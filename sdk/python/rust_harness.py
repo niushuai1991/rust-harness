@@ -56,6 +56,30 @@ class Harness:
     def call(self, method, params=None, timeout=None):
         return self.request(method, params).result(timeout)
 
+    def list_providers(self):
+        return self.call("provider.list")
+
+    def save_provider(self, config, secret=None):
+        return self.call("provider.save", {"config": config, "secret": secret})
+
+    def copy_provider(self, provider_id):
+        return self.call("provider.copy", {"id": provider_id})
+
+    def remove_provider(self, provider_id):
+        return self.call("provider.remove", {"id": provider_id})
+
+    def list_models(self):
+        return self.call("model.list")
+
+    def save_model(self, config, secret=None):
+        return self.call("model.save", {"config": config, "secret": secret})
+
+    def remove_model(self, model_id):
+        return self.call("model.remove", {"modelId": model_id})
+
+    def test_model(self, model_id):
+        return self.call("model.test", {"modelId": model_id})
+
     def close(self):
         self.process.stdin.close()
         try:
@@ -63,6 +87,8 @@ class Harness:
         except subprocess.TimeoutExpired:
             self.process.terminate()
             self.process.wait()
+        self._reader.join(timeout=2)
+        self.process.stdout.close()
 
     def __enter__(self):
         return self

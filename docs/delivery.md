@@ -1,6 +1,29 @@
-# v0.1 开发预览交付记录
+# v0.1.2 开发预览交付记录
 
-安装请使用0.1.1修复版（标准包和离线包均已更新为系统级提权安装）。0.1.0没有请求UAC，在Program Files等受保护目录安装会失败；详情见[安装权限修复](installer-uac-fix.md)。下文的0.1.0产物保留为历史记录。
+已实现 DeepSeek、智谱 Coding Plan 两个内置供应商，每个内部选择 Chat Completions、Responses、Anthropic Messages。内置端点只读，自定义复制保留兼容规则但不复制密钥。详见[三协议使用与升级说明](multi-protocol-delivery.md)。
+
+## 本次验证
+
+- 75 项 Rust 测试、23 项前端交互测试、2 项 Python SDK 真实子进程测试全部通过。
+- 前端类型检查与生产构建、TypeScript SDK 独立类型检查、Rust 格式检查通过；Clippy 退出 0，保留风格和参数数量警告。
+- 本地真实 HTTP/SSE 验证三协议工具审批、结果回传、取消、重启回放及敏感错误脱敏；未使用真实供应商 Key。
+- 发布版桌面启动和单实例检查通过，使用独立临时数据目录；未修改用户真实数据。
+- 标准及离线 NSIS 均已构建，实际 PE 清单验证安装器 requireAdministrator、应用 asInvoker；未在干净虚拟机执行安装/卸载。
+
+## 安装包
+
+| 类型 | 文件 | 大小 |
+|---|---|---|
+| 标准 | Rust Harness_0.1.2_x64-standard-setup.exe | 13,323,445 字节，12.71 MiB |
+| 离线 | Rust Harness_0.1.2_x64-offline-setup.exe | 229,329,803 字节，218.71 MiB |
+
+文件位于 target/release/bundle/nsis，默认 Rust Harness_0.1.2_x64-setup.exe 同标准包。该目录 SHA256SUMS.txt 包含实际文件校验值。安装包为未签名开发预览，离线包使用已有微软 WebView2 完整运行时缓存。
+
+升级会先备份 SQLite 再迁移到格式 2；旧模型配置保留为独立自定义供应商，旧版应用不能直接打开升级后的数据库。
+
+## v0.1 历史交付记录
+
+0.1.1修复版曾将标准包和离线包更新为系统级提权安装。0.1.0没有请求UAC，在Program Files等受保护目录安装会失败；详情见[安装权限修复](installer-uac-fix.md)。下文的0.1.0产物保留为历史记录。
 
 这是核心桌面应用与部分协作能力的实现交付，完整P2/P3路线仍有未完成项，详见[能力矩阵](capability-matrix.md)。
 

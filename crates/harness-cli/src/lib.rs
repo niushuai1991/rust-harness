@@ -1,9 +1,6 @@
 //! Local stdio JSON-RPC. Only explicit human/API requests can synchronize source files.
 use harness_contracts::*;
-use harness_runtime::{
-    Runtime,
-    model::{HttpModel, ModelProvider},
-};
+use harness_runtime::{Runtime, model::ModelProvider};
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc};
 
@@ -16,16 +13,9 @@ fn field<'a>(p: &'a Value, key: &str) -> AppResult<&'a str> {
         .ok_or_else(|| AppError::new("INVALID_PARAMS", key))
 }
 pub async fn provider(runtime: &Runtime, id: &str) -> AppResult<Arc<dyn ModelProvider>> {
-    let models: Vec<ModelConfig> =
-        serde_json::from_value(runtime.store.get("models").await?.unwrap_or(json!([])))
-            .map_err(err)?;
-    let config = models
-        .into_iter()
-        .find(|m| m.id == id)
-        .ok_or_else(|| AppError::new("MODEL_NOT_FOUND", id))?;
-    let secret = harness_platform::get_secret(&config.credential_ref)?.unwrap_or_default();
-    Ok(Arc::new(HttpModel { config, secret }))
+    runtime.models.build_model(id).await
 }
+
 pub async fn dispatch(runtime: Arc<Runtime>, method: &str, p: Value) -> AppResult<Value> {
     Ok(match method {
         "initialize" => {
@@ -111,31 +101,38 @@ pub async fn dispatch(runtime: Arc<Runtime>, method: &str, p: Value) -> AppResul
             )?;
             Value::Null
         }
-        "model.list" => runtime.store.get("models").await?.unwrap_or(json!([])),
-        "model.save" => {
-            let mut config: ModelConfig =
-                serde_json::from_value(p["config"].clone()).map_err(err)?;
-            let url = reqwest::Url::parse(&config.base_url).map_err(err)?;
-            if !matches!(url.scheme(), "https" | "http")
-                || !url.username().is_empty()
-                || url.password().is_some()
-            {
-                return Err(AppError::new("MODEL_URL", "请输入不含凭据的HTTP(S)地址"));
-            }
-            if config.id.is_empty() {
-                config.id = new_id();
-            }
-            config.credential_ref = format!("model/{}", config.id);
-            if let Some(secret) = p["secret"].as_str().filter(|s| !s.is_empty()) {
-                harness_platform::set_secret(&config.credential_ref, secret)?;
-            }
-            let mut all: Vec<ModelConfig> =
-                serde_json::from_value(runtime.store.get("models").await?.unwrap_or(json!([])))
-                    .map_err(err)?;
-            all.retain(|m| m.id != config.id);
-            all.push(config.clone());
-            runtime.store.set("models", &json!(all)).await?;
-            json!(config)
+        "provider.list" => json!(runtime.models.list_providers().await?),
+        "provider.save" => json!(
+            runtime
+                .models
+                .save_provider(
+                    serde_json::from_value(p["config"].clone()).map_err(err)?,
+                    p["secret"].as_str().map(str::to_owned)
+                )
+                .await?
+        ),
+        "provider.copy" => json!(runtime.models.copy_provider(field(&p, "id")?).await?),
+        "provider.remove" => {
+            runtime.models.remove_provider(field(&p, "id")?).await?;
+            Value::Null
+        }
+        "model.list" => json!(runtime.models.list_models().await?),
+        "model.save" => json!(
+            runtime
+                .models
+                .save_model(
+                    serde_json::from_value(p["config"].clone()).map_err(err)?,
+                    p["secret"].as_str().map(str::to_owned)
+                )
+                .await?
+        ),
+        "model.remove" => {
+            runtime.models.remove_model(field(&p, "modelId")?).await?;
+            Value::Null
+        }
+        "model.test" => {
+            runtime.models.test_model(field(&p, "modelId")?).await?;
+            json!("连接成功")
         }
         "plugin.list" => json!(runtime.plugins.list()?),
         "plugin.install" => {

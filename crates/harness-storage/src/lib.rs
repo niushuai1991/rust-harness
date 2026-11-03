@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 fn db_error(e: impl std::fmt::Display) -> AppError {
     AppError::new("STORAGE", e.to_string())
 }
@@ -60,6 +60,67 @@ impl Store {
             ] {
                 sqlx::query(sql).execute(&mut *tx).await.map_err(db_error)?;
             }
+            tx.commit().await.map_err(db_error)?;
+        }
+        if version <= 1 {
+            // VACUUM INTO includes committed WAL pages; a plain file copy does not.
+            if version == 1 {
+                let mut backup = path.with_extension("db.v1.bak");
+                if backup.exists() {
+                    backup = path.with_extension(format!("db.v1.{}.bak", new_id()));
+                }
+                sqlx::query("VACUUM INTO ?")
+                    .bind(backup.to_string_lossy().as_ref())
+                    .execute(&pool)
+                    .await
+                    .map_err(db_error)?;
+            }
+            let mut tx = pool.begin().await.map_err(db_error)?;
+            let raw: Option<String> =
+                sqlx::query_scalar("SELECT value FROM settings WHERE key='models'")
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(db_error)?;
+            if let Some(raw) = raw {
+                let mut models: Vec<ModelConfig> = serde_json::from_str(&raw).map_err(db_error)?;
+                let existing: Option<String> =
+                    sqlx::query_scalar("SELECT value FROM settings WHERE key='providers'")
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .map_err(db_error)?;
+                let mut providers: Vec<ProviderInfo> = existing
+                    .map(|s| serde_json::from_str(&s))
+                    .transpose()
+                    .map_err(db_error)?
+                    .unwrap_or_default();
+                for model in &mut models {
+                    if !model.provider_id.is_empty() {
+                        continue;
+                    }
+                    let id = format!("legacy-{}", model.id);
+                    providers.push(ProviderInfo {
+                        compatibility: ProviderCompatibility::Standard,
+                        id: id.clone(),
+                        name: model.name.clone(),
+                        builtin: false,
+                        endpoints: vec![ProtocolEndpoint {
+                            api_mode: ApiMode::ChatCompletions,
+                            base_url: model.base_url.clone(),
+                        }],
+                        default_model: model.model.clone(),
+                        credential_ref: model.credential_ref.clone(),
+                        proxy: model.proxy.clone(),
+                    });
+                    model.provider_id = id;
+                }
+                for (key, value) in [("models", json!(models)), ("providers", json!(providers))] {
+                    sqlx::query("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(key).bind(value.to_string()).execute(&mut *tx).await.map_err(db_error)?;
+                }
+            }
+            sqlx::query("PRAGMA user_version = 2")
+                .execute(&mut *tx)
+                .await
+                .map_err(db_error)?;
             tx.commit().await.map_err(db_error)?;
         }
         let artifact_dir = path.parent().unwrap_or(Path::new(".")).join("artifacts");

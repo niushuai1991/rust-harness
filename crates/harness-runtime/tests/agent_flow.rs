@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use harness_contracts::*;
 use harness_runtime::{
     Runtime,
-    model::{DeltaSink, ModelAnswer, ModelProvider},
+    model::{DeltaSink, MessageRole, ModelAnswer, ModelMessage, ModelProvider},
 };
 use serde_json::{Value, json};
 use std::{
@@ -13,13 +13,13 @@ use tokio_util::sync::CancellationToken;
 
 struct Recorded {
     answers: Mutex<VecDeque<ModelAnswer>>,
-    requests: Mutex<Vec<Vec<Value>>>,
+    requests: Mutex<Vec<Vec<ModelMessage>>>,
 }
 #[async_trait]
 impl ModelProvider for Recorded {
     async fn complete(
         &self,
-        messages: Vec<Value>,
+        messages: Vec<ModelMessage>,
         _: Vec<ToolDefinition>,
         _: CancellationToken,
         _: DeltaSink,
@@ -101,7 +101,7 @@ async fn approved_edit_stays_in_replica_until_explicit_sync() {
     assert!(
         provider.requests.lock().unwrap()[2]
             .iter()
-            .any(|m| m["role"] == "tool" && m["content"] == "old")
+            .any(|m| m.role == MessageRole::Tool && m.content == "old")
     );
     runtime
         .workspaces

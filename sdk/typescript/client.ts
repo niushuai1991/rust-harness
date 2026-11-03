@@ -1,3 +1,9 @@
+export type ProviderCompatibility = 'standard' | 'deepSeek' | 'bigModel';
+export type ApiMode = 'chatCompletions' | 'responses' | 'anthropic';
+export interface ProtocolEndpoint {apiMode: ApiMode; baseUrl: string}
+export interface ProviderInfo {compatibility: ProviderCompatibility; id: string; name: string; builtin: boolean; endpoints: ProtocolEndpoint[]; defaultModel: string; credentialRef: string; proxy: string | null}
+export interface ModelConfig {compatibility: ProviderCompatibility; id: string; name: string; providerId: string; apiMode: ApiMode; model: string; maxOutputTokens: number | null; baseUrl: string; credentialRef: string; proxy: string | null}
+
 import {spawn, type ChildProcessWithoutNullStreams} from 'node:child_process';
 import {createInterface} from 'node:readline';
 
@@ -30,5 +36,13 @@ export class Harness {
       });
     });
   }
+  listProviders() {return this.call<ProviderInfo[]>('provider.list');}
+  saveProvider(config: ProviderInfo, secret?: string) {return this.call<ProviderInfo>('provider.save', {config, secret});}
+  copyProvider(id: string) {return this.call<ProviderInfo>('provider.copy', {id});}
+  removeProvider(id: string) {return this.call<null>('provider.remove', {id});}
+  listModels() {return this.call<ModelConfig[]>('model.list');}
+  saveModel(config: ModelConfig, secret?: string) {return this.call<ModelConfig>('model.save', {config, secret});}
+  removeModel(modelId: string) {return this.call<null>('model.remove', {modelId});}
+  testModel(modelId: string) {return this.call<string>('model.test', {modelId});}
   close() {this.process.stdin.end();}
 }

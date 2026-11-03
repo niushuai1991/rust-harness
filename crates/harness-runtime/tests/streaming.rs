@@ -26,3 +26,21 @@ fn broken_stream_never_becomes_a_successful_message() {
         .unwrap();
     assert_eq!(decoder.finish().unwrap_err().code, "INCOMPLETE_STREAM");
 }
+
+#[test]
+fn multiline_sse_data_is_one_event() {
+    let mut decoder = SseDecoder::default();
+    decoder.push(b": heartbeat\r\ndata: {\"choices\":\r\ndata: [{\"delta\":{\"content\":\"joined\"}}]}\r\n\r\ndata: [DONE]\r\n\r\n").unwrap();
+    assert_eq!(decoder.finish().unwrap().content, "joined");
+}
+
+#[test]
+fn token_limit_is_not_success_even_with_done_marker() {
+    let mut decoder = SseDecoder::default();
+    let result = decoder.push(b"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n");
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => decoder.finish().unwrap_err(),
+    };
+    assert_eq!(error.code, "MODEL_TRUNCATED");
+}

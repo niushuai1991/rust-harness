@@ -17,6 +17,11 @@ export const commands = {
 	sessionExport: (sessionId: string, path: string) => typedError<null, AppError>(__TAURI_INVOKE("session_export", { sessionId, path })),
 	sessionFork: (sessionId: string) => typedError<SessionInfo, AppError>(__TAURI_INVOKE("session_fork", { sessionId })),
 	sessionSearch: (query: string) => typedError<SessionInfo[], AppError>(__TAURI_INVOKE("session_search", { query })),
+	providerList: () => typedError<ProviderInfo[], AppError>(__TAURI_INVOKE("provider_list")),
+	providerSave: (config: ProviderInfo, secret: string | null) => typedError<ProviderInfo, AppError>(__TAURI_INVOKE("provider_save", { config, secret })),
+	providerCopy: (id: string) => typedError<ProviderInfo, AppError>(__TAURI_INVOKE("provider_copy", { id })),
+	providerRemove: (id: string) => typedError<null, AppError>(__TAURI_INVOKE("provider_remove", { id })),
+	modelRemove: (modelId: string) => typedError<null, AppError>(__TAURI_INVOKE("model_remove", { modelId })),
 	modelList: () => typedError<ModelConfig[], AppError>(__TAURI_INVOKE("model_list")),
 	modelSave: (config: ModelConfig, secret: string | null) => typedError<null, AppError>(__TAURI_INVOKE("model_save", { config, secret })),
 	modelTest: (modelId: string) => typedError<string, AppError>(__TAURI_INVOKE("model_test", { modelId })),
@@ -33,6 +38,8 @@ export const commands = {
 };
 
 /* Types */
+export type ApiMode = "chatCompletions" | "responses" | "anthropic";
+
 export type AppError = {
 	code: string,
 	message: string,
@@ -65,6 +72,10 @@ export type JsonValue = "Null" | boolean | number | null | string | JsonValue[] 
 export type LiveEvent = { type: "durable"; event: SessionEvent } | { type: "delta"; sessionId: string; requestId: string; index: number; text: string; reasoning: boolean } | { type: "status"; sessionId: string; status: string };
 
 export type ModelConfig = {
+	compatibility?: ProviderCompatibility,
+	providerId?: string,
+	apiMode?: ApiMode,
+	maxOutputTokens?: number | null,
 	id: string,
 	name: string,
 	baseUrl: string,
@@ -82,6 +93,24 @@ export type PluginInfo = {
 	permissions: string[],
 	status: string,
 	description: string,
+};
+
+export type ProtocolEndpoint = {
+	apiMode: ApiMode,
+	baseUrl: string,
+};
+
+export type ProviderCompatibility = "standard" | "deepSeek" | "bigModel";
+
+export type ProviderInfo = {
+	compatibility?: ProviderCompatibility,
+	id: string,
+	name: string,
+	builtin: boolean,
+	endpoints: ProtocolEndpoint[],
+	defaultModel: string,
+	credentialRef: string,
+	proxy: string | null,
 };
 
 export type SessionEvent = {

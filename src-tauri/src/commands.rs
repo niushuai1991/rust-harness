@@ -1,7 +1,6 @@
 //! Typed desktop adapters. Agent tools never call these human-only synchronization endpoints.
 use harness_contracts::*;
-use harness_runtime::{Runtime, model::HttpModel};
-use serde_json::json;
+use harness_runtime::Runtime;
 use std::{path::PathBuf, sync::Arc};
 use tauri::{State, ipc::Channel};
 
@@ -99,16 +98,7 @@ pub async fn session_send(
     model_id: String,
     on_event: Channel<LiveEvent>,
 ) -> AppResult<()> {
-    let models = models(&state).await?;
-    let model = models
-        .into_iter()
-        .find(|m| m.id == model_id)
-        .ok_or_else(|| AppError::new("MODEL_NOT_FOUND", "请先配置模型"))?;
-    let secret = harness_platform::get_secret(&model.credential_ref)?.unwrap_or_default();
-    let provider = Arc::new(HttpModel {
-        config: model,
-        secret,
-    });
+    let provider = state.models.build_model(&model_id).await?;
     let runtime = state.inner().clone();
     let mut live = runtime.subscribe();
     let sid = session_id.clone();
@@ -159,76 +149,54 @@ pub async fn session_search(state: Backend<'_>, query: String) -> AppResult<Vec<
     state.store.search(&query).await
 }
 
-async fn models(runtime: &Runtime) -> AppResult<Vec<ModelConfig>> {
-    match runtime.store.get("models").await? {
-        None => Ok(vec![]),
-        Some(v) => serde_json::from_value(v).map_err(error),
-    }
+#[tauri::command]
+#[specta::specta]
+pub async fn provider_list(state: Backend<'_>) -> AppResult<Vec<ProviderInfo>> {
+    state.models.list_providers().await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn provider_save(
+    state: Backend<'_>,
+    config: ProviderInfo,
+    secret: Option<String>,
+) -> AppResult<ProviderInfo> {
+    state.models.save_provider(config, secret).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn provider_copy(state: Backend<'_>, id: String) -> AppResult<ProviderInfo> {
+    state.models.copy_provider(&id).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn provider_remove(state: Backend<'_>, id: String) -> AppResult<()> {
+    state.models.remove_provider(&id).await
 }
 #[tauri::command]
 #[specta::specta]
 pub async fn model_list(state: Backend<'_>) -> AppResult<Vec<ModelConfig>> {
-    models(&state).await
+    state.models.list_models().await
 }
 #[tauri::command]
 #[specta::specta]
 pub async fn model_save(
     state: Backend<'_>,
-    mut config: ModelConfig,
+    config: ModelConfig,
     secret: Option<String>,
 ) -> AppResult<()> {
-    let url = reqwest::Url::parse(&config.base_url).map_err(error)?;
-    if !matches!(url.scheme(), "https" | "http")
-        || !url.username().is_empty()
-        || url.password().is_some()
-    {
-        return Err(AppError::new(
-            "MODEL_URL",
-            "请输入不含凭据的HTTP(S)服务地址",
-        ));
-    }
-    if config.model.trim().is_empty() || config.name.trim().is_empty() {
-        return Err(AppError::new("MODEL_CONFIG", "名称和模型不能为空"));
-    }
-    if config.id.is_empty() {
-        config.id = new_id();
-    }
-    config.credential_ref = format!("model/{}", config.id);
-    if let Some(secret) = secret.filter(|s| !s.is_empty()) {
-        harness_platform::set_secret(&config.credential_ref, &secret)?;
-    }
-    let mut all = models(&state).await?;
-    all.retain(|m| m.id != config.id);
-    all.push(config);
-    state.store.set("models", &json!(all)).await
+    state.models.save_model(config, secret).await?;
+    Ok(())
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn model_remove(state: Backend<'_>, model_id: String) -> AppResult<()> {
+    state.models.remove_model(&model_id).await
 }
 #[tauri::command]
 #[specta::specta]
 pub async fn model_test(state: Backend<'_>, model_id: String) -> AppResult<String> {
-    let model = models(&state)
-        .await?
-        .into_iter()
-        .find(|m| m.id == model_id)
-        .ok_or_else(|| AppError::new("MODEL_NOT_FOUND", "模型不存在"))?;
-    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(20));
-    if let Some(proxy) = model.proxy.as_ref().filter(|p| !p.is_empty()) {
-        builder = builder.proxy(reqwest::Proxy::all(proxy).map_err(error)?);
-    }
-    let secret = harness_platform::get_secret(&model.credential_ref)?.unwrap_or_default();
-    let mut request = builder
-        .build()
-        .map_err(error)?
-        .get(format!("{}/models", model.base_url.trim_end_matches('/')));
-    if !secret.is_empty() {
-        request = request.bearer_auth(secret);
-    }
-    let response = request.send().await.map_err(error)?;
-    if !response.status().is_success() {
-        return Err(AppError::new(
-            "MODEL_HTTP",
-            format!("服务返回 {}", response.status()),
-        ));
-    }
+    state.models.test_model(&model_id).await?;
     Ok("连接成功".into())
 }
 #[tauri::command]
@@ -321,6 +289,11 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         session_export,
         session_fork,
         session_search,
+        provider_list,
+        provider_save,
+        provider_copy,
+        provider_remove,
+        model_remove,
         model_list,
         model_save,
         model_test,

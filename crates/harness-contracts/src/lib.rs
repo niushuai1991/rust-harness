@@ -149,9 +149,53 @@ pub struct ApprovalRequest {
     pub reason: String,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ApiMode {
+    #[default]
+    ChatCompletions,
+    Responses,
+    Anthropic,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtocolEndpoint {
+    pub api_mode: ApiMode,
+    pub base_url: String,
+}
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ProviderCompatibility {
+    #[default]
+    Standard,
+    DeepSeek,
+    BigModel,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderInfo {
+    #[serde(default)]
+    pub compatibility: ProviderCompatibility,
+    pub id: String,
+    pub name: String,
+    pub builtin: bool,
+    pub endpoints: Vec<ProtocolEndpoint>,
+    pub default_model: String,
+    pub credential_ref: String,
+    pub proxy: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelConfig {
+    #[serde(default)]
+    pub compatibility: ProviderCompatibility,
+    #[serde(default)]
+    pub provider_id: String,
+    #[serde(default)]
+    pub api_mode: ApiMode,
+    #[serde(default)]
+    pub max_output_tokens: Option<u32>,
     pub id: String,
     pub name: String,
     pub base_url: String,

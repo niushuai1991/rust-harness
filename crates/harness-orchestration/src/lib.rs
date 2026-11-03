@@ -5,7 +5,7 @@ use harness_contracts::*;
 use harness_platform::ShellService;
 use harness_runtime::{
     ExternalTool, Registration, Runtime, ToolContext,
-    model::{HttpModel, ModelProvider},
+    model::{ModelMessage, ModelProvider},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -490,25 +490,7 @@ impl State {
                 self.save_single_event(&r, s).await?;
                 continue;
             }
-            let provider = async {
-                let models: Vec<ModelConfig> =
-                    serde_json::from_value(r.store.get("models").await?.unwrap_or(json!([])))
-                        .map_err(error)?;
-                let config = models
-                    .into_iter()
-                    .find(|m| m.id == s.model_id)
-                    .ok_or_else(|| {
-                        AppError::new("MODEL_NOT_CONFIGURED", "定时任务未找到模型配置")
-                    })?;
-                let secret = if config.credential_ref.is_empty() {
-                    String::new()
-                } else {
-                    harness_platform::get_secret(&config.credential_ref)?
-                        .ok_or_else(|| AppError::new("MODEL_CREDENTIAL", "定时任务缺少模型凭据"))?
-                };
-                Ok::<_, AppError>(Arc::new(HttpModel { config, secret }) as Arc<dyn ModelProvider>)
-            }
-            .await;
+            let provider = r.models.build_model(&s.model_id).await;
             match provider {
                 Err(e) => {
                     s.status = "failed".into();
@@ -614,10 +596,16 @@ pub async fn compact_session(
     let _boundary = runtime.session_boundary(session).await;
     runtime.store.session(session).await?;
     let events = runtime.store.events(session, 0).await?;
-    let messages = harness_runtime::agent::project_messages(&events);
+    let mut messages = harness_runtime::agent::project_messages(&events);
+    for message in &mut messages {
+        message.replay = None;
+        message.reasoning.clear();
+    }
     let request = vec![
-        json!({"role":"system","content":"请用中文总结会话目标、已完成工作、关键事实、未完成事项和工具执行结果。保留继续任务所需信息，不编造。"}),
-        json!({"role":"user","content":serde_json::to_string(&messages).map_err(error)?}),
+        ModelMessage::system(
+            "请用中文总结会话目标、已完成工作、关键事实、未完成事项和工具执行结果。保留继续任务所需信息，不编造。",
+        ),
+        ModelMessage::user(serde_json::to_string(&messages).map_err(error)?),
     ];
     let answer = provider
         .complete(request, vec![], cancel.clone(), Arc::new(|_| {}))

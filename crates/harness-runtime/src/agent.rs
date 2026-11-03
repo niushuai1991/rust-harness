@@ -1,5 +1,5 @@
 //! Scoped agent ownership, durable tool settlements, and human approvals.
-use crate::model::{ModelProvider, StreamDelta, cancelled};
+use crate::model::{MessageRole, ModelMessage, ModelProvider, StreamDelta, cancelled};
 use harness_contracts::*;
 use harness_extensions::{HostPolicy, PluginManager};
 use harness_platform::{ShellService, WorkspaceManager};
@@ -42,6 +42,7 @@ impl Approvals {
 
 pub struct Runtime {
     pub store: Store,
+    pub models: crate::providers::ModelService,
     pub workspaces: WorkspaceManager,
     pub plugins: Arc<PluginManager>,
     pub approvals: Approvals,
@@ -99,6 +100,7 @@ impl Runtime {
             }
         }
         Ok(Arc::new(Self {
+            models: crate::providers::ModelService::new(store.clone()),
             store,
             workspaces,
             plugins,
@@ -381,7 +383,7 @@ impl Runtime {
             self.append(
                 session,
                 "request.snapshot",
-                json!({"id":request_id,"step":step,"messages":messages,"tools":tools}),
+                json!({"id":request_id,"step":step,"messages":messages,"tools":tools,"route":provider.route(),"request":provider.request_snapshot(&messages,&tools)?}),
             )
             .await?;
             let sender = self.events.clone();
@@ -443,7 +445,7 @@ impl Runtime {
             }
             let mut records = vec![(
                 "assistant.message".into(),
-                json!({"content":answer.content,"reasoning":answer.reasoning,"toolCalls":answer.calls,"usage":answer.usage}),
+                json!({"content":answer.content,"reasoning":answer.reasoning,"toolCalls":answer.calls,"usage":answer.usage,"replay":answer.replay}),
             )];
             for call in &answer.calls {
                 records.push((
@@ -856,35 +858,35 @@ fn workspace_context(root: &Path) -> AppResult<String> {
     }
     Ok(context)
 }
-pub fn project_messages(events: &[SessionEvent]) -> Vec<Value> {
+pub fn project_messages(events: &[SessionEvent]) -> Vec<ModelMessage> {
     let mut system = String::new();
     let mut history = Vec::new();
     for e in events {
+        let content = || e.data["content"].as_str().unwrap_or("").to_owned();
         match e.kind.as_str() {
-            "context.snapshot" => system = e.data["content"].as_str().unwrap_or("").into(),
-            "user.message" => history.push(json!({"role":"user","content":e.data["content"]})),
-            "plugin.context" => history.push(json!({"role":"user","content":e.data["content"]})),
-            "assistant.message" => {
-                let mut message = json!({"role":"assistant","content":e.data["content"]});
-                if let Some(reasoning) = e.data["reasoning"].as_str().filter(|s| !s.is_empty()) {
-                    message["reasoning_content"] = json!(reasoning);
-                }
-                if let Some(calls) = e.data["toolCalls"].as_array().filter(|a| !a.is_empty()) {
-                    message["tool_calls"]=json!(calls.iter().map(|c|json!({"id":c["id"],"type":"function","function":{"name":c["name"],"arguments":c["arguments"].to_string()}})).collect::<Vec<_>>());
-                }
-                history.push(message);
-            }
-            "tool.result" => history.push(
-                json!({"role":"tool","tool_call_id":e.data["callId"],"content":e.data["content"]}),
-            ),
+            "context.snapshot" => system = content(),
+            "user.message" | "plugin.context" => history.push(ModelMessage::user(content())),
+            "assistant.message" => history.push(ModelMessage {
+                role: MessageRole::Assistant,
+                content: content(),
+                reasoning: e.data["reasoning"].as_str().unwrap_or("").into(),
+                tool_calls: serde_json::from_value(e.data["toolCalls"].clone()).unwrap_or_default(),
+                replay: serde_json::from_value(e.data["replay"].clone()).unwrap_or(None),
+                ..Default::default()
+            }),
+            "tool.result" => history.push(ModelMessage::tool(
+                e.data["callId"].as_str().unwrap_or(""),
+                content(),
+                e.data["isError"].as_bool().unwrap_or(false),
+            )),
             "compaction.summary" => {
                 history.clear();
-                history.push(json!({"role":"user","content":e.data["content"]}));
+                history.push(ModelMessage::user(content()));
             }
             _ => {}
         }
     }
-    let mut messages = vec![json!({"role":"system","content":system})];
+    let mut messages = vec![ModelMessage::system(system)];
     messages.extend(history);
     messages
 }

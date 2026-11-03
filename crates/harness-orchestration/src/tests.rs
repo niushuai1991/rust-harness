@@ -5,7 +5,7 @@ struct Answer;
 impl ModelProvider for Answer {
     async fn complete(
         &self,
-        _: Vec<Value>,
+        _: Vec<ModelMessage>,
         _: Vec<ToolDefinition>,
         _: CancellationToken,
         _: DeltaSink,
@@ -120,7 +120,7 @@ async fn compaction_preserves_raw_events() {
     assert_eq!(e[0].data["content"], "原始消息");
     assert_eq!(e.last().unwrap().kind, "compaction.summary");
     assert_eq!(
-        harness_runtime::agent::project_messages(&e)[1]["content"],
+        harness_runtime::agent::project_messages(&e)[1].content,
         "摘要和回复"
     );
 }
@@ -162,6 +162,8 @@ async fn scoped_fork_send_wait() {
 async fn overdue_recovery_marks_missed_and_future_missing_model_fails() {
     let (_d, r, c) = setup().await;
     let i = install(r.clone()).unwrap();
+    // This test drives recovery/ticks manually; the background first tick must not race it.
+    i.state.stop.cancel();
     let s = Schedule {
         id: new_id(),
         session_id: c.session_id.clone(),
