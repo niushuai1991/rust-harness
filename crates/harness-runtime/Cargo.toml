@@ -1,0 +1,24 @@
+[package]
+name = "harness-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[dependencies]
+harness-contracts.workspace = true
+harness-storage.workspace = true
+harness-platform.workspace = true
+harness-extensions.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+tempfile.workspace = true
+jsonschema = { version = "0.33", default-features = false }
+[dev-dependencies]
+tempfile.workspace = true

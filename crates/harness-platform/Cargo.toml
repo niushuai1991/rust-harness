@@ -1,0 +1,20 @@
+[package]
+name = "harness-platform"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+harness-contracts = { path = "../harness-contracts" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+uuid.workspace = true
+ignore.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tempfile.workspace = true
+dunce.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Credentials", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Memory", "Win32_System_Pipes", "Win32_System_Environment"] }

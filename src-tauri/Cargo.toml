@@ -1,0 +1,37 @@
+[package]
+name = "rust-harness-desktop"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "rust_harness_desktop"
+crate-type = ["rlib"]
+
+[features]
+signed-updates = []
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2"
+tauri-plugin-updater = "2"
+specta = { version = "=2.0.0-rc.25", features = ["derive"] }
+tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+harness-contracts = { path = "../crates/harness-contracts" }
+harness-runtime.workspace = true
+harness-platform.workspace = true
+harness-extensions.workspace = true
+harness-orchestration.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+reqwest.workspace = true
+dirs.workspace = true
+tracing-subscriber.workspace = true
+specta-typescript = "0.0.12"

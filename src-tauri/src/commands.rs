@@ -1,0 +1,338 @@
+//! Typed desktop adapters. Agent tools never call these human-only synchronization endpoints.
+use harness_contracts::*;
+use harness_runtime::{Runtime, model::HttpModel};
+use serde_json::json;
+use std::{path::PathBuf, sync::Arc};
+use tauri::{State, ipc::Channel};
+
+type Backend<'a> = State<'a, Arc<Runtime>>;
+fn error(e: impl std::fmt::Display) -> AppError {
+    AppError::new("DESKTOP", e.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn workspace_list(state: Backend<'_>) -> AppResult<Vec<WorkspaceInfo>> {
+    state.workspaces.list()
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn workspace_open(state: Backend<'_>, path: String) -> AppResult<WorkspaceInfo> {
+    let manager = state.workspaces.clone();
+    tokio::task::spawn_blocking(move || manager.create(&PathBuf::from(path)))
+        .await
+        .map_err(error)?
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn workspace_diff(
+    state: Backend<'_>,
+    workspace_id: String,
+) -> AppResult<Vec<FileChange>> {
+    let manager = state.workspaces.clone();
+    tokio::task::spawn_blocking(move || manager.diff(&workspace_id))
+        .await
+        .map_err(error)?
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn workspace_apply(
+    state: Backend<'_>,
+    workspace_id: String,
+    paths: Vec<String>,
+    reviewed: Vec<FileChange>,
+) -> AppResult<Vec<FileChange>> {
+    if paths.len() != reviewed.len() || paths.iter().any(|p| !reviewed.iter().any(|r| &r.path == p))
+    {
+        return Err(AppError::new("STALE_DIFF", "确认路径与差异预览不一致"));
+    }
+    let manager = state.workspaces.clone();
+    tokio::task::spawn_blocking(move || manager.apply_reviewed(&workspace_id, &reviewed))
+        .await
+        .map_err(error)?
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn workspace_refresh(
+    state: Backend<'_>,
+    workspace_id: String,
+) -> AppResult<WorkspaceInfo> {
+    let manager = state.workspaces.clone();
+    tokio::task::spawn_blocking(move || manager.refresh(&workspace_id))
+        .await
+        .map_err(error)?
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn session_list(state: Backend<'_>, workspace_id: String) -> AppResult<Vec<SessionInfo>> {
+    state.store.sessions(Some(&workspace_id)).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn session_create(
+    state: Backend<'_>,
+    workspace_id: String,
+    title: String,
+) -> AppResult<SessionInfo> {
+    state.workspaces.get(&workspace_id)?;
+    state.store.create_session(&workspace_id, &title).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn session_events(
+    state: Backend<'_>,
+    session_id: String,
+    after: Option<String>,
+) -> AppResult<Vec<SessionEvent>> {
+    let after = after
+        .unwrap_or_else(|| "0".into())
+        .parse::<u64>()
+        .map_err(error)?;
+    state.store.events(&session_id, after).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn session_send(
+    state: Backend<'_>,
+    session_id: String,
+    text: String,
+    model_id: String,
+    on_event: Channel<LiveEvent>,
+) -> AppResult<()> {
+    let models = models(&state).await?;
+    let model = models
+        .into_iter()
+        .find(|m| m.id == model_id)
+        .ok_or_else(|| AppError::new("MODEL_NOT_FOUND", "请先配置模型"))?;
+    let secret = harness_platform::get_secret(&model.credential_ref)?.unwrap_or_default();
+    let provider = Arc::new(HttpModel {
+        config: model,
+        secret,
+    });
+    let runtime = state.inner().clone();
+    let mut live = runtime.subscribe();
+    let sid = session_id.clone();
+    let forward = tokio::spawn(async move {
+        loop {
+            match live.recv().await {
+                Ok(event) => {
+                    let target = match &event {
+                        LiveEvent::Durable { event } => &event.session_id,
+                        LiveEvent::Delta { session_id, .. }
+                        | LiveEvent::Status { session_id, .. } => session_id,
+                    };
+                    if target == &sid && on_event.send(event).is_err() {
+                        break;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => break,
+                Err(_) => break,
+            }
+        }
+    });
+    let result = runtime.run_session(session_id, text, provider).await;
+    // Allow the final durable frame to drain; frontend also performs cursor-safe history reload.
+    tokio::task::yield_now().await;
+    forward.abort();
+    result
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn session_cancel(state: Backend<'_>, session_id: String) -> AppResult<()> {
+    state.cancel(&session_id);
+    Ok(())
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn session_export(state: Backend<'_>, session_id: String, path: String) -> AppResult<()> {
+    let content = state.store.export(&session_id).await?;
+    tokio::fs::write(path, content).await.map_err(error)
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn session_fork(state: Backend<'_>, session_id: String) -> AppResult<SessionInfo> {
+    state.fork(&session_id).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn session_search(state: Backend<'_>, query: String) -> AppResult<Vec<SessionInfo>> {
+    state.store.search(&query).await
+}
+
+async fn models(runtime: &Runtime) -> AppResult<Vec<ModelConfig>> {
+    match runtime.store.get("models").await? {
+        None => Ok(vec![]),
+        Some(v) => serde_json::from_value(v).map_err(error),
+    }
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn model_list(state: Backend<'_>) -> AppResult<Vec<ModelConfig>> {
+    models(&state).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn model_save(
+    state: Backend<'_>,
+    mut config: ModelConfig,
+    secret: Option<String>,
+) -> AppResult<()> {
+    let url = reqwest::Url::parse(&config.base_url).map_err(error)?;
+    if !matches!(url.scheme(), "https" | "http")
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err(AppError::new(
+            "MODEL_URL",
+            "请输入不含凭据的HTTP(S)服务地址",
+        ));
+    }
+    if config.model.trim().is_empty() || config.name.trim().is_empty() {
+        return Err(AppError::new("MODEL_CONFIG", "名称和模型不能为空"));
+    }
+    if config.id.is_empty() {
+        config.id = new_id();
+    }
+    config.credential_ref = format!("model/{}", config.id);
+    if let Some(secret) = secret.filter(|s| !s.is_empty()) {
+        harness_platform::set_secret(&config.credential_ref, &secret)?;
+    }
+    let mut all = models(&state).await?;
+    all.retain(|m| m.id != config.id);
+    all.push(config);
+    state.store.set("models", &json!(all)).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn model_test(state: Backend<'_>, model_id: String) -> AppResult<String> {
+    let model = models(&state)
+        .await?
+        .into_iter()
+        .find(|m| m.id == model_id)
+        .ok_or_else(|| AppError::new("MODEL_NOT_FOUND", "模型不存在"))?;
+    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(20));
+    if let Some(proxy) = model.proxy.as_ref().filter(|p| !p.is_empty()) {
+        builder = builder.proxy(reqwest::Proxy::all(proxy).map_err(error)?);
+    }
+    let secret = harness_platform::get_secret(&model.credential_ref)?.unwrap_or_default();
+    let mut request = builder
+        .build()
+        .map_err(error)?
+        .get(format!("{}/models", model.base_url.trim_end_matches('/')));
+    if !secret.is_empty() {
+        request = request.bearer_auth(secret);
+    }
+    let response = request.send().await.map_err(error)?;
+    if !response.status().is_success() {
+        return Err(AppError::new(
+            "MODEL_HTTP",
+            format!("服务返回 {}", response.status()),
+        ));
+    }
+    Ok("连接成功".into())
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn approval_list(state: Backend<'_>) -> AppResult<Vec<ApprovalRequest>> {
+    Ok(state.approvals.list())
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn approval_resolve(state: Backend<'_>, id: String, allow: bool) -> AppResult<()> {
+    state.approvals.resolve(&id, allow)
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_list(state: Backend<'_>) -> AppResult<Vec<PluginInfo>> {
+    state.plugins.list()
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_install(
+    state: Backend<'_>,
+    path: String,
+    permissions: Vec<String>,
+) -> AppResult<PluginInfo> {
+    let plugins = state.plugins.clone();
+    tokio::task::spawn_blocking(move || plugins.install(&PathBuf::from(path), permissions))
+        .await
+        .map_err(error)?
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_enable(state: Backend<'_>, id: String, enabled: bool) -> AppResult<()> {
+    state.plugins.set_enabled(&id, enabled)
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_remove(state: Backend<'_>, id: String) -> AppResult<()> {
+    state.plugins.remove(&id)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn mcp_list(state: Backend<'_>) -> AppResult<Vec<JsonPayload>> {
+    Ok(state
+        .mcp_connections()
+        .into_iter()
+        .map(JsonPayload)
+        .collect())
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn mcp_connect(
+    state: Backend<'_>,
+    workspace_id: String,
+    config: JsonPayload,
+) -> AppResult<()> {
+    let config = serde_json::from_value(config.0).map_err(error)?;
+    state.connect_mcp(&workspace_id, config).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn mcp_disconnect(state: Backend<'_>, id: String) -> AppResult<()> {
+    state.disconnect_mcp(&id).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn mcp_resources(
+    state: Backend<'_>,
+    id: String,
+    uri: Option<String>,
+) -> AppResult<JsonPayload> {
+    match uri {
+        Some(uri) => state.mcp.read_resource(&id, &uri).await.map(JsonPayload),
+        None => state.mcp.list_resources(&id).await.map(JsonPayload),
+    }
+}
+
+pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
+    tauri_specta::Builder::new().commands(tauri_specta::collect_commands![
+        workspace_list,
+        workspace_open,
+        workspace_diff,
+        workspace_apply,
+        workspace_refresh,
+        session_list,
+        session_create,
+        session_events,
+        session_send,
+        session_cancel,
+        session_export,
+        session_fork,
+        session_search,
+        model_list,
+        model_save,
+        model_test,
+        approval_list,
+        approval_resolve,
+        plugin_list,
+        plugin_install,
+        plugin_enable,
+        plugin_remove,
+        mcp_list,
+        mcp_connect,
+        mcp_disconnect,
+        mcp_resources
+    ])
+}

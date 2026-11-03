@@ -1,0 +1,11 @@
+/target/
+/node_modules/
+/dist/
+/.cache/
+/.cargo/config.toml
+/.superpowers/
+/.worktrees/
+*.log
+*.local
+.env
+src-tauri/gen/

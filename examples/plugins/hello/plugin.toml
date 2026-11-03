@@ -1,0 +1,14 @@
+id = "hello"
+name = "Hello theme"
+version = "1.0.0"
+api = "^0.1"
+description = "Pure declarative theme and settings example; executes no installation code."
+permissions = []
+
+[contributions.settings]
+"hello.greeting" = "Hello"
+
+[contributions.themes.midnight]
+background = "#10141d"
+foreground = "#e8edf5"
+accent = "#6caaff"

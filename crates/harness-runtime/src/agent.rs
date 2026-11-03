@@ -1,0 +1,998 @@
+//! Scoped agent ownership, durable tool settlements, and human approvals.
+use crate::model::{ModelProvider, StreamDelta, cancelled};
+use harness_contracts::*;
+use harness_extensions::{HostPolicy, PluginManager};
+use harness_platform::{ShellService, WorkspaceManager};
+use harness_storage::Store;
+use serde_json::{Value, json};
+use std::{
+    collections::{BTreeSet, HashMap},
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
+use tokio::sync::{broadcast, oneshot};
+use tokio_util::sync::CancellationToken;
+
+type PendingApproval = (ApprovalRequest, oneshot::Sender<bool>);
+static FILE_MUTATION: Mutex<()> = Mutex::new(());
+#[derive(Default)]
+pub struct Approvals {
+    pending: Mutex<HashMap<String, PendingApproval>>,
+}
+impl Approvals {
+    pub fn list(&self) -> Vec<ApprovalRequest> {
+        self.pending
+            .lock()
+            .unwrap()
+            .values()
+            .map(|(r, _)| r.clone())
+            .collect()
+    }
+    pub fn resolve(&self, id: &str, allow: bool) -> AppResult<()> {
+        let (_, tx) = self
+            .pending
+            .lock()
+            .unwrap()
+            .remove(id)
+            .ok_or_else(|| AppError::new("APPROVAL_EXPIRED", "审批不存在或已过期"))?;
+        tx.send(allow)
+            .map_err(|_| AppError::new("APPROVAL_EXPIRED", "调用已结束"))
+    }
+}
+
+pub struct Runtime {
+    pub store: Store,
+    pub workspaces: WorkspaceManager,
+    pub plugins: Arc<PluginManager>,
+    pub approvals: Approvals,
+    pub mcp: harness_extensions::mcp::McpManager,
+    mcp_scopes: Mutex<HashMap<String, String>>,
+    events: broadcast::Sender<LiveEvent>,
+    active: Mutex<HashMap<String, CancellationToken>>,
+    queues: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    children: Mutex<HashMap<String, Vec<String>>>,
+    custom: crate::registry::Tools,
+    _host_lock: std::fs::File,
+}
+impl Runtime {
+    pub async fn open(data_dir: PathBuf) -> AppResult<Arc<Self>> {
+        harness_extensions::mcp::init_tls();
+        std::fs::create_dir_all(&data_dir).map_err(internal)?;
+        let host_lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(data_dir.join("host.lock"))
+            .map_err(internal)?;
+        host_lock.try_lock().map_err(|_| {
+            AppError::new(
+                "HOST_RUNNING",
+                "此数据目录已由另一个宿主使用；请关闭现有实例或指定独立数据目录",
+            )
+        })?;
+        let store = Store::open(&data_dir.join("harness.db")).await?;
+        store.recover().await?;
+        let workspaces = WorkspaceManager::new(data_dir.clone())?;
+        let plugins = Arc::new(PluginManager::new(data_dir.join("plugins"))?);
+        plugins.set_host_policy(Arc::new(ReplicaHost));
+        let (events, _) = broadcast::channel(4096);
+        let mut children: HashMap<String, Vec<String>> = HashMap::new();
+        for session in store.sessions(None).await? {
+            for event in store.events(&session.id, 0).await? {
+                if event.kind == "subagent.created" && event.data["historyOnly"] != true {
+                    if let Some(child) = event.data["sessionId"].as_str() {
+                        if let Ok(child_info) = store.session(child).await {
+                            if child_info.workspace_id == session.workspace_id
+                                && !children
+                                    .values()
+                                    .any(|ids| ids.iter().any(|id| id == child))
+                            {
+                                children
+                                    .entry(session.id.clone())
+                                    .or_default()
+                                    .push(child.into());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(Arc::new(Self {
+            store,
+            workspaces,
+            plugins,
+            approvals: Approvals::default(),
+            mcp: harness_extensions::mcp::McpManager::new(),
+            mcp_scopes: Mutex::new(HashMap::new()),
+            events,
+            active: Mutex::new(HashMap::new()),
+            queues: Mutex::new(HashMap::new()),
+            children: Mutex::new(children),
+            custom: Arc::new(Mutex::new(Default::default())),
+            _host_lock: host_lock,
+        }))
+    }
+    pub fn subscribe(&self) -> broadcast::Receiver<LiveEvent> {
+        self.events.subscribe()
+    }
+    pub fn active_count(&self) -> usize {
+        self.active.lock().unwrap().len()
+    }
+    pub fn is_active(&self, id: &str) -> bool {
+        self.active.lock().unwrap().contains_key(id)
+    }
+    pub fn children_of(&self, session: &str) -> Vec<String> {
+        self.children
+            .lock()
+            .unwrap()
+            .get(session)
+            .cloned()
+            .unwrap_or_default()
+    }
+    pub fn adopt_child(&self, parent: &str, child: &str) -> AppResult<()> {
+        if parent == child {
+            return Err(AppError::new("AGENT_SCOPE", "不能将自己登记为子代理"));
+        }
+        let mut children = self.children.lock().unwrap();
+        if children
+            .values()
+            .any(|ids| ids.iter().any(|id| id == child))
+        {
+            return Err(AppError::new("AGENT_SCOPE", "子代理已归其他所有者管理"));
+        }
+        children
+            .entry(parent.into())
+            .or_default()
+            .push(child.into());
+        Ok(())
+    }
+    pub async fn session_boundary(&self, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let queue = self
+            .queues
+            .lock()
+            .unwrap()
+            .entry(id.into())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        queue.lock_owned().await
+    }
+    pub fn register_tool(
+        &self,
+        tool: Arc<dyn crate::ExternalTool>,
+    ) -> AppResult<crate::Registration> {
+        let name = tool.definition().name;
+        let mut registry = self.custom.lock().unwrap();
+        if name.is_empty()
+            || builtin_tools().iter().any(|t| t.name == name)
+            || name.starts_with("plugin__")
+            || name.starts_with("mcp__")
+            || registry.contains_key(&name)
+        {
+            return Err(AppError::new("DUPLICATE_TOOL", name));
+        }
+        registry.insert(name.clone(), tool);
+        Ok(crate::Registration {
+            name,
+            registry: Arc::downgrade(&self.custom),
+        })
+    }
+    pub fn cancel(&self, id: &str) {
+        if let Some(token) = self.active.lock().unwrap().get(id) {
+            token.cancel();
+        }
+    }
+    pub fn cancel_all(&self) {
+        for token in self.active.lock().unwrap().values() {
+            token.cancel();
+        }
+    }
+    /// This entrypoint is exposed only to explicit human configuration commands, never model tools.
+    pub async fn connect_mcp(
+        &self,
+        workspace: &str,
+        config: harness_extensions::mcp::ServerConfig,
+    ) -> AppResult<()> {
+        use harness_extensions::mcp::ServerConfig;
+        let info = self.workspaces.get(workspace)?;
+        if self.mcp_scopes.lock().unwrap().contains_key(config.id()) {
+            return Err(AppError::new("MCP_DUPLICATE", "请先断开同名MCP连接"));
+        }
+        match &config {
+            ServerConfig::StreamableHttp { .. } => self.mcp.connect_http(&config, true).await?,
+            ServerConfig::Stdio { command, args, .. } => {
+                let child = ShellService::spawn_stdio(
+                    Path::new(&info.replica_path),
+                    command,
+                    args,
+                    CancellationToken::new(),
+                )
+                .await?;
+                let (read, write) = tokio::io::split(child);
+                self.mcp
+                    .connect_sandboxed_stdio(&config, read, write, true)
+                    .await?;
+            }
+        }
+        self.mcp_scopes
+            .lock()
+            .unwrap()
+            .insert(config.id().into(), workspace.into());
+        Ok(())
+    }
+    pub async fn disconnect_mcp(&self, id: &str) -> AppResult<()> {
+        self.mcp.disconnect(id).await?;
+        self.mcp_scopes.lock().unwrap().remove(id);
+        Ok(())
+    }
+    pub fn mcp_connections(&self) -> Vec<Value> {
+        self.mcp_scopes
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, workspace)| json!({"id":id,"workspaceId":workspace}))
+            .collect()
+    }
+    pub async fn append(&self, id: &str, kind: &str, data: Value) -> AppResult<SessionEvent> {
+        let event = self.store.append(id, kind, data).await?;
+        let _ = self.events.send(LiveEvent::Durable {
+            event: event.clone(),
+        });
+        Ok(event)
+    }
+    pub fn run_session(
+        self: Arc<Self>,
+        session_id: String,
+        text: String,
+        provider: Arc<dyn ModelProvider>,
+    ) -> futures::future::BoxFuture<'static, AppResult<()>> {
+        Box::pin(async move {
+            if text.trim().is_empty() || text.len() > 1024 * 1024 {
+                return Err(AppError::new("INVALID_INPUT", "消息不能为空或超过1MiB"));
+            }
+            let session = self.store.session(&session_id).await?;
+            let queue = self
+                .queues
+                .lock()
+                .unwrap()
+                .entry(session_id.clone())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone();
+            let message_id = new_id();
+            self.append(
+                &session_id,
+                "inbox.queued",
+                json!({"id":message_id,"content":text}),
+            )
+            .await?;
+            let _serial = queue.lock().await;
+            let lease = self.workspaces.acquire(&session.workspace_id)?;
+            let cancel = CancellationToken::new();
+            self.active
+                .lock()
+                .unwrap()
+                .insert(session_id.clone(), cancel.clone());
+            let run_id = new_id();
+            let result = async {
+                self.append(&session_id, "turn.start", json!({"runId":run_id}))
+                    .await?;
+                self.append(&session_id, "inbox.claimed", json!({"id":message_id}))
+                    .await?;
+                self.append(&session_id, "user.message", json!({"content":text}))
+                    .await?;
+                self.steps(
+                    &session_id,
+                    &session.workspace_id,
+                    Path::new(&lease.info.replica_path),
+                    provider,
+                    cancel.clone(),
+                )
+                .await
+            }
+            .await;
+            self.active.lock().unwrap().remove(&session_id);
+            let status = match &result {
+                Ok(()) => "completed",
+                Err(e) if e.code == "CANCELLED" => "cancelled",
+                Err(_) => "error",
+            };
+            let ending = self
+                .append(
+                    &session_id,
+                    "turn.end",
+                    json!({"runId":run_id,"status":status,"error":result.as_ref().err()}),
+                )
+                .await;
+            let _ = self.events.send(LiveEvent::Status {
+                session_id: session_id.clone(),
+                status: status.into(),
+            });
+            ending?;
+            result
+        })
+    }
+    async fn steps(
+        self: &Arc<Self>,
+        session: &str,
+        workspace: &str,
+        root: &Path,
+        provider: Arc<dyn ModelProvider>,
+        cancel: CancellationToken,
+    ) -> AppResult<()> {
+        self.plugins.set_workspace_policy(
+            workspace,
+            vec![
+                "tools".into(),
+                "hooks".into(),
+                "log".into(),
+                "workspace.read".into(),
+                "workspace.write".into(),
+                "http".into(),
+                "kv".into(),
+            ],
+        );
+        let context = workspace_context(root)?;
+        self.append(session, "context.snapshot", json!({"content":context}))
+            .await?;
+        let mut reads = HashMap::new();
+        for step in 0..30 {
+            if cancel.is_cancelled() {
+                return Err(cancelled());
+            }
+            let mut tools = builtin_tools();
+            tools.extend(self.plugins.tool_definitions(workspace)?);
+            tools.extend(self.custom.lock().unwrap().values().map(|t| t.definition()));
+            let scoped_servers = self
+                .mcp_scopes
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, w)| w.as_str() == workspace)
+                .map(|(id, _)| format!("mcp__{id}__"))
+                .collect::<Vec<_>>();
+            tools.extend(
+                self.mcp
+                    .tool_definitions()
+                    .await
+                    .into_iter()
+                    .filter(|t| scoped_servers.iter().any(|p| t.name.starts_with(p))),
+            );
+            let context_hooks = self
+                .plugins
+                .run_hook(
+                    workspace,
+                    root,
+                    "before_request",
+                    json!({"sessionId":session,"step":step}),
+                    cancel.clone(),
+                )
+                .await?;
+            for context in context_hooks {
+                self.append(
+                    session,
+                    "plugin.context",
+                    json!({"content":context["context"]}),
+                )
+                .await?;
+            }
+            let history = self.store.events(session, 0).await?;
+            let messages = project_messages(&history);
+            let request_id = new_id();
+            self.append(
+                session,
+                "request.snapshot",
+                json!({"id":request_id,"step":step,"messages":messages,"tools":tools}),
+            )
+            .await?;
+            let sender = self.events.clone();
+            let sid = session.to_owned();
+            let rid = request_id.clone();
+            let index = Arc::new(std::sync::atomic::AtomicU32::new(0));
+            let partial = Arc::new(Mutex::new((String::new(), String::new())));
+            let partial_sink = partial.clone();
+            let sink = Arc::new(move |d: StreamDelta| {
+                let mut p = partial_sink.lock().unwrap();
+                if d.reasoning {
+                    p.1.push_str(&d.text);
+                } else {
+                    p.0.push_str(&d.text);
+                }
+                drop(p);
+                let _ = sender.send(LiveEvent::Delta {
+                    session_id: sid.clone(),
+                    request_id: rid.clone(),
+                    index: index.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                    text: d.text,
+                    reasoning: d.reasoning,
+                });
+            });
+            let answer = match provider
+                .complete(messages, tools.clone(), cancel.clone(), sink)
+                .await
+            {
+                Ok(answer) => answer,
+                Err(e) => {
+                    let p = partial.lock().unwrap().clone();
+                    self.append(
+                        session,
+                        "assistant.attempt",
+                        json!({"requestId":request_id,"content":p.0,"reasoning":p.1,"error":e}),
+                    )
+                    .await?;
+                    return Err(e);
+                }
+            };
+            let mut ids: BTreeSet<String> = history
+                .iter()
+                .filter(|e| e.kind == "tool.call")
+                .filter_map(|e| e.data["id"].as_str().map(str::to_owned))
+                .collect();
+            if answer
+                .calls
+                .iter()
+                .any(|c| c.id.is_empty() || c.name.is_empty() || !ids.insert(c.id.clone()))
+            {
+                let error = AppError::new("MODEL_TOOL", "工具批次包含空或重复的调用标识");
+                self.append(
+                    session,
+                    "assistant.attempt",
+                    json!({"content":answer.content,"reasoning":answer.reasoning,"error":error}),
+                )
+                .await?;
+                return Err(error);
+            }
+            let mut records = vec![(
+                "assistant.message".into(),
+                json!({"content":answer.content,"reasoning":answer.reasoning,"toolCalls":answer.calls,"usage":answer.usage}),
+            )];
+            for call in &answer.calls {
+                records.push((
+                    "tool.call".into(),
+                    serde_json::to_value(call).map_err(internal)?,
+                ));
+            }
+            for event in self.store.append_batch(session, records).await? {
+                let _ = self.events.send(LiveEvent::Durable { event });
+            }
+            if answer.calls.is_empty() {
+                return Ok(());
+            }
+            for mut call in answer.calls {
+                let result=async{
+                    let definition=tools.iter().find(|t|t.name==call.name).ok_or_else(||AppError::new("TOOL_UNAVAILABLE",&call.name))?;
+                    let schema=jsonschema::validator_for(&definition.parameters).map_err(internal)?;
+                    if !schema.is_valid(&call.arguments){return Err(AppError::new("TOOL_ARGUMENTS","工具参数不符合JSON Schema"));}
+                    if cancel.is_cancelled(){return Err(cancelled());}
+                    let original=serde_json::to_value(&call).map_err(internal)?;
+                    for rewrite in self.plugins.run_hook(workspace,root,"before_tool",original.clone(),cancel.clone()).await?{
+                        call.name=rewrite["name"].as_str().ok_or_else(||AppError::new("PLUGIN_HOOK","缺少工具名称"))?.into();call.arguments=rewrite["arguments"].clone();
+                    }
+                    if original!=serde_json::to_value(&call).map_err(internal)?{self.append(session,"tool.rewrite",json!({"callId":call.id,"original":original,"effective":call})).await?;}
+                    let effective=tools.iter().find(|t|t.name==call.name).ok_or_else(||AppError::new("TOOL_UNAVAILABLE",&call.name))?;
+                    if !jsonschema::validator_for(&effective.parameters).map_err(internal)?.is_valid(&call.arguments){return Err(AppError::new("TOOL_ARGUMENTS","钩子修改后的工具参数无效"));}
+                    let needs_approval=self.custom.lock().unwrap().get(&call.name).map(|t|t.requires_approval()).unwrap_or_else(||requires_approval(&call.name));
+                    if needs_approval{self.approve(session,&call,&cancel).await?;}
+                    let tool_cancel=cancel.child_token();
+                    let work=self.execute_tool(session,workspace,root,&call,&mut reads,provider.clone(),tool_cancel.clone());
+                    tokio::pin!(work);
+                    tokio::select!{
+                        _ = cancel.cancelled()=>{tool_cancel.cancel();let _=work.await;Err(cancelled())},
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(180))=>{tool_cancel.cancel();let _=work.await;Err(AppError::new("TOOL_TIMEOUT","工具超过180秒执行时限"))},
+                        r=&mut work=>r,
+                    }
+                }.await;
+                let status = match &result {
+                    Ok(_) => "completed",
+                    Err(e) if matches!(e.code.as_str(), "CANCELLED" | "TOOL_TIMEOUT") => "unknown",
+                    Err(e) if e.code == "APPROVAL_DENIED" => "denied",
+                    Err(_) => "error",
+                };
+                let protected_failure = result.is_err();
+                let mut result = match result {
+                    Ok(r) => r,
+                    Err(e) => ToolResult {
+                        content: if status == "unknown" {
+                            format!("{e}；操作可能已产生副作用，结果未知，未自动重试。")
+                        } else {
+                            e.to_string()
+                        },
+                        is_error: true,
+                    },
+                };
+                if !cancel.is_cancelled() {
+                    match self
+                        .plugins
+                        .run_hook(
+                            workspace,
+                            root,
+                            "after_tool",
+                            json!({"call":call,"result":result}),
+                            cancel.clone(),
+                        )
+                        .await
+                    {
+                        Ok(rewrites) => {
+                            for rewrite in rewrites {
+                                result = serde_json::from_value(rewrite).map_err(internal)?;
+                            }
+                        }
+                        Err(error) => {
+                            result.content.push_str(&format!("\n后置钩子失败：{error}"));
+                            result.is_error = true;
+                        }
+                    }
+                }
+                if protected_failure {
+                    result.is_error = true;
+                }
+                let mut content = result.content;
+                if content.len() > 64 * 1024 {
+                    let hash = self.store.put_blob(content.as_bytes()).await?;
+                    let preview = content.chars().take(12000).collect::<String>();
+                    content = format!("{preview}\n\n[完整输出 artifact:{hash}]");
+                }
+                self.append(session,"tool.result",json!({"callId":call.id,"name":call.name,"content":content,"isError":result.is_error,"status":status})).await?;
+            }
+        }
+        Err(AppError::new("STEP_LIMIT", "回合达到30次模型调用上限"))
+    }
+    async fn approve(
+        &self,
+        session: &str,
+        call: &ToolCall,
+        cancel: &CancellationToken,
+    ) -> AppResult<()> {
+        let request = ApprovalRequest {
+            id: new_id(),
+            session_id: session.into(),
+            tool: call.name.clone(),
+            arguments: call.arguments.clone(),
+            reason: "允许此工具在隔离工作副本中执行？原项目仍需单独确认同步。".into(),
+        };
+        let (tx, rx) = oneshot::channel();
+        self.approvals
+            .pending
+            .lock()
+            .unwrap()
+            .insert(request.id.clone(), (request.clone(), tx));
+        let logged = self
+            .append(
+                session,
+                "approval.request",
+                serde_json::to_value(&request).map_err(internal)?,
+            )
+            .await;
+        if let Err(e) = logged {
+            self.approvals.pending.lock().unwrap().remove(&request.id);
+            return Err(e);
+        }
+        let allowed = tokio::select! {_ = cancel.cancelled()=>false,r=rx=>r.unwrap_or(false),_ = tokio::time::sleep(std::time::Duration::from_secs(600))=>false};
+        self.approvals.pending.lock().unwrap().remove(&request.id);
+        self.append(
+            session,
+            "approval.resolved",
+            json!({"id":request.id,"allow":allowed}),
+        )
+        .await?;
+        if allowed {
+            Ok(())
+        } else {
+            Err(AppError::new(
+                "APPROVAL_DENIED",
+                "用户拒绝、取消或审批已过期",
+            ))
+        }
+    }
+    async fn execute_tool(
+        self: &Arc<Self>,
+        session: &str,
+        workspace: &str,
+        root: &Path,
+        call: &ToolCall,
+        reads: &mut HashMap<String, String>,
+        provider: Arc<dyn ModelProvider>,
+        cancel: CancellationToken,
+    ) -> AppResult<ToolResult> {
+        let a = &call.arguments;
+        let text = match call.name.as_str() {
+            "read" => {
+                let path = arg(a, "path")?;
+                let value = harness_platform::read_file(root, path)?;
+                reads.insert(path.into(), value.clone());
+                value
+            }
+            "write" => {
+                let _mutation = FILE_MUTATION.lock().unwrap();
+                let path = arg(a, "path")?;
+                let existing = harness_platform::resolve_path(root, path, false)?;
+                if existing.exists() {
+                    let current = harness_platform::read_file(root, path)?;
+                    if reads.get(path) != Some(&current) {
+                        return Err(AppError::new(
+                            "READ_BEFORE_EDIT",
+                            "修改已有文件前必须读取当前版本",
+                        ));
+                    }
+                }
+                let content = arg(a, "content")?;
+                harness_platform::write_file(root, path, content)?;
+                reads.insert(path.into(), content.into());
+                format!("已写入副本 {path}")
+            }
+            "edit" => {
+                let _mutation = FILE_MUTATION.lock().unwrap();
+                let path = arg(a, "path")?;
+                if !reads.contains_key(path) {
+                    return Err(AppError::new("READ_BEFORE_EDIT", "edit前必须read"));
+                }
+                let old = arg(a, "oldText")?;
+                let new = arg(a, "newText")?;
+                let content = harness_platform::read_file(root, path)?;
+                if reads.get(path) != Some(&content) {
+                    return Err(AppError::new(
+                        "EDIT_CONFLICT",
+                        "读取后文件已改变，请重新read",
+                    ));
+                }
+                if old.is_empty() || content.matches(old).count() != 1 {
+                    return Err(AppError::new(
+                        "EDIT_CONFLICT",
+                        "待替换文本必须在当前文件中恰好出现一次",
+                    ));
+                }
+                let updated = content.replacen(old, new, 1);
+                harness_platform::write_file(root, path, &updated)?;
+                reads.insert(path.into(), updated);
+                format!("已修改副本 {path}")
+            }
+            "list_files" => {
+                serde_json::to_string(&harness_platform::list_files(root)?).map_err(internal)?
+            }
+            "search" => {
+                let query = arg(a, "query")?;
+                let mut found = Vec::new();
+                for path in harness_platform::list_files(root)?.into_iter().take(10000) {
+                    if let Ok(text) = harness_platform::read_file(root, &path) {
+                        for (i, line) in text.lines().enumerate() {
+                            if line.contains(query) {
+                                found.push(format!(
+                                    "{path}:{}:{}",
+                                    i + 1,
+                                    line.chars().take(300).collect::<String>()
+                                ));
+                                if found.len() >= 200 {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if found.len() >= 200 {
+                        break;
+                    }
+                }
+                found.join("\n")
+            }
+            "shell" => {
+                let output = ShellService::run(root, arg(a, "command")?, cancel).await?;
+                return Ok(ToolResult {
+                    content: serde_json::to_string(&output).map_err(internal)?,
+                    is_error: output.exit_code != 0,
+                });
+            }
+            "web_fetch" => fetch(arg(a, "url")?, cancel).await?,
+            "todo_write" | "plan_write" | "goal_write" => {
+                self.append(
+                    session,
+                    &format!("{}.state", call.name.trim_end_matches("_write")),
+                    a.clone(),
+                )
+                .await?;
+                a.to_string()
+            }
+            "agent_spawn" => {
+                let descendants = self
+                    .children
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .map(Vec::len)
+                    .sum::<usize>();
+                if descendants >= 8 {
+                    return Err(AppError::new("AGENT_LIMIT", "当前实例最多8个子代理"));
+                }
+                let child = self
+                    .store
+                    .create_session(
+                        workspace,
+                        a.get("title").and_then(Value::as_str).unwrap_or("子任务"),
+                    )
+                    .await?;
+                self.children
+                    .lock()
+                    .unwrap()
+                    .entry(session.into())
+                    .or_default()
+                    .push(child.id.clone());
+                self.append(session, "subagent.created", json!({"sessionId":child.id}))
+                    .await?;
+                let runtime = self.clone();
+                let id = child.id.clone();
+                let task = arg(a, "task")?.to_owned();
+                tokio::spawn(async move {
+                    if let Err(e) = runtime.run_session(id, task, provider).await {
+                        tracing::warn!(error=%e,"child agent ended");
+                    }
+                });
+                json!({"sessionId":child.id}).to_string()
+            }
+            "agent_status" => {
+                let ids = self
+                    .children
+                    .lock()
+                    .unwrap()
+                    .get(session)
+                    .cloned()
+                    .unwrap_or_default();
+                let active = self.active.lock().unwrap();
+                json!(
+                    ids.into_iter()
+                        .map(|id| json!({"active":active.contains_key(&id),"sessionId":id}))
+                        .collect::<Vec<_>>()
+                )
+                .to_string()
+            }
+            "agent_interrupt" => {
+                let id = arg(a, "sessionId")?;
+                if !self
+                    .children
+                    .lock()
+                    .unwrap()
+                    .get(session)
+                    .is_some_and(|ids| ids.iter().any(|x| x == id))
+                {
+                    return Err(AppError::new("AGENT_SCOPE", "只能控制本会话创建的子代理"));
+                }
+                self.cancel(id);
+                "已请求中断".into()
+            }
+            name if name.starts_with("plugin__") => {
+                return self
+                    .plugins
+                    .execute_tool(workspace, root, name, a.clone(), cancel)
+                    .await;
+            }
+            name if name.starts_with("mcp__") => {
+                return self.mcp.execute_tool(name, a.clone(), cancel).await;
+            }
+            _ => {
+                let tool = self
+                    .custom
+                    .lock()
+                    .unwrap()
+                    .get(&call.name)
+                    .cloned()
+                    .ok_or_else(|| AppError::new("TOOL_UNAVAILABLE", &call.name))?;
+                return tool
+                    .execute(
+                        crate::ToolContext {
+                            session_id: session.into(),
+                            workspace_id: workspace.into(),
+                            root: root.into(),
+                            provider,
+                        },
+                        a.clone(),
+                        cancel,
+                    )
+                    .await;
+            }
+        };
+        Ok(ToolResult {
+            content: text,
+            is_error: false,
+        })
+    }
+    pub async fn fork(&self, id: &str) -> AppResult<SessionInfo> {
+        let _boundary = self.session_boundary(id).await;
+        let original = self.store.session(id).await?;
+        let events = self.store.events(id, 0).await?;
+        let fork = self
+            .store
+            .create_session(
+                &original.workspace_id,
+                &format!("{} · 副本", original.title),
+            )
+            .await?;
+        for e in events {
+            let mut data = e.data;
+            if e.kind == "subagent.created" {
+                data["historyOnly"] = json!(true);
+            }
+            self.store.append(&fork.id, &e.kind, data).await?;
+        }
+        Ok(fork)
+    }
+}
+
+fn arg<'a>(v: &'a Value, key: &str) -> AppResult<&'a str> {
+    v.get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::new("TOOL_ARGUMENTS", format!("缺少字符串字段 {key}")))
+}
+fn internal(e: impl std::fmt::Display) -> AppError {
+    AppError::new("RUNTIME", e.to_string())
+}
+fn requires_approval(name: &str) -> bool {
+    !matches!(
+        name,
+        "read"
+            | "list_files"
+            | "search"
+            | "todo_write"
+            | "plan_write"
+            | "goal_write"
+            | "agent_status"
+    )
+}
+fn workspace_context(root: &Path) -> AppResult<String> {
+    let mut context = format!(
+        "你是本地开发助手。执行根为隔离工作副本 {}。文件工具只接受相对路径。先读取再编辑，原项目变更需用户在差异界面单独确认。",
+        root.display()
+    );
+    for path in ["AGENTS.md", "CLAUDE.md"] {
+        if let Ok(text) = harness_platform::read_file(root, path) {
+            context.push_str(&format!(
+                "\n\n{path}:\n{}",
+                text.chars().take(32000).collect::<String>()
+            ));
+        }
+    }
+    if let Ok(files) = harness_platform::list_files(root) {
+        let skills: Vec<_> = files
+            .into_iter()
+            .filter(|f| f.ends_with("SKILL.md"))
+            .take(100)
+            .collect();
+        context.push_str(&format!("\n可按需读取的技能：{}", skills.join(", ")));
+    }
+    Ok(context)
+}
+pub fn project_messages(events: &[SessionEvent]) -> Vec<Value> {
+    let mut system = String::new();
+    let mut history = Vec::new();
+    for e in events {
+        match e.kind.as_str() {
+            "context.snapshot" => system = e.data["content"].as_str().unwrap_or("").into(),
+            "user.message" => history.push(json!({"role":"user","content":e.data["content"]})),
+            "plugin.context" => history.push(json!({"role":"user","content":e.data["content"]})),
+            "assistant.message" => {
+                let mut message = json!({"role":"assistant","content":e.data["content"]});
+                if let Some(reasoning) = e.data["reasoning"].as_str().filter(|s| !s.is_empty()) {
+                    message["reasoning_content"] = json!(reasoning);
+                }
+                if let Some(calls) = e.data["toolCalls"].as_array().filter(|a| !a.is_empty()) {
+                    message["tool_calls"]=json!(calls.iter().map(|c|json!({"id":c["id"],"type":"function","function":{"name":c["name"],"arguments":c["arguments"].to_string()}})).collect::<Vec<_>>());
+                }
+                history.push(message);
+            }
+            "tool.result" => history.push(
+                json!({"role":"tool","tool_call_id":e.data["callId"],"content":e.data["content"]}),
+            ),
+            "compaction.summary" => {
+                history.clear();
+                history.push(json!({"role":"user","content":e.data["content"]}));
+            }
+            _ => {}
+        }
+    }
+    let mut messages = vec![json!({"role":"system","content":system})];
+    messages.extend(history);
+    messages
+}
+pub fn builtin_tools() -> Vec<ToolDefinition> {
+    fn def(name: &str, description: &str, properties: Value, required: &[&str]) -> ToolDefinition {
+        ToolDefinition {
+            name: name.into(),
+            description: description.into(),
+            parameters: json!({"type":"object","properties":properties,"required":required,"additionalProperties":false}),
+        }
+    }
+    let s = json!({"type":"string"});
+    vec![
+        def(
+            "read",
+            "读取隔离工作副本中的UTF-8文件",
+            json!({"path":s}),
+            &["path"],
+        ),
+        def(
+            "write",
+            "写入副本文件。已有文件必须先read，需用户审批",
+            json!({"path":s,"content":s}),
+            &["path", "content"],
+        ),
+        def(
+            "edit",
+            "唯一文本替换，必须先read，需用户审批",
+            json!({"path":s,"oldText":s,"newText":s}),
+            &["path", "oldText", "newText"],
+        ),
+        def("list_files", "列出副本文件，遵守ignore规则", json!({}), &[]),
+        def(
+            "search",
+            "按字面字符串搜索文件",
+            json!({"query":s}),
+            &["query"],
+        ),
+        def(
+            "shell",
+            "在Windows系统写入沙箱内运行PowerShell命令，需审批",
+            json!({"command":s}),
+            &["command"],
+        ),
+        def(
+            "web_fetch",
+            "获取HTTP(S)文本，需审批",
+            json!({"url":s}),
+            &["url"],
+        ),
+        def(
+            "todo_write",
+            "记录待办清单",
+            json!({"items":{"type":"array","items":{"type":"object"}}}),
+            &["items"],
+        ),
+        def("plan_write", "记录计划", json!({"content":s}), &["content"]),
+        def("goal_write", "记录目标", json!({"content":s}), &["content"]),
+        def(
+            "agent_spawn",
+            "创建独立子代理并立即返回会话ID",
+            json!({"task":s,"title":s}),
+            &["task"],
+        ),
+        def(
+            "agent_status",
+            "列出当前会话创建的子代理状态",
+            json!({}),
+            &[],
+        ),
+        def(
+            "agent_interrupt",
+            "中断当前会话创建的子代理",
+            json!({"sessionId":s}),
+            &["sessionId"],
+        ),
+    ]
+}
+async fn fetch(url: &str, cancel: CancellationToken) -> AppResult<String> {
+    let parsed = reqwest::Url::parse(url).map_err(internal)?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(AppError::new("URL_SCHEME", "仅支持HTTP(S)"));
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(internal)?;
+    let response = tokio::select! {_ =cancel.cancelled()=>return Err(cancelled()),r=client.get(parsed).send()=>r.map_err(internal)?.error_for_status().map_err(internal)?};
+    let mut bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+    use futures::StreamExt;
+    while let Some(chunk) =
+        tokio::select! {_=cancel.cancelled()=>return Err(cancelled()),c=stream.next()=>c}
+    {
+        bytes.extend_from_slice(&chunk.map_err(internal)?);
+        if bytes.len() > 1024 * 1024 {
+            return Err(AppError::new("FETCH_LIMIT", "响应超过1MiB"));
+        }
+    }
+    Ok(String::from_utf8_lossy(&bytes).into())
+}
+struct ReplicaHost;
+impl HostPolicy for ReplicaHost {
+    fn read_file(&self, _: &str, root: &Path, path: &str) -> AppResult<String> {
+        harness_platform::read_file(root, path)
+    }
+    fn write_file(&self, _: &str, root: &Path, path: &str, contents: &str) -> AppResult<()> {
+        let _mutation = FILE_MUTATION.lock().unwrap();
+        harness_platform::write_file(root, path, contents)
+    }
+}
