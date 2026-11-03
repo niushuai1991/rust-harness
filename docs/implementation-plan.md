@@ -11,7 +11,7 @@
 - 基线/备份/同步日志在宿主数据区，独占同步锁，外部修改冲突先行检测。
 - Windows 受限令牌+Low IL+能力SID+ACL仅施加托管根和私有temp；Job Object清理进程树；失败拒绝启动。
 - WASM独立Store、256MiB、5e9 fuel、hook5s/tool60s；权限取声明、授权、工作区策略交集。
-- NSIS当前用户安装，简中/英文，标准WebView2 bootstrapper及离线installer配置；升级保留数据。
+- NSIS简中/英文，标准WebView2 bootstrapper及离线installer配置；升级保留数据。安装权限按2026-11-04用户反馈修订：0.1.1起使用perMachine，在开始安装前请求UAC，以支持受保护目录。
 - 不改用户全局配置，不触碰参考项目。密钥用Windows凭据管理器，遥测关闭。
 
 ## Task 1: 共享接口与事件存储

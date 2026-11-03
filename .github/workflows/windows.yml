@@ -36,6 +36,13 @@ jobs:
       - name: Desktop smoke
         shell: pwsh
         run: ./scripts/smoke-windows.ps1
+      - name: Verify installer UAC manifest
+        shell: pwsh
+        run: |
+          $config = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $installer = Join-Path target/release/bundle/nsis ('{0}_{1}_x64-setup.exe' -f $config.productName, $config.version)
+          python scripts/verify-installer.py $installer --application target/release/rust-harness-desktop.exe
+          if ($LASTEXITCODE) { throw 'Installer UAC manifest verification failed' }
       - uses: actions/upload-artifact@v4
         with:
           name: rust-harness-windows-nsis

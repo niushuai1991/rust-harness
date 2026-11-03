@@ -28,3 +28,10 @@
 - 标准NSIS产物成功生成，约12.56MiB；未运行用户机器上的安装器，未声称完成干净VM安装验收。
 - 离线包另用直连微软运行时构建，不使用付费代理大流量。最终状态见delivery.md。
 - 离线NSIS实际生成成功：218.57MiB；标准包12.56MiB，两个版本分别保留。发布版启动与单实例smoke通过。
+
+## 0.1.1 安装权限修复
+- 用户反馈选D:\Program Files时无法写入exe。旧NSIS为currentUser，实际PE权限级别asInvoker，不会自动对失败的文件写入请求UAC。
+- Ruling: 用户明确要求受保护目录安装时提权，改用官方perMachine模式，在安装开始请求管理员权限，卸载注册写HKLM；应用本身不提升权限。
+- 旧标准包PE回归先失败（asInvoker），新标准包已验证requireAdministrator，主程序验证asInvoker。
+- 增加PE资源验收脚本并接入Windows CI/build脚本，版本统一升为0.1.1。未实际写入用户Program Files或修改其安装注册表。
+- 0.1.1标准/离线包均已实际构建，PE验证全部通过：安装器requireAdministrator，应用asInvoker。

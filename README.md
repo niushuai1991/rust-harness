@@ -27,7 +27,7 @@ cargo check -p rust-harness-desktop
 ## Windows 安装包
 
 ```powershell
-# 标准：当前用户安装，内嵌 WebView2 bootstrapper
+# 标准：系统级安装（开始时请求UAC），内嵌 WebView2 bootstrapper
 ./scripts/build-windows.ps1
 # 仅打包（先自行完成安装依赖与测试）
 npm run desktop:build
@@ -37,7 +37,7 @@ npm run desktop:offline
 ./scripts/smoke-windows.ps1
 ```
 
-NSIS 产物位于 `target/release/bundle/nsis`，使用当前用户权限安装，支持简体中文与英文，LZMA 压缩。标准包在目标机器缺少 WebView2 时需要网络；完整离线包通过 `src-tauri/tauri.offline.conf.json` 显式启用。仓库不带伪造的更新 endpoint 或签名公钥。
+NSIS 产物位于 `target/release/bundle/nsis`。从0.1.1起采用系统级安装，安装开始时由Windows请求管理员权限（UAC），可安装到Program Files或其他受保护目录，卸载信息写入HKLM。应用本身仍以普通用户权限启动。支持简体中文与英文、LZMA压缩；标准包缺少WebView2时需要网络，离线包通过 `src-tauri/tauri.offline.conf.json` 启用。构建脚本及CI使用 `scripts/verify-installer.py` 读取生成EXE的PE清单，确认其为 `requireAdministrator`。仓库不带伪造的更新endpoint或签名公钥。
 
 关闭主窗口会保留后台会话并隐藏到托盘，托盘菜单可以重新打开或退出应用。
 
