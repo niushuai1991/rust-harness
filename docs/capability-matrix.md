@@ -17,7 +17,7 @@
 |headless/stdio JSON-RPC|已实现|真实子进程协议错误恢复和请求测试通过|
 |Python/TypeScript SDK|源码已实现|Python SDK真实子进程调用通过；TypeScript SDK尚未独立发布|
 |NSIS标准包|实际构建成功，12.56MiB|Windows发布版启动与单实例通过；未在干净虚拟机验证安装/卸载|
-|NSIS离线包|配置已实现|尚未实际下载并打包WebView2离线运行时|
+|NSIS离线包|实际构建成功，218.57MiB|已包含微软离线运行时，直连下载；未在无WebView2干净VM安装验收|
 |发布签名与自动更新|Tauri插件接入，信任配置未启用|没有签名证书、更新公钥或发布端点，未发布|
 |PTY/SSH执行世界/LSP/搜索provider/Office预览|未实现|不能计为P2/P3完成|
 |ACP/配置预设分层/脚本工作流/签名插件市场|未实现|不能计为P2/P3完成|

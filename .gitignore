@@ -8,4 +8,6 @@
 *.log
 *.local
 .env
+__pycache__/
+*.pyc
 src-tauri/gen/

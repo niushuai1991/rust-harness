@@ -57,4 +57,4 @@ cargo run -p harness-cli -- --data-dir .cache/cli-data call workspace.list '{}'
 
 标准输入/输出为逐行 JSON-RPC，支持工作区、会话、模型、审批、插件和 MCP；`session.event` 推送日志和模型增量。同步方法必须传递完整 `reviewed` 差异快照。Python 标准库客户端位于 `sdk/python/rust_harness.py`，TypeScript 客户端位于 `sdk/typescript/client.ts`。同一数据目录只允许一个宿主，桌面运行时请给 CLI 指定独立目录。
 
-当前交付为开发预览。阶段完成度和未实现项目见 [能力矩阵](docs/capability-matrix.md)。尚未实现 ACP、SSH、LSP、真实 PTY、签名插件市场及脚本工作流。离线 WebView2 包只有配置，尚未实际打包验收；正式更新需提供公钥、端点并启用 `signed-updates` 功能，默认不会初始化未配置的更新服务。
+当前交付为开发预览。阶段完成度和未实现项目见 [能力矩阵](docs/capability-matrix.md)。尚未实现 ACP、SSH、LSP、真实 PTY、签名插件市场及脚本工作流。标准NSIS约12.56MiB，离线WebView2包约218.57MiB，均已实际生成；尚未做干净虚拟机安装验收。正式更新需提供公钥、端点并启用 `signed-updates` 功能，默认不会初始化未配置的更新服务。

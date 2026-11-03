@@ -12,7 +12,8 @@
 - 发布版桌面启动、第二实例退出；标准NSIS生成（非签名开发版）。
 
 标准安装包：`target/release/bundle/nsis/Rust Harness_0.1.0_x64-setup.exe`。
-离线构建记录：`.cache/nsis-offline.log`；如果成功，独立产物命名为`Rust Harness_0.1.0_x64-offline-setup.exe`。
+离线安装包：`target/release/bundle/nsis/Rust Harness_0.1.0_x64-offline-setup.exe`，约218.57MiB，微软运行时通过直连获取。
+安装包SHA-256记录位于同目录`SHA256SUMS.txt`。
 
 ## 实际边界
 
