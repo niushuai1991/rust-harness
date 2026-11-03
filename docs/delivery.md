@@ -1,5 +1,7 @@
 # v0.1.2 开发预览交付记录
 
+后续版本仅提供使用系统已有 WebView2 的单一 NSIS 安装包。下文 0.1.2 的标准/离线包是已交付历史产物，保留文件与校验值，不代表后续构建策略。
+
 已实现 DeepSeek、智谱 Coding Plan 两个内置供应商，每个内部选择 Chat Completions、Responses、Anthropic Messages。内置端点只读，自定义复制保留兼容规则但不复制密钥。详见[三协议使用与升级说明](multi-protocol-delivery.md)。
 
 ## 本次验证

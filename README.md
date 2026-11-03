@@ -33,17 +33,15 @@ python -m unittest discover -s sdk/python -p 'test_*.py' -v
 ## Windows 安装包
 
 ```powershell
-# 标准：系统级安装（开始时请求UAC），内嵌 WebView2 bootstrapper
+# 系统级安装（开始时请求UAC），使用系统已有 WebView2
 ./scripts/build-windows.ps1
 # 仅打包（先自行完成安装依赖与测试）
 npm run desktop:build
-# 可选离线 WebView2 完整安装包：额外下载量较大
-npm run desktop:offline
 # 验证已构建桌面进程启动、第二实例退出
 ./scripts/smoke-windows.ps1
 ```
 
-NSIS 产物位于 `target/release/bundle/nsis`。从0.1.1起采用系统级安装，安装开始时由Windows请求管理员权限（UAC），可安装到Program Files或其他受保护目录，卸载信息写入HKLM。应用本身仍以普通用户权限启动。支持简体中文与英文、LZMA压缩；标准包缺少WebView2时需要网络，离线包通过 `src-tauri/tauri.offline.conf.json` 启用。构建脚本及CI使用 `scripts/verify-installer.py` 读取生成EXE的PE清单，确认其为 `requireAdministrator`。仓库不带伪造的更新endpoint或签名公钥。
+NSIS 产物位于 `target/release/bundle/nsis`。从0.1.1起采用系统级安装，安装开始时由Windows请求管理员权限（UAC），可安装到Program Files或其他受保护目录，卸载信息写入HKLM。应用本身仍以普通用户权限启动。支持简体中文与英文、LZMA压缩；后续版本只提供一种安装包，默认系统已安装 WebView2；安装器不内嵌、下载或安装 WebView2。构建脚本及CI使用 `scripts/verify-installer.py` 读取生成EXE的PE清单，确认其为 `requireAdministrator`。仓库不带伪造的更新endpoint或签名公钥。
 
 关闭主窗口会保留后台会话并隐藏到托盘，托盘菜单可以重新打开或退出应用。
 
@@ -63,4 +61,4 @@ cargo run -p harness-cli -- --data-dir .cache/cli-data call workspace.list '{}'
 
 标准输入/输出为逐行 JSON-RPC，支持工作区、会话、模型、审批、插件和 MCP；`session.event` 推送日志和模型增量。同步方法必须传递完整 `reviewed` 差异快照。Python 标准库客户端位于 `sdk/python/rust_harness.py`，TypeScript 客户端位于 `sdk/typescript/client.ts`。同一数据目录只允许一个宿主，桌面运行时请给 CLI 指定独立目录。
 
-当前交付为开发预览。阶段完成度和未实现项目见 [能力矩阵](docs/capability-matrix.md)。尚未实现 ACP、SSH、LSP、真实 PTY、签名插件市场及脚本工作流。0.1.2标准NSIS约12.71MiB，离线WebView2包约218.71MiB，均已实际生成；尚未做干净虚拟机安装验收。正式更新需提供公钥、端点并启用 `signed-updates` 功能，默认不会初始化未配置的更新服务。
+当前交付为开发预览。阶段完成度和未实现项目见 [能力矩阵](docs/capability-matrix.md)。尚未实现 ACP、SSH、LSP、真实 PTY、签名插件市场及脚本工作流。0.1.2曾生成标准和离线安装包，作为历史产物保留；后续版本仅构建使用系统 WebView2 的单一 NSIS 包；尚未做干净虚拟机安装验收。正式更新需提供公钥、端点并启用 `signed-updates` 功能，默认不会初始化未配置的更新服务。

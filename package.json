@@ -9,8 +9,7 @@
     "test": "vitest run",
     "sdk:check": "tsc --noEmit --strict --skipLibCheck --target ES2022 --module NodeNext --moduleResolution NodeNext sdk/typescript/client.ts",
     "tauri": "tauri",
-    "desktop:build": "tauri build",
-    "desktop:offline": "tauri build --config src-tauri/tauri.offline.conf.json"
+    "desktop:build": "tauri build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

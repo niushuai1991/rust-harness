@@ -1,5 +1,7 @@
 # 桌面交付报告
 
+后续发布策略已按用户要求调整：仅提供使用系统已有 WebView2 的单一 NSIS 包，不再维护离线包入口；下文初版验证结果保留为历史记录。
+
 ## 实现
 
 - React 19 / TypeScript / Vite / Zustand 中文桌面界面，工作区与会话切换、聊天增量、独立 reasoning 折叠区、工具调用/结果卡片、停止生成、错误和空状态。
@@ -9,7 +11,7 @@
 - 审批轮询显示真实待批准操作，批准/拒绝携带请求 id；差异逐文件预览、冲突禁选、勾选、再次确认应用、同步后刷新。
 - Tauri 2 桌面壳、单实例、窗口状态、对话框、opener、updater 插件初始化；独立 `desktop.rs` 实现托盘显示/退出及关闭隐藏。业务 commands 和该 setup 由主实现者接线。
 - CSP 禁止远程脚本、iframe、object；能力仅开放 core 生命周期和 open/save 对话框，不开放任意 fs/shell 或 opener IPC。无伪造更新公钥、无更新 endpoint。
-- 应用标识 `dev.rustharness.desktop`，真实多尺寸 ICO 与 PNG 图标，NSIS currentUser、SimpChinese/English、lzma、内嵌 WebView2 bootstrapper；独立离线安装器 override。
+- 应用标识 `dev.rustharness.desktop`，真实多尺寸 ICO 与 PNG 图标，NSIS perMachine、SimpChinese/English、lzma；后续安装器使用 WebView2 skip 模式。
 
 ## 本地验证（2026-11-03）
 
@@ -26,15 +28,13 @@
 npm ci --no-audit --no-fund
 npm run tauri dev
 npm run desktop:build
-# 可选：生成包含完整 WebView2 的较大离线安装包（需要额外下载）
-npm run desktop:offline
 # 标准构建连同前端验证
 ./scripts/build-windows.ps1
 # 已构建二进制启动 / 第二实例退出验证
 ./scripts/smoke-windows.ps1
 ```
 
-打包产物位于 `target/release/bundle/nsis`。Node 只参与开发和构建，安装后的桌面应用运行时不依赖 Node。CI 默认构建标准安装包，workflow_dispatch 可显式选择离线包。
+打包产物位于 `target/release/bundle/nsis`。Node 只参与开发和构建，安装后的桌面应用运行时不依赖 Node。CI 和手动触发均只构建单一安装包，使用系统已有 WebView2。
 
 ## 数据保留策略
 

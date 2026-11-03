@@ -3,11 +3,6 @@ on:
   push:
   pull_request:
   workflow_dispatch:
-    inputs:
-      offline:
-        description: Build the larger offline WebView2 installer
-        type: boolean
-        default: false
 permissions:
   contents: read
 jobs:
@@ -29,12 +24,8 @@ jobs:
       - run: npm run sdk:check
       - run: cargo test --workspace --exclude rust-harness-desktop
       - run: python -m unittest discover -s sdk/python -p 'test_*.py' -v
-      - name: Build standard NSIS
-        if: ${{ !inputs.offline }}
+      - name: Build NSIS
         run: npm run desktop:build
-      - name: Build offline NSIS
-        if: ${{ inputs.offline }}
-        run: npm run desktop:offline
       - name: Desktop smoke
         shell: pwsh
         run: ./scripts/smoke-windows.ps1
@@ -48,5 +39,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: rust-harness-windows-nsis
-          path: target/release/bundle/nsis/*.exe
+          path: target/release/bundle/nsis/*_x64-setup.exe
           if-no-files-found: error
