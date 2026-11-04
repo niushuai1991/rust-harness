@@ -2,6 +2,8 @@
 
 Windows 11 上运行的本地开发协作工具：Rust / Tauri 2 宿主，React 19 界面，SQLite 事件存储，独立托管工作副本。模型与工具修改工作副本，用户审阅差异后同步原项目。
 
+打开工作区后会自动选择已有会话；没有历史会话时自动创建首个会话，准备完成即可输入。若创建失败，可查看错误并点击“新建会话”重试。
+
 ## 模型供应商
 
 内置 DeepSeek 与智谱 Coding Plan 两个供应商，每家内部支持 Chat Completions、Responses、Anthropic 三种协议。内置端点只读，需要改地址时复制为自定义供应商。协议间共享该供应商的 API Key 与代理；保存模型后可进行少量实际生成连接测试。详见[三协议交付说明](docs/multi-protocol-delivery.md)。

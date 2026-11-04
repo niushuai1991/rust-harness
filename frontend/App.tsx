@@ -12,7 +12,7 @@ const basename=(path:string)=>path.split(/[\\/]/).filter(Boolean).at(-1)??path;
 const printable=(value:unknown)=>typeof value==='string'?value:JSON.stringify(value,null,2);
 export default function App(){
  const [workspaces,setWorkspaces]=useState<WorkspaceInfo[]>([]),[workspaceId,setWorkspaceId]=useState('');
- const [sessions,setSessions]=useState<SessionInfo[]>([]),[sessionId,setSessionId]=useState('');
+ const [sessions,setSessions]=useState<SessionInfo[]>([]),[sessionId,setSessionId]=useState(''),[sessionBusy,setSessionBusy]=useState(false);
  const [models,setModels]=useState<ModelConfig[]>([]),[modelId,setModelId]=useState('');
  const [approvals,setApprovals]=useState<ApprovalRequest[]>([]),[panel,setPanel]=useState<Panel>(null);
  const [text,setText]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false),[running,setRunning]=useState<Record<string,boolean>>({});
@@ -20,16 +20,55 @@ export default function App(){
  const events=useChat(s=>s.events[sessionId]??EMPTY_EVENTS),stream=useChat(s=>s.streams[sessionId]);
  const workspace=workspaces.find(w=>w.id===workspaceId),session=sessions.find(s=>s.id===sessionId);
  const generation=useRef(0),end=useRef<HTMLDivElement>(null),activeWorkspaceId=useRef(workspaceId);
+ const creatingSessions=useRef(new Map<string,Promise<SessionInfo>>());
  activeWorkspaceId.current=workspaceId;
  async function attempt<T>(action:()=>Promise<T>):Promise<T|undefined>{setError('');try{return await action()}catch(e){setError(errorText(e));return undefined}}
  useEffect(()=>{if(!desktop())return;void attempt(async()=>{const [ws,ms]=await Promise.all([command<WorkspaceInfo[]>('workspace_list'),command<ModelConfig[]>('model_list')]);setWorkspaces(ws);setModels(ms);setWorkspaceId(ws[0]?.id??'');setModelId(ms[0]?.id??'')})},[]);
- useEffect(()=>{const token=++generation.current;setSessions([]);setSessionId('');if(!workspaceId)return;void attempt(async()=>{const list=await command<SessionInfo[]>('session_list',{workspaceId});if(token!==generation.current)return;setSessions(list);setSessionId(list[0]?.id??'')})},[workspaceId]);
+ useEffect(()=>{
+  const token=++generation.current,targetWorkspaceId=workspaceId;
+  let disposed=false;
+  const current=()=>!disposed&&token===generation.current&&activeWorkspaceId.current===targetWorkspaceId;
+  setSessions([]);setSessionId('');setText('');setSessionBusy(!!targetWorkspaceId);setError('');
+  if(!targetWorkspaceId)return;
+  void (async()=>{
+   try{
+    let list=await command<SessionInfo[]>('session_list',{workspaceId:targetWorkspaceId});
+    if(!current())return;
+    if(!list.length)list=[await createSessionFor(targetWorkspaceId)];
+    if(!current())return;
+    if(list.some(s=>s.workspaceId&&s.workspaceId!==targetWorkspaceId))throw new Error('会话不属于当前工作区，请重新打开工作区。');
+    setSessions(list);setSessionId(list[0]?.id??'');
+   }catch(e){if(current())setError(errorText(e))}
+   finally{if(current())setSessionBusy(false)}
+  })();
+  return()=>{disposed=true};
+ },[workspaceId]);
  useEffect(()=>{if(!sessionId)return;const id=sessionId;void attempt(async()=>{const list=await command<SessionEvent[]>('session_events',{sessionId:id});useChat.getState().replace(id,list)})},[sessionId]);
  useEffect(()=>{if(!desktop())return;let alive=true;const refresh=()=>command<ApprovalRequest[]>('approval_list').then(list=>{if(alive)setApprovals(list)}).catch(e=>{if(alive)setError(errorText(e))});void refresh();const timer=setInterval(refresh,2000);return()=>{alive=false;clearInterval(timer)}},[]);
  useEffect(()=>{end.current?.scrollIntoView?.({behavior:'smooth'})},[events,stream]);
  async function openWorkspace(){setBusy(true);await attempt(async()=>{const path=await open({directory:true,multiple:false,title:'选择原项目目录'});if(!path)return;const ws=await command<WorkspaceInfo>('workspace_open',{path});setWorkspaces(old=>[...old.filter(w=>w.id!==ws.id),ws]);setWorkspaceId(ws.id);setNotice('已创建托管工作副本。原项目仅在确认同步后写入。')});setBusy(false)}
- async function newSession(){if(!workspaceId)return;const targetWorkspaceId=workspaceId,token=generation.current;await attempt(async()=>{const s=await command<SessionInfo>('session_create',{workspaceId:targetWorkspaceId,title:'新会话'});if(token!==generation.current||activeWorkspaceId.current!==targetWorkspaceId||s.workspaceId!==targetWorkspaceId)return;setSessions(old=>[s,...old]);setSessionId(s.id)})}
- async function submit(e:FormEvent){e.preventDefault();if(!sessionId||!text.trim()||running[sessionId]||!modelId)return;const id=sessionId,input=text;setText('');setRunning(old=>({...old,[id]:true}));await attempt(async()=>{await send(id,input,modelId,useChat.getState().receive)});useChat.getState().clearStream(id);try{useChat.getState().replace(id,await command<SessionEvent[]>('session_events',{sessionId:id}))}catch(e){setError(errorText(e))}setRunning(old=>({...old,[id]:false}))}
+ function createSessionFor(targetWorkspaceId:string):Promise<SessionInfo>{
+  const pending=creatingSessions.current.get(targetWorkspaceId);
+  if(pending)return pending;
+  const request=command<SessionInfo>('session_create',{workspaceId:targetWorkspaceId,title:'新会话'}).then(s=>{
+   if(s.workspaceId!==targetWorkspaceId||!s.id)throw new Error('创建的会话不属于当前工作区。');
+   return s;
+  });
+  creatingSessions.current.set(targetWorkspaceId,request);
+  const cleanup=()=>{if(creatingSessions.current.get(targetWorkspaceId)===request)creatingSessions.current.delete(targetWorkspaceId)};
+  void request.then(cleanup,cleanup);
+  return request;
+ }
+ async function newSession(){
+  if(!workspaceId||sessionBusy)return;
+  const targetWorkspaceId=workspaceId,token=generation.current;
+  const current=()=>token===generation.current&&activeWorkspaceId.current===targetWorkspaceId;
+  setSessionBusy(true);setError('');
+  try{const s=await createSessionFor(targetWorkspaceId);if(!current())return;setSessions(old=>[s,...old.filter(item=>item.id!==s.id)]);setSessionId(s.id);setText('')}
+  catch(e){if(current())setError(errorText(e))}
+  finally{if(current())setSessionBusy(false)}
+ }
+ async function submit(e:FormEvent){e.preventDefault();if(sessionBusy||!sessionId||!text.trim()||running[sessionId]||!modelId)return;const id=sessionId,input=text;setText('');setRunning(old=>({...old,[id]:true}));await attempt(async()=>{await send(id,input,modelId,useChat.getState().receive)});useChat.getState().clearStream(id);try{useChat.getState().replace(id,await command<SessionEvent[]>('session_events',{sessionId:id}))}catch(e){setError(errorText(e))}setRunning(old=>({...old,[id]:false}))}
  async function cancel(){await attempt(()=>command('session_cancel',{sessionId}))}
  async function resolve(id:string,allow:boolean){await attempt(async()=>{await command('approval_resolve',{id,allow});setApprovals(old=>old.filter(a=>a.id!==id))})}
  async function exportSession(){await attempt(async()=>{const path=await save({defaultPath:'rust-harness-session.json',filters:[{name:'JSON',extensions:['json']}]});if(!path)return;await command('session_export',{sessionId,path});setNotice('会话已导出。')})}
@@ -38,7 +77,7 @@ export default function App(){
    <div className="brand"><span className="brand-mark"><Terminal size={23}/></span><span>Rust Harness<small>你的本地开发搭档</small></span><span className="version">α</span></div>
    <button className="workspace-picker" onClick={openWorkspace} disabled={busy||!desktop()}><FolderOpen size={19}/><span>{workspace?basename(workspace.sourcePath):'打开工作区'}<small>{workspace?'托管工作副本':'从本地项目开始'}</small></span><ChevronDown size={16}/></button>
    {workspaces.length>1&&<select aria-label="工作区" value={workspaceId} onChange={e=>setWorkspaceId(e.target.value)}>{workspaces.map(w=><option key={w.id} value={w.id}>{basename(w.sourcePath)}</option>)}</select>}
-   <div className="section-label">会话 <button aria-label="新建会话" title="新建会话" onClick={newSession} disabled={!workspaceId}><Plus size={17}/></button></div>
+   <div className="section-label">会话 <button aria-label="新建会话" title="新建会话" onClick={newSession} disabled={!workspaceId||sessionBusy}><Plus size={17}/></button></div>
    <nav className="sessions">{sessions.map(s=><button key={s.id} className={sessionId===s.id?'active':''} onClick={()=>{setSessionId(s.id);setText('')}}><MessageSquare size={16}/><span>{s.title}</span>{running[s.id]&&<i className="live-dot"/>}</button>)}{!sessions.length&&<p className="muted empty-small">{workspaceId?'还没有会话，点击 + 开始':'打开工作区后，会话将保存在本机。'}</p>}</nav>
    <div className="sidebar-bottom"><div className="local-badge"><i className="live-dot"/> 本地优先 · 无遥测</div><button onClick={()=>setPanel('plugins')}><Unplug size={17}/>插件与权限</button><button onClick={()=>setPanel('models')}><Settings2 size={17}/>模型设置 <span className="count">{models.length}</span></button></div>
   </aside>
@@ -50,7 +89,7 @@ export default function App(){
     {!events.length&&!stream&&<div className="welcome"><span className="welcome-icon"><Terminal size={35}/></span><div className="eyebrow">BUILD WITH CONFIDENCE</div><h1>想把什么变成现实？</h1><p>理解代码、探索想法，或完成下一次改进。<br/>在独立的工作副本中协作，每一处更改都由你掌控。</p><div className="suggestions">{['梳理项目结构和关键模块','检查代码，找出值得改进的地方','帮我规划并实现一个新功能'].map((s,i)=><button key={s} onClick={()=>setText(s)} disabled={!sessionId}><span>0{i+1}</span>{s}<ArrowUp size={14}/></button>)}</div><div className="welcome-foot"><ShieldCheck size={15}/>工作副本隔离 · 操作可审批 · 更改可预览</div></div>}
     <div className="messages">{events.map(event=><EventCard key={event.id} event={event}/>)}{stream&&<article className="message assistant"><div className="avatar">R</div><div className="message-body"><div className="message-label">Rust Harness <span className="stream-label">正在思考与执行</span></div>{stream.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{stream.reasoning}</pre></details>}<div className="prose">{stream.text||'正在处理…'}<span className="cursor"/></div></div></article>}<div ref={end}/></div>
    </section>
-   <footer className="composer-area"><form className="composer" onSubmit={submit}><textarea aria-label="消息" placeholder={sessionId?'描述任务，或继续你的想法…':'打开工作区并新建会话，开始协作'} value={text} onChange={e=>setText(e.target.value)} disabled={!sessionId} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit()}}}/><div className="composer-bottom"><div className="model-select"><span className="model-dot"/><select aria-label="当前模型" value={modelId} onChange={e=>setModelId(e.target.value)}><option value="" disabled>选择模型</option>{models.map(m=><option value={m.id} key={m.id}>{m.name}</option>)}</select></div><div className="send-controls"><span>Enter 发送 · Shift + Enter 换行</span>{running[sessionId]?<button type="button" className="send" aria-label="取消生成" onClick={cancel}><Square size={16}/></button>:<button className="send" type="submit" aria-label="发送消息" disabled={!text.trim()||!sessionId||!modelId}><ArrowUp size={19}/></button>}</div></div></form><div className="footer-note">原项目保持安全。模型生成的更改需要你确认后才会同步。</div></footer>
+   <footer className="composer-area"><form className="composer" onSubmit={submit}><textarea aria-label="消息" placeholder={sessionBusy?'正在准备会话…':sessionId?'描述任务，或继续你的想法…':workspaceId?'点击“新建会话”重试，开始协作':'打开工作区，开始协作'} value={text} onChange={e=>setText(e.target.value)} disabled={!sessionId||sessionBusy} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit()}}}/><div className="composer-bottom"><div className="model-select"><span className="model-dot"/><select aria-label="当前模型" value={modelId} onChange={e=>setModelId(e.target.value)}><option value="" disabled>选择模型</option>{models.map(m=><option value={m.id} key={m.id}>{m.name}</option>)}</select></div><div className="send-controls"><span>Enter 发送 · Shift + Enter 换行</span>{running[sessionId]?<button type="button" className="send" aria-label="取消生成" onClick={cancel}><Square size={16}/></button>:<button className="send" type="submit" aria-label="发送消息" disabled={sessionBusy||!text.trim()||!sessionId||!modelId}><ArrowUp size={19}/></button>}</div></div></form><div className="footer-note">原项目保持安全。模型生成的更改需要你确认后才会同步。</div></footer>
   </main>
   {panel==='models'&&<ModelPanel models={models} onClose={()=>setPanel(null)} onSaved={async()=>{const ms=await command<ModelConfig[]>('model_list');setModels(ms);if(!ms.some(m=>m.id===modelId))setModelId(ms[0]?.id??'')}}/>}
   {panel==='plugins'&&<PluginPanel workspaceId={workspaceId} onClose={()=>setPanel(null)}/>}
