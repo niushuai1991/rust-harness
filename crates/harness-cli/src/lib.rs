@@ -60,10 +60,42 @@ pub async fn dispatch(runtime: Arc<Runtime>, method: &str, p: Value) -> AppResul
         "session.send" => {
             let model = provider(&runtime, field(&p, "modelId")?).await?;
             runtime
-                .run_session(
+                .run_session_with_attachments(
                     field(&p, "sessionId")?.into(),
                     field(&p, "text")?.into(),
                     model,
+                    serde_json::from_value(p.get("attachments").cloned().unwrap_or(json!([])))
+                        .map_err(err)?,
+                )
+                .await?;
+            Value::Null
+        }
+        "artifact.import" => json!(
+            runtime
+                .artifact_import(field(&p, "sessionId")?, &PathBuf::from(field(&p, "path")?))
+                .await?
+        ),
+        "artifact.read" => {
+            let offset = p["offset"]
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| err("offset"))?;
+            let length = p["length"]
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| err("length"))?;
+            json!(
+                runtime
+                    .artifact_read(field(&p, "sessionId")?, field(&p, "hash")?, offset, length)
+                    .await?
+            )
+        }
+        "artifact.save" => {
+            runtime
+                .artifact_save(
+                    field(&p, "sessionId")?,
+                    field(&p, "hash")?,
+                    &PathBuf::from(field(&p, "path")?),
                 )
                 .await?;
             Value::Null

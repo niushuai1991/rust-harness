@@ -59,10 +59,10 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(window) = app.get_webview_window("main") {
         let handle = window.clone();
         window.on_window_event(move |event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if handle.hide().is_ok() {
-                    api.prevent_close();
-                }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event
+                && handle.hide().is_ok()
+            {
+                api.prevent_close();
             }
         });
     }

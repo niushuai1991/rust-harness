@@ -11,3 +11,6 @@ export interface ModelConfig {id:string;name:string;baseUrl:string;model:string;
 export interface ApprovalRequest {id:string;sessionId:string;tool:string;arguments:unknown;reason:string}
 export interface PluginInfo {id:string;name:string;version:string;kind:string;enabled:boolean;permissions:string[];status:string;description:string}
 export interface FileChange {path:string;kind:string;beforeHash:string|null;afterHash:string|null;sourceHash:string|null;conflict:boolean;beforeText:string|null;afterText:string|null}
+
+export interface ArtifactMetadata {hash:string;name:string;mediaType:string;size:number}
+export interface ArtifactChunk {encoding:'utf8'|'base64';content:string;nextOffset:number|null;totalSize:number}

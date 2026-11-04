@@ -49,11 +49,20 @@ pub struct Runtime {
     pub mcp: harness_extensions::mcp::McpManager,
     mcp_scopes: Mutex<HashMap<String, String>>,
     events: broadcast::Sender<LiveEvent>,
-    active: Mutex<HashMap<String, CancellationToken>>,
+    pub(crate) active: Mutex<HashMap<String, CancellationToken>>,
     queues: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     children: Mutex<HashMap<String, Vec<String>>>,
     custom: crate::registry::Tools,
     _host_lock: std::fs::File,
+}
+struct ToolExecution<'a> {
+    session: &'a str,
+    workspace: &'a str,
+    root: &'a Path,
+    call: &'a ToolCall,
+    reads: &'a mut HashMap<String, String>,
+    provider: Arc<dyn ModelProvider>,
+    cancel: CancellationToken,
 }
 impl Runtime {
     pub async fn open(data_dir: PathBuf) -> AppResult<Arc<Self>> {
@@ -81,21 +90,19 @@ impl Runtime {
         let mut children: HashMap<String, Vec<String>> = HashMap::new();
         for session in store.sessions(None).await? {
             for event in store.events(&session.id, 0).await? {
-                if event.kind == "subagent.created" && event.data["historyOnly"] != true {
-                    if let Some(child) = event.data["sessionId"].as_str() {
-                        if let Ok(child_info) = store.session(child).await {
-                            if child_info.workspace_id == session.workspace_id
-                                && !children
-                                    .values()
-                                    .any(|ids| ids.iter().any(|id| id == child))
-                            {
-                                children
-                                    .entry(session.id.clone())
-                                    .or_default()
-                                    .push(child.into());
-                            }
-                        }
-                    }
+                if event.kind == "subagent.created"
+                    && event.data["historyOnly"] != true
+                    && let Some(child) = event.data["sessionId"].as_str()
+                    && let Ok(child_info) = store.session(child).await
+                    && child_info.workspace_id == session.workspace_id
+                    && !children
+                        .values()
+                        .any(|ids| ids.iter().any(|id| id == child))
+                {
+                    children
+                        .entry(session.id.clone())
+                        .or_default()
+                        .push(child.into());
                 }
             }
         }
@@ -248,11 +255,31 @@ impl Runtime {
         text: String,
         provider: Arc<dyn ModelProvider>,
     ) -> futures::future::BoxFuture<'static, AppResult<()>> {
+        self.run_session_with_attachments(session_id, text, provider, vec![])
+    }
+    pub fn run_session_with_attachments(
+        self: Arc<Self>,
+        session_id: String,
+        text: String,
+        provider: Arc<dyn ModelProvider>,
+        attachments: Vec<String>,
+    ) -> futures::future::BoxFuture<'static, AppResult<()>> {
         Box::pin(async move {
-            if text.trim().is_empty() || text.len() > 1024 * 1024 {
+            if (text.trim().is_empty() && attachments.is_empty())
+                || text.len() > 1024 * 1024
+                || attachments.len() > 20
+            {
                 return Err(AppError::new("INVALID_INPUT", "消息不能为空或超过1MiB"));
             }
             let session = self.store.session(&session_id).await?;
+            let mut attached = Vec::new();
+            for hash in attachments {
+                let metadata = self.artifact_metadata(&session_id, &hash).await?;
+                self.store.blob(&hash).await?;
+                if !attached.iter().any(|a: &ArtifactMetadata| a.hash == hash) {
+                    attached.push(metadata);
+                }
+            }
             let queue = self
                 .queues
                 .lock()
@@ -264,7 +291,7 @@ impl Runtime {
             self.append(
                 &session_id,
                 "inbox.queued",
-                json!({"id":message_id,"content":text}),
+                json!({"id":message_id,"content":text,"attachments":attached}),
             )
             .await?;
             let _serial = queue.lock().await;
@@ -280,8 +307,12 @@ impl Runtime {
                     .await?;
                 self.append(&session_id, "inbox.claimed", json!({"id":message_id}))
                     .await?;
-                self.append(&session_id, "user.message", json!({"content":text}))
-                    .await?;
+                self.append(
+                    &session_id,
+                    "user.message",
+                    json!({"content":text,"attachments":attached}),
+                )
+                .await?;
                 self.steps(
                     &session_id,
                     &session.workspace_id,
@@ -475,7 +506,15 @@ impl Runtime {
                     let needs_approval=self.custom.lock().unwrap().get(&call.name).map(|t|t.requires_approval()).unwrap_or_else(||requires_approval(&call.name));
                     if needs_approval{self.approve(session,&call,&cancel).await?;}
                     let tool_cancel=cancel.child_token();
-                    let work=self.execute_tool(session,workspace,root,&call,&mut reads,provider.clone(),tool_cancel.clone());
+                    let work = self.execute_tool(ToolExecution {
+                        session,
+                        workspace,
+                        root,
+                        call: &call,
+                        reads: &mut reads,
+                        provider: provider.clone(),
+                        cancel: tool_cancel.clone(),
+                    });
                     tokio::pin!(work);
                     tokio::select!{
                         _ = cancel.cancelled()=>{tool_cancel.cancel();let _=work.await;Err(cancelled())},
@@ -528,17 +567,26 @@ impl Runtime {
                     result.is_error = true;
                 }
                 let mut content = result.content;
+                let mut artifact = None;
                 if content.len() > 64 * 1024 {
                     let hash = self.store.put_blob(content.as_bytes()).await?;
+                    artifact = Some(ArtifactMetadata {
+                        hash: hash.clone(),
+                        name: format!("{}-output.txt", call.name),
+                        media_type: "text/plain; charset=utf-8".into(),
+                        size: content.len() as u32,
+                    });
                     let preview = content.chars().take(12000).collect::<String>();
-                    content = format!("{preview}\n\n[完整输出 artifact:{hash}]");
+                    content = format!(
+                        "{preview}\n\n[完整输出 artifact:{hash}；使用 read_artifact 分块读取]"
+                    );
                 }
-                self.append(session,"tool.result",json!({"callId":call.id,"name":call.name,"content":content,"isError":result.is_error,"status":status})).await?;
+                self.append(session,"tool.result",json!({"callId":call.id,"name":call.name,"content":content,"isError":result.is_error,"status":status,"artifact":artifact})).await?;
             }
         }
         Err(AppError::new("STEP_LIMIT", "回合达到30次模型调用上限"))
     }
-    async fn approve(
+    pub(crate) async fn approve(
         &self,
         session: &str,
         call: &ToolCall,
@@ -585,18 +633,34 @@ impl Runtime {
             ))
         }
     }
-    async fn execute_tool(
-        self: &Arc<Self>,
-        session: &str,
-        workspace: &str,
-        root: &Path,
-        call: &ToolCall,
-        reads: &mut HashMap<String, String>,
-        provider: Arc<dyn ModelProvider>,
-        cancel: CancellationToken,
-    ) -> AppResult<ToolResult> {
+    async fn execute_tool(self: &Arc<Self>, input: ToolExecution<'_>) -> AppResult<ToolResult> {
+        let ToolExecution {
+            session,
+            workspace,
+            root,
+            call,
+            reads,
+            provider,
+            cancel,
+        } = input;
         let a = &call.arguments;
         let text = match call.name.as_str() {
+            "read_artifact" => {
+                let offset = a["offset"]
+                    .as_u64()
+                    .and_then(|v| u32::try_from(v).ok())
+                    .ok_or_else(|| AppError::new("TOOL_ARGUMENTS", "无效偏移"))?;
+                let length = a["length"]
+                    .as_u64()
+                    .and_then(|v| u32::try_from(v).ok())
+                    .ok_or_else(|| AppError::new("TOOL_ARGUMENTS", "无效长度"))?;
+                serde_json::to_string(
+                    &self
+                        .artifact_read(session, arg(a, "hash")?, offset, length)
+                        .await?,
+                )
+                .map_err(internal)?
+            }
             "read" => {
                 let path = arg(a, "path")?;
                 let value = harness_platform::read_file(root, path)?;
@@ -827,6 +891,7 @@ fn requires_approval(name: &str) -> bool {
     !matches!(
         name,
         "read"
+            | "read_artifact"
             | "list_files"
             | "search"
             | "todo_write"
@@ -865,7 +930,20 @@ pub fn project_messages(events: &[SessionEvent]) -> Vec<ModelMessage> {
         let content = || e.data["content"].as_str().unwrap_or("").to_owned();
         match e.kind.as_str() {
             "context.snapshot" => system = content(),
-            "user.message" | "plugin.context" => history.push(ModelMessage::user(content())),
+            "user.message" => {
+                let mut message = content();
+                if let Some(attachments) = e.data["attachments"].as_array() {
+                    for artifact in attachments {
+                        if let Ok(meta) =
+                            serde_json::from_value::<ArtifactMetadata>(artifact.clone())
+                        {
+                            message.push_str(&format!("\n附件：{} ({}，{}字节)，hash={}。使用 read_artifact(hash,offset,length) 读取；文本为UTF-8，二进制为base64，不代表原生图像理解。",meta.name,meta.media_type,meta.size,meta.hash));
+                        }
+                    }
+                }
+                history.push(ModelMessage::user(message));
+            }
+            "plugin.context" => history.push(ModelMessage::user(content())),
             "assistant.message" => history.push(ModelMessage {
                 role: MessageRole::Assistant,
                 content: content(),
@@ -900,6 +978,12 @@ pub fn builtin_tools() -> Vec<ToolDefinition> {
     }
     let s = json!({"type":"string"});
     vec![
+        def(
+            "read_artifact",
+            "读取当前会话附件或完整工具输出，按字节偏移分块，单次最多32768字节；UTF-8文本或base64二进制",
+            json!({"hash":s,"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1,"maximum":32768}}),
+            &["hash", "offset", "length"],
+        ),
         def(
             "read",
             "读取隔离工作副本中的UTF-8文件",
@@ -990,6 +1074,14 @@ async fn fetch(url: &str, cancel: CancellationToken) -> AppResult<String> {
 }
 struct ReplicaHost;
 impl HostPolicy for ReplicaHost {
+    fn http_get_cancelled(
+        &self,
+        _: &str,
+        url: &str,
+        cancel: CancellationToken,
+    ) -> AppResult<String> {
+        crate::plugin_ui::http_get(url, cancel)
+    }
     fn read_file(&self, _: &str, root: &Path, path: &str) -> AppResult<String> {
         harness_platform::read_file(root, path)
     }

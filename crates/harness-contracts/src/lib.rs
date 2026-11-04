@@ -216,3 +216,21 @@ pub struct PluginInfo {
     pub status: String,
     pub description: String,
 }
+
+/// Host-managed, content-addressed attachment metadata. Never includes the imported host path.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactMetadata {
+    pub hash: String,
+    pub name: String,
+    pub media_type: String,
+    pub size: u32,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactChunk {
+    pub encoding: String,
+    pub content: String,
+    pub next_offset: Option<u32>,
+    pub total_size: u32,
+}

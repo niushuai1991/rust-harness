@@ -12,7 +12,7 @@ export const commands = {
 	sessionList: (workspaceId: string) => typedError<SessionInfo[], AppError>(__TAURI_INVOKE("session_list", { workspaceId })),
 	sessionCreate: (workspaceId: string, title: string) => typedError<SessionInfo, AppError>(__TAURI_INVOKE("session_create", { workspaceId, title })),
 	sessionEvents: (sessionId: string, after: string | null) => typedError<SessionEvent[], AppError>(__TAURI_INVOKE("session_events", { sessionId, after })),
-	sessionSend: (sessionId: string, text: string, modelId: string, onEvent: Channel<LiveEvent>) => typedError<null, AppError>(__TAURI_INVOKE("session_send", { sessionId, text, modelId, onEvent })),
+	sessionSend: (sessionId: string, text: string, modelId: string, onEvent: Channel<LiveEvent>, attachments: string[] | null) => typedError<null, AppError>(__TAURI_INVOKE("session_send", { sessionId, text, modelId, onEvent, attachments })),
 	sessionCancel: (sessionId: string) => typedError<null, AppError>(__TAURI_INVOKE("session_cancel", { sessionId })),
 	sessionExport: (sessionId: string, path: string) => typedError<null, AppError>(__TAURI_INVOKE("session_export", { sessionId, path })),
 	sessionFork: (sessionId: string) => typedError<SessionInfo, AppError>(__TAURI_INVOKE("session_fork", { sessionId })),
@@ -35,6 +35,13 @@ export const commands = {
 	mcpConnect: (workspaceId: string, config: JsonPayload) => typedError<null, AppError>(__TAURI_INVOKE("mcp_connect", { workspaceId, config })),
 	mcpDisconnect: (id: string) => typedError<null, AppError>(__TAURI_INVOKE("mcp_disconnect", { id })),
 	mcpResources: (id: string, uri: string | null) => typedError<JsonPayload, AppError>(__TAURI_INVOKE("mcp_resources", { id, uri })),
+	artifactImport: (sessionId: string, path: string) => typedError<ArtifactMetadata, AppError>(__TAURI_INVOKE("artifact_import", { sessionId, path })),
+	artifactRead: (sessionId: string, hash: string, offset: number, length: number) => typedError<ArtifactChunk, AppError>(__TAURI_INVOKE("artifact_read", { sessionId, hash, offset, length })),
+	artifactSave: (sessionId: string, hash: string, path: string) => typedError<null, AppError>(__TAURI_INVOKE("artifact_save", { sessionId, hash, path })),
+	pluginContributions: (workspaceId: string) => typedError<JsonPayload[], AppError>(__TAURI_INVOKE("plugin_contributions", { workspaceId })),
+	pluginSettingsSave: (workspaceId: string, pluginId: string, values: JsonPayload) => typedError<null, AppError>(__TAURI_INVOKE("plugin_settings_save", { workspaceId, pluginId, values })),
+	pluginCommand: (sessionId: string, pluginId: string, name: string, params: JsonPayload) => typedError<ToolResult, AppError>(__TAURI_INVOKE("plugin_command", { sessionId, pluginId, name, params })),
+	pluginFilePreview: (workspaceId: string, path: string) => typedError<string, AppError>(__TAURI_INVOKE("plugin_file_preview", { workspaceId, path })),
 };
 
 /* Types */
@@ -51,6 +58,21 @@ export type ApprovalRequest = {
 	tool: string,
 	arguments: JsonValue,
 	reason: string,
+};
+
+export type ArtifactChunk = {
+	encoding: string,
+	content: string,
+	nextOffset: number | null,
+	totalSize: number,
+};
+
+/**  Host-managed, content-addressed attachment metadata. Never includes the imported host path. */
+export type ArtifactMetadata = {
+	hash: string,
+	name: string,
+	mediaType: string,
+	size: number,
 };
 
 export type FileChange = {
@@ -128,6 +150,11 @@ export type SessionInfo = {
 	title: string,
 	createdAt: string,
 	updatedAt: string,
+};
+
+export type ToolResult = {
+	content: string,
+	isError: boolean,
 };
 
 export type WorkspaceInfo = {

@@ -236,10 +236,10 @@ impl Store {
                         }
                     }
                 }
-                if event.kind == "tool.call" {
-                    if let Some(id) = event.data["id"].as_str() {
-                        calls.insert(id.to_owned(), event.data.clone());
-                    }
+                if event.kind == "tool.call"
+                    && let Some(id) = event.data["id"].as_str()
+                {
+                    calls.insert(id.to_owned(), event.data.clone());
                 }
             }
             let mut records = Vec::new();
@@ -398,15 +398,15 @@ async fn append_tx(
         .execute(&mut **tx)
         .await
         .map_err(db_error)?;
-    if matches!(kind, "user.message" | "assistant.message") {
-        if let Some(content) = data.get("content").and_then(Value::as_str) {
-            sqlx::query("INSERT INTO message_search(session_id,content) VALUES(?,?)")
-                .bind(session)
-                .bind(content)
-                .execute(&mut **tx)
-                .await
-                .map_err(db_error)?;
-        }
+    if matches!(kind, "user.message" | "assistant.message")
+        && let Some(content) = data.get("content").and_then(Value::as_str)
+    {
+        sqlx::query("INSERT INTO message_search(session_id,content) VALUES(?,?)")
+            .bind(session)
+            .bind(content)
+            .execute(&mut **tx)
+            .await
+            .map_err(db_error)?;
     }
     Ok(SessionEvent {
         id,
