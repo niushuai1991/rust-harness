@@ -3,7 +3,7 @@ mod paths;
 mod secrets;
 mod shell;
 mod workspace;
-pub use paths::{list_files, read_file, resolve_path, write_file};
+pub use paths::{list_files, read_file, read_file_bounded, resolve_path, write_file};
 pub use secrets::{delete_secret, get_secret, set_secret};
 pub use shell::{ProcessOutput, SandboxedStdio, ShellService};
 pub use workspace::{WorkspaceLease, WorkspaceManager};

@@ -97,6 +97,7 @@ pub async fn session_send(
     text: String,
     model_id: String,
     on_event: Channel<LiveEvent>,
+    attachments: Option<Vec<String>>,
 ) -> AppResult<()> {
     let provider = state.models.build_model(&model_id).await?;
     let runtime = state.inner().clone();
@@ -120,7 +121,9 @@ pub async fn session_send(
             }
         }
     });
-    let result = runtime.run_session(session_id, text, provider).await;
+    let result = runtime
+        .run_session_with_attachments(session_id, text, provider, attachments.unwrap_or_default())
+        .await;
     // Allow the final durable frame to drain; frontend also performs cursor-safe history reload.
     tokio::task::yield_now().await;
     forward.abort();
@@ -306,6 +309,13 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         mcp_list,
         mcp_connect,
         mcp_disconnect,
-        mcp_resources
+        mcp_resources,
+        crate::artifact_commands::artifact_import,
+        crate::artifact_commands::artifact_read,
+        crate::artifact_commands::artifact_save,
+        crate::plugin_commands::plugin_contributions,
+        crate::plugin_commands::plugin_settings_save,
+        crate::plugin_commands::plugin_command,
+        crate::plugin_commands::plugin_file_preview
     ])
 }

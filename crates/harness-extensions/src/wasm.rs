@@ -24,6 +24,15 @@ pub trait HostPolicy: Send + Sync {
     ) -> AppResult<()> {
         Err(fail("host write policy unavailable"))
     }
+    /// Native I/O must support dropping the request on cancellation. Default fails closed.
+    fn http_get_cancelled(
+        &self,
+        _workspace: &str,
+        _url: &str,
+        _cancel: CancellationToken,
+    ) -> AppResult<String> {
+        Err(fail("cancellable HTTP policy unavailable"))
+    }
     fn http_get(&self, _workspace: &str, _url: &str) -> AppResult<String> {
         Err(fail("host HTTP policy unavailable"))
     }
@@ -34,6 +43,19 @@ pub(crate) struct EngineHost {
     engine: Engine,
     linker: Linker<Data>,
 }
+pub(crate) struct ExecutionRequest<'a> {
+    pub component: &'a Component,
+    pub workspace: &'a str,
+    pub root: &'a Path,
+    pub grants: Vec<String>,
+    pub policy: Arc<dyn HostPolicy>,
+    pub kv: BTreeMap<String, String>,
+    pub name: &'a str,
+    pub args: &'a str,
+    pub cancel: CancellationToken,
+    pub disabled: CancellationToken,
+    pub approved_execution: bool,
+}
 struct Data {
     wasi: WasiCtx,
     table: ResourceTable,
@@ -43,6 +65,10 @@ struct Data {
     workspace: String,
     root: std::path::PathBuf,
     policy: Arc<dyn HostPolicy>,
+    approved: bool,
+    cancel: CancellationToken,
+    external_cancel: CancellationToken,
+    disabled: CancellationToken,
 }
 impl WasiView for Data {
     fn ctx(&mut self) -> WasiCtxView<'_> {
@@ -81,6 +107,13 @@ impl bindings::rust_harness::plugin::host::Host for Data {
         contents: String,
     ) -> wasmtime::Result<Result<(), String>> {
         self.require("workspace.write")?;
+        if !self.approved
+            || self.cancel.is_cancelled()
+            || self.external_cancel.is_cancelled()
+            || self.disabled.is_cancelled()
+        {
+            return Ok(Err("side effects require approved execution".into()));
+        }
         if contents.len() > 1 << 20 {
             return Ok(Err("write limit".into()));
         }
@@ -91,9 +124,16 @@ impl bindings::rust_harness::plugin::host::Host for Data {
     }
     fn http_get(&mut self, url: String) -> wasmtime::Result<Result<String, String>> {
         self.require("http")?;
+        if !self.approved
+            || self.cancel.is_cancelled()
+            || self.external_cancel.is_cancelled()
+            || self.disabled.is_cancelled()
+        {
+            return Ok(Err("HTTP requires approved execution".into()));
+        }
         Ok(self
             .policy
-            .http_get(&self.workspace, &url)
+            .http_get_cancelled(&self.workspace, &url, self.cancel.clone())
             .map_err(|e| e.to_string())
             .and_then(bounded))
     }
@@ -149,17 +189,36 @@ impl EngineHost {
     }
     pub fn execute(
         &self,
-        component: &Component,
-        workspace: &str,
-        root: &Path,
-        grants: Vec<String>,
-        policy: Arc<dyn HostPolicy>,
-        kv: BTreeMap<String, String>,
-        name: &str,
-        args: &str,
-        cancel: CancellationToken,
-        disabled: CancellationToken,
+        request: ExecutionRequest<'_>,
     ) -> AppResult<(String, BTreeMap<String, String>)> {
+        let ExecutionRequest {
+            component,
+            workspace,
+            root,
+            grants,
+            policy,
+            kv,
+            name,
+            args,
+            cancel,
+            disabled,
+            approved_execution,
+        } = request;
+        let native_cancel = CancellationToken::new();
+        let native_signal = native_cancel.clone();
+        let external_cancel = cancel.clone();
+        let plugin_disabled = disabled.clone();
+        let native_watch = tokio::runtime::Handle::current().spawn(async move {
+            tokio::select! { _=external_cancel.cancelled()=>{}, _=plugin_disabled.cancelled()=>{} };
+            native_signal.cancel();
+        });
+        struct Watch(tokio::task::JoinHandle<()>);
+        impl Drop for Watch {
+            fn drop(&mut self) {
+                self.0.abort();
+            }
+        }
+        let _watch = Watch(native_watch);
         let data = Data {
             wasi: WasiCtx::builder().build(),
             table: ResourceTable::new(),
@@ -174,6 +233,10 @@ impl EngineHost {
             workspace: workspace.into(),
             root: root.into(),
             policy,
+            approved: false,
+            cancel: native_cancel,
+            external_cancel: cancel.clone(),
+            disabled: disabled.clone(),
         };
         let mut store = Store::new(&self.engine, data);
         store.limiter(|s| &mut s.limits);
@@ -215,10 +278,12 @@ impl EngineHost {
                 },
             std::sync::atomic::Ordering::Relaxed,
         );
+        store.data_mut().approved = approved_execution;
         let result = guest
             .call_execute(&mut store, name, args)
             .map_err(fail)?
             .map_err(fail)?;
+        store.data_mut().approved = false;
         bounded(result.clone()).map_err(fail)?;
         deadline.store(
             start.elapsed().as_millis() as u64 + 5000,

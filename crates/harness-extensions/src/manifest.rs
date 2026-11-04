@@ -46,6 +46,8 @@ pub struct Tool {
 pub struct Command {
     pub name: String,
     pub title: String,
+    #[serde(default = "object_schema")]
+    pub parameters: serde_json::Value,
 }
 pub(crate) fn fail(message: impl ToString) -> AppError {
     AppError::new("plugin", message.to_string())
@@ -96,10 +98,20 @@ impl Manifest {
                 return Err(fail("invalid/duplicate tool"));
             }
         }
+        names.clear();
         for command in &self.contributions.commands {
-            if !identifier(&command.name) {
+            if !identifier(&command.name)
+                || !names.insert(&command.name)
+                || command.title.trim().is_empty()
+            {
                 return Err(fail("invalid command"));
             }
+        }
+        crate::declarative::validate_contributions(&self.contributions)?;
+        if !self.contributions.commands.is_empty()
+            && (self.component.is_none() || !self.permissions.iter().any(|p| p == "tools"))
+        {
+            return Err(fail("commands require component and tools permission"));
         }
         if !self.contributions.tools.is_empty()
             && (self.component.is_none() || !self.permissions.iter().any(|p| p == "tools"))
@@ -125,4 +137,8 @@ impl Manifest {
         }
         Ok(())
     }
+}
+
+fn object_schema() -> serde_json::Value {
+    serde_json::json!({"type":"object","properties":{},"additionalProperties":false})
 }

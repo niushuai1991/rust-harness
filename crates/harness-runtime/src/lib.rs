@@ -5,3 +5,7 @@ mod registry;
 pub use agent::Runtime;
 pub use registry::{ExternalTool, Registration, ToolContext};
 pub mod providers;
+
+mod artifacts;
+
+pub mod plugin_ui;

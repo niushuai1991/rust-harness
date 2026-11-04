@@ -264,3 +264,127 @@ async fn cancelling_after_side_effect_records_unknown_outcome_and_releases_lease
     );
     assert!(runtime.workspaces.diff(&w.id).is_ok());
 }
+
+#[tokio::test]
+async fn attachments_enter_model_history_and_spilled_output_is_readable_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let huge = "完整输出".repeat(10000);
+    std::fs::write(source.join("large.txt"), &huge).unwrap();
+    let data = dir.path().join("host");
+    let runtime = Runtime::open(data.clone()).await.unwrap();
+    let w = runtime.workspaces.create(&source).unwrap();
+    let s = runtime
+        .store
+        .create_session(&w.id, "artifacts")
+        .await
+        .unwrap();
+    let private = dir.path().join("private-host-path.txt");
+    std::fs::write(&private, "附件说明").unwrap();
+    let meta = runtime.artifact_import(&s.id, &private).await.unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([
+            call(
+                "attached",
+                "read_artifact",
+                json!({"hash":meta.hash,"offset":0,"length":32768}),
+            ),
+            call("large", "read", json!({"path":"large.txt"})),
+            ModelAnswer::default(),
+        ])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .run_session_with_attachments(
+            s.id.clone(),
+            "检查附件".into(),
+            provider.clone(),
+            vec![meta.hash.clone()],
+        )
+        .await
+        .unwrap();
+    let requests = provider.requests.lock().unwrap();
+    let history = serde_json::to_string(&requests[0]).unwrap();
+    assert!(history.contains(&meta.hash));
+    assert!(history.contains("private-host-path.txt"));
+    assert!(!history.contains(&private.to_string_lossy().replace('\\', "\\\\")));
+    assert!(
+        requests[1]
+            .iter()
+            .any(|m| m.role == MessageRole::Tool && m.content.contains("附件说明"))
+    );
+    drop(requests);
+    let events = runtime.store.events(&s.id, 0).await.unwrap();
+    let artifact = events
+        .iter()
+        .find(|e| e.kind == "tool.result" && e.data["callId"] == "large")
+        .unwrap()
+        .data["artifact"]
+        .clone();
+    assert_eq!(artifact["size"], huge.len());
+    let hash = artifact["hash"].as_str().unwrap().to_owned();
+    drop(runtime);
+    let runtime = Runtime::open(data).await.unwrap();
+    let chunk = runtime.artifact_read(&s.id, &hash, 0, 32768).await.unwrap();
+    assert!(huge.starts_with(&chunk.content));
+    assert!(chunk.next_offset.is_some());
+    let replay_provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([
+            call(
+                "spill-read",
+                "read_artifact",
+                json!({"hash":hash,"offset":0,"length":32768}),
+            ),
+            ModelAnswer::default(),
+        ])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .run_session(
+            s.id.clone(),
+            "继续读取完整输出".into(),
+            replay_provider.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        replay_provider.requests.lock().unwrap()[1]
+            .iter()
+            .any(|m| m.role == MessageRole::Tool && m.content.contains("完整输出"))
+    );
+    let other = runtime.store.create_session(&w.id, "other").await.unwrap();
+    assert!(
+        runtime
+            .artifact_read(&other.id, &hash, 0, 32768)
+            .await
+            .is_err()
+    );
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer::default()])),
+        requests: Mutex::new(vec![]),
+    });
+    assert!(
+        runtime
+            .clone()
+            .run_session_with_attachments(
+                other.id.clone(),
+                "steal".into(),
+                provider,
+                vec![meta.hash]
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        !runtime
+            .store
+            .events(&other.id, 0)
+            .await
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == "user.message")
+    );
+}

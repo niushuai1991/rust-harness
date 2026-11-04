@@ -99,14 +99,12 @@ pub fn install(runtime: Arc<Runtime>) -> AppResult<Installed> {
             if ticker.stop.is_cancelled() {
                 break;
             }
-            if let Err(e) = ticker.tick(first).await {
-                if let Some(r) = ticker.runtime.upgrade() {
-                    if let Ok(sessions) = r.store.sessions(None).await {
-                        if let Some(s) = sessions.first() {
-                            let _ = r.append(&s.id, "schedule.error", json!({"error":e})).await;
-                        }
-                    }
-                }
+            if let Err(e) = ticker.tick(first).await
+                && let Some(r) = ticker.runtime.upgrade()
+                && let Ok(sessions) = r.store.sessions(None).await
+                && let Some(s) = sessions.first()
+            {
+                let _ = r.append(&s.id, "schedule.error", json!({"error":e})).await;
             }
             first = false;
             tokio::select! {_=ticker.stop.cancelled()=>break,_=tokio::time::sleep(Duration::from_millis(250))=>{}}
@@ -263,10 +261,10 @@ impl ExternalTool for Tool {
             "background_cancel" => {
                 let id = string(&args, "id")?;
                 let status = self.state.job_status(&r, &context.session_id, id).await?;
-                if let Some((owner, token)) = self.state.jobs.lock().unwrap().get(id) {
-                    if owner == &context.session_id {
-                        token.cancel();
-                    }
+                if let Some((owner, token)) = self.state.jobs.lock().unwrap().get(id)
+                    && owner == &context.session_id
+                {
+                    token.cancel();
                 }
                 r.append(
                     &context.session_id,
@@ -539,17 +537,23 @@ impl State {
                     }
                 }
                 let _guard = state.schedules_lock.lock().await;
-                if let Ok(mut all) = state.schedules().await {
-                    if let Some(current) = all.iter_mut().find(|x| x.id == schedule.id) {
-                        current.status = if result.is_ok() {
-                            "completed"
-                        } else {
-                            "failed"
-                        }
-                        .into();
-                        let _=runtime.append(&current.session_id,"schedule.finished",json!({"id":current.id,"status":current.status,"error":result.err()})).await;
-                        let _ = state.save(&all).await;
+                if let Ok(mut all) = state.schedules().await
+                    && let Some(current) = all.iter_mut().find(|x| x.id == schedule.id)
+                {
+                    current.status = if result.is_ok() {
+                        "completed"
+                    } else {
+                        "failed"
                     }
+                    .into();
+                    let _ = runtime
+                        .append(
+                            &current.session_id,
+                            "schedule.finished",
+                            json!({"id":current.id,"status":current.status,"error":result.err()}),
+                        )
+                        .await;
+                    let _ = state.save(&all).await;
                 }
             });
         }

@@ -1,4 +1,5 @@
 //! Installed immutable plugin versions and isolated component invocations.
+mod declarative;
 mod manifest;
 pub mod mcp;
 mod package;
@@ -130,13 +131,12 @@ impl PluginManager {
             }
             // Refuse upgrades that would break an enabled dependent.
             for p in state.plugins.values().filter(|p| p.enabled) {
-                if let Some(req) = p.manifest.dependencies.get(&manifest.id) {
-                    if !semver::VersionReq::parse(req)
+                if let Some(req) = p.manifest.dependencies.get(&manifest.id)
+                    && !semver::VersionReq::parse(req)
                         .map_err(fail)?
                         .matches(&semver::Version::parse(&manifest.version).map_err(fail)?)
-                    {
-                        return Err(fail("upgrade breaks dependent"));
-                    }
+                {
+                    return Err(fail("upgrade breaks dependent"));
                 }
             }
             fs::rename(&staging, &version).map_err(fail)?;
@@ -287,6 +287,7 @@ impl PluginManager {
                     &format!("plugin__{id}__hook:{hook}"),
                     payload.clone(),
                     cancel.clone(),
+                    false,
                 )
                 .await?;
             let value: Value = serde_json::from_str(&result.content).map_err(fail)?;
@@ -315,10 +316,12 @@ impl PluginManager {
         args: Value,
         cancel: CancellationToken,
     ) -> AppResult<ToolResult> {
-        if name.contains("__hook:") {
-            return Err(fail("hooks must use run_hook"));
+        if name.contains("__hook:") || name.contains("__command:") {
+            return Err(fail(
+                "hooks and commands require their explicit entry points",
+            ));
         }
-        self.execute_invocation(workspace_id, root, name, args, cancel)
+        self.execute_invocation(workspace_id, root, name, args, cancel, true)
             .await
     }
     async fn execute_invocation(
@@ -328,6 +331,7 @@ impl PluginManager {
         name: &str,
         args: Value,
         cancel: CancellationToken,
+        approved_execution: bool,
     ) -> AppResult<ToolResult> {
         let _serial = tokio::select! {biased; _=cancel.cancelled()=>return Err(fail("cancelled while waiting for plugin execution")), lock=self.serial.lock()=>lock}; // serializes transactional KV commits; each call still owns a fresh Store.
         let (id, tool) = name
@@ -357,6 +361,15 @@ impl PluginManager {
             {
                 return Err(fail("hook not declared"));
             }
+        } else if let Some(command) = tool.strip_prefix("command:") {
+            let command = installed
+                .manifest
+                .contributions
+                .commands
+                .iter()
+                .find(|c| c.name == command)
+                .ok_or_else(|| fail("command not declared"))?;
+            declarative::validate_arguments(&command.parameters, &args)?;
         } else if !installed
             .manifest
             .contributions
@@ -376,7 +389,7 @@ impl PluginManager {
         let grants: Vec<_> = installed
             .grants
             .iter()
-            .filter(|p| ceiling.contains(p))
+            .filter(|p| ceiling.contains(p) && installed.manifest.permissions.contains(p))
             .cloned()
             .collect();
         if !grants.iter().any(|s| s == "tools") {
@@ -426,9 +439,19 @@ impl PluginManager {
         let stopped = disabled.clone();
         let cancelled = cancel.clone();
         let (content, kv) = tokio::task::spawn_blocking(move || {
-            engine.execute(
-                &component, &workspace, &root, grants, policy, kv, &tool, &args, cancel, disabled,
-            )
+            engine.execute(wasm::ExecutionRequest {
+                component: &component,
+                workspace: &workspace,
+                root: &root,
+                grants,
+                policy,
+                kv,
+                name: &tool,
+                args: &args,
+                cancel,
+                disabled,
+                approved_execution,
+            })
         })
         .await
         .map_err(fail)??;

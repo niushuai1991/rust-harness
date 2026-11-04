@@ -151,6 +151,16 @@ pub fn read_file(root: &Path, relative: &str) -> AppResult<String> {
         .map_err(io)?;
     Ok(text)
 }
+/// Bounded human preview using the same guarded handle as full replica reads.
+pub fn read_file_bounded(root: &Path, relative: &str, max_bytes: usize) -> AppResult<String> {
+    let guard = guarded(root, relative, true)?;
+    let mut bytes = Vec::new();
+    open_read(&guard.path)?
+        .take(max_bytes.min(1 << 20) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(io)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
 pub(crate) fn bytes(root: &Path, relative: &str) -> AppResult<Vec<u8>> {
     let guard = guarded(root, relative, true)?;
     let mut data = Vec::new();

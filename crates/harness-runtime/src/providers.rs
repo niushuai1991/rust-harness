@@ -255,19 +255,14 @@ impl ModelService {
         if let Some(builtin) = suppliers
             .iter()
             .find(|p| p.builtin && p.id == config.provider_id)
-        {
-            if let Some(endpoint) = builtin
+            && let Some(endpoint) = builtin
                 .endpoints
                 .iter()
                 .find(|e| e.api_mode == config.api_mode)
-            {
-                if !config.base_url.is_empty()
-                    && config.base_url.trim_end_matches('/')
-                        != endpoint.base_url.trim_end_matches('/')
-                {
-                    return Err(invalid("内置供应商端点不可覆盖"));
-                }
-            }
+            && !config.base_url.is_empty()
+            && config.base_url.trim_end_matches('/') != endpoint.base_url.trim_end_matches('/')
+        {
+            return Err(invalid("内置供应商端点不可覆盖"));
         }
         config = Self::resolve(config, &suppliers)?;
         if let Some(secret) = secret.filter(|s| !s.is_empty()) {
@@ -318,7 +313,7 @@ impl ModelService {
             return Err(AppError::new("MODEL_CREDENTIAL", "请先配置供应商密钥"));
         }
         let mut config = config;
-        config.max_output_tokens = Some(128);
+        config.max_output_tokens = Some(512);
         let answer = HttpModel { config, secret }
             .complete(
                 vec![ModelMessage::user("Reply OK.")],
@@ -568,5 +563,66 @@ mod tests {
         let mut builtin = s.list_providers().await.unwrap().remove(0);
         builtin.compatibility = ProviderCompatibility::Standard;
         assert!(s.save_provider(builtin, None).await.is_err());
+    }
+    #[tokio::test]
+    async fn connection_test_budget_allows_short_reasoning_responses() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let end = loop {
+                let mut part = [0; 4096];
+                let n = stream.read(&mut part).await.unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&part[..n]);
+                if let Some(p) = bytes.windows(4).position(|v| v == b"\r\n\r\n") {
+                    break p + 4;
+                }
+            };
+            let headers = String::from_utf8(bytes[..end].to_vec()).unwrap();
+            let size = headers
+                .lines()
+                .find_map(|line| {
+                    let (k, v) = line.split_once(':')?;
+                    k.eq_ignore_ascii_case("content-length")
+                        .then(|| v.trim().parse::<usize>().unwrap())
+                })
+                .unwrap();
+            while bytes.len() < end + size {
+                let mut part = [0; 4096];
+                let n = stream.read(&mut part).await.unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&part[..n]);
+            }
+            let request: serde_json::Value =
+                serde_json::from_slice(&bytes[end..end + size]).unwrap();
+            let event = if request["max_output_tokens"].as_u64().unwrap_or(0) < 512 {
+                json!({"type":"response.incomplete","response":{"status":"incomplete"}})
+            } else {
+                json!({"type":"response.completed","response":{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"OK"}]}]}})
+            };
+            let body = format!("data: {event}\n\n");
+            stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+        });
+        let (_dir, service) = service().await;
+        let mut supplier = service.copy_provider("bigmodel").await.unwrap();
+        supplier.endpoints = vec![ProtocolEndpoint {
+            api_mode: ApiMode::Responses,
+            base_url: url,
+        }];
+        let supplier = service.save_provider(supplier, None).await.unwrap();
+        let model:ModelConfig=serde_json::from_value(json!({"id":"","name":"budget","providerId":supplier.id,"apiMode":"responses","baseUrl":"","model":"fixture","credentialRef":"","proxy":null})).unwrap();
+        let model = service.save_model(model, None).await.unwrap();
+        let result = service.test_model(&model.id).await;
+        task.await.unwrap();
+        assert!(
+            result.is_ok(),
+            "connection test must leave enough budget for a short thinking response: {result:?}"
+        );
     }
 }
