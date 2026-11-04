@@ -1,4 +1,6 @@
-# 执行记录 — docs/implementation-plan.md
+# 执行记录
+
+对应 [总体实施计划](specs/implementation-plan.md)，规范入口见 [Spec 文档索引](spec-index.md)。
 
 ## 预检
 - 工作目录为空且不是已有Git仓库；已初始化feat/rust-harness，无需创建嵌套worktree。

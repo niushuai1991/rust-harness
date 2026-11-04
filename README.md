@@ -51,7 +51,7 @@ NSIS 产物位于 `target/release/bundle/nsis`。从0.1.1起采用系统级安�
 
 应用文件与用户数据分开存储。覆盖安装和升级保留会话、托管副本、基线、同步日志与备份；卸载默认保留用户数据和凭据。API 密钥仅写入 Windows 凭据管理器，模型列表不会读取或回显密钥。插件仅在声明、授权与工作区策略交集内运行。请先导出会话、处理待同步更改，再显式清理应用数据。
 
-实现与验收边界见 [实施计划](docs/implementation-plan.md)、[桌面交付报告](docs/desktop-report.md)。
+规范入口见 [Spec 文档索引](docs/spec-index.md)。实现与验收边界见 [实施计划](docs/specs/implementation-plan.md)、[桌面交付报告](docs/desktop-report.md)。
 
 ## Headless 与 SDK
 
