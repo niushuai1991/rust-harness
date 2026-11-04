@@ -1,6 +1,8 @@
-import {useEffect,useRef,useState,type FormEvent,type ReactNode} from 'react';
+import {Fragment,useEffect,useRef,useState,type FormEvent,type ReactNode} from 'react';
 import {open,save} from '@tauri-apps/plugin-dialog';
 import {ArrowUp,Check,ChevronDown,Folder,FolderOpen,GitCompareArrows,MessageSquare,Plus,Settings2,ShieldCheck,Square,Terminal,Unplug,X,Download,RefreshCw} from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {command,desktop,errorText,send} from './api';
 import {useChat} from './store';
 import {ModelPanel} from './ModelPanel';
@@ -100,7 +102,7 @@ export default function App(){
    {notice&&<div role="status" className="notice"><Check size={15}/>{notice}<button aria-label="关闭提示" onClick={()=>setNotice('')}><X size={15}/></button></div>}
    <section className="conversation" aria-label="聊天消息">
     {!events.length&&!stream&&<div className="welcome"><span className="welcome-icon"><Terminal size={35}/></span><div className="eyebrow">BUILD WITH CONFIDENCE</div><h1>想把什么变成现实？</h1><p>理解代码、探索想法，或完成下一次改进。<br/>在独立的工作副本中协作，每一处更改都由你掌控。</p><div className="suggestions">{['梳理项目结构和关键模块','检查代码，找出值得改进的地方','帮我规划并实现一个新功能'].map((s,i)=><button key={s} onClick={()=>setText(s)} disabled={!sessionId}><span>0{i+1}</span>{s}<ArrowUp size={14}/></button>)}</div><div className="welcome-foot"><ShieldCheck size={15}/>工作副本隔离 · 操作可审批 · 更改可预览</div></div>}
-    <div className="messages">{events.map(event=><EventCard key={event.id} event={event} workspaceId={workspaceId}/>)}{stream&&<article className="message assistant"><div className="avatar">R</div><div className="message-body"><div className="message-label">Rust Harness <span className="stream-label">正在思考与执行</span></div>{stream.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{stream.reasoning}</pre></details>}<div className="prose">{stream.text||'正在处理…'}<span className="cursor"/></div></div></article>}<div ref={end}/></div>
+    <div className="messages"><ConversationEvents events={events} workspaceId={workspaceId}/>{stream&&<article className="message assistant"><div className="avatar">R</div><div className="message-body"><div className="message-label">Rust Harness <span className="stream-label">正在思考与执行</span></div>{stream.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{stream.reasoning}</pre></details>}<div className="prose"><Markdown content={stream.text||'正在处理…'}/><span className="cursor"/></div></div></article>}<div ref={end}/></div>
    </section>
    <footer className="composer-area"><form className="composer" onSubmit={submit}><textarea aria-label="消息" placeholder={sessionBusy?'正在准备会话…':sessionId?'描述任务，或继续你的想法…':workspaceId?'点击“新建会话”重试，开始协作':'打开工作区，开始协作'} value={text} onChange={e=>setText(e.target.value)} disabled={!sessionId||sessionBusy} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit()}}}/>{attachments.length>0&&<div className="permission-tags">{attachments.map(a=><span key={a.hash}>{a.name} <button type="button" aria-label={`移除附件 ${a.name}`} onClick={()=>setAttachments(old=>old.filter(item=>item.hash!==a.hash))}><X size={12}/></button></span>)}</div>}<div className="composer-bottom"><button type="button" aria-label="添加附件" disabled={!sessionId||sessionBusy||importing||!!running[sessionId]||attachments.length>=20} onClick={addAttachment}>{importing?'导入中…':'添加附件'}</button><div className="model-select"><span className="model-dot"/><select aria-label="当前模型" value={modelId} onChange={e=>setModelId(e.target.value)}><option value="" disabled>选择模型</option>{models.map(m=><option value={m.id} key={m.id}>{m.name}</option>)}</select></div><div className="send-controls"><span>Enter 发送 · Shift + Enter 换行</span>{running[sessionId]?<button type="button" className="send" aria-label="取消生成" onClick={cancel}><Square size={16}/></button>:<button className="send" type="submit" aria-label="发送消息" disabled={sessionBusy||importing||(!text.trim()&&!attachments.length)||!sessionId||!modelId}><ArrowUp size={19}/></button>}</div></div></form><div className="footer-note">原项目保持安全。模型生成的更改需要你确认后才会同步。</div></footer>
   </main>
@@ -112,10 +114,35 @@ export default function App(){
  </div>
 }
 const EMPTY_EVENTS:SessionEvent[]=[];
+function Markdown({content}:{content:string}){return <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>}
+function durationLabel(start?:SessionEvent,end?:SessionEvent){
+ const startAt=Date.parse(start?.createdAt??''),endAt=Date.parse(end?.createdAt??'');
+ if(!Number.isFinite(startAt)||!Number.isFinite(endAt)||endAt<startAt)return '本轮已完成';
+ const seconds=Math.floor((endAt-startAt)/1000),hours=Math.floor(seconds/3600),minutes=Math.floor(seconds%3600/60),remaining=seconds%60;
+ return `本轮已完成，用时${hours?`${hours}小时`:''}${hours||minutes?`${minutes}分`:''}${remaining}秒`;
+}
+function CompletedTurn({events,workspaceId}:{events:SessionEvent[];workspaceId?:string}){
+ const finalIndex=events.map(e=>e.kind).lastIndexOf('assistant.message');
+ const process=events.filter((event,index)=>index!==finalIndex&&!['turn.start','turn.end','user.message'].includes(event.kind));
+ const user=events.find(event=>event.kind==='user.message'),final=finalIndex>=0?events[finalIndex]:undefined;
+ const start=events.find(event=>event.kind==='turn.start'),end=events.at(-1);
+ return <>{user&&<EventCard event={user} workspaceId={workspaceId}/>} {process.length>0&&<details className="turn-details" open><summary>{durationLabel(start,end)}<ChevronDown size={14}/></summary>{process.map(event=><EventCard key={event.id} event={event} workspaceId={workspaceId}/>)}</details>} {final&&<EventCard event={final} workspaceId={workspaceId}/>}</>;
+}
+function ConversationEvents({events,workspaceId}:{events:SessionEvent[];workspaceId?:string}){
+ const cards:ReactNode[]=[];let start=-1;
+ for(let index=0;index<events.length;index++){
+  const event=events[index];
+  if(event.kind==='turn.start'){if(start>=0)cards.push(<Fragment key={`open-${events[start].id}`}>{events.slice(start,index).map(item=><EventCard key={item.id} event={item} workspaceId={workspaceId}/>)}</Fragment>);start=index;continue}
+  if(event.kind==='turn.end'&&start>=0){const turn=events.slice(start,index+1);cards.push(event.data.status==='completed'?<CompletedTurn key={event.id} events={turn} workspaceId={workspaceId}/>:<Fragment key={event.id}>{turn.map(item=><EventCard key={item.id} event={item} workspaceId={workspaceId}/>)}</Fragment>);start=-1;continue}
+  if(start<0)cards.push(<EventCard key={event.id} event={event} workspaceId={workspaceId}/>);
+ }
+ if(start>=0)cards.push(<Fragment key={`open-${events[start].id}`}>{events.slice(start).map(event=><EventCard key={event.id} event={event} workspaceId={workspaceId}/>)}</Fragment>);
+ return <>{cards}</>;
+}
 export function EventCard({event,workspaceId}:{event:SessionEvent;workspaceId?:string}) {
  const {kind,data}=event;
  if(kind==='user.message')return <article className="message user"><div className="avatar">你</div><div className="message-body"><div className="message-label">你</div><div className="prose">{printable(data.content)}</div>{Array.isArray(data.attachments)&&data.attachments.map((a,index)=><ArtifactDownload key={index} sessionId={event.sessionId} artifact={a as ArtifactMetadata}/>)}</div></article>;
- if(kind==='assistant.message'||kind==='assistant.attempt')return <article className="message assistant"><div className="avatar">R</div><div className="message-body"><div className="message-label">Rust Harness</div>{!!data.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{printable(data.reasoning)}</pre></details>}<div className="prose">{printable(data.content)}</div>{!!data.error&&<div className="inline-error">{printable(data.error)}</div>}</div></article>;
+ if(kind==='assistant.message'||kind==='assistant.attempt')return <article className="message assistant"><div className="avatar">R</div><div className="message-body"><div className="message-label">Rust Harness</div>{!!data.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{printable(data.reasoning)}</pre></details>}<div className="prose"><Markdown content={printable(data.content)}/></div>{!!data.error&&<div className="inline-error">{printable(data.error)}</div>}</div></article>;
  if(kind==='tool.call'||kind==='tool.result')return <details className="tool-card"><summary><Terminal size={15}/><strong>{printable(data.name)}</strong><span>{kind==='tool.call'?'工具调用':data.isError?'执行失败':'已完成'}</span></summary>{kind==='tool.result'&&String(data.name).startsWith('plugin__')?<PluginResultCards workspaceId={workspaceId} content={printable(data.content)}/>:<pre>{printable(data.arguments??data.content)}</pre>}{!!data.artifact&&<ArtifactDownload sessionId={event.sessionId} artifact={data.artifact as ArtifactMetadata}/>}</details>;
  if(kind==='plugin.command.result')return <article className="tool-card"><strong>{printable(data.name)}</strong><PluginResultCards workspaceId={workspaceId} content={printable(data.content)}/></article>;
  if(kind==='compaction.summary')return <details className="tool-card"><summary>上下文摘要</summary><pre>{printable(data.content)}</pre></details>;
