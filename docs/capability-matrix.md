@@ -19,7 +19,8 @@
 |NSIS安装包|0.1.4单包11.17MiB，使用系统已有WebView2|Windows 11 guest 中完成 0.1.2 安装、0.1.4 覆盖升级、默认卸载保留数据及显式清理三固定根；外部目标保留|
 |NSIS离线包|仅保留0.1.2及以前的历史产物，后续不再提供|后续仅构建系统已有WebView2的单一NSIS包（skip模式）|
 |发布签名与自动更新|Tauri插件接入，信任配置未启用|没有签名证书、更新公钥或发布端点，未发布|
-|PTY/SSH执行世界/LSP/搜索provider/Office预览|未实现|不能计为P2/P3完成|
+|LSP只读五件套（诊断/悬停/定义/引用/符号）|已实现并接线|mock server 11项与runtime流程6项测试；真实rust-analyzer经Windows沙箱冒烟通过（E0308诊断与hover到位），测试为`#[ignore]`仅显式运行，见[LSP计划](specs/lsp-plan.md)|
+|PTY/SSH执行世界/搜索provider/Office预览|未实现|不能计为P2/P3完成|
 |ACP/配置预设分层/脚本工作流/签名插件市场|未实现|不能计为P2/P3完成|
 
 数据目录为宿主独占，桌面打开时headless需使用独立数据目录，避免另一个进程执行恢复时破坏活动会话。WASM采用每次调用独立Store，activate→execute/hook→deactivate，KV成功后提交；不承诺长期驻留实例状态。

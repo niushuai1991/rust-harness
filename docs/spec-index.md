@@ -10,6 +10,7 @@
 | [双供应商、多协议接入计划](specs/multi-protocol-plan.md) | 2026-11-04（计划批准） | 已实现，六路真实连接及 Agent 工具链路已验证 | 固定供应商目录、三协议适配、配置迁移及桌面和 CLI 接入。 |
 | [P1 验收与缺口补齐](specs/p1-acceptance.md) | 2026-11-04（验收启动） | 已完成 | P1 验收范围、附件及插件缺口、安装清理和完成门槛。 |
 | [CLI 命令行 Agent 调用计划](specs/cli-plan.md) | 2026-11-05（计划拟制） | 已实施，真实模型端到端验证通过（2026-11-06）；chat 与 ask 交互抽查待用户 | `harness` 命令行 run/chat/diff/apply/models/sessions 能力，参考 codex CLI 设计。 |
+| [LSP 语言服务集成计划](specs/lsp-plan.md) | 2026-11-06（计划拟制） | 已实施，真实 rust-analyzer 沙箱冒烟通过 | P3 提前项：只读五件套 LSP 工具（诊断/悬停/定义/引用/符号），通用 server 配置，默认 rust-analyzer。 |
 
 ## 关系说明
 
