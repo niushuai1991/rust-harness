@@ -21,6 +21,7 @@ dunce.workspace = true
 reqwest.workspace = true
 dirs.workspace = true
 clap.workspace = true
+similar.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

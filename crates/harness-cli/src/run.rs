@@ -98,7 +98,7 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<i32> {
 
     let (workspace_id, session_id, reuse_warning) =
         resolve_target(&runtime, &args, &prompt).await?;
-    let model_id = resolve_model(&runtime, args.model.clone()).await?;
+    let model_id = crate::manage::resolve_model_id(&runtime, args.model.clone()).await?;
     let provider = runtime.models.build_model(&model_id).await?;
 
     let mut console = Console::new(args.json, &session_id, args.color);
@@ -383,30 +383,6 @@ async fn resolve_target(
         )
         .await?;
     Ok((workspace.id.clone(), session.id.clone(), warning))
-}
-
-async fn resolve_model(runtime: &Arc<Runtime>, explicit: Option<String>) -> AppResult<String> {
-    if let Some(id) = explicit {
-        return Ok(id);
-    }
-    if let Some(default) = runtime
-        .store
-        .get("cli.default_model")
-        .await?
-        .and_then(|value| value.as_str().map(str::to_owned))
-    {
-        return Ok(default);
-    }
-    let models = runtime.models.list_models().await?;
-    let listing = models
-        .iter()
-        .map(|model| model.id.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-    Err(AppError::new(
-        "MODEL_NOT_SELECTED",
-        format!("未选择模型：用 -m <id> 或 harness models default <id>；可用模型：{listing}"),
-    ))
 }
 
 fn canonical(path: &Path) -> AppResult<String> {
