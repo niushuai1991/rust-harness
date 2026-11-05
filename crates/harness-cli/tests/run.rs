@@ -251,3 +251,18 @@ async fn run_lists_models_when_none_selected() {
     assert!(stderr.contains("MODEL_NOT_SELECTED"), "stderr: {stderr}");
     assert!(stderr.contains("可用模型"), "stderr: {stderr}");
 }
+
+#[tokio::test]
+async fn chat_requires_tty() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = source_dir(dir.path());
+    let output = harness(&host_dir(&dir))
+        .args(["chat", "-C", source.to_str().unwrap()])
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("TTY"), "stderr: {stderr}");
+}

@@ -96,20 +96,64 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<i32> {
         return Err(AppError::new("INVALID_INPUT", "提示词不能为空"));
     }
 
-    let (workspace_id, session_id, reuse_warning) =
-        resolve_target(&runtime, &args, &prompt).await?;
+    let (workspace_id, session_id, reuse_warning) = resolve_session_target(
+        &runtime,
+        args.cwd.as_deref(),
+        args.workspace.as_deref(),
+        args.session.as_deref(),
+        &prompt,
+    )
+    .await?;
+    if let Some(warning) = &reuse_warning {
+        eprintln!("{warning}");
+    }
     let model_id = crate::manage::resolve_model_id(&runtime, args.model.clone()).await?;
     let provider = runtime.models.build_model(&model_id).await?;
+    turn_once(
+        runtime,
+        TurnContext {
+            session_id,
+            workspace_id,
+            provider,
+            policy,
+            json: args.json,
+            color: args.color,
+        },
+        &prompt,
+    )
+    .await
+}
 
-    let mut console = Console::new(args.json, &session_id, args.color);
-    if let Some(warning) = reuse_warning {
-        console.note(&warning).map_err(io_err)?;
-    }
+/// 单轮执行的会话与渲染参数。
+pub(crate) struct TurnContext {
+    pub session_id: String,
+    pub workspace_id: String,
+    pub provider: Arc<dyn harness_runtime::model::ModelProvider>,
+    pub policy: Approval,
+    pub json: bool,
+    pub color: ColorChoice,
+}
+
+/// 单轮执行内核：入队 → 事件泵 → 子代理收尾 → 终行 result。run 与 chat 共用。
+pub(crate) async fn turn_once(
+    runtime: Arc<Runtime>,
+    context: TurnContext,
+    prompt: &str,
+) -> AppResult<i32> {
+    let TurnContext {
+        session_id,
+        workspace_id,
+        provider,
+        policy,
+        json,
+        color,
+    } = context;
+    let mut console = Console::new(json, &session_id, color);
 
     // 订阅必须先于入队，避免丢失本消息的 inbox.queued/turn.start 事件
     let mut events = runtime.subscribe();
     let message_id = runtime
-        .enqueue_message(&session_id, prompt.clone(), vec![])
+        .enqueue_message(&session_id, prompt.to_owned(), vec![])
         .await?;
     let mut scope = RunScope::new(&session_id, &message_id);
     let mut task = tokio::spawn({
@@ -318,15 +362,17 @@ fn read_stdin_to_string() -> AppResult<String> {
 }
 
 /// 工作区与会话解析：--session 绑定校验；按 source_path 复用最新工作区；脏副本拒绝。
-async fn resolve_target(
+pub(crate) async fn resolve_session_target(
     runtime: &Arc<Runtime>,
-    args: &Args,
-    prompt: &str,
+    cwd: Option<&Path>,
+    workspace: Option<&str>,
+    session: Option<&str>,
+    title_prompt: &str,
 ) -> AppResult<(String, String, Option<String>)> {
-    if let Some(session_id) = &args.session {
+    if let Some(session_id) = session {
         let info = runtime.store.session(session_id).await?;
         let workspace = runtime.workspaces.get(&info.workspace_id)?;
-        if let Some(cwd) = &args.cwd {
+        if let Some(cwd) = cwd {
             let want = canonical(cwd)?;
             if !workspace.source_path.eq_ignore_ascii_case(&want) {
                 return Err(AppError::new(
@@ -338,16 +384,16 @@ async fn resolve_target(
                 ));
             }
         }
-        return Ok((workspace.id.clone(), session_id.clone(), None));
+        return Ok((workspace.id.clone(), session_id.to_owned(), None));
     }
-    let cwd = canonical(args.cwd.as_deref().unwrap_or(Path::new(".")))?;
+    let cwd = canonical(cwd.unwrap_or(Path::new(".")))?;
     let candidate = runtime
         .workspaces
         .list()?
         .into_iter()
         .rev()
         .find(|workspace| workspace.source_path.eq_ignore_ascii_case(&cwd));
-    let (workspace, warning) = match (&args.workspace, candidate) {
+    let (workspace, warning) = match (workspace, candidate) {
         (Some(id), _) => (
             runtime.workspaces.get(id)?,
             Some(format!(
@@ -370,7 +416,7 @@ async fn resolve_target(
         }
         (None, None) => (runtime.workspaces.create(Path::new(&cwd))?, None),
     };
-    let title: String = prompt.trim().chars().take(24).collect();
+    let title: String = title_prompt.trim().chars().take(24).collect();
     let session = runtime
         .store
         .create_session(
