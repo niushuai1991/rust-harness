@@ -20,8 +20,11 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 wasmtime = { version = "49.0.4", default-features = false, features = ["runtime", "cranelift", "component-model", "std", "parallel-compilation", "wat"] }
 wasmtime-wasi = { version = "49.0.4", default-features = false, features = ["p2"] }
 rmcp = { version = "3.8.0", features = ["client", "transport-io", "transport-streamable-http-client-reqwest"] }
+bytes.workspace = true
+futures.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 wat = "1"
+futures.workspace = true
 
