@@ -277,6 +277,31 @@ pub async fn mcp_resources(
     }
 }
 
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_status(
+    state: Backend<'_>,
+    workspace_id: Option<String>,
+) -> AppResult<Vec<LspStatusEntry>> {
+    let status = state.lsp_status().await;
+    Ok(match workspace_id {
+        Some(id) => status
+            .into_iter()
+            .filter(|e| e.workspace_id == id)
+            .collect(),
+        None => status,
+    })
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_restart(
+    state: Backend<'_>,
+    workspace_id: String,
+    server_id: String,
+) -> AppResult<()> {
+    state.lsp_restart(&workspace_id, &server_id).await
+}
+
 pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
     tauri_specta::Builder::new().commands(tauri_specta::collect_commands![
         workspace_list,
@@ -310,6 +335,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         mcp_connect,
         mcp_disconnect,
         mcp_resources,
+        lsp_status,
+        lsp_restart,
         crate::artifact_commands::artifact_import,
         crate::artifact_commands::artifact_read,
         crate::artifact_commands::artifact_save,

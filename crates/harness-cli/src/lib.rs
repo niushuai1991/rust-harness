@@ -213,6 +213,23 @@ pub async fn dispatch(runtime: Arc<Runtime>, method: &str, p: Value) -> AppResul
             runtime.disconnect_mcp(field(&p, "id")?).await?;
             Value::Null
         }
+        "lsp.status" => {
+            let all = runtime.lsp_status().await;
+            match p.get("workspaceId").and_then(Value::as_str) {
+                Some(workspace) => json!(
+                    all.into_iter()
+                        .filter(|e| e.workspace_id == workspace)
+                        .collect::<Vec<_>>()
+                ),
+                None => json!(all),
+            }
+        }
+        "lsp.restart" => {
+            runtime
+                .lsp_restart(field(&p, "workspaceId")?, field(&p, "serverId")?)
+                .await?;
+            Value::Null
+        }
         _ => return Err(AppError::new("METHOD_NOT_FOUND", method)),
     })
 }

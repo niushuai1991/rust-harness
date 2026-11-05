@@ -47,6 +47,7 @@ pub struct Runtime {
     pub plugins: Arc<PluginManager>,
     pub approvals: Approvals,
     pub mcp: harness_extensions::mcp::McpManager,
+    pub lsp: Arc<harness_extensions::lsp::LspManager>,
     mcp_scopes: Mutex<HashMap<String, String>>,
     events: broadcast::Sender<LiveEvent>,
     pub(crate) active: Mutex<HashMap<String, CancellationToken>>,
@@ -114,6 +115,7 @@ impl Runtime {
             plugins,
             approvals: Approvals::default(),
             mcp: harness_extensions::mcp::McpManager::new(),
+            lsp: Arc::new(harness_extensions::lsp::LspManager::new()),
             mcp_scopes: Mutex::new(HashMap::new()),
             events,
             active: Mutex::new(HashMap::new()),
@@ -235,6 +237,186 @@ impl Runtime {
         self.mcp.disconnect(id).await?;
         self.mcp_scopes.lock().unwrap().remove(id);
         Ok(())
+    }
+    /// Test and SDK seam: register an LSP connection whose pipes the caller created.
+    /// Production spawns the server via `ShellService::spawn_stdio` in `ensure_running`.
+    pub async fn connect_lsp_streams<R, W>(
+        &self,
+        workspace: &str,
+        config: &LspServerConfig,
+        read: R,
+        write: W,
+    ) -> AppResult<Arc<harness_extensions::lsp::LspConnection>>
+    where
+        R: tokio::io::AsyncRead + Unpin + Send + 'static,
+        W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        let info = self.workspaces.get(workspace)?;
+        let replica = PathBuf::from(&info.replica_path);
+        self.lsp
+            .connect(workspace, config, &replica, read, write)
+            .await
+    }
+    pub async fn lsp_status(&self) -> Vec<LspStatusEntry> {
+        self.lsp.status().await
+    }
+    /// Drop the server connection; the next LSP tool call respawns it from config.
+    pub async fn lsp_restart(&self, workspace: &str, server_id: &str) -> AppResult<()> {
+        self.lsp.disconnect(workspace, server_id).await
+    }
+    async fn lsp_servers(&self) -> AppResult<Vec<LspServerConfig>> {
+        match self.store.get("lsp.servers.v1").await? {
+            Some(value) => serde_json::from_value(value)
+                .map_err(|e| AppError::new("LSP_CONFIG", format!("lsp.servers.v1 配置无效：{e}"))),
+            None => Ok(LspServerConfig::default_servers()),
+        }
+    }
+    async fn ensure_running(
+        &self,
+        workspace: &str,
+        server: &LspServerConfig,
+    ) -> AppResult<Arc<harness_extensions::lsp::LspConnection>> {
+        if let Some(existing) = self.lsp.connection(workspace, &server.id).await {
+            return Ok(existing);
+        }
+        let info = self.workspaces.get(workspace)?;
+        let replica = PathBuf::from(&info.replica_path);
+        let child = ShellService::spawn_stdio(
+            &replica,
+            &server.command,
+            &server.args,
+            CancellationToken::new(),
+        )
+        .await
+        .map_err(|e| {
+            AppError::new(
+                e.code.clone(),
+                format!("{e}；可通过 settings 键 lsp.servers.v1 配置语言服务器"),
+            )
+        })?;
+        let (read, write) = tokio::io::split(child);
+        self.lsp
+            .connect(workspace, server, &replica, read, write)
+            .await
+            .map_err(|e| {
+                AppError::new(
+                    e.code.clone(),
+                    format!("{e}；可通过 settings 键 lsp.servers.v1 调整配置"),
+                )
+            })
+    }
+    /// Resolve the configured server for a file extension, ensure it runs, and sync the file.
+    async fn ensure_lsp(
+        &self,
+        workspace: &str,
+        root: &Path,
+        servers: &[LspServerConfig],
+        path: &str,
+    ) -> AppResult<(Arc<harness_extensions::lsp::LspConnection>, String)> {
+        let extension = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+        let server = servers
+            .iter()
+            .find(|s| {
+                s.extensions
+                    .iter()
+                    .any(|e| e.eq_ignore_ascii_case(&extension))
+            })
+            .ok_or_else(|| {
+                AppError::new(
+                    "LSP_NO_SERVER",
+                    format!(
+                        "未配置处理 .{extension} 的语言服务器；可在 settings 键 lsp.servers.v1 配置"
+                    ),
+                )
+            })?;
+        let connection = self.ensure_running(workspace, server).await?;
+        let text = harness_platform::read_file(root, path)?;
+        let uri = harness_extensions::lsp::file_uri(root, path)?;
+        connection
+            .sync_document(
+                &uri,
+                harness_extensions::lsp::language_for_extension(&extension),
+                &text,
+            )
+            .await?;
+        Ok((connection, uri))
+    }
+    async fn execute_lsp_tool(
+        &self,
+        name: &str,
+        workspace: &str,
+        root: &Path,
+        a: &Value,
+        cancel: CancellationToken,
+    ) -> AppResult<String> {
+        let servers = self.lsp_servers().await?;
+        match name {
+            "lsp_diagnostics" => {
+                let Some(path) = a["path"].as_str() else {
+                    let mut all = Vec::new();
+                    for server in &servers {
+                        if let Some(connection) = self.lsp.connection(workspace, &server.id).await {
+                            let value = connection.diagnostics(None).await;
+                            if let Some(list) = value.as_array() {
+                                all.extend(list.iter().cloned());
+                            }
+                        }
+                    }
+                    return serde_json::to_string(&Value::Array(all)).map_err(internal);
+                };
+                let (connection, uri) = self.ensure_lsp(workspace, root, &servers, path).await?;
+                if a["wait"].as_bool().unwrap_or(false) {
+                    connection
+                        .wait_diagnostics(&uri, LSP_DIAGNOSTICS_IDLE, LSP_DIAGNOSTICS_CAP, &cancel)
+                        .await?;
+                }
+                serde_json::to_string(&connection.diagnostics(Some(&uri)).await).map_err(internal)
+            }
+            "lsp_hover" | "lsp_definition" | "lsp_references" => {
+                let path = arg(a, "path")?;
+                let (connection, uri) = self.ensure_lsp(workspace, root, &servers, path).await?;
+                let mut params = json!({
+                    "textDocument": {"uri": uri},
+                    "position": {"line": lsp_position(a, "line")?, "character": lsp_position(a, "character")?}
+                });
+                let method = match name {
+                    "lsp_hover" => "textDocument/hover",
+                    "lsp_definition" => "textDocument/definition",
+                    _ => {
+                        params["context"] = json!({"includeDeclaration": a["includeDeclaration"].as_bool().unwrap_or(true)});
+                        "textDocument/references"
+                    }
+                };
+                lsp_text(connection.request(method, params, &cancel).await?)
+            }
+            "lsp_symbols" => {
+                if let Some(path) = a["path"].as_str() {
+                    let (connection, uri) =
+                        self.ensure_lsp(workspace, root, &servers, path).await?;
+                    lsp_text(
+                        connection
+                            .request(
+                                "textDocument/documentSymbol",
+                                json!({"textDocument": {"uri": uri}}),
+                                &cancel,
+                            )
+                            .await?,
+                    )
+                } else {
+                    let query = arg(a, "query")?;
+                    let server = servers
+                        .first()
+                        .ok_or_else(|| AppError::new("LSP_NO_SERVER", "未配置任何语言服务器"))?;
+                    let connection = self.ensure_running(workspace, server).await?;
+                    lsp_text(
+                        connection
+                            .request("workspace/symbol", json!({"query": query}), &cancel)
+                            .await?,
+                    )
+                }
+            }
+            _ => Err(AppError::new("TOOL_UNAVAILABLE", name)),
+        }
     }
     pub fn mcp_connections(&self) -> Vec<Value> {
         self.mcp_scopes
@@ -888,6 +1070,14 @@ impl Runtime {
             name if name.starts_with("mcp__") => {
                 return self.mcp.execute_tool(name, a.clone(), cancel).await;
             }
+            name if name.starts_with("lsp_") => {
+                return Ok(ToolResult {
+                    content: self
+                        .execute_lsp_tool(name, workspace, root, a, cancel)
+                        .await?,
+                    is_error: false,
+                });
+            }
             _ => {
                 let tool = self
                     .custom
@@ -942,6 +1132,24 @@ fn arg<'a>(v: &'a Value, key: &str) -> AppResult<&'a str> {
         .and_then(Value::as_str)
         .ok_or_else(|| AppError::new("TOOL_ARGUMENTS", format!("缺少字符串字段 {key}")))
 }
+/// Diagnostics quiet window after the latest push or sync; hard cap for push storms.
+const LSP_DIAGNOSTICS_IDLE: std::time::Duration = std::time::Duration::from_secs(3);
+const LSP_DIAGNOSTICS_CAP: std::time::Duration = std::time::Duration::from_secs(120);
+/// Model-facing positions are 1-based; LSP is 0-based. Zero passes through unchanged.
+fn lsp_position(v: &Value, key: &str) -> AppResult<u32> {
+    let value = v[key]
+        .as_u64()
+        .ok_or_else(|| AppError::new("TOOL_ARGUMENTS", format!("缺少数值字段 {key}")))?;
+    u32::try_from(value.saturating_sub(1))
+        .map_err(|_| AppError::new("TOOL_ARGUMENTS", format!("无效 {key}")))
+}
+fn lsp_text(result: Value) -> AppResult<String> {
+    if result.is_null() {
+        Ok("无结果".into())
+    } else {
+        serde_json::to_string(&result).map_err(internal)
+    }
+}
 fn internal(e: impl std::fmt::Display) -> AppError {
     AppError::new("RUNTIME", e.to_string())
 }
@@ -952,6 +1160,11 @@ fn requires_approval(name: &str) -> bool {
             | "read_artifact"
             | "list_files"
             | "search"
+            | "lsp_diagnostics"
+            | "lsp_hover"
+            | "lsp_definition"
+            | "lsp_references"
+            | "lsp_symbols"
             | "todo_write"
             | "plan_write"
             | "goal_write"
@@ -1104,6 +1317,36 @@ pub fn builtin_tools() -> Vec<ToolDefinition> {
             "中断当前会话创建的子代理",
             json!({"sessionId":s}),
             &["sessionId"],
+        ),
+        def(
+            "lsp_diagnostics",
+            "查询语言服务器诊断；path缺省返回全工作区缓存，wait=true时等待诊断推送并静默约3秒（冷启动首次分析可能无结果，可稍后重试）",
+            json!({"path":s,"wait":{"type":"boolean"}}),
+            &[],
+        ),
+        def(
+            "lsp_hover",
+            "查询语言服务器悬停信息（类型签名与文档）；line/character为1-based",
+            json!({"path":s,"line":{"type":"integer","minimum":1},"character":{"type":"integer","minimum":1}}),
+            &["path", "line", "character"],
+        ),
+        def(
+            "lsp_definition",
+            "查询符号定义位置；line/character为1-based",
+            json!({"path":s,"line":{"type":"integer","minimum":1},"character":{"type":"integer","minimum":1}}),
+            &["path", "line", "character"],
+        ),
+        def(
+            "lsp_references",
+            "查找符号全部引用；line/character为1-based",
+            json!({"path":s,"line":{"type":"integer","minimum":1},"character":{"type":"integer","minimum":1},"includeDeclaration":{"type":"boolean"}}),
+            &["path", "line", "character"],
+        ),
+        def(
+            "lsp_symbols",
+            "文档符号（给path）或工作区符号搜索（给query，按首个已配置语言服务器执行）",
+            json!({"path":s,"query":s}),
+            &[],
         ),
     ]
 }
