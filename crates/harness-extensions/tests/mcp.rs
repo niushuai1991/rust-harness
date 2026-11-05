@@ -28,7 +28,10 @@ impl ServerHandler for Fixture {
             )
             .unwrap(),
         ];
-        Ok(ListToolsResult { tools, ..Default::default() })
+        Ok(ListToolsResult {
+            tools,
+            ..Default::default()
+        })
     }
     async fn call_tool(
         &self,
