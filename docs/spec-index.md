@@ -9,7 +9,7 @@
 | [总体实施计划](specs/implementation-plan.md) | 2026-11-03（设计确认） | 实施中，部分阶段尚未完成 | 全局架构、模块职责、交付阶段与验收要求。 |
 | [双供应商、多协议接入计划](specs/multi-protocol-plan.md) | 2026-11-04（计划批准） | 已实现，六路真实连接及 Agent 工具链路已验证 | 固定供应商目录、三协议适配、配置迁移及桌面和 CLI 接入。 |
 | [P1 验收与缺口补齐](specs/p1-acceptance.md) | 2026-11-04（验收启动） | 已完成 | P1 验收范围、附件及插件缺口、安装清理和完成门槛。 |
-| [CLI 命令行 Agent 调用计划](specs/cli-plan.md) | 2026-11-05（计划拟制） | 已实施，自动化验证通过；真实模型端到端待人工验证 | `harness` 命令行 run/chat/diff/apply/models/sessions 能力，参考 codex CLI 设计。 |
+| [CLI 命令行 Agent 调用计划](specs/cli-plan.md) | 2026-11-05（计划拟制） | 已实施，真实模型端到端验证通过（2026-11-06）；chat 与 ask 交互抽查待用户 | `harness` 命令行 run/chat/diff/apply/models/sessions 能力，参考 codex CLI 设计。 |
 
 ## 关系说明
 
