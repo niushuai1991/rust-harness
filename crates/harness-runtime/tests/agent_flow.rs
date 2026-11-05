@@ -305,17 +305,18 @@ async fn attachments_enter_model_history_and_spilled_output_is_readable_after_re
         )
         .await
         .unwrap();
-    let requests = provider.requests.lock().unwrap();
-    let history = serde_json::to_string(&requests[0]).unwrap();
-    assert!(history.contains(&meta.hash));
-    assert!(history.contains("private-host-path.txt"));
-    assert!(!history.contains(&private.to_string_lossy().replace('\\', "\\\\")));
-    assert!(
-        requests[1]
-            .iter()
-            .any(|m| m.role == MessageRole::Tool && m.content.contains("附件说明"))
-    );
-    drop(requests);
+    {
+        let requests = provider.requests.lock().unwrap();
+        let history = serde_json::to_string(&requests[0]).unwrap();
+        assert!(history.contains(&meta.hash));
+        assert!(history.contains("private-host-path.txt"));
+        assert!(!history.contains(&private.to_string_lossy().replace('\\', "\\\\")));
+        assert!(
+            requests[1]
+                .iter()
+                .any(|m| m.role == MessageRole::Tool && m.content.contains("附件说明"))
+        );
+    }
     let events = runtime.store.events(&s.id, 0).await.unwrap();
     let artifact = events
         .iter()

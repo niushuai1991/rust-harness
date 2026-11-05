@@ -2,9 +2,9 @@
 
 拟制日期：2026-11-05。
 
-状态：计划待批准，未开始实施。
+状态：已实施（2026-11-05，实施记录见文末）。
 
-依据：用户要求参考 OpenAI Codex CLI（本地仓库 `D:\code\codex`）为本项目提供命令行 Agent 调用能力；经对现有 `harness-cli`、`harness-runtime` 与 codex CLI 架构调研后拟制本计划，待人工批准后按 TDD 实施。2026-11-05 依据两轮审查意见修订，见文末[修订记录](#修订记录)。
+依据：用户要求参考 OpenAI Codex CLI（本地仓库 `D:\code\codex`）为本项目提供命令行 Agent 调用能力；经对现有 `harness-cli`、`harness-runtime` 与 codex CLI 架构调研后拟制本计划，按 TDD 实施。2026-11-05 依据两轮审查意见修订，见文末[修订记录](#修订记录)。
 
 ## 背景与目标
 
@@ -220,6 +220,31 @@ crates/harness-cli/
 - 数据目录被桌面端占用时 CLI 无法启动（既有 `host.lock` 独占设计），计划不改变该约束。
 - `--json` 输出格式为 CLI 内部契约（终行 schema 已定义），SDK 消费方如需稳定契约需另行登记。
 - diff 渲染引入 `similar` 新依赖，仅限 `harness-cli` crate。
+
+## 实施记录（2026-11-05）
+
+分支 `feat/cli-agent-run`，按 TDD 分六步提交：
+
+| 提交 | 内容 |
+|---|---|
+| 877bbd7 | runtime 消息入队与执行拆分（`enqueue_message`/`execute_message`/`cancel_message`），回合事件携带 `messageId`；`agent_flow.rs` 预置 clippy 告警一并修复 |
+| 961cd1c | `harness` 入口重构为 clap 子命令（rpc/call/run/chat/sessions/diff/apply/models），rpc 与 call 行为不变 |
+| 8e9bc49 | `run` 一次性执行：messageId 认领作用域、子代理作用域集合、human/json 双渲染器、审批策略与 TTY 缺省规则、stdin 矩阵、脏副本拒绝、Ctrl+C 两段取消、退出码 0\|1\|130 |
+| 16099b7 | `diff`/`apply`（kind 语义、1MiB 阈值、unified diff、冲突排除、y/n/a/q 交互）与 `sessions`/`models`（含 `cli.default_model` 校验与清除） |
+| 62c075e | `chat` REPL：单轮内核 `turn_once` 复用、斜杠命令、单一 stdin 串行、非 TTY 报错 |
+| 44c134a | `mcp.rs` 测试预置 clippy 告警修复（main 上即存在） |
+
+测试覆盖（计划"测试计划"全部场景）：
+
+- runtime 38 项（新增 `message_scoping.rs` 3 项：入队返回标识与回合携带 messageId、取消跳过且不调模型、取消只影响目标消息）。
+- harness-cli 31 项：lib 单元 22 项（scope 认领/子代理/取消、console 去重/缺口/JSONL 契约/子代理前缀、approval TTY 规则、diffview added/deleted/二进制/阈值/截断/冲突排除/y-n-a-q/颜色、chat 斜杠命令、manage 默认模型校验）+ 子进程集成 9 项（SSE mock 驱动 JSONL 契约与终行、管道提示词、审批缺省报错、ask 需 TTY、模型未选择报错、call 冒烟、rpc 回归、chat 非 TTY）。
+- 前端 35 项（worktree 需先 `npm ci`，根目录 node_modules 缺 react-markdown 属环境未同步）。
+
+验证结果：`cargo fmt --check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test --all-features`（默认成员 84 项）、`cargo build --all-features`、`npm test` 全部通过。
+
+与计划的偏差：无结构性偏差；run/chat 的复用警告在 execute 中直接输出 stderr（不进入渲染器）；`models list` 的 `ApiMode` 以 JSON 字符串展示（无 Display 实现）。
+
+待人工验证：真实模型端到端（`run` 流式与 diff 提示、管道 `--json --approval auto`、`diff`/`apply` 闭环、`chat` 交互、子代理与排队回合任务抽查、桌面端 `host.lock` 互斥提示），见计划"验证方式"。
 
 ## 修订记录
 

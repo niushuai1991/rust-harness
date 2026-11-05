@@ -22,14 +22,13 @@ impl ServerHandler for Fixture {
         _: Option<PaginatedRequestParams>,
         _: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, rmcp::ErrorData> {
-        let mut list = ListToolsResult::default();
-        list.tools = vec![
+        let tools = vec![
             serde_json::from_value(
                 json!({"name":"echo","description":"fixture","inputSchema":{"type":"object"}}),
             )
             .unwrap(),
         ];
-        Ok(list)
+        Ok(ListToolsResult { tools, ..Default::default() })
     }
     async fn call_tool(
         &self,

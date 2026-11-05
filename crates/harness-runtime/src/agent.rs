@@ -6,7 +6,7 @@ use harness_platform::{ShellService, WorkspaceManager};
 use harness_storage::Store;
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -51,6 +51,7 @@ pub struct Runtime {
     events: broadcast::Sender<LiveEvent>,
     pub(crate) active: Mutex<HashMap<String, CancellationToken>>,
     queues: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    cancelled_messages: Mutex<HashSet<(String, String)>>,
     children: Mutex<HashMap<String, Vec<String>>>,
     custom: crate::registry::Tools,
     _host_lock: std::fs::File,
@@ -117,6 +118,7 @@ impl Runtime {
             events,
             active: Mutex::new(HashMap::new()),
             queues: Mutex::new(HashMap::new()),
+            cancelled_messages: Mutex::new(HashSet::new()),
             children: Mutex::new(children),
             custom: Arc::new(Mutex::new(Default::default())),
             _host_lock: host_lock,
@@ -265,84 +267,140 @@ impl Runtime {
         attachments: Vec<String>,
     ) -> futures::future::BoxFuture<'static, AppResult<()>> {
         Box::pin(async move {
-            if (text.trim().is_empty() && attachments.is_empty())
-                || text.len() > 1024 * 1024
-                || attachments.len() > 20
-            {
-                return Err(AppError::new("INVALID_INPUT", "消息不能为空或超过1MiB"));
+            let message_id = self.enqueue_message(&session_id, text, attachments).await?;
+            self.execute_message(session_id, message_id, provider).await
+        })
+    }
+    /// 校验输入并落 `inbox.queued`，立即返回消息标识；回合执行经 [`Self::execute_message`]。
+    pub async fn enqueue_message(
+        self: &Arc<Self>,
+        session_id: &str,
+        text: String,
+        attachments: Vec<String>,
+    ) -> AppResult<String> {
+        if (text.trim().is_empty() && attachments.is_empty())
+            || text.len() > 1024 * 1024
+            || attachments.len() > 20
+        {
+            return Err(AppError::new("INVALID_INPUT", "消息不能为空或超过1MiB"));
+        }
+        self.store.session(session_id).await?;
+        let mut attached = Vec::new();
+        for hash in attachments {
+            let metadata = self.artifact_metadata(session_id, &hash).await?;
+            self.store.blob(&hash).await?;
+            if !attached.iter().any(|a: &ArtifactMetadata| a.hash == hash) {
+                attached.push(metadata);
             }
-            let session = self.store.session(&session_id).await?;
-            let mut attached = Vec::new();
-            for hash in attachments {
-                let metadata = self.artifact_metadata(&session_id, &hash).await?;
-                self.store.blob(&hash).await?;
-                if !attached.iter().any(|a: &ArtifactMetadata| a.hash == hash) {
-                    attached.push(metadata);
-                }
-            }
-            let queue = self
-                .queues
-                .lock()
-                .unwrap()
-                .entry(session_id.clone())
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-                .clone();
-            let message_id = new_id();
+        }
+        let message_id = new_id();
+        self.append(
+            session_id,
+            "inbox.queued",
+            json!({"id":message_id,"content":text,"attachments":attached}),
+        )
+        .await?;
+        Ok(message_id)
+    }
+    /// 标记排队中的消息取消；`execute_message` 获得队列锁后结算为 `inbox.cancelled`。
+    pub fn cancel_message(&self, session: &str, message_id: &str) {
+        self.cancelled_messages
+            .lock()
+            .unwrap()
+            .insert((session.to_owned(), message_id.to_owned()));
+    }
+    /// 执行已入队的消息；回合事件携带 `messageId`，排队时取消的消息不产生回合事件、不调用模型。
+    pub async fn execute_message(
+        self: Arc<Self>,
+        session_id: String,
+        message_id: String,
+        provider: Arc<dyn ModelProvider>,
+    ) -> AppResult<()> {
+        let session = self.store.session(&session_id).await?;
+        let queued = self
+            .store
+            .events(&session_id, 0)
+            .await?
+            .into_iter()
+            .find(|e| {
+                e.kind == "inbox.queued" && e.data["id"].as_str() == Some(message_id.as_str())
+            })
+            .ok_or_else(|| AppError::new("INVALID_MESSAGE", "消息不存在或已结算"))?;
+        let queue = self
+            .queues
+            .lock()
+            .unwrap()
+            .entry(session_id.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let _serial = queue.lock().await;
+        if self
+            .cancelled_messages
+            .lock()
+            .unwrap()
+            .remove(&(session_id.clone(), message_id.clone()))
+        {
+            self.append(&session_id, "inbox.cancelled", json!({"id":message_id}))
+                .await?;
+            return Err(AppError::new("CANCELLED", "消息已在排队时取消"));
+        }
+        let lease = self.workspaces.acquire(&session.workspace_id)?;
+        let cancel = CancellationToken::new();
+        self.active
+            .lock()
+            .unwrap()
+            .insert(session_id.clone(), cancel.clone());
+        let run_id = new_id();
+        let result = async {
             self.append(
                 &session_id,
-                "inbox.queued",
-                json!({"id":message_id,"content":text,"attachments":attached}),
+                "turn.start",
+                json!({"runId":run_id,"messageId":message_id}),
             )
             .await?;
-            let _serial = queue.lock().await;
-            let lease = self.workspaces.acquire(&session.workspace_id)?;
-            let cancel = CancellationToken::new();
-            self.active
-                .lock()
-                .unwrap()
-                .insert(session_id.clone(), cancel.clone());
-            let run_id = new_id();
-            let result = async {
-                self.append(&session_id, "turn.start", json!({"runId":run_id}))
-                    .await?;
-                self.append(&session_id, "inbox.claimed", json!({"id":message_id}))
-                    .await?;
-                self.append(
-                    &session_id,
-                    "user.message",
-                    json!({"content":text,"attachments":attached}),
-                )
+            self.append(&session_id, "inbox.claimed", json!({"id":message_id}))
                 .await?;
-                self.steps(
-                    &session_id,
-                    &session.workspace_id,
-                    Path::new(&lease.info.replica_path),
-                    provider,
-                    cancel.clone(),
-                )
-                .await
-            }
+            let text = queued.data["content"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            let attached: Vec<ArtifactMetadata> =
+                serde_json::from_value(queued.data["attachments"].clone()).map_err(internal)?;
+            self.append(
+                &session_id,
+                "user.message",
+                json!({"content":text,"attachments":attached}),
+            )
+            .await?;
+            self.steps(
+                &session_id,
+                &session.workspace_id,
+                Path::new(&lease.info.replica_path),
+                provider,
+                cancel.clone(),
+            )
+            .await
+        }
+        .await;
+        self.active.lock().unwrap().remove(&session_id);
+        let status = match &result {
+            Ok(()) => "completed",
+            Err(e) if e.code == "CANCELLED" => "cancelled",
+            Err(_) => "error",
+        };
+        let ending = self
+            .append(
+                &session_id,
+                "turn.end",
+                json!({"runId":run_id,"messageId":message_id,"status":status,"error":result.as_ref().err()}),
+            )
             .await;
-            self.active.lock().unwrap().remove(&session_id);
-            let status = match &result {
-                Ok(()) => "completed",
-                Err(e) if e.code == "CANCELLED" => "cancelled",
-                Err(_) => "error",
-            };
-            let ending = self
-                .append(
-                    &session_id,
-                    "turn.end",
-                    json!({"runId":run_id,"status":status,"error":result.as_ref().err()}),
-                )
-                .await;
-            let _ = self.events.send(LiveEvent::Status {
-                session_id: session_id.clone(),
-                status: status.into(),
-            });
-            ending?;
-            result
-        })
+        let _ = self.events.send(LiveEvent::Status {
+            session_id: session_id.clone(),
+            status: status.into(),
+        });
+        ending?;
+        result
     }
     async fn steps(
         self: &Arc<Self>,
