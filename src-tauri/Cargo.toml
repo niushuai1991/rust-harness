@@ -29,6 +29,7 @@ harness-runtime.workspace = true
 harness-platform.workspace = true
 harness-extensions.workspace = true
 harness-orchestration.workspace = true
+harness-browser.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 reqwest.workspace = true
