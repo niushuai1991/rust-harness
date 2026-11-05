@@ -2,7 +2,7 @@
 
 拟制日期：2026-11-05。
 
-状态：已实施（2026-11-05，实施记录见文末）。
+状态：已实施并完成真实模型端到端验证（2026-11-05 实施，2026-11-06 端到端验证，记录见文末）。
 
 依据：用户要求参考 OpenAI Codex CLI（本地仓库 `D:\code\codex`）为本项目提供命令行 Agent 调用能力；经对现有 `harness-cli`、`harness-runtime` 与 codex CLI 架构调研后拟制本计划，按 TDD 实施。2026-11-05 依据两轮审查意见修订，见文末[修订记录](#修订记录)。
 
@@ -244,7 +244,24 @@ crates/harness-cli/
 
 与计划的偏差：无结构性偏差；run/chat 的复用警告在 execute 中直接输出 stderr（不进入渲染器）；`models list` 的 `ApiMode` 以 JSON 字符串展示（无 Display 实现）。
 
-待人工验证：真实模型端到端（`run` 流式与 diff 提示、管道 `--json --approval auto`、`diff`/`apply` 闭环、`chat` 交互、子代理与排队回合任务抽查、桌面端 `host.lock` 互斥提示），见计划"验证方式"。
+### 端到端验证记录（2026-11-06）
+
+验证环境：真实模型 bigmodel glm-5.3-flash（`models test` 连接成功）；独立数据目录（SQLite backup API 对桌面端数据目录做只读一致性快照，凭据经 Windows 凭据管理器全局命名空间 `provider/bigmodel` 复用，无需重配）；桌面端运行中，CLI 经 `--data-dir` 与桌面端并存验证。
+
+| 验证点 | 结果 | 证据 |
+|---|---|---|
+| host.lock 互斥 | 通过 | 桌面端运行时启动 CLI 报 `HOST_RUNNING: 此数据目录已由另一个宿主使用；请关闭现有实例或指定独立数据目录`，退出码 1；CLI↔CLI 并发同样互斥（后台 `run` 运行中第二个 CLI 进程同样被拒），单宿主约束生效 |
+| run 流式与 diff 提示 | 通过 | 正文 stdout、推理与工具摘要 stderr 分流正确；退出码 0；无改动时提示"副本改动 0 个文件"，有改动时 stderr 提示 `审阅同步：harness diff <id> → harness apply <id>` |
+| 脏副本拒绝 | 通过 | 副本存在未应用改动时启动报 `WORKSPACE_DIRTY`，列出改动数与 diff/apply、显式复用两种处理方式 |
+| 管道 + JSONL 契约 | 通过 | stdin 管道提示词 + `--json --approval auto`：stdout 121 行全部可独立解析（event 14 / delta 106 / result 1），终行 `result` 字段完整、`status=completed`、`changedFiles=1`；事件链 `inbox.queued → turn.start → inbox.claimed → user.message → 审批 → tool → turn.end` 完整；缺显式 `--approval` 报 `APPROVAL_REQUIRED`；原项目保持为空，隔离生效 |
+| diff/apply 闭环 | 通过 | `diff` 渲染 modified/added 语义正确（added 全部为新增行）；`apply --all` 应用 2 项改动；交互路径（逐文件 y 确认）应用 1 项；apply 后 `diff` 报"无改动"；原项目文件内容逐一核对与副本一致 |
+| chat | 自动化部分通过 | 非 TTY 启动报 `TTY: chat 需要交互式终端`，退出码 1 |
+| 子代理 | 通过 | `agent_spawn` 派生子代理，子代理输出带 `[子代理 <id 前缀>]` 前缀，父会话 `agent_wait` 等待收尾后正常结束，退出码 0，总结正确转述 |
+| 排队回合归属 | 以单测覆盖为准 | host.lock 单宿主约束下两个 CLI 进程无法并发，端到端构造不可行；排队回合的 messageId 认领与取消由 runtime `message_scoping` 3 项与 CLI `scope` 单测覆盖 |
+
+验证中发现并修复缺陷：`run --json` 终行 `result` 的 `runId` 恒为 `null`（turn.end 结算后 `claimed_run_id()` 恒返回 `None`，事件流中 runId 存在）；已按 TDD 修复（PR #8），复证终行 runId 与事件流一致。
+
+待用户交互终端抽查：`chat` 交互对话与斜杠命令（/model /sessions /diff /apply /approval /quit）、`ask` 审批 y/n 交互（依赖 TTY，无法自动化）。
 
 ## 修订记录
 
