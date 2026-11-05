@@ -9,12 +9,12 @@
 | [总体实施计划](specs/implementation-plan.md) | 2026-11-03（设计确认） | 实施中，部分阶段尚未完成 | 全局架构、模块职责、交付阶段与验收要求。 |
 | [双供应商、多协议接入计划](specs/multi-protocol-plan.md) | 2026-11-04（计划批准） | 已实现，六路真实连接及 Agent 工具链路已验证 | 固定供应商目录、三协议适配、配置迁移及桌面和 CLI 接入。 |
 | [P1 验收与缺口补齐](specs/p1-acceptance.md) | 2026-11-04（验收启动） | 已完成 | P1 验收范围、附件及插件缺口、安装清理和完成门槛。 |
-| [CLI 命令行 Agent 调用计划](specs/cli-plan.md) | 2026-11-05（计划拟制） | 计划待批准，未开始实施 | `harness` 命令行 run/chat/diff/apply/models/sessions 能力，参考 codex CLI 设计。 |
+| [CLI 命令行 Agent 调用计划](specs/cli-plan.md) | 2026-11-05（计划拟制） | 已实施，自动化验证通过；真实模型端到端待人工验证 | `harness` 命令行 run/chat/diff/apply/models/sessions 能力，参考 codex CLI 设计。 |
 
 ## 关系说明
 
 - 总体计划描述全局架构与阶段目标，多协议专项计划补充模型接入约定；两者共同作为维护依据。
-- CLI 命令行调用计划为宿主接口专项计划，实施前不改变现有桌面端与 JSON-RPC 约定。
+- CLI 命令行调用计划为宿主接口专项计划，实施后桌面端与 JSON-RPC 约定保持不变。
 - 当前完成情况以 [能力状态矩阵](capability-matrix.md) 为准，具体执行与验证证据见 [执行进度](progress.md) 和 [交付记录](delivery.md)。
 - 后续发布仅构建使用系统已有 WebView2 的单一 NSIS 包；专项计划中的双安装包与测试数量仅对应 0.1.2 当次交付。
 
