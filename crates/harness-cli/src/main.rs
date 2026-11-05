@@ -23,6 +23,12 @@ struct Cli {
 enum Commands {
     /// stdio JSON-RPC 长连接宿主（推送 session.event）
     Rpc,
+    /// ACP（Agent Client Protocol）v1 agent 端，供编辑器客户端经 stdio 接入
+    Acp {
+        /// 模型 ID（缺省用 cli.default_model）
+        #[arg(long)]
+        model: Option<String>,
+    },
     /// 单次 JSON-RPC 调用并打印结果
     Call {
         /// 方法名，如 workspace.list
@@ -71,6 +77,9 @@ async fn run() -> AppResult<()> {
     let _owner = harness_orchestration::install(runtime.clone())?;
     match cli.command {
         Commands::Rpc => harness_cli::serve(runtime).await,
+        Commands::Acp { model } => {
+            harness_cli::acp::serve(runtime, harness_cli::acp::AcpOptions { model }).await
+        }
         Commands::Call { method, params } => {
             let parsed: serde_json::Value =
                 serde_json::from_str(&params).map_err(|e| AppError::new("JSON", e.to_string()))?;

@@ -8,8 +8,11 @@ pub enum Phase {
     Pending,
     /// 已认领，等待同 messageId 的 turn.end
     Open { run_id: String },
-    /// 本回合已结算
-    Closed { status: String },
+    /// 本回合已结算（runId 保留供 result 终行取用；排队取消时为 None）
+    Closed {
+        status: String,
+        run_id: Option<String>,
+    },
 }
 
 /// 作用域对一条 Durable 事件的裁决。
@@ -59,11 +62,12 @@ impl RunScope {
         &self.session_id
     }
 
-    /// 本回合被认领的 runId（turn.start 后可用）。
+    /// 本回合被认领的 runId（turn.start 后可用，结算后保留）。
     pub fn claimed_run_id(&self) -> Option<&str> {
         match &self.phase {
             Phase::Open { run_id } => Some(run_id),
-            _ => None,
+            Phase::Closed { run_id, .. } => run_id.as_deref(),
+            Phase::Pending => None,
         }
     }
 
@@ -88,8 +92,13 @@ impl RunScope {
             if event.kind == "inbox.cancelled"
                 && event.data["id"].as_str() == Some(self.message_id.as_str())
             {
+                let run_id = match &self.phase {
+                    Phase::Open { run_id } => Some(run_id.clone()),
+                    _ => None,
+                };
                 self.phase = Phase::Closed {
                     status: "cancelled".into(),
+                    run_id,
                 };
                 return Verdict::Cancelled;
             }
@@ -106,11 +115,18 @@ impl RunScope {
                 && event.data["messageId"].as_str() == Some(self.message_id.as_str())
             {
                 let status = event.data["status"].as_str().unwrap_or("error").to_owned();
-                if let Phase::Open { run_id } = &self.phase
-                    && event.data["runId"].as_str() == Some(run_id.as_str())
-                {
+                let claimed = match &self.phase {
+                    Phase::Open { run_id }
+                        if event.data["runId"].as_str() == Some(run_id.as_str()) =>
+                    {
+                        Some(run_id.clone())
+                    }
+                    _ => None,
+                };
+                if let Some(run_id) = claimed {
                     self.phase = Phase::Closed {
                         status: status.clone(),
+                        run_id: Some(run_id),
                     };
                     return Verdict::TurnClosed(status);
                 }
@@ -184,9 +200,12 @@ mod tests {
         assert_eq!(
             scope.phase,
             Phase::Closed {
-                status: "completed".into()
+                status: "completed".into(),
+                run_id: Some("r1".into()),
             }
         );
+        // 结算后仍可取回本回合 runId（JSONL 终行 result 需要它）
+        assert_eq!(scope.claimed_run_id(), Some("r1"));
     }
 
     #[test]
@@ -197,9 +216,11 @@ mod tests {
         assert_eq!(
             scope.phase,
             Phase::Closed {
-                status: "cancelled".into()
+                status: "cancelled".into(),
+                run_id: None,
             }
         );
+        assert_eq!(scope.claimed_run_id(), None);
     }
 
     #[test]

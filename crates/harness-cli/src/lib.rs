@@ -1,4 +1,5 @@
 //! Local stdio JSON-RPC. Only explicit human/API requests can synchronize source files.
+pub mod acp;
 pub mod approval;
 pub mod chat;
 pub mod console;
