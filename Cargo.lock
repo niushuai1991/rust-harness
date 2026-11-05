@@ -2122,6 +2122,8 @@ name = "harness-extensions"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
+ "futures",
  "harness-contracts",
  "reqwest 0.12.28",
  "rmcp",

@@ -234,3 +234,68 @@ pub struct ArtifactChunk {
     pub next_offset: Option<u32>,
     pub total_size: u32,
 }
+
+/// One configured language server: the command runs inside the platform sandbox.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LspServerConfig {
+    pub id: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub extensions: Vec<String>,
+    /// Server-specific `initializationOptions`; the harness pushes file contents
+    /// itself, so servers needing it may disable their internal file watchers here.
+    #[serde(default)]
+    #[specta(type = JsonValue)]
+    pub initialization_options: Value,
+}
+
+impl LspServerConfig {
+    pub fn default_servers() -> Vec<Self> {
+        vec![Self {
+            id: "rust-analyzer".into(),
+            command: "rust-analyzer".into(),
+            args: vec![],
+            extensions: vec!["rs".into()],
+            initialization_options: Value::Null,
+        }]
+    }
+}
+
+/// Runtime state of one language server connection, for host status queries.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LspStatusEntry {
+    pub workspace_id: String,
+    pub server_id: String,
+    pub running: bool,
+    pub documents: u32,
+    pub diagnostics: u32,
+}
+
+#[cfg(test)]
+mod lsp_config_tests {
+    use super::*;
+
+    #[test]
+    fn default_servers_map_rust_to_rust_analyzer() {
+        let servers = LspServerConfig::default_servers();
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].id, "rust-analyzer");
+        assert_eq!(servers[0].command, "rust-analyzer");
+        assert_eq!(servers[0].extensions, vec!["rs"]);
+        assert!(servers[0].args.is_empty());
+    }
+
+    #[test]
+    fn config_roundtrips_with_missing_optional_fields() {
+        let config: LspServerConfig = serde_json::from_str(
+            r#"{"id":"pyright","command":"pyright-langserver","extensions":["py"]}"#,
+        )
+        .unwrap();
+        assert_eq!(config.args, Vec::<String>::new());
+        assert_eq!(config.extensions, vec!["py"]);
+    }
+}

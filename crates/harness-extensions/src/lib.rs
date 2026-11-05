@@ -1,5 +1,6 @@
 //! Installed immutable plugin versions and isolated component invocations.
 mod declarative;
+pub mod lsp;
 mod manifest;
 pub mod mcp;
 mod package;
