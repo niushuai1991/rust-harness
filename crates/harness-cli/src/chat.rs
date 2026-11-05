@@ -1,5 +1,6 @@
 //! `harness chat`：终端交互式对话（docs/specs/cli-plan.md 步骤 6 实现）。
-use crate::{Approval, ColorChoice};
+use crate::approval::Approval;
+use crate::diffview::ColorChoice;
 use harness_contracts::{AppError, AppResult};
 use harness_runtime::Runtime;
 use std::path::PathBuf;

@@ -17,6 +17,7 @@ harness-orchestration.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+dunce.workspace = true
 reqwest.workspace = true
 dirs.workspace = true
 clap.workspace = true

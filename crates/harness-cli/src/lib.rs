@@ -1,4 +1,12 @@
 //! Local stdio JSON-RPC. Only explicit human/API requests can synchronize source files.
+pub mod approval;
+pub mod chat;
+pub mod console;
+pub mod diffview;
+pub mod manage;
+pub mod run;
+pub mod scope;
+
 use harness_contracts::*;
 use harness_runtime::{Runtime, model::ModelProvider};
 use serde_json::{Value, json};

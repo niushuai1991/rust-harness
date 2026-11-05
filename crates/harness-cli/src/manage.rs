@@ -1,5 +1,5 @@
 //! `harness sessions/diff/apply/models`：会话、差异审阅与模型管理（docs/specs/cli-plan.md 步骤 4/5 实现）。
-use crate::ColorChoice;
+use crate::diffview::ColorChoice;
 use harness_contracts::{AppError, AppResult};
 use harness_runtime::Runtime;
 use std::sync::Arc;

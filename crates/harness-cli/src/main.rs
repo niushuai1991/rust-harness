@@ -1,28 +1,8 @@
 //! `harness` 命令行入口：JSON-RPC 宿主与 Agent 任务驱动。
-mod chat;
-mod manage;
-mod run;
-
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
+use harness_cli::{chat, manage, run};
 use harness_contracts::{AppError, AppResult};
 use std::path::PathBuf;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum Approval {
-    /// 自动允许作用域内的审批请求
-    Auto,
-    /// 终端 y/n 确认（需 TTY）
-    Ask,
-    /// 一律拒绝需审批工具
-    Never,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum ColorChoice {
-    Auto,
-    Always,
-    Never,
-}
 
 #[derive(Parser)]
 #[command(
@@ -97,7 +77,13 @@ async fn run() -> AppResult<()> {
             println!("{}", harness_cli::dispatch(runtime, &method, parsed).await?);
             Ok(())
         }
-        Commands::Run(args) => run::execute(runtime, args).await,
+        Commands::Run(args) => {
+            let code = run::execute(runtime, args).await?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
         Commands::Chat(args) => chat::execute(runtime, args).await,
         Commands::Sessions(args) => manage::sessions(runtime, args).await,
         Commands::Diff(args) => manage::diff(runtime, args).await,
