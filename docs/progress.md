@@ -63,3 +63,13 @@
 - 同工作区在途创建按 Promise 去重，切走或返回时复用；过期结果不修改当前工作区状态。
 - 5项新增回归先失败、修复后通过；App交互14项、前端全套28项及TypeScript/Vite生产构建通过。独立审查通过。
 - 0.1.3单一NSIS已实际生成（10.99 MiB），使用系统已有WebView2的skip模式；安装器requireAdministrator和应用asInvoker清单验证通过。用户旧版进程仍在运行，未中断旧会话，未执行修复版原生进程冒烟。
+
+## ACP 协议接口（P3，2026-11-06）
+
+- 依据 [ACP 协议接口计划](specs/acp-plan.md)：`harness acp` 新子命令，Agent Client Protocol v1 agent 端，类型与 ndjson 帧处理来自官方 `agent-client-protocol` 5.0.0（`=5.0.0` 精确锁定 + `stdio` feature；Rust 1.98 编译通过）。桌面端与 JSON-RPC 约定不变。
+- 并发设计：`session/prompt` 经 SDK `cx.spawn` 移出 dispatch loop 并将 Responder 移入延迟应答，保证回合进行中 `session/cancel` 可达；EOF 后 `cancel_all()`。
+- 映射：`session/new {cwd}` 每次新建隔离工作副本与内部会话；Delta→`agent_message_chunk`/`agent_thought_chunk`；tool.call/result→`tool_call`/`tool_call_update`（kind 按工具分类，rawInput=arguments）；审批策略即 modes（ask/auto/never，set_mode 可切换）——ask 转 `session/request_permission`（allow/reject 一次），cancelled 结果视为拒绝，auto/never 直接结算；模型选择 `--model` > `cli.default_model`；`session/load` 按 seq 回放 user/assistant/tool/compaction 事件后应答。
+- 终态：completed→`end_turn`、CANCELLED→`cancelled`（取消经模型调用错误返回，按规范捕获）、STEP_LIMIT→`max_turn_requests`、其余错误→`-32603` 带原消息。
+- TDD：16 项映射/fixture 单测（先红后绿；官方 SDK 样例 JSON 锁定 wire 形态——权限结果为内部标签嵌套 `{"outcome":{"outcome":...}}`，pending 状态缺省序列化）；11 项 duplex 集成测试（initialize 门禁与协商、未知方法 -32601、set_mode 通知、mock SSE 真回路流式与 end_turn、无模型/不支持内容块错误、审批 ask 双路径、取消、load 有序回放、子进程 Stdio 冒烟）。
+- 全套验证：fmt/clippy(-D warnings)/全工作区 test/build 通过。真实模型端到端（SQLite 快照独立数据目录 + 凭据管理器复用）：真实回合经 read 工具转述文件内容，18 段流式 chunk + end_turn；进程重启后 session/load 回放顺序正确。
+- 边界：mcpServers 参数忽略（stderr 警告）；fs/terminal/elicitation/authenticate 未实现（本 Agent 不调用客户端方法，authMethods 空）；Zed 实测待用户抽查；单宿主 host.lock 约束与 rpc 相同（桌面运行时需独立 --data-dir）。
