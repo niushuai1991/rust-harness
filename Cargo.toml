@@ -41,6 +41,7 @@ dunce = "1"
 dirs = "6"
 clap = { version = "4", features = ["derive"] }
 similar = "2"
+agent-client-protocol = { version = "=5.0.0", features = ["stdio"] }
 
 [profile.release]
 lto = "thin"

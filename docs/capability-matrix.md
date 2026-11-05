@@ -1,4 +1,4 @@
-# 能力状态（2026-11-04）
+# 能力状态（2026-11-06）
 
 状态说明：已实现表示存在实际执行代码；已验证另需对应测试或实际构建证据。不以计划或接口占位替代功能。
 
@@ -15,12 +15,13 @@
 |Todo/Plan/Goal|事件与模型工具已实现|尚无独立管理面板|
 |调度、会话压缩|应用存活期间单次调度、显式压缩服务已实现|missed不补跑、缺模型failed和原日志保留测试|
 |headless/stdio JSON-RPC|已实现|真实子进程协议错误恢复和请求测试通过|
+|ACP v1 agent 端（harness acp）|已实现并接线|官方SDK 5.0.0；16项映射/fixture单测与11项duplex集成测试（initialize门禁、审批ask双路径、取消、load回放、子进程冒烟）通过；真实模型端到端流式chunk、end_turn与重启load回放通过；mcpServers参数忽略，Zed实测待用户|
 |Python/TypeScript SDK|源码已实现|Python SDK真实子进程2项通过；TypeScript SDK独立类型检查通过，尚未独立发布|
 |NSIS安装包|0.1.4单包11.17MiB，使用系统已有WebView2|Windows 11 guest 中完成 0.1.2 安装、0.1.4 覆盖升级、默认卸载保留数据及显式清理三固定根；外部目标保留|
 |NSIS离线包|仅保留0.1.2及以前的历史产物，后续不再提供|后续仅构建系统已有WebView2的单一NSIS包（skip模式）|
 |发布签名与自动更新|Tauri插件接入，信任配置未启用|没有签名证书、更新公钥或发布端点，未发布|
 |PTY/SSH执行世界/LSP/搜索provider/Office预览|未实现|不能计为P2/P3完成|
-|ACP/配置预设分层/脚本工作流/签名插件市场|未实现|不能计为P2/P3完成|
+|配置预设分层/脚本工作流/签名插件市场|未实现|不能计为P3完成|
 
 数据目录为宿主独占，桌面打开时headless需使用独立数据目录，避免另一个进程执行恢复时破坏活动会话。WASM采用每次调用独立Store，activate→execute/hook→deactivate，KV成功后提交；不承诺长期驻留实例状态。
 
