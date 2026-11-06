@@ -166,6 +166,10 @@ impl Console {
             "inbox.cancelled" => {
                 writeln!(self.err, "{prefix}消息已在排队时取消")?;
             }
+            "compaction.summary" => {
+                let content = event.data["content"].as_str().unwrap_or_default();
+                writeln!(self.err, "{prefix}[历史已压缩] {}", content.trim())?;
+            }
             _ => {}
         }
         if !self.json {
@@ -321,6 +325,21 @@ mod tests {
             Box::new(err.clone()),
         );
         (console, out, err)
+    }
+
+    #[test]
+    fn human_renders_compaction_summary_to_stderr() {
+        let (mut console, _out, err) = console();
+        console
+            .durable(&event(
+                "s1",
+                "compaction.summary",
+                json!({"content":"本会话完成了登录功能","throughSeq":42}),
+            ))
+            .unwrap();
+        let text = err.string();
+        assert!(text.contains("历史已压缩"), "输出：{text}");
+        assert!(text.contains("本会话完成了登录功能"), "输出：{text}");
     }
 
     #[test]

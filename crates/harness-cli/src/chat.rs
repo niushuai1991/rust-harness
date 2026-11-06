@@ -2,17 +2,15 @@
 use crate::{
     approval::Approval,
     diffview::ColorChoice,
+    line_editor::{self, LineResult},
     manage::{self, ensure_model_exists},
     run,
+    slash::{ChatCommand, SLASH_COMMANDS, parse_command},
 };
 use clap::ValueEnum;
 use harness_contracts::{AppError, AppResult};
 use harness_runtime::Runtime;
-use std::{
-    io::{BufRead, IsTerminal, Write},
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{io::IsTerminal, path::PathBuf, sync::Arc};
 
 #[derive(Debug, clap::Args)]
 pub struct Args {
@@ -36,47 +34,32 @@ pub struct Args {
     pub color: ColorChoice,
 }
 
-/// 斜杠命令解析；非斜杠输入为消息。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ChatCommand<'a> {
-    Quit,
-    Help,
-    Model(Option<&'a str>),
-    Sessions,
-    Diff,
-    Apply,
-    Approval(Option<&'a str>),
-    Unknown(&'a str),
-    Message,
-}
+/// `/init` 注入的预置提示词：模型在隔离副本生成 AGENTS.md，经 /diff /apply 审阅同步。
+const INIT_PROMPT: &str = "请分析当前项目并在执行根目录生成 AGENTS.md：\n\
+1. 项目概述（用途、技术栈、构建/测试/运行命令）\n\
+2. 目录结构与关键模块说明\n\
+3. 协作约定（代码风格、提交与验证要求）\n\
+要求内容精炼并全部使用中文；若已存在 AGENTS.md 则读取后在原基础上修订补全。完成后简述你做了什么。";
 
-pub fn parse_command(line: &str) -> ChatCommand<'_> {
-    if !line.starts_with('/') {
-        return ChatCommand::Message;
-    }
-    let mut parts = line.splitn(2, char::is_whitespace);
-    let name = parts.next().unwrap_or_default();
-    let rest = parts.next().map(str::trim).filter(|rest| !rest.is_empty());
-    match name {
-        "/quit" | "/exit" | "/q" => ChatCommand::Quit,
-        "/help" | "/h" => ChatCommand::Help,
-        "/model" => ChatCommand::Model(rest),
-        "/sessions" => ChatCommand::Sessions,
-        "/diff" => ChatCommand::Diff,
-        "/apply" => ChatCommand::Apply,
-        "/approval" => ChatCommand::Approval(rest),
-        other => ChatCommand::Unknown(other),
-    }
-}
+/// 列出 /resume 展示的会话数量上限。
+const RESUME_LIST_LIMIT: usize = 10;
 
-const HELP: &str = "可用命令：\n  /model [id]  查看或切换模型\n  /sessions    列出会话\n  /diff        查看副本改动\n  /apply       审阅后同步到原项目\n  /approval [auto|ask|never]  查看或切换审批策略\n  /quit        退出\n其余输入将作为任务消息发送给 Agent。";
+/// 由命令注册表生成帮助文案。
+fn help_text() -> String {
+    let mut text = String::from("可用命令：\n");
+    for spec in SLASH_COMMANDS {
+        text.push_str(&format!("  {:<28} {}\n", spec.display(), spec.description));
+    }
+    text.push_str("其余输入将作为任务消息发送给 Agent。输入 / 可浏览命令补全。");
+    text
+}
 
 pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<()> {
     if !std::io::stdin().is_terminal() {
         return Err(AppError::new("TTY", "chat 需要交互式终端（stdin 为 TTY）"));
     }
     let mut policy = args.approval.unwrap_or(Approval::Ask);
-    let (workspace_id, session_id, warning) = run::resolve_session_target(
+    let (mut workspace_id, mut session_id, warning) = run::resolve_session_target(
         &runtime,
         args.cwd.as_deref(),
         args.workspace.as_deref(),
@@ -91,23 +74,28 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<()> {
     }
     eprintln!("chat 就绪：模型 {model_id}，会话 {session_id}。/help 查看命令，/quit 退出。");
 
-    let stdin = std::io::stdin();
+    let mut history = Vec::new();
     loop {
-        let mut stderr = std::io::stderr();
-        write!(stderr, "你> ").ok();
-        stderr.flush().ok();
-        let mut line = String::new();
-        match stdin.lock().read_line(&mut line) {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
-        }
+        let line = match line_editor::read_line("你> ", &mut history) {
+            Ok(LineResult::Line(line)) => line,
+            Ok(LineResult::Interrupt) | Ok(LineResult::Eof) => break,
+            Err(error) => return Err(AppError::new("TTY", error.to_string())),
+        };
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
+        let context = run::TurnContext {
+            session_id: session_id.clone(),
+            workspace_id: workspace_id.clone(),
+            provider: provider.clone(),
+            policy,
+            json: false,
+            color: ColorChoice::Auto,
+        };
         match parse_command(trimmed) {
             ChatCommand::Quit => break,
-            ChatCommand::Help => eprintln!("{HELP}"),
+            ChatCommand::Help => eprintln!("{}", help_text()),
             ChatCommand::Model(None) => {
                 for model in runtime.models.list_models().await? {
                     let marker = if model.id == model_id { " *当前" } else { "" };
@@ -119,6 +107,77 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<()> {
                 model_id = id.to_owned();
                 provider = runtime.models.build_model(&model_id).await?;
                 eprintln!("已切换模型：{model_id}（下一回合生效）");
+            }
+            ChatCommand::Status => {
+                let info = runtime.workspaces.get(&workspace_id)?;
+                eprintln!(
+                    "会话    {session_id}\n工作区  {}\n副本    {}\n模型    {model_id}\n审批    {policy:?}",
+                    info.source_path, info.replica_path,
+                );
+            }
+            ChatCommand::Clear => {
+                session_id = runtime
+                    .store
+                    .create_session(&workspace_id, "新会话")
+                    .await?
+                    .id;
+                eprintln!("已重开会话：{session_id}（原会话保留，可用 /resume 切回）");
+            }
+            ChatCommand::Compact => {
+                eprintln!("正在压缩会话历史……");
+                match harness_orchestration::compact_session(
+                    runtime.clone(),
+                    &session_id,
+                    provider.clone(),
+                    Default::default(),
+                )
+                .await
+                {
+                    Ok(()) => eprintln!("历史已压缩为摘要，后续回合将基于摘要继续。"),
+                    Err(error) => eprintln!("压缩失败：{error}"),
+                }
+            }
+            ChatCommand::Init => {
+                if let Err(error) = run::turn_once(runtime.clone(), context, INIT_PROMPT).await {
+                    eprintln!("回合发起失败：{error}");
+                } else {
+                    eprintln!("提示：用 /diff 查看 AGENTS.md 改动，/apply 审阅后同步到原项目。");
+                }
+            }
+            ChatCommand::Resume(None) => {
+                let sessions = runtime.list_sessions(Some(&workspace_id)).await?;
+                let listed: Vec<_> = sessions
+                    .iter()
+                    .filter(|info| info.parent_id.is_none())
+                    .take(RESUME_LIST_LIMIT)
+                    .collect();
+                for info in &listed {
+                    let marker = if info.id == session_id {
+                        " *当前"
+                    } else {
+                        ""
+                    };
+                    eprintln!("{}\t{}\t{}{marker}", info.id, info.title, info.created_at);
+                }
+                if listed.is_empty() {
+                    eprintln!("当前工作区暂无会话。");
+                } else {
+                    eprintln!("用法：/resume <id> 切换会话。");
+                }
+            }
+            ChatCommand::Resume(Some(id)) => {
+                let sessions = runtime.list_sessions(Some(&workspace_id)).await?;
+                match sessions.iter().find(|info| info.id == id) {
+                    Some(info) => {
+                        session_id = info.id.clone();
+                        eprintln!("已切换会话：{session_id}（{}）", info.title);
+                    }
+                    None => {
+                        eprintln!(
+                            "会话不存在或不属于当前工作区：{id}；不带参数执行 /resume 可列出。"
+                        )
+                    }
+                }
             }
             ChatCommand::Sessions => {
                 manage::sessions(
@@ -161,14 +220,6 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<()> {
                 eprintln!("未知命令 {command}；/help 查看可用命令。");
             }
             ChatCommand::Message => {
-                let context = run::TurnContext {
-                    session_id: session_id.clone(),
-                    workspace_id: workspace_id.clone(),
-                    provider: provider.clone(),
-                    policy,
-                    json: false,
-                    color: ColorChoice::Auto,
-                };
                 if let Err(error) = run::turn_once(runtime.clone(), context, trimmed).await {
                     eprintln!("回合发起失败：{error}");
                 }
@@ -184,31 +235,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn slash_commands_are_parsed() {
-        assert_eq!(parse_command("/quit"), ChatCommand::Quit);
-        assert_eq!(parse_command("/exit"), ChatCommand::Quit);
-        assert_eq!(parse_command("/q"), ChatCommand::Quit);
-        assert_eq!(parse_command("/help"), ChatCommand::Help);
-        assert_eq!(parse_command("/model"), ChatCommand::Model(None));
-        assert_eq!(parse_command("/model glm"), ChatCommand::Model(Some("glm")));
-        assert_eq!(parse_command("/sessions"), ChatCommand::Sessions);
-        assert_eq!(parse_command("/diff"), ChatCommand::Diff);
-        assert_eq!(parse_command("/apply"), ChatCommand::Apply);
-        assert_eq!(parse_command("/approval"), ChatCommand::Approval(None));
-        assert_eq!(
-            parse_command("/approval never"),
-            ChatCommand::Approval(Some("never"))
-        );
-        assert_eq!(parse_command("/nope"), ChatCommand::Unknown("/nope"));
+    fn help_text_lists_every_registered_command() {
+        let text = help_text();
+        for spec in SLASH_COMMANDS {
+            assert!(
+                text.contains(&spec.display()),
+                "帮助缺少 {}",
+                spec.display()
+            );
+            assert!(
+                text.contains(spec.description),
+                "帮助缺少描述：{}",
+                spec.description
+            );
+        }
     }
 
     #[test]
-    fn plain_text_is_a_message_and_blank_args_are_ignored() {
-        assert_eq!(parse_command("修复登录页"), ChatCommand::Message);
-        assert_eq!(parse_command("/model   "), ChatCommand::Model(None));
-        assert_eq!(
-            parse_command("/approval   never"),
-            ChatCommand::Approval(Some("never"))
-        );
+    fn init_prompt_mentions_agents_md() {
+        assert!(INIT_PROMPT.contains("AGENTS.md"));
     }
 }
