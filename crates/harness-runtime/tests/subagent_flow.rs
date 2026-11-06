@@ -173,6 +173,10 @@ async fn parent_link_survives_restart_and_decorates_session_list() {
         answers: Mutex::new(VecDeque::from([
             call("c1", "agent_spawn", json!({"task":"子任务"})),
             ModelAnswer::default(),
+            // 不传 modelId 时子代理复用父 provider：父会话第 2 轮与子代理第 1 轮
+            // 共产生 3 次 complete，若队列只有 2 个回答，两者会竞争最后一个，
+            // CI 慢机时序下父会话可能从空队列 pop 而报 FIXTURE 错。
+            ModelAnswer::default(),
         ])),
     });
     auto_approve(&runtime);
