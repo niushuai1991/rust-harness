@@ -76,3 +76,20 @@
 .model-row-actions{display:flex;align-items:center;gap:5px;flex-shrink:0}
 .model-list-empty{padding:14px;margin:0}
 @media(max-width:700px){.usage-cards{flex-direction:column}}
+/* 顶栏“后台任务”浮层卡片 */
+.toolbar{position:relative}
+.task-popover{position:absolute;top:calc(100% + 11px);right:0;width:432px;max-width:82vw;max-height:62vh;overflow:auto;background:#fafbf8;border:1px solid #dce4d4;border-radius:13px;box-shadow:0 22px 70px #10271b30;z-index:5;padding:15px 18px 13px;transform-origin:top right;animation:task-popover-in .13s ease-out}
+.task-popover::before{content:"";position:absolute;top:-5px;right:150px;width:9px;height:9px;background:#fafbf8;border-left:1px solid #dce4d4;border-top:1px solid #dce4d4;transform:rotate(45deg)}
+@keyframes task-popover-in{from{opacity:0;transform:translateY(-4px) scale(.98)}to{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){.task-popover{animation:none}}
+.task-popover>header{display:flex;align-items:center;justify-content:space-between;margin-bottom:2px}
+.task-popover h2{font-size:15px;font-weight:550;margin:0}
+.task-popover-tools{display:flex;align-items:center;gap:2px}
+.task-popover .task-popover-note{margin:2px 0 0;font-size:11.5px;line-height:1.6}
+.task-popover .section-label{padding:13px 2px 6px;letter-spacing:1.4px}
+.task-popover .plugin-list{margin-top:0}
+.task-popover .plugin-list article{padding:11px 13px;margin:8px 0}
+.task-popover .plugin-heading svg{flex-shrink:0}
+.task-popover .plugin-actions{margin-top:9px}
+.toolbar .soft[aria-expanded="true"]{background:#e2e9d9;border-color:#cfdac2;color:#3c5a44;font-weight:550}
+@media(max-width:700px){.task-popover{right:-10px}}
