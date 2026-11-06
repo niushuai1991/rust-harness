@@ -118,3 +118,14 @@
 - 环境边界（实测）：开发机（Windows 11 Insider 26300）ConPTY 客户端连接失效——宿主 conhost 存活但子进程一律 0xC0000142 退出、输出管道零字节；最小 MS 样例探针、裸进程/受限 token/Low IL 去除、`start` 控制台上下文、计划任务上下文均复现，非 ConPTY 新控制台正常；与 deepseek-harness 记录的「console isolation unavailable」同类。真实 ConPTY 集成测试（往返/杀树/租约生命周期）带可用性预检：本机打印原因跳过，GitHub CI windows runner 真实运行。
 - TDD：平台纯函数 8 项单测先红后绿；orchestration stub 全流程 3 项（开关与租约、退出结算与作用域、上限/审批矩阵/恢复）先红后绿；前端终端卡片 1 项先红后绿，全套 52 项通过。
 - 边界：SSH 远端执行（P3）仅留 trait seam；桌面 xterm.js 交互面板、屏幕仿真/prompt 就绪检测、resize 模型接口、跨会话终端面板不在范围；非 Windows 平台返回 UNSUPPORTED。
+
+## 配置预设分层（P2，2026-11-07）
+
+- 依据 [配置预设计划](specs/config-presets-plan.md)：P2 验收项「预设」此前无规范定义，本计划为其立项并实现——预设 = 命名的会话能力配置包（modelId + effort + approval），分层 = 解析优先级（显式参数 > 所选预设字段 > 宿主缺省回落），目录来源与模型设置计划同构（合成内置 `builtin:default` 只读置顶，用户预设存 settings 键 `presets`，无 schema 迁移）。
+- 契约：`PresetConfig`/`PresetInfo`（附运行时计算的 `broken` 标记：模型缺失/停用、供应商停用、effort 不支持，仿 deepseek-harness roster 语义）与 `KNOWN_APPROVALS`；保存校验只查模型目录，不做凭据读取与网络（真实凭据管理器教训）。
+- runtime：新 `presets.rs` 挂 `Runtime.presets`（与 ModelService 并列），`list/save/remove/resolve`；resolve 未知 id 报 `PRESET_NOT_FOUND` 并列可用项，`builtin:default` 返回全空覆盖。
+- 各端解析链：CLI run/chat `--preset`（approval：`--approval > 预设档位 > TTY 规则`；model：`-m > 预设 > cli.default_model`；effort 同理）；`harness presets list|save|remove|default` 管理，`cli.default_preset` 为未显式 `--preset` 时的回落（与 cli.default_model 同层）。JSON-RPC 新增 `preset.list/save/remove`，`session.send` 的 `modelId` 放宽为可选（`modelId > presetId 预设 > 报错列可用`，编程接口不读 `cli.default_preset`；SDK 未包装该方法，无破坏面）。ACP `--preset` 启动时解析一次（未知 id 启动即失败），供出模型/effort 与新会话初始审批模式（`set_mode` 仍可切换）。
+- 桌面：命令 `preset_list/preset_save/preset_remove`（specta 重新导出 bindings）；新增侧栏「能力预设」面板（内置只读行、broken 标记、增删改表单，审批字段标注仅 CLI/JSON-RPC/ACP 生效）；发送框增「能力预设」下拉——选中即以预设 modelId/effort 填充既有三级联（持久化沿用 `app.default_selection`），手改级联即放弃预设，不可用预设禁选。桌面审批保持交互式（安全模型不变）。
+- TDD：contracts 3 项（roundtrip/缺省/常量）、PresetService 6 项（CRUD/校验矩阵/broken/builtin 合成与拒绝）、审批分层 3 项（显式压预设/预设补位 TTY 规则/parse）均先红后绿；集成测试 CLI 链路 1 项（非 TTY 无 `-m` 无 `--approval`，全靠预设供出三要素并完成回合）与 ACP 2 项（预设初始模式、未知预设启动失败）；前端 PresetsPanel 3 项与发送框级联填充 1 项。
+- 全套验证：`cargo fmt --check`、`clippy --all-targets --all-features -- -D warnings`、`cargo test --all-features`（156 项）、`cargo build --all-features`、`npm test`（65 项）、`npm run build` 通过；CLI 冒烟（presets 子命令、未知预设报错、`run --preset` 真实模型回合完成）通过。
+- 边界：附加指令注入与 skills 启停、`agent_spawn`/`schedule_write` 的 presetId、桌面审批策略接管、SDK 封装、会话绑定预设落库均不在本次范围；真实模型端到端与桌面 UI 抽查待用户。

@@ -26,3 +26,10 @@ export interface ScheduleInfo {id:string;sessionId:string;workspaceId:string;at:
 
 // Derived view for the plans/goals panel (harness-contracts PlanStateOverview); event log stays authoritative.
 export interface PlanStateOverview {sessionId:string;sessionTitle:string;workspaceId:string;kind:string;data:Record<string,unknown>;updatedAt:string}
+
+// 能力预设（harness-contracts PresetConfig/PresetInfo）：命名的会话能力配置包。
+export const BUILTIN_PRESET_ID='builtin:default';
+export const KNOWN_APPROVALS=['ask','auto','never'] as const;
+export type ApprovalPolicy=(typeof KNOWN_APPROVALS)[number];
+export interface PresetConfig {id:string;name:string;description:string|null;modelId:string|null;effort:string|null;approval:string|null}
+export type PresetInfo=PresetConfig&{broken:string|null};

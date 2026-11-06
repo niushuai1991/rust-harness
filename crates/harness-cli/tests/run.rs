@@ -338,3 +338,74 @@ async fn run_rejects_effort_outside_model_levels() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("MODEL_EFFORT"), "stderr: {stderr}");
 }
+
+#[tokio::test]
+async fn run_resolves_model_effort_and_approval_from_preset() {
+    let base = mock_finished().await;
+    let dir = tempfile::tempdir().unwrap();
+    let source = source_dir(dir.path());
+    let host = host_dir(&dir);
+    configure_model(&host, &base).await;
+    // mock 模型补档位列表（efforts 由 model.save upsert 覆盖）。
+    let base_url = base.trim_end_matches("/v1").to_string();
+    let effortful = format!(
+        r#"{{"config":{{"id":"mock","name":"mock","providerId":"fixture","apiMode":"chatCompletions","model":"model","credentialRef":"test/none","baseUrl":"{base_url}/v1","maxOutputTokens":1024,"efforts":["low","high"]}}}}"#
+    );
+    for (method, params) in [
+        ("model.save", effortful),
+        (
+            "preset.save".into(),
+            r#"{"preset":{"id":"refactor","name":"批量重构","modelId":"mock","effort":"low","approval":"auto"}}"#.to_string(),
+        ),
+    ] {
+        let output = harness(&host)
+            .args(["call", method, &params])
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{method} 失败：{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    // 非交互式（stdin 非 TTY）下不传 -m 与 --approval：模型、档位与审批策略全部来自预设。
+    let output = harness(&host)
+        .args([
+            "run",
+            "-C",
+            source.to_str().unwrap(),
+            "--json",
+            "--preset",
+            "refactor",
+            "总结项目",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("finished"), "stdout: {stdout}");
+
+    // preset.list 经 JSON-RPC 可读，含内置与用户预设。
+    let output = harness(&host)
+        .args(["call", "preset.list", "{}"])
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success());
+    let listing: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("preset.list 返回 JSON");
+    let ids: Vec<&str> = listing
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|preset| preset["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["builtin:default", "refactor"]);
+}

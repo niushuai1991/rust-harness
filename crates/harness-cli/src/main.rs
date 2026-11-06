@@ -28,6 +28,9 @@ enum Commands {
         /// 模型 ID（缺省用 cli.default_model）
         #[arg(long)]
         model: Option<String>,
+        /// 能力预设（显式 --model 优先于预设字段）
+        #[arg(long)]
+        preset: Option<String>,
     },
     /// 单次 JSON-RPC 调用并打印结果
     Call {
@@ -49,6 +52,8 @@ enum Commands {
     Apply(manage::ApplyArgs),
     /// 模型管理
     Models(manage::ModelsArgs),
+    /// 预设管理
+    Presets(manage::PresetsArgs),
 }
 
 fn data_dir(cli: &Cli) -> AppResult<PathBuf> {
@@ -78,8 +83,8 @@ async fn run() -> AppResult<()> {
     let _browser = harness_browser::install(runtime.clone())?;
     match cli.command {
         Commands::Rpc => harness_cli::serve(runtime).await,
-        Commands::Acp { model } => {
-            harness_cli::acp::serve(runtime, harness_cli::acp::AcpOptions { model }).await
+        Commands::Acp { model, preset } => {
+            harness_cli::acp::serve(runtime, harness_cli::acp::AcpOptions { model, preset }).await
         }
         Commands::Call { method, params } => {
             let parsed: serde_json::Value =
@@ -99,5 +104,6 @@ async fn run() -> AppResult<()> {
         Commands::Diff(args) => manage::diff(runtime, args).await,
         Commands::Apply(args) => manage::apply(runtime, args).await,
         Commands::Models(args) => manage::models(runtime, args).await,
+        Commands::Presets(args) => manage::presets(runtime, args).await,
     }
 }

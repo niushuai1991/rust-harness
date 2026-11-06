@@ -50,6 +50,9 @@ pub struct Args {
     /// 审批策略；缺省时 stdin 为 TTY 取 ask，否则报错
     #[arg(long)]
     pub approval: Option<Approval>,
+    /// 能力预设（模型/档位/审批策略的命名组合；显式参数优先于预设字段）
+    #[arg(long)]
+    pub preset: Option<String>,
     /// 颜色输出
     #[arg(long, default_value = "auto")]
     pub color: ColorChoice,
@@ -65,7 +68,14 @@ enum Signal {
 
 pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<i32> {
     let stdin_tty = std::io::stdin().is_terminal();
-    let policy = approval::resolve_policy(args.approval, stdin_tty)?;
+    // 预设层：显式 --preset > settings `cli.default_preset`；字段级仍以显式参数优先。
+    let preset = crate::manage::resolve_preset(&runtime, args.preset.as_deref()).await?;
+    let preset_approval = preset
+        .as_ref()
+        .and_then(|resolved| resolved.approval.as_deref())
+        .map(approval::parse_approval)
+        .transpose()?;
+    let policy = approval::resolve_policy_with_preset(args.approval, preset_approval, stdin_tty)?;
     if let Some(source) = &args.prompt_stdin {
         if source != "-" {
             return Err(AppError::new(
@@ -110,11 +120,18 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<i32> {
     if let Some(warning) = &reuse_warning {
         eprintln!("{warning}");
     }
-    let model_id = crate::manage::resolve_model_id(&runtime, args.model.clone()).await?;
-    let provider = runtime
-        .models
-        .build_model_with(&model_id, args.effort.clone())
-        .await?;
+    let model_id = crate::manage::resolve_model_id(
+        &runtime,
+        args.model
+            .clone()
+            .or_else(|| crate::manage::preset_model(&preset)),
+    )
+    .await?;
+    let effort = args
+        .effort
+        .clone()
+        .or_else(|| crate::manage::preset_effort(&preset));
+    let provider = runtime.models.build_model_with(&model_id, effort).await?;
     turn_once(
         runtime,
         TurnContext {

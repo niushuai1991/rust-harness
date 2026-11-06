@@ -19,6 +19,7 @@
 | [模型设置两级选择与 effort 计划](specs/model-settings-plan.md) | 2026-11-06（计划批准） | 已实施，Rust 与前端测试通过（2026-11-06）；桌面 UI 与真实模型端到端抽查待用户 | 模型设置供应商→模型两级结构、内置模型目录与启停、effort 档位按协议编码、API 自动检测模型列表、发送框级联选择与选择持久化、卸载清理勾选机制核实。 |
 | [输入框斜杠快捷指令计划](specs/slash-commands-plan.md) | 2026-11-06（计划批准） | 已实施，Rust 125 项与前端 59 项测试通过（2026-11-06）；两端交互抽查待用户 | CLI chat 斜杠命令注册表、crossterm 行编辑与 `/` 补全弹窗、五个新增命令；桌面端 composer 菜单与 `session_compact`。 |
 | [PTY 执行世界（本地沙箱终端）计划](specs/pty-execution-world-plan.md) | 2026-11-06（计划拟制） | 已实现，Rust 135 项与前端 52 项测试通过（2026-11-06）；真实 ConPTY 集成测试在开发机预检跳过（该机 ConPTY 客户端连接不可用），由 CI windows runner 真实执行；真实模型端到端待用户抽查 | P2 项：沙箱内 ConPTY 持久终端，`terminal_open/write/read/close` 工具组；自研 ConPTY + 受限 token spawn；SSH 远端仅留 trait seam。 |
+| [配置预设分层计划](specs/config-presets-plan.md) | 2026-11-07（计划拟制） | 已实施，Rust 156 项与前端 65 项测试通过（2026-11-07）；真实 `harness run --preset` 冒烟回合完成，桌面 UI 抽查待用户 | P2 项「预设」：命名会话能力配置包（模型/effort/审批策略），解析按显式参数>预设>宿主缺省三层；内置合成与用户自定义两层目录，CLI/JSON-RPC/ACP/桌面四端接入。 |
 
 ## 关系说明
 
@@ -33,6 +34,7 @@
 - 模型设置计划为模型接入专项计划，替代多协议计划中"模型标识手动录入"的单层模型形态；内置目录只读、个人覆盖可写，升级语义与多协议计划一致。
 - 输入框斜杠快捷指令计划落地 cli-plan 预留的 REPL 体验升级，仍不做全屏 TUI；两端 `/init` 提示词以 CLI 常量为单一事实源。
 - PTY 执行世界计划为 P2 验收项专项计划，自研 ConPTY 与受限 token 沙箱配对构成单一本地执行世界；`PtyWorld` trait 为 P3 SSH 远端执行的接入 seam，终端打开一次审批覆盖后续输入。
+- 配置预设分层计划为 P2 验收项专项计划，预设为命名的能力配置包（模型/effort/审批策略），解析优先级为显式参数>预设>宿主缺省；目录与模型设置计划同构（内置合成只读、用户自定义可写），预设 approval 仅 CLI/JSON-RPC/ACP 生效，桌面保持交互式审批。
 - 当前完成情况以 [能力状态矩阵](capability-matrix.md) 为准，具体执行与验证证据见 [执行进度](progress.md) 和 [交付记录](delivery.md)。
 - 后续发布仅构建使用系统已有 WebView2 的单一 NSIS 包；专项计划中的双安装包与测试数量仅对应 0.1.2 当次交付。
 
