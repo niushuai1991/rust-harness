@@ -34,6 +34,21 @@
 .slash-menu button span{color:var(--muted);font-size:12px}
 .slash-menu button.selected,.slash-menu button:hover{background:#e4eddb}
 
+/* 输入框 + 号“添加内容”菜单（附件/计划/目标） */
+.composer-plus-wrap{position:relative}
+.composer-plus{width:34px;height:34px;padding:0;border:0;background:transparent;color:var(--muted);border-radius:8px}
+.composer-plus:hover{background:#edf1e9;color:var(--text)}
+.composer-plus[aria-expanded="true"]{background:#e4eddb;color:var(--accent)}
+.plus-menu{position:absolute;bottom:calc(100% + 10px);left:0;width:300px;max-width:78vw;background:var(--panel);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(36,51,44,.14);padding:5px;display:flex;flex-direction:column;z-index:15;transform-origin:bottom left;animation:plus-menu-in .13s ease-out}
+@keyframes plus-menu-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){.plus-menu{animation:none}}
+.plus-menu button{display:flex;gap:10px;align-items:flex-start;justify-content:flex-start;border:none;background:transparent;padding:8px 10px;border-radius:8px;text-align:left}
+.plus-menu button:hover:not(:disabled){background:#e4eddb}
+.plus-menu button svg{flex-shrink:0;margin-top:2px;color:var(--muted)}
+.plus-menu button span{display:flex;flex-direction:column;gap:1px;min-width:0}
+.plus-menu button strong{font-size:13px;font-weight:550;color:var(--text)}
+.plus-menu button small{font-size:11px;color:var(--muted);line-height:1.5}
+
 /* 模型设置：左栏分组导航 + 右栏详情视图（计划卡/额度卡/连接设置/模型列表） */
 .provider-nav{display:flex;flex-direction:column;min-width:0}
 .provider-layout .nav-group-title{font-size:11px;color:#8b9788;letter-spacing:1.2px;font-weight:400;margin:0 0 8px;padding-left:2px}

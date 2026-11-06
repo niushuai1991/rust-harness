@@ -61,6 +61,18 @@ pub static SLASH_COMMANDS: &[SlashSpec] = &[
         arg_hint: None,
     },
     SlashSpec {
+        name: "plan",
+        aliases: &[],
+        description: "制定实施计划",
+        arg_hint: Some("[任务]"),
+    },
+    SlashSpec {
+        name: "goal",
+        aliases: &[],
+        description: "设定会话目标",
+        arg_hint: Some("[目标]"),
+    },
+    SlashSpec {
         name: "resume",
         aliases: &[],
         description: "切换到已有会话",
@@ -132,6 +144,8 @@ pub enum ChatCommand<'a> {
     Clear,
     Compact,
     Init,
+    Plan(Option<&'a str>),
+    Goal(Option<&'a str>),
     Status,
     Resume(Option<&'a str>),
     Sessions,
@@ -159,6 +173,8 @@ pub fn parse_command(line: &str) -> ChatCommand<'_> {
         "clear" => ChatCommand::Clear,
         "compact" => ChatCommand::Compact,
         "init" => ChatCommand::Init,
+        "plan" => ChatCommand::Plan(rest),
+        "goal" => ChatCommand::Goal(rest),
         "status" => ChatCommand::Status,
         "resume" => ChatCommand::Resume(rest),
         "sessions" => ChatCommand::Sessions,
@@ -179,8 +195,8 @@ mod tests {
         assert_eq!(
             names,
             [
-                "help", "model", "status", "clear", "compact", "init", "resume", "sessions",
-                "diff", "apply", "approval", "quit"
+                "help", "model", "status", "clear", "compact", "init", "plan", "goal", "resume",
+                "sessions", "diff", "apply", "approval", "quit"
             ]
         );
     }
@@ -241,6 +257,16 @@ mod tests {
         assert_eq!(parse_command("/new"), ChatCommand::Clear);
         assert_eq!(parse_command("/compact"), ChatCommand::Compact);
         assert_eq!(parse_command("/init"), ChatCommand::Init);
+        assert_eq!(parse_command("/plan"), ChatCommand::Plan(None));
+        assert_eq!(
+            parse_command("/plan 修复登录页"),
+            ChatCommand::Plan(Some("修复登录页"))
+        );
+        assert_eq!(parse_command("/goal"), ChatCommand::Goal(None));
+        assert_eq!(
+            parse_command("/goal  完成导出功能 "),
+            ChatCommand::Goal(Some("完成导出功能"))
+        );
         assert_eq!(parse_command("/resume"), ChatCommand::Resume(None));
         assert_eq!(
             parse_command("/resume abc"),
