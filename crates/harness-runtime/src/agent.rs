@@ -43,6 +43,7 @@ impl Approvals {
 pub struct Runtime {
     pub store: Store,
     pub models: crate::providers::ModelService,
+    pub presets: crate::presets::PresetService,
     pub workspaces: WorkspaceManager,
     pub plugins: Arc<PluginManager>,
     pub approvals: Approvals,
@@ -111,8 +112,10 @@ impl Runtime {
                 }
             }
         }
+        let models = crate::providers::ModelService::new(store.clone());
         Ok(Arc::new(Self {
-            models: crate::providers::ModelService::new(store.clone()),
+            presets: crate::presets::PresetService::new(store.clone(), models.clone()),
+            models,
             store,
             workspaces,
             plugins,

@@ -24,8 +24,9 @@
 |LSP只读五件套（诊断/悬停/定义/引用/符号）|已实现并接线|mock server 11项与runtime流程6项测试；真实rust-analyzer经Windows沙箱冒烟通过（E0308诊断与hover到位），测试为`#[ignore]`仅显式运行，见[LSP计划](specs/lsp-plan.md)|
 |内置浏览器（browser_navigate/snapshot/click/type/press/screenshot/evaluate/close）|已实现并接线|11项Rust测试（白名单/stub解析/命令契约/审批链路，含真实Edge headless全链路）通过；真实模型端到端（glm-5.3-flash）navigate→snapshot→type→click→evaluate读到预期文本，turn completed，见[浏览器计划](specs/browser-plan.md)|
 |PTY 本地沙箱终端（terminal_open/write/read/close）|已实现并接线|ANSI 过滤/有界缓冲 8 项单测、orchestration stub 全流程 3 项与前端 52 项测试通过；真实 ConPTY 集成测试（往返/杀树/租约）在本开发机预检跳过——该机 ConPTY 客户端连接不可用（0xC0000142，最小样例复现，见[PTY计划](specs/pty-execution-world-plan.md)），在 GitHub CI windows runner 真实运行；SSH 远端执行世界未实现，不能计为 P3 完成|
+|配置预设（模型/effort/审批策略命名组合）|已实现并接线|契约 3 项、PresetService 6 项、审批分层 6 项单测与 CLI 链路/ACP 2 项集成测试先红后绿；真实 `harness run --preset` 回合完成；桌面 3 项面板测试与发送框级联填充测试通过；解析为显式参数>预设>宿主缺省三层，桌面审批保持交互式，见[配置预设计划](specs/config-presets-plan.md)|
 |搜索provider/Office预览|未实现|不能计为P2/P3完成|
-|配置预设分层/脚本工作流/签名插件市场|未实现|不能计为P3完成|
+|脚本工作流/签名插件市场|未实现|不能计为P3完成|
 
 数据目录为宿主独占，桌面打开时headless需使用独立数据目录，避免另一个进程执行恢复时破坏活动会话。WASM采用每次调用独立Store，activate→execute/hook→deactivate，KV成功后提交；不承诺长期驻留实例状态。
 

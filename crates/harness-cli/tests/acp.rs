@@ -691,3 +691,67 @@ fn acp_subprocess_serves_initialize_and_new_session() {
     drop(input);
     assert!(child.wait().unwrap().success());
 }
+
+#[tokio::test]
+async fn preset_sets_initial_mode_for_new_sessions() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("a.txt"), "old").unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    runtime
+        .presets
+        .save(harness_contracts::PresetConfig {
+            id: "auto-run".into(),
+            name: "自动".into(),
+            description: None,
+            model_id: None,
+            effort: None,
+            approval: Some("auto".into()),
+        })
+        .await
+        .unwrap();
+    let (client_io, agent_io) = tokio::io::duplex(1024 * 1024);
+    let (agent_read, agent_write) = tokio::io::split(agent_io);
+    tokio::spawn(serve_transport(
+        runtime,
+        AcpOptions {
+            preset: Some("auto-run".into()),
+            ..Default::default()
+        },
+        ByteStreams::new(agent_write.compat_write(), agent_read.compat()),
+    ));
+    let (mut client, _log) = TestClient::new(client_io);
+    initialize(&mut client).await;
+    let response = client
+        .request(
+            "session/new",
+            json!({"cwd": source.to_str().unwrap(), "mcpServers": []}),
+        )
+        .await;
+    assert!(response.get("error").is_none(), "{response}");
+    assert_eq!(
+        response["result"]["modes"]["currentModeId"], "auto",
+        "预设审批档位作为新会话初始模式"
+    );
+}
+
+#[tokio::test]
+async fn unknown_preset_fails_startup() {
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let (client_io, agent_io) = tokio::io::duplex(64 * 1024);
+    let (agent_read, agent_write) = tokio::io::split(agent_io);
+    let outcome = serve_transport(
+        runtime,
+        AcpOptions {
+            preset: Some("ghost".into()),
+            ..Default::default()
+        },
+        ByteStreams::new(agent_write.compat_write(), agent_read.compat()),
+    )
+    .await;
+    let error = outcome.unwrap_err();
+    assert_eq!(error.code, "PRESET_NOT_FOUND", "未知预设启动即失败");
+    drop(client_io);
+}

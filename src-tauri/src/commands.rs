@@ -275,6 +275,21 @@ pub async fn default_selection_save(
 }
 #[tauri::command]
 #[specta::specta]
+pub async fn preset_list(state: Backend<'_>) -> AppResult<Vec<PresetInfo>> {
+    state.presets.list().await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn preset_save(state: Backend<'_>, preset: PresetConfig) -> AppResult<PresetConfig> {
+    state.presets.save(preset).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn preset_remove(state: Backend<'_>, id: String) -> AppResult<()> {
+    state.presets.remove(&id).await
+}
+#[tauri::command]
+#[specta::specta]
 pub async fn approval_list(state: Backend<'_>) -> AppResult<Vec<ApprovalRequest>> {
     Ok(state.approvals.list())
 }
@@ -447,6 +462,9 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         model_fetch_available,
         default_selection_get,
         default_selection_save,
+        preset_list,
+        preset_save,
+        preset_remove,
         approval_list,
         approval_resolve,
         plugin_list,

@@ -36,6 +36,9 @@ export const commands = {
 	effort: string | null,
 } | null, AppError>(__TAURI_INVOKE("default_selection_get")),
 	defaultSelectionSave: (selection: DefaultSelection) => typedError<null, AppError>(__TAURI_INVOKE("default_selection_save", { selection })),
+	presetList: () => typedError<PresetInfo[], AppError>(__TAURI_INVOKE("preset_list")),
+	presetSave: (preset: PresetConfig) => typedError<PresetConfig, AppError>(__TAURI_INVOKE("preset_save", { preset })),
+	presetRemove: (id: string) => typedError<null, AppError>(__TAURI_INVOKE("preset_remove", { id })),
 	approvalList: () => typedError<ApprovalRequest[], AppError>(__TAURI_INVOKE("approval_list")),
 	approvalResolve: (id: string, allow: boolean) => typedError<null, AppError>(__TAURI_INVOKE("approval_resolve", { id, allow })),
 	pluginList: () => typedError<PluginInfo[], AppError>(__TAURI_INVOKE("plugin_list")),
@@ -175,6 +178,22 @@ export type PluginInfo = {
 	status: string,
 	description: string,
 };
+
+/**  用户自定义预设：命名的会话能力配置包（模型/effort/审批策略），可选字段缺省表示该项不覆盖。 */
+export type PresetConfig = {
+	id: string,
+	name: string,
+	description?: string | null,
+	modelId?: string | null,
+	effort?: string | null,
+	approval?: string | null,
+};
+
+/**  预设列表行：配置附运行时计算的 broken 标记（不落库），可读但不可直接构建模型。 */
+export type PresetInfo = {
+	/**  预设不可用的原因（模型缺失/停用、effort 不支持等）；None 表示可用。 */
+	broken: string | null,
+} & PresetConfig;
 
 export type ProtocolEndpoint = {
 	apiMode: ApiMode,

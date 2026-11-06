@@ -31,6 +31,8 @@ use std::{
 pub struct AcpOptions {
     /// 模型 ID；缺省时回落到 settings `cli.default_model`。
     pub model: Option<String>,
+    /// 能力预设；缺省时回落到 settings `cli.default_preset`，显式 `--model` 优先于预设字段。
+    pub preset: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,6 +231,7 @@ fn internal_error(e: impl std::fmt::Display) -> agent_client_protocol::Error {
 struct AcpState {
     runtime: Arc<Runtime>,
     model: Option<String>,
+    preset: Option<harness_runtime::presets::ResolvedPreset>,
     initialized: AtomicBool,
     /// ACP 会话（id = 内部会话 UUID）→ 工作区与审批策略。
     sessions: Mutex<BTreeMap<String, (String, Policy)>>,
@@ -239,6 +242,15 @@ struct AcpState {
 }
 
 impl AcpState {
+    /// 新会话的初始审批策略：预设档位优先，缺省 ask；`session/set_mode` 仍可切换。
+    fn initial_policy(&self) -> Policy {
+        self.preset
+            .as_ref()
+            .and_then(|resolved| resolved.approval.as_deref())
+            .and_then(Policy::parse)
+            .unwrap_or(Policy::Ask)
+    }
+
     fn known(&self, session: &str) -> bool {
         self.sessions.lock().unwrap().contains_key(session)
     }
@@ -271,7 +283,10 @@ pub async fn serve_transport(
     options: AcpOptions,
     transport: impl ConnectTo<agent_client_protocol::Agent>,
 ) -> AppResult<()> {
+    // 预设启动时解析一次，未知 ID 立即失败而不是在每个回合报错。
+    let preset = crate::manage::resolve_preset(&runtime, options.preset.as_deref()).await?;
     let state = Arc::new(AcpState {
+        preset,
         runtime,
         model: options.model,
         initialized: AtomicBool::new(false),
@@ -338,14 +353,15 @@ async fn run_connection(
                     Ok(session) => session,
                     Err(e) => return responder.respond_with_error(internal_error(e)),
                 };
+                let initial = new_session.initial_policy();
                 new_session
                     .sessions
                     .lock()
                     .unwrap()
-                    .insert(session.id.clone(), (workspace.id, Policy::Ask));
+                    .insert(session.id.clone(), (workspace.id, initial));
                 responder.respond(
                     NewSessionResponse::new(SessionId::new(session.id.as_str()))
-                        .modes(modes_state(Policy::Ask)),
+                        .modes(modes_state(initial)),
                 )
             },
             on_receive_request!(),
@@ -410,9 +426,10 @@ async fn run_connection(
                 };
                 let runtime = prompt.runtime.clone();
                 let explicit = prompt.model.clone();
+                let preset = prompt.preset.clone();
                 // 长回合移出 dispatch loop，保证 session/cancel 可达；responder 移入延迟应答。
                 cx.spawn(async move {
-                    let outcome = run_turn(runtime, &session_id, text, explicit).await;
+                    let outcome = run_turn(runtime, &session_id, text, explicit, preset).await;
                     match outcome {
                         Ok(status) => responder.respond(PromptResponse::new(stop_reason(&status))),
                         // 取消经模型调用错误返回，按规范必须应答 cancelled。
@@ -484,9 +501,18 @@ async fn run_turn(
     session_id: &str,
     text: String,
     explicit_model: Option<String>,
+    preset: Option<harness_runtime::presets::ResolvedPreset>,
 ) -> AppResult<String> {
-    let model_id = crate::manage::resolve_model_id(&runtime, explicit_model).await?;
-    let model = runtime.models.build_model(&model_id).await?;
+    // 分层：--model > 预设 modelId > cli.default_model；effort 取预设档位（显式参数无对应项）。
+    let model_id = crate::manage::resolve_model_id(
+        &runtime,
+        explicit_model.or_else(|| crate::manage::preset_model(&preset)),
+    )
+    .await?;
+    let model = runtime
+        .models
+        .build_model_with(&model_id, crate::manage::preset_effort(&preset))
+        .await?;
     let mut events = runtime.subscribe();
     runtime
         .run_session_with_attachments(session_id.to_owned(), text, model, Vec::new())

@@ -176,6 +176,9 @@ pub enum ProviderCompatibility {
 /// 已知推理档位，语义强度从低到高；efforts 为空表示该模型不提供 effort 选择。
 pub const KNOWN_EFFORTS: [&str; 6] = ["disabled", "minimal", "low", "medium", "high", "max"];
 
+/// 已知审批策略档位，与 CLI/ACP 的三档策略一一对应。
+pub const KNOWN_APPROVALS: [&str; 3] = ["ask", "auto", "never"];
+
 /// 内置供应商随程序分发的只读模型条目；启用状态由个人层的 `disabled_models` 覆盖。
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -297,6 +300,32 @@ pub struct DefaultSelection {
     pub effort: Option<String>,
 }
 
+/// 用户自定义预设：命名的会话能力配置包（模型/effort/审批策略），可选字段缺省表示该项不覆盖。
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PresetConfig {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub model_id: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
+    #[serde(default)]
+    pub approval: Option<String>,
+}
+
+/// 预设列表行：配置附运行时计算的 broken 标记（不落库），可读但不可直接构建模型。
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PresetInfo {
+    #[serde(flatten)]
+    pub preset: PresetConfig,
+    /// 预设不可用的原因（模型缺失/停用、effort 不支持等）；None 表示可用。
+    pub broken: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginInfo {
@@ -404,6 +433,47 @@ mod lsp_config_tests {
         .unwrap();
         assert_eq!(config.args, Vec::<String>::new());
         assert_eq!(config.extensions, vec!["py"]);
+    }
+}
+
+#[cfg(test)]
+mod preset_tests {
+    use super::*;
+
+    /// 预设可选字段序列化缺省；camelCase 键名与桌面绑定一致。
+    #[test]
+    fn preset_roundtrips_with_optional_fields() {
+        let preset = PresetConfig {
+            id: "refactor".into(),
+            name: "批量重构".into(),
+            description: Some("自动审批跑批量任务".into()),
+            model_id: Some("builtin:bigmodel:glm-5.3".into()),
+            effort: Some("high".into()),
+            approval: Some("auto".into()),
+        };
+        let json = serde_json::to_string(&preset).unwrap();
+        assert!(json.contains("\"modelId\""));
+        let back: PresetConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, "refactor");
+        assert_eq!(back.model_id.as_deref(), Some("builtin:bigmodel:glm-5.3"));
+        assert_eq!(back.effort.as_deref(), Some("high"));
+        assert_eq!(back.approval.as_deref(), Some("auto"));
+    }
+
+    /// 旧存储/手写 JSON 允许只给 id，其余字段全部缺省。
+    #[test]
+    fn preset_minimal_json_defaults() {
+        let preset: PresetConfig = serde_json::from_str(r#"{"id":"p1","name":"p1"}"#).unwrap();
+        assert_eq!(preset.description, None);
+        assert_eq!(preset.model_id, None);
+        assert_eq!(preset.effort, None);
+        assert_eq!(preset.approval, None);
+    }
+
+    /// 审批档位集合与 CLI/ACP 的三档策略一一对应。
+    #[test]
+    fn known_approvals_cover_policy_set() {
+        assert_eq!(KNOWN_APPROVALS, ["ask", "auto", "never"]);
     }
 }
 

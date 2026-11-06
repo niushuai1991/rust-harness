@@ -450,3 +450,24 @@ describe('斜杠命令补全',()=>{
   await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','/clear 帮我重开','m',expect.any(Function),undefined,null));
  });
 });
+
+describe('能力预设',()=>{
+ it('发送框选择预设填充级联，手改级联视为放弃预设',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name:string,args:any)=>{
+   if(name==='preset_list')return [{id:'p1',name:'快速响应',description:null,modelId:'m',effort:'high',approval:'auto',broken:null},{id:'stale',name:'失效预设',description:null,modelId:'ghost',effort:null,approval:null,broken:'模型 ghost 不存在'}];
+   return original(name,args);
+  });
+  render(<App/>);await screen.findByText('内容 a');
+  const presetSelect=screen.getByLabelText('能力预设') as HTMLSelectElement;
+  expect(presetSelect.value).toBe('');
+  const staleOption=screen.getByRole('option',{name:/失效预设/}) as HTMLOptionElement;
+  expect(staleOption.disabled).toBe(true);
+  fireEvent.change(presetSelect,{target:{value:'p1'}});
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('default_selection_save',{selection:{modelId:'m',effort:'high'}}));
+  expect((screen.getByLabelText('推理档位') as HTMLSelectElement).value).toBe('high');
+  // 手改档位即放弃预设
+  fireEvent.change(screen.getByLabelText('推理档位'),{target:{value:'low'}});
+  expect((screen.getByLabelText('能力预设') as HTMLSelectElement).value).toBe('');
+ });
+});

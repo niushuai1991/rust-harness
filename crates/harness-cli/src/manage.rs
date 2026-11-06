@@ -289,6 +289,161 @@ pub fn ensure_model_exists(models: &[ModelConfig], id: &str) -> AppResult<()> {
     }
 }
 
+pub const DEFAULT_PRESET_KEY: &str = "cli.default_preset";
+
+#[derive(Debug, clap::Args)]
+pub struct PresetsArgs {
+    #[command(subcommand)]
+    pub cmd: Option<PresetsCmd>,
+}
+
+#[derive(Debug, clap::Subcommand)]
+pub enum PresetsCmd {
+    /// 列出全部预设（内置置顶，附可用性标记）
+    List,
+    /// 保存（upsert）一个预设；未指定的能力字段不覆盖
+    Save {
+        /// 预设 ID
+        id: String,
+        /// 显示名称（缺省取 ID）
+        #[arg(long)]
+        name: Option<String>,
+        /// 一句话说明
+        #[arg(long)]
+        description: Option<String>,
+        /// 模型 ID
+        #[arg(long)]
+        model: Option<String>,
+        /// 推理档位（必须在所选模型支持列表内）
+        #[arg(long)]
+        effort: Option<String>,
+        /// 审批策略 ask|auto|never（仅 CLI/JSON-RPC/ACP 生效）
+        #[arg(long)]
+        approval: Option<String>,
+    },
+    /// 删除一个用户预设
+    Remove {
+        /// 预设 ID
+        id: String,
+    },
+    /// 查看、设置或清除 CLI 默认预设（run/chat/ACP 未显式 --preset 时的回落）
+    Default {
+        /// 预设 ID（缺省为查看当前值）
+        preset_id: Option<String>,
+        /// 清除默认预设设置
+        #[arg(long, conflicts_with = "preset_id")]
+        clear: bool,
+    },
+}
+
+pub async fn presets(runtime: Arc<Runtime>, args: PresetsArgs) -> AppResult<()> {
+    match args.cmd.unwrap_or(PresetsCmd::List) {
+        PresetsCmd::List => {
+            for info in runtime.presets.list().await? {
+                let state = match &info.broken {
+                    Some(reason) => format!("\t不可用（{reason}）"),
+                    None => String::new(),
+                };
+                println!(
+                    "{}\t{}\t{}\t{}\t{}\t{}{}",
+                    info.preset.id,
+                    info.preset.name,
+                    info.preset.model_id.as_deref().unwrap_or("-"),
+                    info.preset.effort.as_deref().unwrap_or("-"),
+                    info.preset.approval.as_deref().unwrap_or("-"),
+                    if info.preset.id == harness_runtime::presets::BUILTIN_PRESET_ID {
+                        "内置"
+                    } else {
+                        "-"
+                    },
+                    state
+                );
+            }
+        }
+        PresetsCmd::Save {
+            id,
+            name,
+            description,
+            model,
+            effort,
+            approval,
+        } => {
+            let saved = runtime
+                .presets
+                .save(harness_contracts::PresetConfig {
+                    id,
+                    name: name.unwrap_or_default(),
+                    description,
+                    model_id: model,
+                    effort,
+                    approval,
+                })
+                .await?;
+            println!("已保存预设 {}（{}）", saved.id, saved.name);
+        }
+        PresetsCmd::Remove { id } => {
+            runtime.presets.remove(&id).await?;
+            println!("已删除预设 {id}");
+        }
+        PresetsCmd::Default { preset_id, clear } => {
+            if clear {
+                runtime.store.set(DEFAULT_PRESET_KEY, &Value::Null).await?;
+                println!("已清除 CLI 默认预设。");
+                return Ok(());
+            }
+            match preset_id {
+                Some(id) => {
+                    runtime.presets.resolve(&id).await?;
+                    runtime.store.set(DEFAULT_PRESET_KEY, &json!(id)).await?;
+                    println!("已设置 CLI 默认预设：{id}");
+                }
+                None => match current_default_preset(&runtime).await? {
+                    Some(id) => println!("CLI 默认预设：{id}"),
+                    None => println!("CLI 默认预设未设置（harness presets default <id>）。"),
+                },
+            }
+        }
+    }
+    Ok(())
+}
+
+/// run/chat/ACP 的预设解析：显式 --preset > settings `cli.default_preset` > 无预设。
+pub async fn resolve_preset(
+    runtime: &Arc<Runtime>,
+    explicit: Option<&str>,
+) -> AppResult<Option<harness_runtime::presets::ResolvedPreset>> {
+    let id = match explicit {
+        Some(id) => Some(id.to_owned()),
+        None => current_default_preset(runtime).await?,
+    };
+    match id {
+        Some(id) => Ok(Some(runtime.presets.resolve(&id).await?)),
+        None => Ok(None),
+    }
+}
+
+pub(crate) fn preset_model(
+    preset: &Option<harness_runtime::presets::ResolvedPreset>,
+) -> Option<String> {
+    preset
+        .as_ref()
+        .and_then(|resolved| resolved.model_id.clone())
+}
+
+pub(crate) fn preset_effort(
+    preset: &Option<harness_runtime::presets::ResolvedPreset>,
+) -> Option<String> {
+    preset.as_ref().and_then(|resolved| resolved.effort.clone())
+}
+
+async fn current_default_preset(runtime: &Arc<Runtime>) -> AppResult<Option<String>> {
+    Ok(runtime
+        .store
+        .get(DEFAULT_PRESET_KEY)
+        .await?
+        .and_then(|value| value.as_str().map(str::to_owned)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

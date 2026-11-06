@@ -32,6 +32,9 @@ pub struct Args {
     /// 审批策略；chat 默认 ask
     #[arg(long)]
     pub approval: Option<Approval>,
+    /// 能力预设（模型/档位/审批策略的命名组合；显式参数优先于预设字段）
+    #[arg(long)]
+    pub preset: Option<String>,
     /// 颜色输出
     #[arg(long, default_value = "auto")]
     pub color: ColorChoice,
@@ -61,7 +64,14 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<()> {
     if !std::io::stdin().is_terminal() {
         return Err(AppError::new("TTY", "chat 需要交互式终端（stdin 为 TTY）"));
     }
-    let mut policy = args.approval.unwrap_or(Approval::Ask);
+    // 预设层：显式 --preset > settings `cli.default_preset`；字段级仍以显式参数优先。
+    let preset = manage::resolve_preset(&runtime, args.preset.as_deref()).await?;
+    let preset_approval = preset
+        .as_ref()
+        .and_then(|resolved| resolved.approval.as_deref())
+        .map(crate::approval::parse_approval)
+        .transpose()?;
+    let mut policy = args.approval.or(preset_approval).unwrap_or(Approval::Ask);
     let (workspace_id, mut session_id, warning) = run::resolve_session_target(
         &runtime,
         args.cwd.as_deref(),
@@ -70,8 +80,15 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<()> {
         "chat 会话",
     )
     .await?;
-    let mut model_id = manage::resolve_model_id(&runtime, args.model.clone()).await?;
-    let effort = args.effort.clone();
+    let mut model_id = manage::resolve_model_id(
+        &runtime,
+        args.model.clone().or_else(|| manage::preset_model(&preset)),
+    )
+    .await?;
+    let effort = args
+        .effort
+        .clone()
+        .or_else(|| manage::preset_effort(&preset));
     let mut provider = runtime
         .models
         .build_model_with(&model_id, effort.clone())

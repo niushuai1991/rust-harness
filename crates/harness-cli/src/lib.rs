@@ -84,8 +84,28 @@ pub async fn dispatch(runtime: Arc<Runtime>, method: &str, p: Value) -> AppResul
                 .await?
         ),
         "session.send" => {
-            let model =
-                provider_with_effort(&runtime, field(&p, "modelId")?, p["effort"].as_str()).await?;
+            // 分层：显式 modelId/effort > presetId 预设字段；均无模型时报错列出可用项。
+            // 编程接口不读 cli.default_preset，预设仅随显式 presetId 生效。
+            let preset = match p.get("presetId").and_then(Value::as_str) {
+                Some(id) => Some(runtime.presets.resolve(id).await?),
+                None => None,
+            };
+            let effort = p
+                .get("effort")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| crate::manage::preset_effort(&preset));
+            let model = match p.get("modelId").and_then(Value::as_str) {
+                Some(id) => provider_with_effort(&runtime, id, effort.as_deref()).await?,
+                None => {
+                    let model_id = crate::manage::resolve_model_id(
+                        &runtime,
+                        crate::manage::preset_model(&preset),
+                    )
+                    .await?;
+                    provider_with_effort(&runtime, &model_id, effort.as_deref()).await?
+                }
+            };
             runtime
                 .run_session_with_attachments(
                     field(&p, "sessionId")?.into(),
@@ -213,6 +233,17 @@ pub async fn dispatch(runtime: Arc<Runtime>, method: &str, p: Value) -> AppResul
                         .ok_or_else(|| AppError::new("INVALID_PARAMS", "enabled"))?,
                 )
                 .await?;
+            Value::Null
+        }
+        "preset.list" => json!(runtime.presets.list().await?),
+        "preset.save" => json!(
+            runtime
+                .presets
+                .save(serde_json::from_value(p["preset"].clone()).map_err(err)?)
+                .await?
+        ),
+        "preset.remove" => {
+            runtime.presets.remove(field(&p, "id")?).await?;
             Value::Null
         }
         "plugin.list" => json!(runtime.plugins.list()?),
