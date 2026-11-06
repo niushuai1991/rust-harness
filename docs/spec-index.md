@@ -17,6 +17,7 @@
 | [P2 后台任务桌面可视化计划](specs/p2-background-tasks-plan.md) | 2026-11-06（计划拟制） | 已实施，Rust 10 项与前端 42 项测试通过（2026-11-06）；桌面 UI 抽查待用户 | P2 项：后台 Shell/子代理/定时任务事件卡片渲染与会话级任务面板，宿主查询/取消/删除命令。 |
 | [计划/目标管理面板计划](specs/plan-goal-panel-plan.md) | 2026-11-06（计划拟制） | 已实施，Rust 2 项与前端 6 项新增测试通过（2026-11-06）；桌面 UI 抽查待用户 | P2「计划/目标」收尾：跨会话只读汇总面板，`plan_overview` 命令与状态演变历史；不做 UI 写入通道。 |
 | [输入框斜杠快捷指令计划](specs/slash-commands-plan.md) | 2026-11-06（计划批准） | 已实施，Rust 125 项与前端 59 项测试通过（2026-11-06）；两端交互抽查待用户 | CLI chat 斜杠命令注册表、crossterm 行编辑与 `/` 补全弹窗、五个新增命令；桌面端 composer 菜单与 `session_compact`。 |
+| [PTY 执行世界（本地沙箱终端）计划](specs/pty-execution-world-plan.md) | 2026-11-06（计划拟制） | 已实现，Rust 135 项与前端 52 项测试通过（2026-11-06）；真实 ConPTY 集成测试在开发机预检跳过（该机 ConPTY 客户端连接不可用），由 CI windows runner 真实执行；真实模型端到端待用户抽查 | P2 项：沙箱内 ConPTY 持久终端，`terminal_open/write/read/close` 工具组；自研 ConPTY + 受限 token spawn；SSH 远端仅留 trait seam。 |
 
 ## 关系说明
 
@@ -29,6 +30,7 @@
 - P2 后台任务桌面可视化计划为 P2 验收项专项计划，只补齐人机可见性，不改变 orchestration 工具语义与审批策略。
 - 计划/目标管理面板计划为 P2「计划/目标」收尾专项，面板为只读派生视图，事件流仍是唯一事实来源，不新增 UI 写入通道。
 - 输入框斜杠快捷指令计划落地 cli-plan 预留的 REPL 体验升级，仍不做全屏 TUI；两端 `/init` 提示词以 CLI 常量为单一事实源。
+- PTY 执行世界计划为 P2 验收项专项计划，自研 ConPTY 与受限 token 沙箱配对构成单一本地执行世界；`PtyWorld` trait 为 P3 SSH 远端执行的接入 seam，终端打开一次审批覆盖后续输入。
 - 当前完成情况以 [能力状态矩阵](capability-matrix.md) 为准，具体执行与验证证据见 [执行进度](progress.md) 和 [交付记录](delivery.md)。
 - 后续发布仅构建使用系统已有 WebView2 的单一 NSIS 包；专项计划中的双安装包与测试数量仅对应 0.1.2 当次交付。
 

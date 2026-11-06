@@ -137,6 +137,24 @@ describe('后台任务可视化',()=>{
  });
 });
 
+const terminalEvents:SessionEvent[]=[
+ {id:'t1',sessionId:'a',seq:'1',kind:'terminal.opened',data:{id:'term-1',shell:'pwsh',status:'running'},createdAt:'2026-11-06T02:00:00Z'},
+ {id:'t2',sessionId:'a',seq:'2',kind:'terminal.closed',data:{id:'term-1',status:'exited',exitCode:0,outputBlobHash:'blob-hash-1'},createdAt:'2026-11-06T02:01:00Z'},
+ {id:'t3',sessionId:'a',seq:'3',kind:'terminal.closed',data:{id:'term-2',status:'interrupted',error:'应用中断，未重放终端副作用'},createdAt:'2026-11-06T02:02:00Z'},
+];
+describe('终端事件可视化',()=>{
+ it('消息流渲染终端打开与关闭卡片',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_events'?terminalEvents:original(name,args));
+  render(<App/>);
+  await screen.findByText(/已打开交互式终端 term-1/);
+  expect(screen.getByText(/交互式终端已结束 term-1/)).toBeInTheDocument();
+  expect(screen.getByText('已退出')).toBeInTheDocument();
+  expect(screen.getByText('已中断')).toBeInTheDocument();
+  expect(screen.getByText(/blob-hash-1/)).toBeInTheDocument();
+ });
+});
+
 
 describe('工作区的首次会话',()=>{
  it('选择没有会话的新工作区后可直接点击输入并发送',async()=>{

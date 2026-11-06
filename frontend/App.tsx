@@ -15,6 +15,7 @@ import {PlansPanel} from './PlansPanel';
 import type {WorkspaceInfo,SessionInfo,SessionEvent,ModelConfig,ApprovalRequest,PluginInfo,FileChange,ArtifactMetadata} from './types';
 
 type Panel='models'|'plugins'|'diff'|'tasks'|'plans'|null;
+const TERMINAL_STATUS:{[status:string]:string}={running:'运行中',exited:'已退出',terminated:'已终止',interrupted:'已中断'};
 const basename=(path:string)=>path.split(/[\\/]/).filter(Boolean).at(-1)??path;
 const printable=(value:unknown)=>typeof value==='string'?value:JSON.stringify(value,null,2);
 export default function App(){
@@ -193,6 +194,11 @@ export function EventCard({event,...extras}:{event:SessionEvent}&EventCardExtras
   return <details className="tool-card"><summary><Terminal size={15}/><strong>后台任务已结束</strong><span className={status==='completed'?'':'conflict'}>{JOB_STATUS[status]??status}</span></summary>{output?<pre>{`退出码 ${printable(output.exit_code)}\n【stdout】\n${printable(output.stdout??'')}\n【stderr】\n${printable(output.stderr??'')}`}</pre>:data.error!=null&&<pre>错误：{printable(data.error)}</pre>}</details>;
  }
  if(kind==='job.cancel_requested')return <div className="turn-status">已请求取消后台任务 {printable(data.id)}</div>;
+ if(kind==='terminal.opened')return <details className="tool-card"><summary><Terminal size={15}/><strong>{`已打开交互式终端 ${printable(data.id)}`}</strong><span>{TERMINAL_STATUS[String(data.status)]??'运行中'}</span></summary><pre>{`shell：${printable(data.shell)}`}</pre></details>;
+ if(kind==='terminal.closed'){
+  const status=String(data.status);
+  return <details className="tool-card"><summary><Terminal size={15}/><strong>{`交互式终端已结束 ${printable(data.id)}`}</strong><span className={status==='exited'?'':'conflict'}>{TERMINAL_STATUS[status]??status}</span></summary><pre>{[data.exitCode!=null?`退出码 ${printable(data.exitCode)}`:'',typeof data.outputBlobHash==='string'?`尾部输出 artifact：${data.outputBlobHash}${data.outputTruncated===true?'（有截断）':''}`:'',data.error!=null?`错误：${printable(data.error)}`:''].filter(Boolean).join('\n')}</pre></details>;
+ }
  if(kind==='schedule.created')return <details className="tool-card"><summary><CalendarClock size={15}/><strong>{printable(data.task)}</strong><span>{printable(data.at)}</span></summary><pre>{`执行时间：${printable(data.at)}\n模型：${printable(data.modelId)}`}</pre></details>;
  if(kind==='schedule.deleted')return <div className="turn-status">已删除定时任务 {printable(data.id)}</div>;
  if(kind.startsWith('schedule.')){const status=String(data.status??kind.slice('schedule.'.length));return <div className="turn-status">定时任务 {printable(data.id)}：{SCHEDULE_STATUS[status]??status}</div>}
