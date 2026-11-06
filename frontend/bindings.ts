@@ -25,6 +25,7 @@ export const commands = {
 	providerSave: (config: ProviderInfo, secret: string | null) => typedError<ProviderInfo, AppError>(__TAURI_INVOKE("provider_save", { config, secret })),
 	providerCopy: (id: string) => typedError<ProviderInfo, AppError>(__TAURI_INVOKE("provider_copy", { id })),
 	providerRemove: (id: string) => typedError<null, AppError>(__TAURI_INVOKE("provider_remove", { id })),
+	providerUsage: (providerId: string) => typedError<ProviderUsageSnapshot, AppError>(__TAURI_INVOKE("provider_usage", { providerId })),
 	modelRemove: (modelId: string) => typedError<null, AppError>(__TAURI_INVOKE("model_remove", { modelId })),
 	modelList: () => typedError<ModelConfig[], AppError>(__TAURI_INVOKE("model_list")),
 	modelSave: (config: ModelConfig, secret: string | null) => typedError<null, AppError>(__TAURI_INVOKE("model_save", { config, secret })),
@@ -215,6 +216,21 @@ export type ProviderInfo = {
 	disabledModels?: string[],
 };
 
+/**  单张剩余额度卡；`remaining_percent` 为剩余百分比（接口的已用口径已反转），`reset_at` 为毫秒时间戳。 */
+export type ProviderUsageCard = {
+	kind: UsageCardKind,
+	remainingPercent: number | null,
+	/**  毫秒时间戳远小于 2^53，specta 以 f64 导出 number，绕开 BigInt 禁令。 */
+	resetAt: number | null,
+};
+
+/**  供应商套餐与剩余额度快照；即查即返，不落库。 */
+export type ProviderUsageSnapshot = {
+	/**  套餐显示名（如 GLM Coding Pro）；由接口 level 字段归一化而来。 */
+	planName: string | null,
+	cards: ProviderUsageCard[],
+};
+
 export type SessionEvent = {
 	id: string,
 	sessionId: string,
@@ -238,6 +254,9 @@ export type ToolResult = {
 	content: string,
 	isError: boolean,
 };
+
+/**  供应商剩余额度的卡片类别；与智谱 quota/limit 接口的 type/unit 匹配规则对应。 */
+export type UsageCardKind = "fiveHour" | "weekly" | "tools";
 
 export type WorkspaceInfo = {
 	id: string,

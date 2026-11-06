@@ -246,6 +246,14 @@ pub async fn model_fetch_available(
 }
 #[tauri::command]
 #[specta::specta]
+pub async fn provider_usage(
+    state: Backend<'_>,
+    provider_id: String,
+) -> AppResult<ProviderUsageSnapshot> {
+    state.models.fetch_usage(&provider_id).await
+}
+#[tauri::command]
+#[specta::specta]
 pub async fn default_selection_get(state: Backend<'_>) -> AppResult<Option<DefaultSelection>> {
     state
         .store
@@ -446,6 +454,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         provider_save,
         provider_copy,
         provider_remove,
+        provider_usage,
         model_remove,
         model_list,
         model_save,

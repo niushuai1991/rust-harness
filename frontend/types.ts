@@ -13,6 +13,9 @@ export interface BuiltinModel {id:string;name:string;efforts:string[]}
 export interface ProviderInfo {id:string;name:string;builtin:boolean;compatibility:ProviderCompatibility;endpoints:ProtocolEndpoint[];defaultModel:string;credentialRef:string;proxy:string|null;enabled:boolean;builtinModels:BuiltinModel[];disabledModels:string[]}
 export interface ModelConfig {id:string;name:string;baseUrl:string;model:string;credentialRef:string;proxy:string|null;providerId:string;compatibility:ProviderCompatibility;apiMode:ApiMode;maxOutputTokens:number|null;efforts:string[];effort:string|null;enabled:boolean;builtin:boolean}
 export interface DefaultSelection {modelId:string;effort:string|null}
+export type UsageCardKind='fiveHour'|'weekly'|'tools';
+export interface ProviderUsageCard {kind:UsageCardKind;remainingPercent:number|null;resetAt:number|null}
+export interface ProviderUsageSnapshot {planName:string|null;cards:ProviderUsageCard[]}
 export interface ApprovalRequest {id:string;sessionId:string;tool:string;arguments:unknown;reason:string}
 export interface PluginInfo {id:string;name:string;version:string;kind:string;enabled:boolean;permissions:string[];status:string;description:string}
 export interface FileChange {path:string;kind:string;beforeHash:string|null;afterHash:string|null;sourceHash:string|null;conflict:boolean;beforeText:string|null;afterText:string|null}
