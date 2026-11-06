@@ -59,7 +59,7 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<()> {
         return Err(AppError::new("TTY", "chat 需要交互式终端（stdin 为 TTY）"));
     }
     let mut policy = args.approval.unwrap_or(Approval::Ask);
-    let (mut workspace_id, mut session_id, warning) = run::resolve_session_target(
+    let (workspace_id, mut session_id, warning) = run::resolve_session_target(
         &runtime,
         args.cwd.as_deref(),
         args.workspace.as_deref(),

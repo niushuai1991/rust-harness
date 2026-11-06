@@ -5,10 +5,10 @@
 
 use crate::slash::{SlashSpec, filter_slash_commands};
 use crossterm::{
-    cursor::{MoveDown, MoveToColumn, MoveUp},
+    cursor::{MoveTo, position},
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute, queue,
-    terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode},
+    terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode, size},
 };
 use std::io::{self, Write};
 use unicode_width::UnicodeWidthStr;
@@ -438,9 +438,13 @@ fn map_event(event: Event) -> Option<KeyAction> {
 fn read_line_raw(prompt: &str, history: &mut Vec<String>) -> io::Result<LineResult> {
     let mut out = io::stdout();
     let mut editor = Editor::new(std::mem::take(history));
-    let prompt_width = display_width(prompt);
+    // 输入行固定在提示符出现时的屏幕行；之后全部用绝对行号重绘，
+    // 避免相对位移（MoveUp/MoveDown）在 ConPTY 下与滚动/换行叠加产生错位。
+    let (_start_x, row) = position()?;
+    let screen_rows = size()?.1;
+    let max_rows = ((screen_rows.saturating_sub(row + 1)) as usize).min(MAX_POPUP_ROWS);
     let mut drawn_rows = 0usize;
-    execute!(out, MoveToColumn(0))?;
+    execute!(out, MoveTo(0, row), Clear(ClearType::UntilNewLine))?;
     let _ = write!(out, "{prompt}");
     out.flush()?;
     loop {
@@ -449,8 +453,8 @@ fn read_line_raw(prompt: &str, history: &mut Vec<String>) -> io::Result<LineResu
         };
         match editor.handle(action) {
             Some(outcome) => {
-                clear_popup_area(&mut out, prompt_width, drawn_rows)?;
-                execute!(out, MoveToColumn(0), Clear(ClearType::UntilNewLine))?;
+                clear_popup_area(&mut out, row, drawn_rows)?;
+                execute!(out, MoveTo(0, row), Clear(ClearType::UntilNewLine))?;
                 writeln!(out)?;
                 let buffer = editor.buffer().to_string();
                 if outcome == Outcome::Submitted && !buffer.trim().is_empty() {
@@ -463,40 +467,37 @@ fn read_line_raw(prompt: &str, history: &mut Vec<String>) -> io::Result<LineResu
                 });
             }
             None => {
-                drawn_rows = redraw(&mut out, prompt, &editor, drawn_rows)?;
+                drawn_rows = redraw(&mut out, prompt, row, max_rows, &editor, drawn_rows)?;
             }
         }
     }
 }
 
-/// 重绘输入行与弹窗区域，返回本次弹窗占用的行数。
+/// 重绘输入行与弹窗区域（绝对行号），返回本次弹窗占用的行数。
 fn redraw(
     out: &mut impl Write,
     prompt: &str,
+    row: u16,
+    max_rows: usize,
     editor: &Editor,
     previous_rows: usize,
 ) -> io::Result<usize> {
     let prompt_width = display_width(prompt);
     let candidates = editor.popup_candidates();
     let rows = if editor.popup_open() {
-        candidates.len().min(MAX_POPUP_ROWS)
+        candidates.len().min(max_rows)
     } else {
         0
     };
-    queue!(out, MoveToColumn(0), Clear(ClearType::UntilNewLine))?;
+    queue!(out, MoveTo(0, row), Clear(ClearType::UntilNewLine))?;
     let _ = write!(out, "{prompt}{}", editor.buffer());
-    // 先清掉上一帧可能更长的弹窗区域，再画新内容
-    let stale = previous_rows.saturating_sub(rows);
-    if stale > 0 {
-        for _ in 0..stale {
-            queue!(
-                out,
-                MoveDown(1),
-                MoveToColumn(0),
-                Clear(ClearType::UntilNewLine)
-            )?;
-        }
-        queue!(out, MoveUp(stale as u16))?;
+    // 清上一帧残留的弹窗行（新帧行数变少时）
+    for index in rows..previous_rows {
+        queue!(
+            out,
+            MoveTo(0, row + 1 + index as u16),
+            Clear(ClearType::UntilNewLine)
+        )?;
     }
     if rows > 0 {
         let selected = editor.popup_selected();
@@ -513,8 +514,7 @@ fn redraw(
             };
             queue!(
                 out,
-                MoveDown(1),
-                MoveToColumn(0),
+                MoveTo(0, row + 1 + index as u16),
                 Clear(ClearType::UntilNewLine)
             )?;
             let _ = write!(out, "{mark}{}  {}", spec.display(), spec.description);
@@ -522,31 +522,24 @@ fn redraw(
     }
     queue!(
         out,
-        MoveUp(rows as u16),
-        MoveToColumn(u16::try_from(prompt_width + editor.cursor_width()).unwrap_or(u16::MAX))
+        MoveTo(
+            u16::try_from(prompt_width + editor.cursor_width()).unwrap_or(u16::MAX),
+            row
+        )
     )?;
     out.flush()?;
     Ok(rows)
 }
 
-/// 清除弹窗残留并把光标放回输入行行首。
-fn clear_popup_area(out: &mut impl Write, prompt_width: usize, rows: usize) -> io::Result<()> {
-    if rows > 0 {
-        queue!(out, MoveToColumn(0))?;
-        for _ in 0..rows {
-            queue!(
-                out,
-                MoveDown(1),
-                MoveToColumn(0),
-                Clear(ClearType::UntilNewLine)
-            )?;
-        }
-        queue!(out, MoveUp(rows as u16))?;
+/// 清除弹窗残留行（提交/退出路径）。
+fn clear_popup_area(out: &mut impl Write, row: u16, rows: usize) -> io::Result<()> {
+    for index in 0..rows {
+        queue!(
+            out,
+            MoveTo(0, row + 1 + index as u16),
+            Clear(ClearType::UntilNewLine)
+        )?;
     }
-    queue!(
-        out,
-        MoveToColumn(prompt_width.min(u16::MAX as usize) as u16)
-    )?;
     out.flush()?;
     Ok(())
 }

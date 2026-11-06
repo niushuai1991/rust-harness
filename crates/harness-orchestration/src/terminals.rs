@@ -7,7 +7,7 @@
 use async_trait::async_trait;
 use harness_contracts::*;
 use harness_platform::{PtyService, SandboxedPty, WorkspaceLease};
-use std::{path::Path, sync::Arc};
+use std::path::Path;
 use tokio_util::sync::CancellationToken;
 pub(crate) const TERMINAL_LIMIT: usize = 4;
 /// Execution-world seam: opening one terminal inside one world.
