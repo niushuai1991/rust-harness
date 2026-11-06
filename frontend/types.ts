@@ -14,3 +14,7 @@ export interface FileChange {path:string;kind:string;beforeHash:string|null;afte
 
 export interface ArtifactMetadata {hash:string;name:string;mediaType:string;size:number}
 export interface ArtifactChunk {encoding:'utf8'|'base64';content:string;nextOffset:number|null;totalSize:number}
+
+// Orchestration payloads (serde JSON from harness-orchestration JobInfo/Schedule).
+export interface JobInfo {id:string;command:string;status:string;cancelRequested:boolean;output:{stdout:string;stderr:string;exit_code:number}|null;error:unknown|null;createdAt:string}
+export interface ScheduleInfo {id:string;sessionId:string;workspaceId:string;at:string;task:string;modelId:string;status:string}

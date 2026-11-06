@@ -18,14 +18,26 @@ use tokio_util::sync::CancellationToken;
 const SCHEDULE_KEY: &str = "orchestration.schedules.v1";
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Schedule {
-    id: String,
-    session_id: String,
-    workspace_id: String,
-    at: String,
-    task: String,
-    model_id: String,
-    status: String,
+pub struct Schedule {
+    pub id: String,
+    pub session_id: String,
+    pub workspace_id: String,
+    pub at: String,
+    pub task: String,
+    pub model_id: String,
+    pub status: String,
+}
+/// Merged human view of one background shell job, derived from durable session events.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobInfo {
+    pub id: String,
+    pub command: String,
+    pub status: String,
+    pub cancel_requested: bool,
+    pub output: Option<Value>,
+    pub error: Option<Value>,
+    pub created_at: String,
 }
 struct State {
     runtime: Weak<Runtime>,
@@ -42,6 +54,38 @@ pub struct Installed {
 impl Installed {
     pub fn has_activity(&self) -> bool {
         !self.state.jobs.lock().unwrap().is_empty() || !self.state.agents.lock().unwrap().is_empty()
+    }
+    fn runtime(&self) -> AppResult<Arc<Runtime>> {
+        self.state
+            .runtime
+            .upgrade()
+            .ok_or_else(|| AppError::new("SHUTDOWN", "应用已关闭"))
+    }
+    /// Human panel: merged background shell job view for one session.
+    pub async fn session_jobs(&self, session: &str) -> AppResult<Vec<JobInfo>> {
+        let r = self.runtime()?;
+        self.state.session_jobs(&r, session).await
+    }
+    /// Human panel: request cancellation of a session-owned background job.
+    pub async fn cancel_job(&self, session: &str, id: &str) -> AppResult<()> {
+        let r = self.runtime()?;
+        self.state.cancel_job(&r, session, id).await.map(|_| ())
+    }
+    /// Human panel: schedules owned by one session.
+    pub async fn session_schedules(&self, session: &str) -> AppResult<Vec<Schedule>> {
+        let r = self.runtime()?;
+        Ok(self
+            .state
+            .schedules()
+            .await?
+            .into_iter()
+            .filter(|s| s.session_id == session)
+            .collect())
+    }
+    /// Human panel: delete a session-owned schedule and record the event.
+    pub async fn delete_schedule(&self, session: &str, id: &str) -> AppResult<()> {
+        let r = self.runtime()?;
+        self.state.delete_schedule(&r, session, id).await
     }
 }
 impl Drop for Installed {
@@ -259,20 +303,9 @@ impl ExternalTool for Tool {
                     .await?
             }
             "background_cancel" => {
-                let id = string(&args, "id")?;
-                let status = self.state.job_status(&r, &context.session_id, id).await?;
-                if let Some((owner, token)) = self.state.jobs.lock().unwrap().get(id)
-                    && owner == &context.session_id
-                {
-                    token.cancel();
-                }
-                r.append(
-                    &context.session_id,
-                    "job.cancel_requested",
-                    json!({"id":id}),
-                )
-                .await?;
-                json!({"id":id,"status":status["status"],"cancelRequested":true})
+                self.state
+                    .cancel_job(&r, &context.session_id, string(&args, "id")?)
+                    .await?
             }
             "agent_fork" => {
                 let source = string(&args, "sessionId")?;
@@ -380,15 +413,8 @@ impl ExternalTool for Tool {
             }
             "schedule_delete" => {
                 let id = string(&args, "id")?;
-                let _lock = self.state.schedules_lock.lock().await;
-                let mut schedules = self.state.schedules().await?;
-                let position = schedules
-                    .iter()
-                    .position(|s| s.id == id && s.session_id == context.session_id)
-                    .ok_or_else(|| AppError::new("SCHEDULE_SCOPE", "任务不存在或不属于本会话"))?;
-                schedules.remove(position);
-                self.state.save(&schedules).await?;
-                r.append(&context.session_id, "schedule.deleted", json!({"id":id}))
+                self.state
+                    .delete_schedule(&r, &context.session_id, id)
                     .await?;
                 json!({"id":id,"deleted":true})
             }
@@ -421,6 +447,70 @@ impl State {
             })
             .map(|e| e.data)
             .ok_or_else(|| AppError::new("JOB_SCOPE", "任务不存在或不属于本会话"))
+    }
+    async fn session_jobs(&self, r: &Runtime, session: &str) -> AppResult<Vec<JobInfo>> {
+        self.ready.get_or_try_init(|| self.recover_jobs()).await?;
+        let mut jobs: Vec<JobInfo> = Vec::new();
+        let mut index: HashMap<String, usize> = HashMap::new();
+        for e in r.store.events(session, 0).await? {
+            let Some(id) = e.data["id"].as_str().map(str::to_owned) else {
+                continue;
+            };
+            match e.kind.as_str() {
+                "job.started" => {
+                    index.insert(id.clone(), jobs.len());
+                    jobs.push(JobInfo {
+                        id,
+                        command: e.data["command"].as_str().unwrap_or_default().into(),
+                        status: "running".into(),
+                        cancel_requested: false,
+                        output: None,
+                        error: None,
+                        created_at: e.created_at.clone(),
+                    });
+                }
+                "job.cancel_requested" => {
+                    if let Some(pos) = index.get(&id) {
+                        jobs[*pos].cancel_requested = true;
+                    }
+                }
+                "job.finished" => {
+                    if let Some(pos) = index.get(&id) {
+                        let job = &mut jobs[*pos];
+                        job.status = e.data["status"].as_str().unwrap_or("finished").into();
+                        job.output = e.data.get("output").cloned().filter(|v| !v.is_null());
+                        job.error = e.data.get("error").cloned().filter(|v| !v.is_null());
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(jobs)
+    }
+    async fn cancel_job(&self, r: &Runtime, session: &str, id: &str) -> AppResult<Value> {
+        self.ready.get_or_try_init(|| self.recover_jobs()).await?;
+        let status = self.job_status(r, session, id).await?;
+        if let Some((owner, token)) = self.jobs.lock().unwrap().get(id)
+            && owner == session
+        {
+            token.cancel();
+        }
+        r.append(session, "job.cancel_requested", json!({"id":id}))
+            .await?;
+        Ok(json!({"id":id,"status":status["status"],"cancelRequested":true}))
+    }
+    async fn delete_schedule(&self, r: &Runtime, session: &str, id: &str) -> AppResult<()> {
+        let _lock = self.schedules_lock.lock().await;
+        let mut schedules = self.schedules().await?;
+        let position = schedules
+            .iter()
+            .position(|s| s.id == id && s.session_id == session)
+            .ok_or_else(|| AppError::new("SCHEDULE_SCOPE", "任务不存在或不属于本会话"))?;
+        schedules.remove(position);
+        self.save(&schedules).await?;
+        r.append(session, "schedule.deleted", json!({"id":id}))
+            .await?;
+        Ok(())
     }
     async fn recover_jobs(&self) -> AppResult<()> {
         let Some(r) = self.runtime.upgrade() else {

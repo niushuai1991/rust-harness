@@ -295,3 +295,118 @@ async fn dropping_install_cancels_shell_before_releasing_workspace_lease() {
     }
     panic!("关闭后任务未取消");
 }
+#[tokio::test]
+async fn session_jobs_reports_merged_status_and_session_scope() {
+    let (_d, r, c) = setup().await;
+    let i = install(r.clone()).unwrap();
+    r.append(
+        &c.session_id,
+        "job.started",
+        json!({"id":"old","command":"echo gone","status":"running"}),
+    )
+    .await
+    .unwrap();
+    r.append(&c.session_id, "job.cancel_requested", json!({"id":"old"}))
+        .await
+        .unwrap();
+    r.append(
+        &c.session_id,
+        "job.finished",
+        json!({"id":"old","status":"interrupted","error":"应用中断，未重放Shell副作用"}),
+    )
+    .await
+    .unwrap();
+    let jobs = i.session_jobs(&c.session_id).await.unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].id, "old");
+    assert_eq!(jobs[0].command, "echo gone");
+    assert_eq!(jobs[0].status, "interrupted");
+    assert!(jobs[0].cancel_requested);
+    assert_eq!(
+        jobs[0].error.as_ref().unwrap(),
+        "应用中断，未重放Shell副作用"
+    );
+    let other = r
+        .store
+        .create_session(&c.workspace_id, "另一会话")
+        .await
+        .unwrap();
+    assert!(i.session_jobs(&other.id).await.unwrap().is_empty());
+}
+#[cfg(windows)]
+#[tokio::test]
+async fn cancel_job_scopes_and_marks_cancellation() {
+    let (_d, r, c) = setup().await;
+    let i = install(r.clone()).unwrap();
+    let j = call(
+        &i,
+        &c,
+        "background_run",
+        json!({"command":"Start-Sleep -Seconds 30"}),
+    )
+    .await
+    .unwrap();
+    let id = j["id"].as_str().unwrap().to_owned();
+    let other = r
+        .store
+        .create_session(&c.workspace_id, "另一会话")
+        .await
+        .unwrap();
+    assert_eq!(
+        i.cancel_job(&other.id, &id).await.unwrap_err().code,
+        "JOB_SCOPE"
+    );
+    i.cancel_job(&c.session_id, &id).await.unwrap();
+    for _ in 0..100 {
+        let jobs = i.session_jobs(&c.session_id).await.unwrap();
+        let job = jobs.iter().find(|j| j.id == id).unwrap();
+        if job.status != "running" {
+            assert_eq!(job.status, "cancelled");
+            assert!(job.cancel_requested);
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    }
+    panic!("人工取消未结算");
+}
+#[tokio::test]
+async fn schedule_host_api_scopes_and_deletes() {
+    let (_d, r, c) = setup().await;
+    let i = install(r.clone()).unwrap();
+    let s = call(
+        &i,
+        &c,
+        "schedule_write",
+        json!({"at":"2099-01-01T00:00:00Z","task":"面板删除","modelId":"missing"}),
+    )
+    .await
+    .unwrap();
+    let other = r
+        .store
+        .create_session(&c.workspace_id, "另一会话")
+        .await
+        .unwrap();
+    assert!(i.session_schedules(&other.id).await.unwrap().is_empty());
+    let mine = i.session_schedules(&c.session_id).await.unwrap();
+    assert_eq!(mine.len(), 1);
+    assert_eq!(mine[0].id, s["id"]);
+    assert_eq!(mine[0].task, "面板删除");
+    assert_eq!(mine[0].status, "pending");
+    i.delete_schedule(&c.session_id, &mine[0].id).await.unwrap();
+    assert!(i.session_schedules(&c.session_id).await.unwrap().is_empty());
+    assert!(
+        r.store
+            .events(&c.session_id, 0)
+            .await
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == "schedule.deleted")
+    );
+    assert_eq!(
+        i.delete_schedule(&c.session_id, &mine[0].id)
+            .await
+            .unwrap_err()
+            .code,
+        "SCHEDULE_SCOPE"
+    );
+}
