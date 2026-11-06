@@ -256,6 +256,35 @@ impl Default for ModelConfig {
     }
 }
 
+/// 供应商剩余额度的卡片类别；与智谱 quota/limit 接口的 type/unit 匹配规则对应。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum UsageCardKind {
+    FiveHour,
+    Weekly,
+    Tools,
+}
+
+/// 单张剩余额度卡；`remaining_percent` 为剩余百分比（接口的已用口径已反转），`reset_at` 为毫秒时间戳。
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUsageCard {
+    pub kind: UsageCardKind,
+    pub remaining_percent: Option<f64>,
+    /// 毫秒时间戳远小于 2^53，specta 以 f64 导出 number，绕开 BigInt 禁令。
+    #[specta(type = f64)]
+    pub reset_at: Option<i64>,
+}
+
+/// 供应商套餐与剩余额度快照；即查即返，不落库。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUsageSnapshot {
+    /// 套餐显示名（如 GLM Coding Pro）；由接口 level 字段归一化而来。
+    pub plan_name: Option<String>,
+    pub cards: Vec<ProviderUsageCard>,
+}
+
 fn default_true() -> bool {
     true
 }
