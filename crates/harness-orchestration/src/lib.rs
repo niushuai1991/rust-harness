@@ -1,4 +1,5 @@
 //! Durable jobs, scoped agent messaging and application-lifetime scheduling.
+mod terminals;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use harness_contracts::*;
@@ -11,9 +12,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
+    path::Path,
     sync::{Arc, Mutex, Weak},
     time::Duration,
 };
+pub use terminals::{PlatformWorld, PtyWorld, TerminalSession};
+use terminals::{TERMINAL_LIMIT, TerminalEntry};
 use tokio_util::sync::CancellationToken;
 const SCHEDULE_KEY: &str = "orchestration.schedules.v1";
 #[derive(Clone, Serialize, Deserialize)]
@@ -44,6 +48,8 @@ struct State {
     stop: CancellationToken,
     jobs: Mutex<HashMap<String, (String, CancellationToken)>>,
     agents: Mutex<HashMap<String, usize>>,
+    terminals: Mutex<HashMap<String, Arc<TerminalEntry>>>,
+    world: Arc<dyn PtyWorld>,
     schedules_lock: tokio::sync::Mutex<()>,
     ready: tokio::sync::OnceCell<()>,
 }
@@ -95,6 +101,9 @@ impl Drop for Installed {
         for (_, token) in self.state.jobs.lock().unwrap().values() {
             token.cancel();
         }
+        for entry in self.state.terminals.lock().unwrap().values() {
+            entry.token.cancel();
+        }
         if let Some(runtime) = self.state.runtime.upgrade() {
             for id in self.state.agents.lock().unwrap().keys() {
                 runtime.cancel(id);
@@ -104,11 +113,17 @@ impl Drop for Installed {
 }
 /// Keep the returned owner alive for the entire application lifetime.
 pub fn install(runtime: Arc<Runtime>) -> AppResult<Installed> {
+    install_with(runtime, Arc::new(terminals::PlatformWorld))
+}
+/// Same as [`install`] with an injected execution world (tests, future remote worlds).
+pub fn install_with(runtime: Arc<Runtime>, world: Arc<dyn PtyWorld>) -> AppResult<Installed> {
     let state = Arc::new(State {
         runtime: Arc::downgrade(&runtime),
         stop: CancellationToken::new(),
         jobs: Mutex::new(HashMap::new()),
         agents: Mutex::new(HashMap::new()),
+        terminals: Mutex::new(HashMap::new()),
+        world,
         schedules_lock: tokio::sync::Mutex::new(()),
         ready: tokio::sync::OnceCell::new(),
     });
@@ -123,6 +138,10 @@ pub fn install(runtime: Arc<Runtime>) -> AppResult<Installed> {
         "schedule_write",
         "schedule_list",
         "schedule_delete",
+        "terminal_open",
+        "terminal_write",
+        "terminal_read",
+        "terminal_close",
     ] {
         registrations.push(runtime.register_tool(Arc::new(Tool {
             state: state.clone(),
@@ -133,7 +152,7 @@ pub fn install(runtime: Arc<Runtime>) -> AppResult<Installed> {
     tokio::spawn(async move {
         if ticker
             .ready
-            .get_or_try_init(|| ticker.recover_jobs())
+            .get_or_try_init(|| ticker.recover_all())
             .await
             .is_err()
         {
@@ -220,6 +239,26 @@ impl ExternalTool for Tool {
                 "创建持久单次定时任务；过期不补跑，执行仍遵守工具审批",
             ),
             "schedule_delete" => (json!({"id":s}), vec!["id"], "删除本会话的定时任务"),
+            "terminal_open" => (
+                json!({}),
+                vec![],
+                "在托管副本打开持久交互式PowerShell终端（ConPTY），返回终端id；交互式程序用terminal_*，一次性命令用shell；打开需审批且覆盖该终端后续输入，每会话最多4个",
+            ),
+            "terminal_write" => (
+                json!({"id":s,"input":s,"yieldMs":{"type":"integer","minimum":250,"maximum":30000}}),
+                vec!["id", "input"],
+                "向本会话已打开终端写入命令并等待增量输出（ANSI已过滤）；终端存续期间写入不再逐次审批",
+            ),
+            "terminal_read" => (
+                json!({"id":s,"yieldMs":{"type":"integer","minimum":250,"maximum":30000}}),
+                vec!["id"],
+                "读取本会话终端自上次读取以来的新输出，不写入",
+            ),
+            "terminal_close" => (
+                json!({"id":s}),
+                vec!["id"],
+                "关闭本会话终端并终止其进程树，返回尾部输出blob",
+            ),
             _ => (json!({}), vec![], "列出本会话的定时任务"),
         };
         ToolDefinition {
@@ -231,7 +270,12 @@ impl ExternalTool for Tool {
     fn requires_approval(&self) -> bool {
         !matches!(
             self.name.as_str(),
-            "background_status" | "agent_wait" | "schedule_list"
+            "background_status"
+                | "agent_wait"
+                | "schedule_list"
+                | "terminal_write"
+                | "terminal_read"
+                | "terminal_close"
         )
     }
     async fn execute(
@@ -427,6 +471,108 @@ impl ExternalTool for Tool {
                     .filter(|s| s.session_id == context.session_id)
                     .collect::<Vec<_>>()
             ),
+            "terminal_open" => {
+                let count = self
+                    .state
+                    .terminals
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .filter(|e| e.session_id == context.session_id)
+                    .count();
+                if count >= TERMINAL_LIMIT {
+                    return Err(AppError::new("TERMINAL_LIMIT", "每个会话最多4个终端"));
+                }
+                let lease = r.workspaces.acquire(&context.workspace_id)?;
+                let root = lease.info.replica_path.clone();
+                let token = self.state.stop.child_token();
+                let session = match self
+                    .state
+                    .world
+                    .spawn(Path::new(&root), token.clone())
+                    .await
+                {
+                    Ok(session) => session,
+                    Err(e) => {
+                        drop(lease);
+                        return Err(e);
+                    }
+                };
+                let id = new_id();
+                r.append(
+                    &context.session_id,
+                    "terminal.opened",
+                    json!({"id":id,"shell":"pwsh","status":"running"}),
+                )
+                .await?;
+                self.state.terminals.lock().unwrap().insert(
+                    id.clone(),
+                    Arc::new(TerminalEntry {
+                        session_id: context.session_id.clone(),
+                        session: tokio::sync::Mutex::new(session),
+                        _lease: lease,
+                        token,
+                    }),
+                );
+                json!({"id":id,"status":"running"})
+            }
+            "terminal_write" => {
+                let id = string(&args, "id")?.to_owned();
+                let input = string(&args, "input")?.to_owned();
+                let yield_ms = args["yieldMs"].as_u64().unwrap_or(1000).clamp(250, 30000);
+                let entry = self.state.terminal_entry(&id, &context.session_id)?;
+                let mut session = entry.session.lock().await;
+                session.write_input(&input).await?;
+                let output = session.read_output(yield_ms).await?;
+                let exit = session.exit_code().await;
+                drop(session);
+                if let Some(code) = exit {
+                    self.state
+                        .settle_terminal(&r, &context.session_id, &id, Some(code), "exited")
+                        .await?;
+                    json!({"id":id,"status":"exited","exitCode":code,"output":output})
+                } else {
+                    json!({"id":id,"status":"running","output":output})
+                }
+            }
+            "terminal_read" => {
+                let id = string(&args, "id")?.to_owned();
+                let yield_ms = args["yieldMs"].as_u64().unwrap_or(1000).clamp(250, 30000);
+                let entry = self.state.terminal_entry(&id, &context.session_id)?;
+                let mut session = entry.session.lock().await;
+                let output = session.read_output(yield_ms).await?;
+                let exit = session.exit_code().await;
+                drop(session);
+                if let Some(code) = exit {
+                    self.state
+                        .settle_terminal(&r, &context.session_id, &id, Some(code), "exited")
+                        .await?;
+                    json!({"id":id,"status":"exited","exitCode":code,"output":output})
+                } else {
+                    json!({"id":id,"status":"running","output":output})
+                }
+            }
+            "terminal_close" => {
+                let id = string(&args, "id")?.to_owned();
+                let entry = self.state.terminal_entry(&id, &context.session_id)?;
+                entry.session.lock().await.terminate();
+                let exit = tokio::time::timeout(Duration::from_secs(10), async {
+                    let mut session = entry.session.lock().await;
+                    session.exit_code().await
+                })
+                .await
+                .ok()
+                .flatten();
+                let status = if exit.is_some() {
+                    "exited"
+                } else {
+                    "terminated"
+                };
+                self.state
+                    .settle_terminal(&r, &context.session_id, &id, exit, status)
+                    .await?;
+                json!({"id":id,"closed":true,"status":status})
+            }
             _ => return Err(AppError::new("TOOL_UNAVAILABLE", &self.name)),
         };
         Ok(ToolResult {
@@ -436,8 +582,45 @@ impl ExternalTool for Tool {
     }
 }
 impl State {
+    /// Resolve a terminal owned by the calling session.
+    fn terminal_entry(&self, id: &str, session: &str) -> AppResult<Arc<TerminalEntry>> {
+        self.terminals
+            .lock()
+            .unwrap()
+            .get(id)
+            .filter(|e| e.session_id == session)
+            .cloned()
+            .ok_or_else(|| AppError::new("TERMINAL_SCOPE", "终端不存在或不属于本会话"))
+    }
+    /// Settle a finished terminal: spill tail into a blob, append `terminal.closed`,
+    /// drop the entry so the workspace lease is released.
+    async fn settle_terminal(
+        &self,
+        r: &Runtime,
+        session: &str,
+        id: &str,
+        exit: Option<i32>,
+        status: &str,
+    ) -> AppResult<()> {
+        let entry = self.terminals.lock().unwrap().remove(id);
+        let Some(entry) = entry else {
+            return Ok(());
+        };
+        let (tail, truncated) = entry.session.lock().await.spill();
+        let mut payload = json!({"id":id,"status":status});
+        if let Some(code) = exit {
+            payload["exitCode"] = code.into();
+        }
+        if !tail.trim().is_empty() {
+            let hash = r.store.put_blob(tail.as_bytes()).await?;
+            payload["outputBlobHash"] = hash.into();
+            payload["outputTruncated"] = truncated.into();
+        }
+        r.append(session, "terminal.closed", payload).await?;
+        Ok(())
+    }
     async fn job_status(&self, r: &Runtime, session: &str, id: &str) -> AppResult<Value> {
-        self.ready.get_or_try_init(|| self.recover_jobs()).await?;
+        self.ready.get_or_try_init(|| self.recover_all()).await?;
         r.store
             .events(session, 0)
             .await?
@@ -450,7 +633,7 @@ impl State {
             .ok_or_else(|| AppError::new("JOB_SCOPE", "任务不存在或不属于本会话"))
     }
     async fn session_jobs(&self, r: &Runtime, session: &str) -> AppResult<Vec<JobInfo>> {
-        self.ready.get_or_try_init(|| self.recover_jobs()).await?;
+        self.ready.get_or_try_init(|| self.recover_all()).await?;
         let mut jobs: Vec<JobInfo> = Vec::new();
         let mut index: HashMap<String, usize> = HashMap::new();
         for e in r.store.events(session, 0).await? {
@@ -489,7 +672,7 @@ impl State {
         Ok(jobs)
     }
     async fn cancel_job(&self, r: &Runtime, session: &str, id: &str) -> AppResult<Value> {
-        self.ready.get_or_try_init(|| self.recover_jobs()).await?;
+        self.ready.get_or_try_init(|| self.recover_all()).await?;
         let status = self.job_status(r, session, id).await?;
         if let Some((owner, token)) = self.jobs.lock().unwrap().get(id)
             && owner == session
@@ -536,6 +719,43 @@ impl State {
                 if !self.jobs.lock().unwrap().contains_key(id) {
                     r.append(&s.id,"job.finished",json!({"id":id,"status":"interrupted","error":"应用中断，未重放Shell副作用"})).await?;
                 }
+            }
+        }
+        Ok(())
+    }
+    /// First readiness step: settle both jobs and terminals left open by a restart.
+    async fn recover_all(&self) -> AppResult<()> {
+        self.recover_jobs().await?;
+        self.recover_terminals().await
+    }
+    /// Opened terminals without a `terminal.closed` event are settled as interrupted;
+    /// side effects are never replayed.
+    async fn recover_terminals(&self) -> AppResult<()> {
+        let Some(r) = self.runtime.upgrade() else {
+            return Ok(());
+        };
+        for s in r.store.sessions(None).await? {
+            let mut open = HashMap::new();
+            for e in r.store.events(&s.id, 0).await? {
+                if let Some(id) = e.data["id"].as_str() {
+                    match e.kind.as_str() {
+                        "terminal.opened" => {
+                            open.insert(id.to_owned(), ());
+                        }
+                        "terminal.closed" => {
+                            open.remove(id);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            for id in open.keys() {
+                r.append(
+                    &s.id,
+                    "terminal.closed",
+                    json!({"id":id,"status":"interrupted","error":"应用中断，未重放终端副作用"}),
+                )
+                .await?;
             }
         }
         Ok(())

@@ -410,3 +410,210 @@ async fn schedule_host_api_scopes_and_deletes() {
         "SCHEDULE_SCOPE"
     );
 }
+struct StubWorld;
+#[async_trait::async_trait]
+impl PtyWorld for StubWorld {
+    async fn spawn(
+        &self,
+        _root: &std::path::Path,
+        _cancel: CancellationToken,
+    ) -> AppResult<Box<dyn TerminalSession>> {
+        Ok(Box::new(StubTerminal {
+            echo: String::new(),
+            exited: false,
+        }))
+    }
+}
+struct StubTerminal {
+    echo: String,
+    exited: bool,
+}
+#[async_trait::async_trait]
+impl TerminalSession for StubTerminal {
+    async fn write_input(&mut self, input: &str) -> AppResult<()> {
+        if self.exited {
+            return Err(AppError::new("TERMINAL_GONE", "终端已退出"));
+        }
+        self.echo.push_str(input);
+        if input.contains("exit") {
+            self.exited = true;
+        }
+        Ok(())
+    }
+    async fn read_output(&mut self, _yield_ms: u64) -> AppResult<String> {
+        Ok(format!("回显:{}", std::mem::take(&mut self.echo)))
+    }
+    async fn exit_code(&mut self) -> Option<i32> {
+        self.exited.then_some(0)
+    }
+    fn spill(&self) -> (String, bool) {
+        ("stub 尾部输出".into(), false)
+    }
+    fn terminate(&self) {}
+}
+#[tokio::test]
+async fn terminal_open_write_read_close_with_stub_world() {
+    let (_d, r, c) = setup().await;
+    let i = install_with(r.clone(), Arc::new(StubWorld)).unwrap();
+    let opened = call(&i, &c, "terminal_open", json!({})).await.unwrap();
+    let id = opened["id"].as_str().unwrap().to_owned();
+    // 共享租约持有：终端存续期间人工同步（独占 refresh）被拒
+    assert_eq!(
+        r.workspaces.refresh(&c.workspace_id).unwrap_err().code,
+        "BUSY"
+    );
+    assert!(
+        r.store
+            .events(&c.session_id, 0)
+            .await
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == "terminal.opened" && e.data["id"] == opened["id"])
+    );
+    let written = call(
+        &i,
+        &c,
+        "terminal_write",
+        json!({"id":id,"input":"hello","yieldMs":100}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(written["status"], "running");
+    assert_eq!(written["output"], "回显:hello");
+    let read = call(&i, &c, "terminal_read", json!({"id":id,"yieldMs":50}))
+        .await
+        .unwrap();
+    assert_eq!(read["status"], "running");
+    let closed = call(&i, &c, "terminal_close", json!({"id":id}))
+        .await
+        .unwrap();
+    assert_eq!(closed["closed"], true);
+    let done = r
+        .store
+        .events(&c.session_id, 0)
+        .await
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find(|e| e.kind == "terminal.closed" && e.data["id"] == opened["id"])
+        .expect("缺少 terminal.closed 事件");
+    assert_eq!(done.data["status"], "terminated");
+    assert!(done.data["outputBlobHash"].is_string());
+    r.workspaces.refresh(&c.workspace_id).unwrap();
+    assert_eq!(
+        call(&i, &c, "terminal_write", json!({"id":id,"input":"x"}))
+            .await
+            .unwrap_err()
+            .code,
+        "TERMINAL_SCOPE"
+    );
+}
+#[tokio::test]
+async fn terminal_exit_settles_and_scopes() {
+    let (_d, r, c) = setup().await;
+    let i = install_with(r.clone(), Arc::new(StubWorld)).unwrap();
+    let opened = call(&i, &c, "terminal_open", json!({})).await.unwrap();
+    let id = opened["id"].as_str().unwrap().to_owned();
+    let written = call(
+        &i,
+        &c,
+        "terminal_write",
+        json!({"id":id,"input":"exit","yieldMs":100}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(written["status"], "exited");
+    assert_eq!(written["exitCode"], 0);
+    assert!(
+        r.store
+            .events(&c.session_id, 0)
+            .await
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == "terminal.closed"
+                && e.data["id"] == opened["id"]
+                && e.data["status"] == "exited")
+    );
+    let other = r
+        .store
+        .create_session(&c.workspace_id, "另一会话")
+        .await
+        .unwrap();
+    let mut other_context = c.clone();
+    other_context.session_id = other.id;
+    assert_eq!(
+        call(&i, &other_context, "terminal_read", json!({"id":id}))
+            .await
+            .unwrap_err()
+            .code,
+        "TERMINAL_SCOPE"
+    );
+}
+#[tokio::test]
+async fn terminal_limit_approval_and_recovery() {
+    let (_d, r, c) = setup().await;
+    r.append(
+        &c.session_id,
+        "terminal.opened",
+        json!({"id":"old","shell":"pwsh","status":"running"}),
+    )
+    .await
+    .unwrap();
+    let i = install_with(r.clone(), Arc::new(StubWorld)).unwrap();
+    for _ in 0..200 {
+        let settled = r
+            .store
+            .events(&c.session_id, 0)
+            .await
+            .unwrap()
+            .iter()
+            .any(|e| {
+                e.kind == "terminal.closed"
+                    && e.data["id"] == "old"
+                    && e.data["status"] == "interrupted"
+            });
+        if settled {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        r.store
+            .events(&c.session_id, 0)
+            .await
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == "terminal.closed"
+                && e.data["id"] == "old"
+                && e.data["status"] == "interrupted"),
+        "重启后未按 interrupted 结算未关闭终端"
+    );
+    let mut ids = Vec::new();
+    for _ in 0..4 {
+        ids.push(call(&i, &c, "terminal_open", json!({})).await.unwrap()["id"].clone());
+    }
+    assert_eq!(
+        call(&i, &c, "terminal_open", json!({}))
+            .await
+            .unwrap_err()
+            .code,
+        "TERMINAL_LIMIT"
+    );
+    let approval_of = |name: &str| {
+        Tool {
+            state: i.state.clone(),
+            name: name.into(),
+        }
+        .requires_approval()
+    };
+    assert!(approval_of("terminal_open"));
+    assert!(!approval_of("terminal_write"));
+    assert!(!approval_of("terminal_read"));
+    assert!(!approval_of("terminal_close"));
+    for id in ids {
+        call(&i, &c, "terminal_close", json!({"id":id}))
+            .await
+            .unwrap();
+    }
+    r.workspaces.refresh(&c.workspace_id).unwrap();
+}

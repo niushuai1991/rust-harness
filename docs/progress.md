@@ -109,3 +109,12 @@
 - 顺手修复 main 预存在告警：`harness-orchestration::session_schedules` 的未使用变量（PR #14 合并遗留），`runtime()?` 保留 SHUTDOWN 检查语义。
 - TDD：`plan_states.rs` 2 项先红（`latest_states` 缺失）后绿；前端 `PlansPanel.test.tsx` 5 项与 App 入口 1 项先红后绿，全套 51 项通过；`cargo fmt --check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test --all-features`（125 项）、`cargo build --all-features`、`npm run build` 通过；`frontend/bindings.ts` 经 `export_bindings` 重新导出。
 - 边界：面板只读，不提供勾选/编辑——手动写入不进模型历史，模型无法感知用户侧修改，需额外注入机制，不在本次范围；CLI/headless/ACP 不透传该视图（事件原样可得）；历史懒加载复用 `session_events` 全量返回，超大会话一次性拉取。
+## PTY 执行世界（P2，2026-11-06）
+
+- 依据 [PTY 执行世界（本地沙箱终端）计划](specs/pty-execution-world-plan.md)：P2「PTY」项。模型可经 `terminal_open/write/read/close` 在托管副本内打开持久交互式 PowerShell（ConPTY）、写入命令并增量读取输出；一次性命令仍走 `shell`。
+- `harness-platform` 新增 `pty` 模块：自研 ConPTY spawn（不引入 portable-pty）——`CreatePseudoConsole` + 现有受限 token（`CreateProcessAsUserW`，CREATE_SUSPENDED→AssignProcessToJobObject→ResumeThread）+ KILL_ON_JOB_CLOSE，属性值指针指向调用方作用域存活变量（曾修复悬空栈指针致子进程 0xC0000142 的缺陷）；输出泵阻塞读 16KB 块、UTF-8 边界安全解码直写共享 OutputBuffer；捐赠句柄保留至会话结束；`\n` 归一化为 `\r`（控制台以 CR 为回车）；ANSI/VT 过滤（CSI/OSC/DCS/字符集序列，容忍跨块分割）+ 有界缓冲（pending 64KiB / 尾部 128KiB / 单次读取 64KiB 带截断标记）。
+- `harness-orchestration` 新增 `terminals.rs`：`PtyWorld`/`TerminalSession` trait 为执行世界 seam（P3 SSH 远端实现同一 trait 接入），默认 `PlatformWorld`，`install_with` 可注入；四工具注册进 `install`；`terminal_open` 需审批且覆盖该终端后续输入（一次审批不逐命令，spec 记录该风险），每会话上限 4；终端持有共享工作区租约（人工同步被拒，其他执行不受影响）；跨回合存续；重启后未关闭终端按 interrupted 结算（`recover_all` 与 job 恢复同路）；关闭/退出时尾部输出 spill 至 blob 并在 `terminal.closed` 记录 hash；`Installed::drop` 级联杀树。
+- 前端 `EventCard` 渲染 `terminal.opened`/`terminal.closed` 卡片（状态映射、退出码、尾部 blob hash、截断标记）；无新增 Tauri 命令，bindings 不变。
+- 环境边界（实测）：开发机（Windows 11 Insider 26300）ConPTY 客户端连接失效——宿主 conhost 存活但子进程一律 0xC0000142 退出、输出管道零字节；最小 MS 样例探针、裸进程/受限 token/Low IL 去除、`start` 控制台上下文、计划任务上下文均复现，非 ConPTY 新控制台正常；与 deepseek-harness 记录的「console isolation unavailable」同类。真实 ConPTY 集成测试（往返/杀树/租约生命周期）带可用性预检：本机打印原因跳过，GitHub CI windows runner 真实运行。
+- TDD：平台纯函数 8 项单测先红后绿；orchestration stub 全流程 3 项（开关与租约、退出结算与作用域、上限/审批矩阵/恢复）先红后绿；前端终端卡片 1 项先红后绿，全套 52 项通过。
+- 边界：SSH 远端执行（P3）仅留 trait seam；桌面 xterm.js 交互面板、屏幕仿真/prompt 就绪检测、resize 模型接口、跨会话终端面板不在范围；非 Windows 平台返回 UNSUPPORTED。
