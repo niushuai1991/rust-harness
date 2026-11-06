@@ -155,15 +155,7 @@ pub(crate) async fn fetch_model_ids(
     proxy: Option<&str>,
 ) -> AppResult<Vec<String>> {
     let base = base_url.trim_end_matches('/');
-    let mut builder = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(20))
-        .redirect(reqwest::redirect::Policy::none());
-    if let Some(proxy) = proxy.filter(|p| !p.is_empty()) {
-        builder = builder.proxy(
-            reqwest::Proxy::all(proxy).map_err(|_| AppError::new("MODEL_PROXY", "代理地址无效"))?,
-        );
-    }
-    let client = builder.build().map_err(transport_error)?;
+    let client = http_client(proxy)?;
     let request = match api_mode {
         ApiMode::Anthropic => {
             let url = if base.ends_with("/v1") {
@@ -206,6 +198,120 @@ pub(crate) async fn fetch_model_ids(
     ids.sort_unstable();
     ids.dedup();
     Ok(ids)
+}
+/// 构建带超时、禁重定向与可选代理的 HTTP 客户端；模型列表与额度请求共用。
+fn http_client(proxy: Option<&str>) -> AppResult<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none());
+    if let Some(proxy) = proxy.filter(|p| !p.is_empty()) {
+        builder = builder.proxy(
+            reqwest::Proxy::all(proxy).map_err(|_| AppError::new("MODEL_PROXY", "代理地址无效"))?,
+        );
+    }
+    builder.build().map_err(transport_error)
+}
+/// Coding Plan 剩余额度端点；monitor 接口要求 authorization 直传完整凭据（无 Bearer 前缀）。
+const BIGMODEL_USAGE_QUOTA_URL: &str = "https://bigmodel.cn/api/monitor/usage/quota/limit";
+
+/// 请求 monitor 额度接口；超时与重定向策略与模型列表一致。
+async fn fetch_usage_quota_json(
+    url: &str,
+    secret: &str,
+    proxy: Option<&str>,
+) -> AppResult<serde_json::Value> {
+    let client = http_client(proxy)?;
+    let response = client
+        .get(url)
+        .header("authorization", secret)
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(transport_error)?;
+    if !response.status().is_success() {
+        return Err(AppError::new(
+            "MODEL_USAGE",
+            format!("获取额度失败：HTTP {}", response.status()),
+        ));
+    }
+    response.json().await.map_err(transport_error)
+}
+
+/// 将 quota/limit 响应映射为剩余额度快照；envelope 失败时报 MODEL_USAGE。
+fn map_usage_quota(value: serde_json::Value) -> AppResult<ProviderUsageSnapshot> {
+    let success = value.get("success").and_then(|v| v.as_bool());
+    let code = value.get("code").and_then(|v| v.as_i64());
+    if success == Some(false) || code.is_some_and(|c| c != 0 && c != 200) {
+        let msg = value
+            .get("msg")
+            .and_then(|v| v.as_str())
+            .unwrap_or("接口返回异常");
+        return Err(AppError::new("MODEL_USAGE", format!("获取额度失败：{msg}")));
+    }
+    let data = value.get("data");
+    let plan_name = data
+        .and_then(|d| d.get("level"))
+        .and_then(|v| v.as_str())
+        .and_then(normalize_plan_level);
+    let mut cards = Vec::new();
+    if let Some(limits) = data
+        .and_then(|d| d.get("limits"))
+        .and_then(|v| v.as_array())
+    {
+        // 按固定顺序匹配三张卡（与 zcode 的 type/unit 约定一致），未知条目忽略。
+        for (kind, quota_type, unit) in [
+            (UsageCardKind::FiveHour, "TOKENS_LIMIT", 3),
+            (UsageCardKind::Weekly, "TOKENS_LIMIT", 6),
+            (UsageCardKind::Tools, "TIME_LIMIT", 5),
+        ] {
+            let Some(limit) = limits.iter().find(|l| {
+                l.get("type").and_then(|v| v.as_str()) == Some(quota_type)
+                    && l.get("unit").and_then(|v| v.as_i64()) == Some(unit)
+            }) else {
+                continue;
+            };
+            cards.push(ProviderUsageCard {
+                kind,
+                remaining_percent: remaining_percent(limit),
+                reset_at: limit.get("nextResetTime").and_then(|v| v.as_i64()),
+            });
+        }
+    }
+    Ok(ProviderUsageSnapshot { plan_name, cards })
+}
+
+/// 接口的 percentage 为已用百分比，反转为剩余；缺失时回退 remaining/usage。
+fn remaining_percent(limit: &serde_json::Value) -> Option<f64> {
+    if let Some(used) = limit.get("percentage").and_then(|v| v.as_f64()) {
+        return Some((100.0 - used.clamp(0.0, 100.0)).max(0.0));
+    }
+    let remaining = limit.get("remaining").and_then(|v| v.as_f64());
+    let total = match limit.get("usage").and_then(|v| v.as_f64()) {
+        Some(total) => Some(total),
+        None => Some(limit.get("currentValue").and_then(|v| v.as_f64())? + remaining?),
+    };
+    match (remaining, total) {
+        (Some(remaining), Some(total)) if total > 0.0 => {
+            Some((remaining / total * 100.0).clamp(0.0, 100.0))
+        }
+        _ => None,
+    }
+}
+
+/// 将 quota level 归一化为套餐显示名；已知档位映射为 GLM Coding 系列，其余原样保留。
+fn normalize_plan_level(level: &str) -> Option<String> {
+    let trimmed = level.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    match trimmed.to_ascii_lowercase().as_str() {
+        "lite" | "pro" | "max" => {
+            let mut chars = trimmed.chars();
+            let (first, rest) = (chars.next().unwrap(), chars.as_str());
+            Some(format!("GLM Coding {}{}", first.to_uppercase(), rest))
+        }
+        _ => Some(trimmed.to_string()),
+    }
 }
 fn decode(e: impl std::fmt::Display) -> AppError {
     AppError::new("MODEL_CONFIG", e.to_string())
@@ -565,6 +671,27 @@ impl ModelService {
         )
         .await
     }
+    /// 拉取供应商套餐与剩余额度（当前仅内置智谱 Coding Plan 支持）；快照即查即返，不落库。
+    pub async fn fetch_usage(&self, provider_id: &str) -> AppResult<ProviderUsageSnapshot> {
+        let _guard = self.gate.lock().await;
+        let supplier = self
+            .providers()
+            .await?
+            .into_iter()
+            .find(|p| p.id == provider_id)
+            .ok_or_else(|| invalid("供应商不存在"))?;
+        if !supplier.builtin || supplier.compatibility != ProviderCompatibility::BigModel {
+            return Err(invalid("该供应商不支持额度查询"));
+        }
+        let secret = harness_platform::get_secret(&supplier.credential_ref)?.unwrap_or_default();
+        if secret.is_empty() {
+            return Err(AppError::new("MODEL_CREDENTIAL", "请先配置供应商密钥"));
+        }
+        let value =
+            fetch_usage_quota_json(BIGMODEL_USAGE_QUOTA_URL, &secret, supplier.proxy.as_deref())
+                .await?;
+        map_usage_quota(value)
+    }
     pub async fn test_model(&self, id: &str) -> AppResult<()> {
         let config = self
             .list_models()
@@ -631,6 +758,78 @@ mod tests {
             p[1].endpoints[2].base_url,
             "https://open.bigmodel.cn/api/anthropic"
         );
+    }
+    #[test]
+    fn maps_quota_response_to_remaining_cards() {
+        // 样例取自真实接口响应（2026-11 实测）：percentage 为已用口径，展示前反转。
+        let value = serde_json::json!({
+            "code": 200, "msg": "操作成功", "success": true,
+            "data": {
+                "level": "pro",
+                "limits": [
+                    {"type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 30},
+                    {"type": "TOKENS_LIMIT", "unit": 6, "number": 1, "percentage": 86, "nextResetTime": 1794130964977i64},
+                    {"type": "TIME_LIMIT", "unit": 5, "number": 1, "usage": 1000, "currentValue": 14, "remaining": 986, "percentage": 1, "nextResetTime": 1796092406981i64}
+                ]
+            }
+        });
+        let snapshot = map_usage_quota(value).unwrap();
+        assert_eq!(snapshot.plan_name.as_deref(), Some("GLM Coding Pro"));
+        assert_eq!(snapshot.cards.len(), 3);
+        assert_eq!(snapshot.cards[0].kind, UsageCardKind::FiveHour);
+        assert_eq!(snapshot.cards[0].remaining_percent, Some(70.0));
+        assert_eq!(snapshot.cards[0].reset_at, None);
+        assert_eq!(snapshot.cards[1].kind, UsageCardKind::Weekly);
+        assert_eq!(snapshot.cards[1].remaining_percent, Some(14.0));
+        assert_eq!(snapshot.cards[1].reset_at, Some(1794130964977));
+        assert_eq!(snapshot.cards[2].kind, UsageCardKind::Tools);
+        assert!((snapshot.cards[2].remaining_percent.unwrap() - 99.0).abs() < 1e-9);
+        assert_eq!(snapshot.cards[2].reset_at, Some(1796092406981));
+    }
+    #[test]
+    fn maps_quota_reorders_limits_and_ignores_unknown_entries() {
+        // limits 顺序打乱仍按 5小时→每周→工具调用 输出；未知 type/unit 忽略；percentage 缺失回退 remaining/usage。
+        let value = serde_json::json!({
+            "success": true,
+            "data": {
+                "level": "GLM Coding Pro",
+                "limits": [
+                    {"type": "TIME_LIMIT", "unit": 5, "usage": 1000, "remaining": 986},
+                    {"type": "WEIRD_LIMIT", "unit": 3, "percentage": 50},
+                    {"type": "TOKENS_LIMIT", "unit": 6, "percentage": 86},
+                    {"type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 0}
+                ]
+            }
+        });
+        let snapshot = map_usage_quota(value).unwrap();
+        assert_eq!(snapshot.plan_name.as_deref(), Some("GLM Coding Pro"));
+        let kinds: Vec<UsageCardKind> = snapshot.cards.iter().map(|c| c.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                UsageCardKind::FiveHour,
+                UsageCardKind::Weekly,
+                UsageCardKind::Tools
+            ]
+        );
+        assert_eq!(snapshot.cards[0].remaining_percent, Some(100.0));
+        assert_eq!(snapshot.cards[1].remaining_percent, Some(14.0));
+        assert!((snapshot.cards[2].remaining_percent.unwrap() - 98.6).abs() < 1e-9);
+    }
+    #[test]
+    fn rejects_quota_error_envelope() {
+        let err = map_usage_quota(serde_json::json!({"code":401,"msg":"未授权","success":false}))
+            .unwrap_err();
+        assert_eq!(err.code, "MODEL_USAGE");
+        assert!(err.message.contains("未授权"));
+    }
+    #[test]
+    fn quota_without_level_yields_no_plan_name() {
+        let snapshot =
+            map_usage_quota(serde_json::json!({"code":200,"success":true,"data":{"limits":[]}}))
+                .unwrap();
+        assert_eq!(snapshot.plan_name, None);
+        assert!(snapshot.cards.is_empty());
     }
     #[tokio::test]
     async fn immutable_builtins_and_independent_copy() {
