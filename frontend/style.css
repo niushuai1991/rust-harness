@@ -6,3 +6,12 @@
 
 .primary,.send{background:var(--accent);border-color:var(--accent)}.muted{color:var(--muted)}.topbar,.modal,.composer{background:var(--panel)}
 .prose{white-space:normal}.prose>:first-child{margin-top:0}.prose>:last-child{margin-bottom:0}.prose p{margin:0 0 12px}.prose h1,.prose h2,.prose h3,.prose h4{color:#344b37;font-weight:600;line-height:1.45;margin:22px 0 10px}.prose h1{font-size:23px}.prose h2{font-size:19px}.prose h3{font-size:16px}.prose ul,.prose ol{margin:0 0 12px;padding-left:23px}.prose li{margin:3px 0}.prose li::marker{color:#6f8d61}.prose a{color:#3d744c;text-decoration-thickness:1px;text-underline-offset:2px}.prose :not(pre)>code{font-family:"Cascadia Code",Consolas,monospace;font-size:.9em;background:#edf1e6;border-radius:4px;padding:2px 5px}.prose pre{margin:12px 0;padding:13px 15px;max-width:100%;overflow:auto;background:#eaf0e3;border:1px solid #dce5d6;border-radius:8px;white-space:pre}.prose pre code{font-size:12px;background:transparent;padding:0}.prose blockquote{margin:12px 0;padding:3px 0 3px 13px;border-left:3px solid #a3b897;color:#64725f}.prose table{border-collapse:collapse;display:block;max-width:100%;overflow:auto;margin:12px 0}.prose th,.prose td{border:1px solid #dce5d6;padding:6px 9px;text-align:left}.prose th{background:#edf1e6;font-weight:600}.prose input[type=checkbox]{accent-color:#517245;margin-right:7px}.turn-details{margin:8px 0 18px}.turn-details>summary{display:flex;align-items:center;gap:5px;list-style:none;cursor:pointer;color:#829084;font-size:11px}.turn-details>summary::-webkit-details-marker{display:none}.turn-details>summary svg{transition:transform .15s}.turn-details[open]>summary svg{transform:rotate(180deg)}.turn-details .message{margin:15px 0}.turn-details .tool-card{margin-left:0}
+.sessions button.child{padding-left:26px}
+.subagent-badge{font-style:normal;font-size:9px;color:#5c7c46;background:#e4eddb;border-radius:4px;padding:1px 6px;flex-shrink:0;margin-left:auto}
+.subagent-row{display:flex;align-items:center;gap:8px;padding:11px 14px 0;color:#5c7c46}
+.subagent-row strong{font-weight:600}
+.subagent-row button{padding:3px 9px;font-size:10px;margin-left:auto}
+.subagent-card pre{margin-top:9px}
+.todo-list{list-style:none;margin:9px 0 12px;padding:0 14px}
+.todo-list li{padding:4px 0;color:#64725f}
+.todo-list li.done{color:#96a48c;text-decoration:line-through}

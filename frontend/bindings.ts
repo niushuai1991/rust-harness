@@ -10,6 +10,7 @@ export const commands = {
 	workspaceApply: (workspaceId: string, paths: string[], reviewed: FileChange[]) => typedError<FileChange[], AppError>(__TAURI_INVOKE("workspace_apply", { workspaceId, paths, reviewed })),
 	workspaceRefresh: (workspaceId: string) => typedError<WorkspaceInfo, AppError>(__TAURI_INVOKE("workspace_refresh", { workspaceId })),
 	sessionList: (workspaceId: string) => typedError<SessionInfo[], AppError>(__TAURI_INVOKE("session_list", { workspaceId })),
+	sessionActiveList: () => typedError<string[], AppError>(__TAURI_INVOKE("session_active_list")),
 	sessionCreate: (workspaceId: string, title: string) => typedError<SessionInfo, AppError>(__TAURI_INVOKE("session_create", { workspaceId, title })),
 	sessionEvents: (sessionId: string, after: string | null) => typedError<SessionEvent[], AppError>(__TAURI_INVOKE("session_events", { sessionId, after })),
 	sessionSend: (sessionId: string, text: string, modelId: string, onEvent: Channel<LiveEvent>, attachments: string[] | null) => typedError<null, AppError>(__TAURI_INVOKE("session_send", { sessionId, text, modelId, onEvent, attachments })),
@@ -35,6 +36,8 @@ export const commands = {
 	mcpConnect: (workspaceId: string, config: JsonPayload) => typedError<null, AppError>(__TAURI_INVOKE("mcp_connect", { workspaceId, config })),
 	mcpDisconnect: (id: string) => typedError<null, AppError>(__TAURI_INVOKE("mcp_disconnect", { id })),
 	mcpResources: (id: string, uri: string | null) => typedError<JsonPayload, AppError>(__TAURI_INVOKE("mcp_resources", { id, uri })),
+	lspStatus: (workspaceId: string | null) => typedError<LspStatusEntry[], AppError>(__TAURI_INVOKE("lsp_status", { workspaceId })),
+	lspRestart: (workspaceId: string, serverId: string) => typedError<null, AppError>(__TAURI_INVOKE("lsp_restart", { workspaceId, serverId })),
 	artifactImport: (sessionId: string, path: string) => typedError<ArtifactMetadata, AppError>(__TAURI_INVOKE("artifact_import", { sessionId, path })),
 	artifactRead: (sessionId: string, hash: string, offset: number, length: number) => typedError<ArtifactChunk, AppError>(__TAURI_INVOKE("artifact_read", { sessionId, hash, offset, length })),
 	artifactSave: (sessionId: string, hash: string, path: string) => typedError<null, AppError>(__TAURI_INVOKE("artifact_save", { sessionId, hash, path })),
@@ -93,6 +96,15 @@ export type JsonValue = "Null" | boolean | number | null | string | JsonValue[] 
 
 export type LiveEvent = { type: "durable"; event: SessionEvent } | { type: "delta"; sessionId: string; requestId: string; index: number; text: string; reasoning: boolean } | { type: "status"; sessionId: string; status: string };
 
+/**  Runtime state of one language server connection, for host status queries. */
+export type LspStatusEntry = {
+	workspaceId: string,
+	serverId: string,
+	running: boolean,
+	documents: number,
+	diagnostics: number,
+};
+
 export type ModelConfig = {
 	compatibility?: ProviderCompatibility,
 	providerId?: string,
@@ -150,6 +162,8 @@ export type SessionInfo = {
 	title: string,
 	createdAt: string,
 	updatedAt: string,
+	/**  子代理归属的父会话；由运行时从 subagent.created 事件推导，存储层恒为空。 */
+	parentId: string | null,
 };
 
 export type ToolResult = {

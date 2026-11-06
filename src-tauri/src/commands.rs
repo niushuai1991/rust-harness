@@ -64,7 +64,12 @@ pub async fn workspace_refresh(
 #[tauri::command]
 #[specta::specta]
 pub async fn session_list(state: Backend<'_>, workspace_id: String) -> AppResult<Vec<SessionInfo>> {
-    state.store.sessions(Some(&workspace_id)).await
+    state.list_sessions(Some(&workspace_id)).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn session_active_list(state: Backend<'_>) -> AppResult<Vec<String>> {
+    Ok(state.active_ids())
 }
 #[tauri::command]
 #[specta::specta]
@@ -310,6 +315,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         workspace_apply,
         workspace_refresh,
         session_list,
+        session_active_list,
         session_create,
         session_events,
         session_send,

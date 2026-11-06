@@ -1,6 +1,6 @@
 // Handwritten mirror of harness-contracts. Rust/Specta is the contract authority.
 export interface WorkspaceInfo {id:string;sourcePath:string;replicaPath:string;createdAt:string}
-export interface SessionInfo {id:string;workspaceId:string;title:string;createdAt:string;updatedAt:string}
+export interface SessionInfo {id:string;workspaceId:string;title:string;createdAt:string;updatedAt:string;parentId?:string|null}
 export interface SessionEvent {id:string;sessionId:string;seq:string;kind:string;data:Record<string,unknown>;createdAt:string}
 export type LiveEvent = {type:'durable';event:SessionEvent}|{type:'delta';sessionId:string;requestId:string;index:number;text:string;reasoning:boolean}|{type:'status';sessionId:string;status:string};
 export type ApiMode='chatCompletions'|'responses'|'anthropic';

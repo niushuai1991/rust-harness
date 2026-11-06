@@ -46,7 +46,10 @@ pub async fn dispatch(runtime: Arc<Runtime>, method: &str, p: Value) -> AppResul
                     .apply_reviewed(field(&p, "workspaceId")?, &changes)?
             )
         }
-        "session.list" => json!(runtime.store.sessions(p["workspaceId"].as_str()).await?),
+        "session.list" => {
+            json!(runtime.list_sessions(p["workspaceId"].as_str()).await?)
+        }
+        "session.active" => json!(runtime.active_ids()),
         "session.create" => {
             let w = field(&p, "workspaceId")?;
             runtime.workspaces.get(w)?;

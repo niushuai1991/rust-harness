@@ -76,6 +76,8 @@ pub struct SessionInfo {
     pub title: String,
     pub created_at: String,
     pub updated_at: String,
+    /// 子代理归属的父会话；由运行时从 subagent.created 事件推导，存储层恒为空。
+    pub parent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

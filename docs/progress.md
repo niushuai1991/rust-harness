@@ -73,3 +73,12 @@
 - TDD：16 项映射/fixture 单测（先红后绿；官方 SDK 样例 JSON 锁定 wire 形态——权限结果为内部标签嵌套 `{"outcome":{"outcome":...}}`，pending 状态缺省序列化）；11 项 duplex 集成测试（initialize 门禁与协商、未知方法 -32601、set_mode 通知、mock SSE 真回路流式与 end_turn、无模型/不支持内容块错误、审批 ask 双路径、取消、load 有序回放、子进程 Stdio 冒烟）。
 - 全套验证：fmt/clippy(-D warnings)/全工作区 test/build 通过。真实模型端到端（SQLite 快照独立数据目录 + 凭据管理器复用）：真实回合经 read 工具转述文件内容，18 段流式 chunk + end_turn；进程重启后 session/load 回放顺序正确。
 - 边界：mcpServers 参数忽略（stderr 警告）；fs/terminal/elicitation/authenticate 未实现（本 Agent 不调用客户端方法，authMethods 空）；Zed 实测待用户抽查；单宿主 host.lock 约束与 rpc 相同（桌面运行时需独立 --data-dir）。
+
+## 子代理可视化与 spawn 模型选择（2026-11-06）
+
+- 依据 [子代理可视化与 spawn 模型选择计划](specs/subagent-visibility-plan.md)：核实子代理协作原语与重启恢复已闭环后，补齐"用户看不见子代理"与"spawn 无法指定模型"两个缺口。
+- 契约：`SessionInfo` 新增运行时推导的 `parent_id`（存储层恒空）；`Runtime` 维护 child→parent 反向映射（与既有 children 重建同源，fork 的 historyOnly 排除语义保持），新增 `parent_of`/`list_sessions`/`active_ids`。
+- `agent_spawn` 可选 `modelId`：先经 `build_model` 校验再创建子会话（失败不留空会话），`subagent.created` 事件附带 `modelId`；审批要求与 8 个子代理上限不变。桌面新增 `session_active_list` 命令、CLI 新增 `session.active`，`session.list`/桌面 `session_list` 装饰父子关系。
+- 前端：会话列表子任务徽标与缩进、`session_active_list` 并入 2 秒轮询显示运行 live-dot；`EventCard` 渲染 `subagent.created`/`subagent.message_sent`（可跳转子会话）与 `todo.state`/`plan.state`/`goal.state` 卡片。
+- TDD 证据：`subagent_flow.rs` 3 项先红后绿（无效 modelId 拒绝不留子会话、合法 modelId 事件与登记、重启后父子关系重建与列表装饰）；前端 38 项测试通过（新增 3 项），tsc 与 Vite 生产构建通过。测试自身发现并修复：`agent_spawn` 审批未处理导致 600 秒超时（自动批准）、批准助手强引用阻止 host.lock 释放（改 Weak + 重试打开）。
+- 边界：ACP/JSON-RPC 不透传子代理生命周期；子代理工具白名单、深度树管理面板、Todo/Plan/Goal 独立管理面板、会话搜索/fork 前端入口均未实现，保持原状态。

@@ -54,6 +54,7 @@ pub struct Runtime {
     queues: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     cancelled_messages: Mutex<HashSet<(String, String)>>,
     children: Mutex<HashMap<String, Vec<String>>>,
+    parents: Mutex<HashMap<String, String>>,
     custom: crate::registry::Tools,
     _host_lock: std::fs::File,
 }
@@ -90,6 +91,7 @@ impl Runtime {
         plugins.set_host_policy(Arc::new(ReplicaHost));
         let (events, _) = broadcast::channel(4096);
         let mut children: HashMap<String, Vec<String>> = HashMap::new();
+        let mut parents: HashMap<String, String> = HashMap::new();
         for session in store.sessions(None).await? {
             for event in store.events(&session.id, 0).await? {
                 if event.kind == "subagent.created"
@@ -105,6 +107,7 @@ impl Runtime {
                         .entry(session.id.clone())
                         .or_default()
                         .push(child.into());
+                    parents.insert(child.into(), session.id.clone());
                 }
             }
         }
@@ -122,6 +125,7 @@ impl Runtime {
             queues: Mutex::new(HashMap::new()),
             cancelled_messages: Mutex::new(HashSet::new()),
             children: Mutex::new(children),
+            parents: Mutex::new(parents),
             custom: Arc::new(Mutex::new(Default::default())),
             _host_lock: host_lock,
         }))
@@ -143,6 +147,25 @@ impl Runtime {
             .cloned()
             .unwrap_or_default()
     }
+    /// 子代理归属的父会话；非子代理返回 None。
+    pub fn parent_of(&self, session: &str) -> Option<String> {
+        self.parents.lock().unwrap().get(session).cloned()
+    }
+    /// 会话列表并附加父子关系；`workspace` 过滤工作区。
+    pub async fn list_sessions(&self, workspace: Option<&str>) -> AppResult<Vec<SessionInfo>> {
+        let mut sessions = self.store.sessions(workspace).await?;
+        let parents = self.parents.lock().unwrap();
+        for session in &mut sessions {
+            if let Some(parent) = parents.get(&session.id) {
+                session.parent_id = Some(parent.clone());
+            }
+        }
+        Ok(sessions)
+    }
+    /// 正在执行回合的会话标识，供界面展示子代理等后台活动状态。
+    pub fn active_ids(&self) -> Vec<String> {
+        self.active.lock().unwrap().keys().cloned().collect()
+    }
     pub fn adopt_child(&self, parent: &str, child: &str) -> AppResult<()> {
         if parent == child {
             return Err(AppError::new("AGENT_SCOPE", "不能将自己登记为子代理"));
@@ -158,6 +181,10 @@ impl Runtime {
             .entry(parent.into())
             .or_default()
             .push(child.into());
+        self.parents
+            .lock()
+            .unwrap()
+            .insert(child.into(), parent.into());
         Ok(())
     }
     pub async fn session_boundary(&self, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
@@ -1006,6 +1033,16 @@ impl Runtime {
                 if descendants >= 8 {
                     return Err(AppError::new("AGENT_LIMIT", "当前实例最多8个子代理"));
                 }
+                let model_id = a
+                    .get("modelId")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                // 先校验模型再创建子会话，失败时不留下未登记的空会话。
+                let provider = match model_id {
+                    Some(id) => self.models.build_model(id).await?,
+                    None => provider,
+                };
                 let child = self
                     .store
                     .create_session(
@@ -1019,8 +1056,15 @@ impl Runtime {
                     .entry(session.into())
                     .or_default()
                     .push(child.id.clone());
-                self.append(session, "subagent.created", json!({"sessionId":child.id}))
-                    .await?;
+                self.parents
+                    .lock()
+                    .unwrap()
+                    .insert(child.id.clone(), session.to_owned());
+                let mut created = json!({"sessionId":child.id});
+                if let Some(id) = model_id {
+                    created["modelId"] = json!(id);
+                }
+                self.append(session, "subagent.created", created).await?;
                 let runtime = self.clone();
                 let id = child.id.clone();
                 let task = arg(a, "task")?.to_owned();
@@ -1302,8 +1346,8 @@ pub fn builtin_tools() -> Vec<ToolDefinition> {
         def("goal_write", "记录目标", json!({"content":s}), &["content"]),
         def(
             "agent_spawn",
-            "创建独立子代理并立即返回会话ID",
-            json!({"task":s,"title":s}),
+            "创建独立子代理并立即返回会话ID；可选modelId指定已配置模型，缺省继承当前模型",
+            json!({"task":s,"title":s,"modelId":s}),
             &["task"],
         ),
         def(
