@@ -16,7 +16,7 @@
 | [子代理可视化与 spawn 模型选择计划](specs/subagent-visibility-plan.md) | 2026-11-06（计划拟制） | 已实施，单测与前端测试通过（2026-11-06） | 子代理父子关系与运行状态可视化，`agent_spawn` 可选 modelId；ACP 透传与管理面板留待后续。 |
 | [P2 后台任务桌面可视化计划](specs/p2-background-tasks-plan.md) | 2026-11-06（计划拟制） | 已实施，Rust 10 项与前端 42 项测试通过（2026-11-06）；桌面 UI 抽查待用户 | P2 项：后台 Shell/子代理/定时任务事件卡片渲染与会话级任务面板，宿主查询/取消/删除命令。 |
 | [计划/目标管理面板计划](specs/plan-goal-panel-plan.md) | 2026-11-06（计划拟制） | 已实施，Rust 2 项与前端 6 项新增测试通过（2026-11-06）；桌面 UI 抽查待用户 | P2「计划/目标」收尾：跨会话只读汇总面板，`plan_overview` 命令与状态演变历史；不做 UI 写入通道。 |
-| [输入框斜杠快捷指令计划](specs/slash-commands-plan.md) | 2026-11-06（计划批准） | 实施中 | CLI chat 斜杠命令注册表、crossterm 行编辑与 `/` 补全弹窗、五个新增命令；桌面端 composer 菜单与 `session_compact`。 |
+| [输入框斜杠快捷指令计划](specs/slash-commands-plan.md) | 2026-11-06（计划批准） | 已实施，Rust 125 项与前端 59 项测试通过（2026-11-06）；两端交互抽查待用户 | CLI chat 斜杠命令注册表、crossterm 行编辑与 `/` 补全弹窗、五个新增命令；桌面端 composer 菜单与 `session_compact`。 |
 
 ## 关系说明
 

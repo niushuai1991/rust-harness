@@ -1,7 +1,7 @@
 # 输入框斜杠快捷指令计划
 
 - 日期：2026-11-06（计划批准）
-- 状态：实施中
+- 状态：已实施，Rust 125 项与前端 59 项测试通过（2026-11-06）；两端交互抽查待用户
 - 范围：CLI `harness chat` 的 `/` 斜杠命令注册表、crossterm 行编辑与实时补全弹窗、五个新增命令；桌面端 composer 命令菜单与 `session_compact`。设计参考 codex CLI（`tui/src/slash_command.rs`、`bottom_pane/command_popup.rs`）。
 
 ## 背景与目标

@@ -314,3 +314,51 @@ describe('计划与目标面板',()=>{
   await waitFor(()=>expect(screen.queryByRole('dialog',{name:'计划与目标'})).not.toBeInTheDocument());
  });
 });
+describe('斜杠命令补全',()=>{
+ it('输入 / 显示候选菜单，过滤收窄，Esc 关闭后 token 变化重开',async()=>{
+  render(<App/>);await screen.findByText('内容 a');
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'/'}});
+  const menu=screen.getByRole('listbox',{name:'斜杠命令补全'});
+  expect(within(menu).getByText('/clear')).toBeInTheDocument();
+  expect(within(menu).getByText('/help')).toBeInTheDocument();
+  fireEvent.change(input,{target:{value:'/he'}});
+  expect(within(screen.getByRole('listbox',{name:'斜杠命令补全'})).getByText('/help')).toBeInTheDocument();
+  expect(screen.queryByText('/clear')).not.toBeInTheDocument();
+  fireEvent.keyDown(input,{key:'Escape'});
+  expect(screen.queryByRole('listbox',{name:'斜杠命令补全'})).not.toBeInTheDocument();
+  fireEvent.change(input,{target:{value:'/hel'}});
+  expect(screen.getByRole('listbox',{name:'斜杠命令补全'})).toBeInTheDocument();
+ });
+ it('ArrowDown 循环选择，Tab 补全为规范名',async()=>{
+  render(<App/>);await screen.findByText('内容 a');
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'/c'}});
+  const options=within(screen.getByRole('listbox',{name:'斜杠命令补全'})).getAllByRole('option');
+  expect(options.map(option=>option.textContent)).toEqual(['/clear重开新会话','/compact压缩历史为摘要']);
+  expect(options[0]).toHaveAttribute('aria-selected','true');
+  fireEvent.keyDown(input,{key:'ArrowDown'});
+  expect(options[1]).toHaveAttribute('aria-selected','true');
+  fireEvent.keyDown(input,{key:'Tab'});
+  expect(input).toHaveValue('/compact ');
+ });
+ it('Enter 执行选中命令：/clear 重开会话',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name:string,args:any)=>name==='session_create'?{id:'fresh',workspaceId:'w',title:'新会话'}:original(name,args));
+  render(<App/>);await screen.findByText('内容 a');
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'/cl'}});
+  fireEvent.keyDown(input,{key:'Enter'});
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话'}));
+  await screen.findByText('内容 fresh');
+ });
+ it('光标移出首 token 后菜单关闭，Enter 走普通发送',async()=>{
+  mocks.send.mockResolvedValue(undefined);
+  render(<App/>);await screen.findByText('内容 a');
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'/clear 帮我重开'}});
+  expect(screen.queryByRole('listbox',{name:'斜杠命令补全'})).not.toBeInTheDocument();
+  fireEvent.keyDown(input,{key:'Enter'});
+  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','/clear 帮我重开','m',expect.any(Function)));
+ });
+});
