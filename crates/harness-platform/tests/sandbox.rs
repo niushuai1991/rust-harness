@@ -50,8 +50,15 @@ async fn cancellation_returns_and_releases_runtime_lease() {
         ps.display()
     );
     let token = cancel.clone();
+    let replica = info.replica_path.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        // 固定延时在 CI 慢机上可能早于 Start-Process 写出 child.pid，导致取消后
+        // 读 pid 文件 NotFound；改为轮询等待 pid 文件出现再取消（上限 10 秒）。
+        let pid = PathBuf::from(&replica).join("child.pid");
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while tokio::time::Instant::now() < deadline && !pid.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
         token.cancel();
     });
     let result = tokio::time::timeout(
