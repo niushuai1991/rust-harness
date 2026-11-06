@@ -1,6 +1,6 @@
-import {Fragment,useEffect,useRef,useState,type FormEvent,type ReactNode} from 'react';
+import {Fragment,useEffect,useMemo,useRef,useState,type FormEvent,type ReactNode} from 'react';
 import {open,save} from '@tauri-apps/plugin-dialog';
-import {ArrowUp,Bot,Check,ChevronDown,Folder,FolderOpen,GitCompareArrows,ListTodo,MessageSquare,Plus,Send,Settings2,ShieldCheck,Square,Target,Terminal,Unplug,X,Download,RefreshCw} from 'lucide-react';
+import {ArrowUp,Bot,CalendarClock,Check,ChevronDown,Folder,FolderOpen,GitCompareArrows,ListTodo,MessageSquare,Plus,Send,Settings2,ShieldCheck,Square,Target,Terminal,Unplug,X,Download,RefreshCw} from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {command,desktop,errorText,send} from './api';
@@ -9,9 +9,10 @@ import {ModelPanel} from './ModelPanel';
 import {McpPanel} from './McpPanel';
 import {PluginContributionsPanel,PluginThemeHost} from './PluginContributionsPanel';
 import {PluginResultCards} from './PluginResultCards';
+import {BackgroundTasksPanel,JOB_STATUS,SCHEDULE_STATUS} from './BackgroundTasksPanel';
 import type {WorkspaceInfo,SessionInfo,SessionEvent,ModelConfig,ApprovalRequest,PluginInfo,FileChange,ArtifactMetadata} from './types';
 
-type Panel='models'|'plugins'|'diff'|null;
+type Panel='models'|'plugins'|'diff'|'tasks'|null;
 const basename=(path:string)=>path.split(/[\\/]/).filter(Boolean).at(-1)??path;
 const printable=(value:unknown)=>typeof value==='string'?value:JSON.stringify(value,null,2);
 export default function App(){
@@ -28,6 +29,7 @@ export default function App(){
  useEffect(()=>{attachmentEpoch.current++;setAttachments([]);setImporting(false)},[sessionId,workspaceId]);
  const events=useChat(s=>s.events[sessionId]??EMPTY_EVENTS),stream=useChat(s=>s.streams[sessionId]);
  const workspace=workspaces.find(w=>w.id===workspaceId),session=sessions.find(s=>s.id===sessionId);
+ const taskCount=useMemo(()=>{const open=new Set<string>();for(const e of events){const id=e.data?.id;if(typeof id!=='string')continue;if(e.kind==='job.started')open.add(id);else if(e.kind==='job.finished')open.delete(id)}return open.size},[events]);
  const generation=useRef(0),end=useRef<HTMLDivElement>(null),activeWorkspaceId=useRef(workspaceId);
  const creatingSessions=useRef(new Map<string,Promise<SessionInfo>>());
  activeWorkspaceId.current=workspaceId;
@@ -98,7 +100,7 @@ export default function App(){
    <nav className="sessions">{sessions.map(s=><button key={s.id} className={`${sessionId===s.id?'active':''}${s.parentId?' child':''}`} title={s.parentId?'子代理会话':undefined} onClick={()=>{setSessionId(s.id);setText('')}}><MessageSquare size={16}/><span>{s.title}</span>{s.parentId&&<em className="subagent-badge">子任务</em>}{(running[s.id]||activeIds.has(s.id))&&<i className="live-dot"/>}</button>)}{!sessions.length&&<p className="muted empty-small">{workspaceId?'还没有会话，点击 + 开始':'打开工作区后，会话将保存在本机。'}</p>}</nav>
    <div className="sidebar-bottom"><div className="local-badge"><i className="live-dot"/> 本地优先 · 无遥测</div><button onClick={()=>setPanel('plugins')}><Unplug size={17}/>插件与权限</button><button onClick={()=>setPanel('models')}><Settings2 size={17}/>模型设置 <span className="count">{models.length}</span></button></div>
   </aside>
-  <main className="main"><header className="topbar"><div className="breadcrumb"><Folder size={15}/>{workspace?basename(workspace.sourcePath):'工作台'}<span>/</span><strong>{session?.title??'新的可能，从这里开始'}</strong></div><div className="toolbar"><button className="icon-button" title="导出会话" aria-label="导出会话" disabled={!sessionId} onClick={exportSession}><Download size={17}/></button><button className="soft" onClick={()=>setPanel('diff')} disabled={!workspaceId}><GitCompareArrows size={16}/>查看更改</button></div></header>
+  <main className="main"><header className="topbar"><div className="breadcrumb"><Folder size={15}/>{workspace?basename(workspace.sourcePath):'工作台'}<span>/</span><strong>{session?.title??'新的可能，从这里开始'}</strong></div><div className="toolbar"><button className="icon-button" title="导出会话" aria-label="导出会话" disabled={!sessionId} onClick={exportSession}><Download size={17}/></button><button className="soft" onClick={()=>setPanel('tasks')} disabled={!sessionId}><ListTodo size={16}/>后台任务{taskCount>0&&<span className="count">{taskCount}</span>}</button><button className="soft" onClick={()=>setPanel('diff')} disabled={!workspaceId}><GitCompareArrows size={16}/>查看更改</button></div></header>
    {!desktop()&&<div className="host-banner"><Terminal size={16}/>当前为界面预览，需要桌面宿主才能访问工作区和模型。</div>}
    {error&&<div role="alert" className="alert"><span>{error}</span><button aria-label="关闭错误" onClick={()=>setError('')}><X size={16}/></button></div>}
    {notice&&<div role="status" className="notice"><Check size={15}/>{notice}<button aria-label="关闭提示" onClick={()=>setNotice('')}><X size={15}/></button></div>}
@@ -112,6 +114,7 @@ export default function App(){
   <PluginThemeHost workspaceId={workspaceId} revision={pluginRevision}/>
   {panel==='plugins'&&<PluginPanel workspaceId={workspaceId} sessionId={sessionId} revision={pluginRevision} onChanged={()=>setPluginRevision(v=>v+1)} onClose={()=>setPanel(null)}/>}
   {panel==='diff'&&<DiffPanel key={workspaceId} workspaceId={workspaceId} onClose={()=>setPanel(null)}/>}
+  {panel==='tasks'&&sessionId&&<BackgroundTasksPanel sessionId={sessionId} onClose={()=>setPanel(null)}/>}
   {approvals[0]&&<Modal title="操作需要你的批准" onClose={()=>void resolve(approvals[0].id,false)}><div className="approval-heading"><ShieldCheck size={24}/><strong>{approvals[0].tool}</strong></div><p>{approvals[0].reason}</p><pre className="code-block">{printable(approvals[0].arguments)}</pre><p className="muted">会话：{sessions.find(s=>s.id===approvals[0].sessionId)?.title??approvals[0].sessionId}</p><div className="actions"><button onClick={()=>resolve(approvals[0].id,false)}>拒绝</button><button className="primary" onClick={()=>resolve(approvals[0].id,true)}>批准此次操作</button></div></Modal>}
  </div>
 }
@@ -158,6 +161,15 @@ export function EventCard({event,...extras}:{event:SessionEvent}&EventCardExtras
  if(kind==='assistant.message'||kind==='assistant.attempt')return <article className="message assistant"><div className="avatar">R</div><div className="message-body"><div className="message-label">Rust Harness</div>{!!data.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{printable(data.reasoning)}</pre></details>}<div className="prose"><Markdown content={printable(data.content)}/></div>{!!data.error&&<div className="inline-error">{printable(data.error)}</div>}</div></article>;
  if(kind==='tool.call'||kind==='tool.result')return <details className="tool-card"><summary><Terminal size={15}/><strong>{printable(data.name)}</strong><span>{kind==='tool.call'?'工具调用':data.isError?'执行失败':'已完成'}</span></summary>{kind==='tool.result'&&String(data.name).startsWith('plugin__')?<PluginResultCards workspaceId={extras.workspaceId} content={printable(data.content)}/>:<pre>{printable(data.arguments??data.content)}</pre>}{!!data.artifact&&<ArtifactDownload sessionId={event.sessionId} artifact={data.artifact as ArtifactMetadata}/>}</details>;
  if(kind==='plugin.command.result')return <article className="tool-card"><strong>{printable(data.name)}</strong><PluginResultCards workspaceId={extras.workspaceId} content={printable(data.content)}/></article>;
+ if(kind==='job.started')return <details className="tool-card"><summary><Terminal size={15}/><strong>{printable(data.command)}</strong><span>{JOB_STATUS[String(data.status)]??'运行中'}</span></summary><pre>{printable(data)}</pre></details>;
+ if(kind==='job.finished'){
+  const status=String(data.status),output=data.output as {stdout?:unknown;stderr?:unknown;exit_code?:unknown}|null;
+  return <details className="tool-card"><summary><Terminal size={15}/><strong>后台任务已结束</strong><span className={status==='completed'?'':'conflict'}>{JOB_STATUS[status]??status}</span></summary>{output?<pre>{`退出码 ${printable(output.exit_code)}\n【stdout】\n${printable(output.stdout??'')}\n【stderr】\n${printable(output.stderr??'')}`}</pre>:data.error!=null&&<pre>错误：{printable(data.error)}</pre>}</details>;
+ }
+ if(kind==='job.cancel_requested')return <div className="turn-status">已请求取消后台任务 {printable(data.id)}</div>;
+ if(kind==='schedule.created')return <details className="tool-card"><summary><CalendarClock size={15}/><strong>{printable(data.task)}</strong><span>{printable(data.at)}</span></summary><pre>{`执行时间：${printable(data.at)}\n模型：${printable(data.modelId)}`}</pre></details>;
+ if(kind==='schedule.deleted')return <div className="turn-status">已删除定时任务 {printable(data.id)}</div>;
+ if(kind.startsWith('schedule.')){const status=String(data.status??kind.slice('schedule.'.length));return <div className="turn-status">定时任务 {printable(data.id)}：{SCHEDULE_STATUS[status]??status}</div>}
  if(kind==='compaction.summary')return <details className="tool-card"><summary>上下文摘要</summary><pre>{printable(data.content)}</pre></details>;
  if(kind==='turn.end'&&data.status&&data.status!=='completed')return <div className="turn-status">本轮状态：{printable(data.status)}</div>;
  return null;

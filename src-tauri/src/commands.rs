@@ -307,6 +307,50 @@ pub async fn lsp_restart(
     state.lsp_restart(&workspace_id, &server_id).await
 }
 
+type Orchestration<'a> = State<'a, harness_orchestration::Installed>;
+fn payload(value: impl serde::Serialize) -> AppResult<JsonPayload> {
+    serde_json::to_value(value).map(JsonPayload).map_err(error)
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn job_list(orch: Orchestration<'_>, session_id: String) -> AppResult<Vec<JsonPayload>> {
+    orch.session_jobs(&session_id)
+        .await?
+        .into_iter()
+        .map(payload)
+        .collect()
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn job_cancel(
+    orch: Orchestration<'_>,
+    session_id: String,
+    job_id: String,
+) -> AppResult<()> {
+    orch.cancel_job(&session_id, &job_id).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn schedule_list(
+    orch: Orchestration<'_>,
+    session_id: String,
+) -> AppResult<Vec<JsonPayload>> {
+    orch.session_schedules(&session_id)
+        .await?
+        .into_iter()
+        .map(payload)
+        .collect()
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn schedule_delete(
+    orch: Orchestration<'_>,
+    session_id: String,
+    id: String,
+) -> AppResult<()> {
+    orch.delete_schedule(&session_id, &id).await
+}
+
 pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
     tauri_specta::Builder::new().commands(tauri_specta::collect_commands![
         workspace_list,
@@ -343,6 +387,10 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         mcp_resources,
         lsp_status,
         lsp_restart,
+        job_list,
+        job_cancel,
+        schedule_list,
+        schedule_delete,
         crate::artifact_commands::artifact_import,
         crate::artifact_commands::artifact_read,
         crate::artifact_commands::artifact_save,

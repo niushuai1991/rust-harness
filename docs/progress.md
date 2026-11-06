@@ -93,3 +93,11 @@
 - 前端：会话列表子任务徽标与缩进、`session_active_list` 并入 2 秒轮询显示运行 live-dot；`EventCard` 渲染 `subagent.created`/`subagent.message_sent`（可跳转子会话）与 `todo.state`/`plan.state`/`goal.state` 卡片。
 - TDD 证据：`subagent_flow.rs` 3 项先红后绿（无效 modelId 拒绝不留子会话、合法 modelId 事件与登记、重启后父子关系重建与列表装饰）；前端 38 项测试通过（新增 3 项），tsc 与 Vite 生产构建通过。测试自身发现并修复：`agent_spawn` 审批未处理导致 600 秒超时（自动批准）、批准助手强引用阻止 host.lock 释放（改 Weak + 重试打开）。
 - 边界：ACP/JSON-RPC 不透传子代理生命周期；子代理工具白名单、深度树管理面板、Todo/Plan/Goal 独立管理面板、会话搜索/fork 前端入口均未实现，保持原状态。
+## P2 后台任务桌面可视化（2026-11-06）
+
+- 依据 [P2 后台任务桌面可视化计划](specs/p2-background-tasks-plan.md)：补齐 orchestration 后台 Shell、定时任务与子代理事件在桌面端的可见性闭环，不改变工具语义与审批策略。
+- harness-orchestration 新增人机接口（与模型工具同源实现）：`session_jobs`（扫描会话事件合成任务最新状态）、`cancel_job`（会话归属校验后取消并追加 `job.cancel_requested`）、`session_schedules`/`delete_schedule`（会话过滤与删除，`Schedule`/`JobInfo` 公开为 serde camelCase DTO）；工具 `background_cancel`/`schedule_delete` 复用同一实现。
+- 桌面端新增命令 `job_list`/`job_cancel`/`schedule_list`/`schedule_delete`（JsonPayload 载荷，经 tauri-specta 重新导出绑定）；事件卡片渲染 `job.started/finished/cancel_requested`、`schedule.created/deleted/running/finished/failed/missed/interrupted`、`subagent.created`（historyOnly 跳过）/`subagent.message_sent`；顶栏「后台任务」按钮按已加载事件统计未终结任务数。
+- 新增会话级「后台任务」面板：后台 Shell 任务与定时任务分组列表，运行中任务可取消、pending 定时任务两步确认删除，打开期间每 2 秒轮询（与审批轮询同模式）。
+- TDD：orchestration 3 项新测试（事件合成与会话作用域、取消归属校验、定时宿主 API）先红后绿，连同既有 7 项共 10 项通过；前端新增面板 4 项与事件卡片/徽标 3 项测试，全套 42 项通过；`npm run build` 通过。
+- 边界：空闲期完成的任务靠面板轮询与刷新呈现，不额外推送；跨会话任务中心、完成通知、PTY 不在本次范围。

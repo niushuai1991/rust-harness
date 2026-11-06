@@ -86,6 +86,57 @@ describe('事件状态',()=>{
  it('重复增量去重，会话隔离，持久化seq按大整数排序',()=>{const state=useChat.getState();const delta:LiveEvent={type:'delta',sessionId:'a',requestId:'r',index:0,text:'A',reasoning:false};state.receive(delta);state.receive(delta);state.receive({...delta,index:1,text:'B'});state.receive({...delta,sessionId:'b',text:'C'});expect(useChat.getState().streams.a.text).toBe('AB');expect(useChat.getState().streams.b.text).toBe('C');state.replace('a',[event('later','a','9007199254740993','later'),event('first','a','9007199254740992','first')]);expect(useChat.getState().events.a.map(e=>e.id)).toEqual(['first','later']);state.receive({type:'durable',event:event('final','a','9007199254740994','AB')});expect(useChat.getState().streams.a).toBeUndefined()});
 });
 
+const jobEvents:SessionEvent[]=[
+ {id:'s1',sessionId:'a',seq:'1',kind:'job.started',data:{id:'job-1',command:'cargo test --all-features',status:'running'},createdAt:'2026-11-06T01:00:00Z'},
+ {id:'c1',sessionId:'a',seq:'2',kind:'job.cancel_requested',data:{id:'job-1'},createdAt:'2026-11-06T01:01:00Z'},
+ {id:'f1',sessionId:'a',seq:'3',kind:'job.finished',data:{id:'job-1',status:'cancelled',error:'已取消'},createdAt:'2026-11-06T01:01:05Z'},
+ {id:'s2',sessionId:'a',seq:'4',kind:'job.started',data:{id:'job-2',command:'npm run build',status:'running'},createdAt:'2026-11-06T01:02:00Z'},
+ {id:'f2',sessionId:'a',seq:'5',kind:'job.finished',data:{id:'job-2',status:'completed',output:{stdout:'built ok',stderr:'',exit_code:0}},createdAt:'2026-11-06T01:03:00Z'},
+ {id:'sc1',sessionId:'a',seq:'6',kind:'schedule.created',data:{id:'sch-1',at:'2099-01-01T00:00:00Z',task:'以后执行',modelId:'missing',status:'pending'},createdAt:'2026-11-06T01:04:00Z'},
+ {id:'sf1',sessionId:'a',seq:'7',kind:'schedule.finished',data:{id:'sch-1',status:'completed'},createdAt:'2026-11-06T01:05:00Z'},
+ {id:'sa1',sessionId:'a',seq:'8',kind:'subagent.created',data:{sessionId:'child-1',source:'a'},createdAt:'2026-11-06T01:06:00Z'},
+ {id:'sm1',sessionId:'a',seq:'9',kind:'subagent.message_sent',data:{sessionId:'child-1',content:'真实子任务'},createdAt:'2026-11-06T01:07:00Z'},
+];
+describe('后台任务可视化',()=>{
+ it('消息流渲染后台任务、定时任务与子代理事件卡片',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_events'?jobEvents:original(name,args));
+  render(<App/>);
+  await screen.findByText('npm run build');
+  expect(screen.getAllByText('cargo test --all-features').length).toBeGreaterThan(0);
+  expect(screen.getByText('已取消')).toBeInTheDocument();
+  expect(screen.getByText(/已请求取消后台任务/)).toBeInTheDocument();
+  expect(screen.getByText(/built ok/)).toBeInTheDocument();
+  expect(screen.getByText('已创建子代理')).toBeInTheDocument();
+  expect(screen.getByText('真实子任务')).toBeInTheDocument();
+ });
+ it('渲染定时任务创建卡片与执行状态行，historyOnly 子代理不渲染',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_events'?[...jobEvents,{id:'sa2',sessionId:'a',seq:'10',kind:'subagent.created',data:{sessionId:'ghost',source:'a',historyOnly:true},createdAt:'2026-11-06T01:08:00Z'}]:original(name,args));
+  render(<App/>);
+  await screen.findByText('以后执行');
+  expect(screen.getByText('2099-01-01T00:00:00Z')).toBeInTheDocument();
+  expect(screen.getByText(/定时任务 sch-1：已完成/)).toBeInTheDocument();
+  expect(screen.queryByText('ghost')).not.toBeInTheDocument();
+ });
+ it('顶栏按钮统计未终结的后台任务并打开面板',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_events')return jobEvents.filter(e=>['s1','f1','s2'].includes(e.id));
+   if(name==='job_list')return [];
+   if(name==='schedule_list')return [];
+   return original(name,args);
+  });
+  render(<App/>);
+  await screen.findByText('npm run build');
+  const button=screen.getByRole('button',{name:/后台任务/});
+  expect(button).toHaveTextContent('1');
+  fireEvent.click(button);
+  await screen.findByRole('dialog',{name:'后台任务'});
+  expect(mocks.command).toHaveBeenCalledWith('job_list',{sessionId:'a'});
+ });
+});
+
 
 describe('工作区的首次会话',()=>{
  it('选择没有会话的新工作区后可直接点击输入并发送',async()=>{
