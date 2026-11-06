@@ -1,5 +1,5 @@
 //! Shared supplier configuration and authoritative route resolution for every carrier.
-use crate::model::{HttpModel, ModelMessage, ModelProvider};
+use crate::model::{HttpModel, ModelMessage, ModelProvider, transport_error};
 use harness_contracts::*;
 use harness_storage::Store;
 use serde::de::DeserializeOwned;
@@ -7,12 +7,29 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+/// 内置供应商目录（deepseek、bigmodel）及其只读模型清单，与 zcode 内置目录对齐。
+/// 目录身份在升级间保持稳定；用户只能通过个人覆盖层启用/禁用，不能改写。
 pub fn builtin_providers() -> Vec<ProviderInfo> {
+    let deepseek_models: [(&str, &str, &[&str]); 2] = [
+        ("deepseek-flash", "DeepSeek Flash", &["disabled", "enabled"]),
+        (
+            "deepseek-v4-pro",
+            "DeepSeek V4 Pro",
+            &["disabled", "enabled"],
+        ),
+    ];
+    let bigmodel_models: [(&str, &str, &[&str]); 4] = [
+        ("glm-5.3", "GLM-5.3", &["low", "high", "max"]),
+        ("glm-5.3-flash", "GLM-5.3 Flash", &["low", "high", "max"]),
+        ("glm-5.2", "GLM-5.2", &["disabled", "high", "max"]),
+        ("glm-5-turbo", "GLM-5 Turbo", &["disabled", "enabled"]),
+    ];
     [
         (
             "deepseek",
             "DeepSeek",
             "deepseek-flash",
+            deepseek_models.as_slice(),
             [
                 "https://api.deepseek.com",
                 "https://api.deepseek.com",
@@ -23,6 +40,7 @@ pub fn builtin_providers() -> Vec<ProviderInfo> {
             "bigmodel",
             "智谱 Coding Plan",
             "glm-5.3",
+            bigmodel_models.as_slice(),
             [
                 "https://open.bigmodel.cn/api/coding/paas/v4",
                 "https://open.bigmodel.cn/api/v1",
@@ -31,7 +49,7 @@ pub fn builtin_providers() -> Vec<ProviderInfo> {
         ),
     ]
     .into_iter()
-    .map(|(id, name, model, urls)| ProviderInfo {
+    .map(|(id, name, model, models, urls)| ProviderInfo {
         compatibility: if id == "deepseek" {
             ProviderCompatibility::DeepSeek
         } else {
@@ -55,11 +73,139 @@ pub fn builtin_providers() -> Vec<ProviderInfo> {
             base_url: base_url.into(),
         })
         .collect(),
+        enabled: true,
+        builtin_models: models
+            .iter()
+            .map(|(id, name, efforts)| BuiltinModel {
+                id: (*id).into(),
+                name: (*name).into(),
+                efforts: efforts.iter().map(|e| (*e).into()).collect(),
+            })
+            .collect(),
+        disabled_models: Vec::new(),
     })
     .collect()
 }
+
+/// 由内置目录条目合成的可路由模型配置；api_mode 固定为供应商的 Anthropic 端点。
+fn builtin_model_config(provider: &ProviderInfo, model: &BuiltinModel) -> Option<ModelConfig> {
+    let endpoint = provider
+        .endpoints
+        .iter()
+        .find(|e| e.api_mode == ApiMode::Anthropic)?;
+    Some(ModelConfig {
+        provider_id: provider.id.clone(),
+        id: format!("builtin:{}:{}", provider.id, model.id),
+        name: model.name.clone(),
+        base_url: endpoint.base_url.clone(),
+        model: model.id.clone(),
+        credential_ref: provider.credential_ref.clone(),
+        proxy: provider.proxy.clone(),
+        compatibility: provider.compatibility,
+        api_mode: ApiMode::Anthropic,
+        max_output_tokens: None,
+        efforts: model.efforts.clone(),
+        effort: None,
+        enabled: !provider.disabled_models.contains(&model.id),
+        builtin: true,
+    })
+}
+
+/// 内置供应商的模型必须配置密钥才能执行；自定义供应商允许空密钥（请求时由端点拒绝）。
+fn require_credential(config: &ModelConfig, secret: &str) -> AppResult<()> {
+    if secret.is_empty()
+        && builtin_providers()
+            .iter()
+            .any(|p| p.id == config.provider_id)
+    {
+        return Err(AppError::new("MODEL_CREDENTIAL", "请先配置供应商密钥"));
+    }
+    Ok(())
+}
+
+/// 应用本次请求的 effort 覆盖；档位必须在模型支持列表内，None 表示清除覆盖、跟随供应商默认。
+fn apply_effort(mut config: ModelConfig, effort: Option<String>) -> AppResult<ModelConfig> {
+    match effort {
+        Some(value) => {
+            if config.efforts.is_empty() || !config.efforts.contains(&value) {
+                return Err(AppError::new(
+                    "MODEL_EFFORT",
+                    format!(
+                        "推理档位 {value} 不受支持，可选：{}",
+                        config.efforts.join(", ")
+                    ),
+                ));
+            }
+            config.effort = Some(value);
+        }
+        None => config.effort = None,
+    }
+    Ok(config)
+}
 fn invalid(message: &str) -> AppError {
     AppError::new("MODEL_CONFIG", message)
+}
+
+/// 拉取端点的模型列表：OpenAI 兼容协议请求 `{base}/models`（Bearer），
+/// Anthropic 协议请求 `{base}/v1/models`（x-api-key），返回去重排序的模型 ID。
+pub(crate) async fn fetch_model_ids(
+    base_url: &str,
+    api_mode: ApiMode,
+    secret: &str,
+    proxy: Option<&str>,
+) -> AppResult<Vec<String>> {
+    let base = base_url.trim_end_matches('/');
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none());
+    if let Some(proxy) = proxy.filter(|p| !p.is_empty()) {
+        builder = builder.proxy(
+            reqwest::Proxy::all(proxy).map_err(|_| AppError::new("MODEL_PROXY", "代理地址无效"))?,
+        );
+    }
+    let client = builder.build().map_err(transport_error)?;
+    let request = match api_mode {
+        ApiMode::Anthropic => {
+            let url = if base.ends_with("/v1") {
+                format!("{base}/models")
+            } else {
+                format!("{base}/v1/models")
+            };
+            client
+                .get(url)
+                .header("anthropic-version", "2023-06-01")
+                .header("x-api-key", secret)
+        }
+        _ => client.get(format!("{base}/models")).bearer_auth(secret),
+    };
+    let response = request
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(transport_error)?;
+    if !response.status().is_success() {
+        return Err(AppError::new(
+            "MODEL_FETCH",
+            format!("获取模型列表失败：HTTP {}", response.status()),
+        ));
+    }
+    let value: serde_json::Value = response.json().await.map_err(transport_error)?;
+    let mut ids: Vec<String> = value
+        .get("data")
+        .and_then(|data| data.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    if ids.is_empty() {
+        return Err(AppError::new("MODEL_FETCH", "端点未返回模型列表"));
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    Ok(ids)
 }
 fn decode(e: impl std::fmt::Display) -> AppError {
     AppError::new("MODEL_CONFIG", e.to_string())
@@ -96,7 +242,11 @@ impl ModelService {
         let mut all = builtin_providers();
         for saved in self.read::<ProviderInfo>("providers").await? {
             if let Some(builtin) = all.iter_mut().find(|p| p.id == saved.id) {
-                builtin.proxy = saved.proxy; // Built-in catalog identity and URLs are immutable.
+                // Built-in catalog identity and URLs are immutable; personal layer
+                // may only toggle visibility (proxy / enabled / disabled models).
+                builtin.proxy = saved.proxy;
+                builtin.enabled = saved.enabled;
+                builtin.disabled_models = saved.disabled_models;
             } else {
                 all.push(saved);
             }
@@ -127,6 +277,8 @@ impl ModelService {
                 ));
             }
             config.credential_ref = builtin.credential_ref;
+            // 个人覆盖层只保留启停状态；目录身份与模型清单始终以程序内置为准。
+            config.builtin_models = Vec::new();
         } else {
             if config.id.is_empty() {
                 config.id = new_id();
@@ -227,14 +379,23 @@ impl ModelService {
         model.credential_ref = supplier.credential_ref.clone();
         Ok(model)
     }
+    /// 全量模型视图：内置供应商的目录模型（含停用标记）+ 已保存的自定义模型。
+    /// 条目的 `enabled` 只表示自身状态；供应商停用由 `build_model` 拦截。
     pub async fn list_models(&self) -> AppResult<Vec<ModelConfig>> {
         let _guard = self.gate.lock().await;
         let suppliers = self.providers().await?;
-        self.read::<ModelConfig>("models")
-            .await?
-            .into_iter()
-            .map(|m| Self::resolve(m, &suppliers))
-            .collect()
+        let mut all: Vec<ModelConfig> = Vec::new();
+        for supplier in &suppliers {
+            for model in &supplier.builtin_models {
+                if let Some(config) = builtin_model_config(supplier, model) {
+                    all.push(config);
+                }
+            }
+        }
+        for model in self.read::<ModelConfig>("models").await? {
+            all.push(Self::resolve(model, &suppliers)?);
+        }
+        Ok(all)
     }
     pub async fn save_model(
         &self,
@@ -247,6 +408,21 @@ impl ModelService {
             || config.max_output_tokens == Some(0)
         {
             return Err(invalid("名称、模型不能为空，输出上限必须大于0"));
+        }
+        if config.builtin {
+            return Err(invalid("内置模型不可修改，请在模型设置中启用或禁用"));
+        }
+        for value in &config.efforts {
+            if !KNOWN_EFFORTS.contains(&value.as_str()) {
+                return Err(invalid(&format!("推理档位 {value} 不受支持")));
+            }
+        }
+        if config
+            .effort
+            .as_ref()
+            .is_some_and(|effort| config.efforts.is_empty() || !config.efforts.contains(effort))
+        {
+            return Err(invalid("默认档位必须在该模型支持的档位列表内"));
         }
         if config.id.is_empty() {
             config.id = new_id();
@@ -281,21 +457,113 @@ impl ModelService {
         self.store.set("models", &json!(all)).await
     }
     pub async fn build_model(&self, id: &str) -> AppResult<Arc<dyn ModelProvider>> {
-        let config = self
+        self.build_model_with(id, None).await
+    }
+    /// 构建可执行模型；`effort` 为本次请求的档位覆盖（必须在模型支持列表内）。
+    pub async fn build_model_with(
+        &self,
+        id: &str,
+        effort: Option<String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        let mut config = self
             .list_models()
             .await?
             .into_iter()
             .find(|m| m.id == id)
             .ok_or_else(|| AppError::new("MODEL_NOT_FOUND", "模型不存在"))?;
-        let secret = harness_platform::get_secret(&config.credential_ref)?.unwrap_or_default();
-        if secret.is_empty()
-            && builtin_providers()
-                .iter()
-                .any(|p| p.id == config.provider_id)
+        if !config.enabled {
+            return Err(AppError::new("MODEL_DISABLED", "模型已停用"));
+        }
+        if !self
+            .providers()
+            .await?
+            .iter()
+            .any(|p| p.id == config.provider_id && p.enabled)
         {
+            return Err(AppError::new("MODEL_DISABLED", "供应商已停用"));
+        }
+        config = apply_effort(config, effort)?;
+        let secret = harness_platform::get_secret(&config.credential_ref)?.unwrap_or_default();
+        require_credential(&config, &secret)?;
+        Ok(Arc::new(HttpModel { config, secret }))
+    }
+    /// 内置目录模型的启用/禁用；写个人覆盖层，内置目录本身不变。
+    pub async fn set_builtin_model_enabled(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+        enabled: bool,
+    ) -> AppResult<()> {
+        let _guard = self.gate.lock().await;
+        let supplier = self
+            .providers()
+            .await?
+            .into_iter()
+            .find(|p| p.id == provider_id)
+            .ok_or_else(|| invalid("供应商不存在"))?;
+        if !supplier.builtin_models.iter().any(|m| m.id == model_id) {
+            return Err(invalid("内置模型不存在"));
+        }
+        let mut all = self.read::<ProviderInfo>("providers").await?;
+        let saved = all.iter_mut().find(|p| p.id == provider_id);
+        match saved {
+            Some(saved) => {
+                saved.disabled_models.retain(|id| id != model_id);
+                if !enabled {
+                    saved.disabled_models.push(model_id.to_string());
+                }
+            }
+            None => {
+                all.push(ProviderInfo {
+                    compatibility: Default::default(),
+                    id: provider_id.to_string(),
+                    name: String::new(),
+                    builtin: true,
+                    endpoints: Vec::new(),
+                    default_model: String::new(),
+                    credential_ref: String::new(),
+                    proxy: supplier.proxy.clone(),
+                    enabled: true,
+                    builtin_models: Vec::new(),
+                    disabled_models: if enabled {
+                        Vec::new()
+                    } else {
+                        vec![model_id.to_string()]
+                    },
+                });
+            }
+        }
+        self.store.set("providers", &json!(all)).await
+    }
+    /// 按供应商与协议从远端拉取可用模型列表（GET /models），供设置页选择后手动保存。
+    pub async fn fetch_available_models(
+        &self,
+        provider_id: &str,
+        api_mode: ApiMode,
+    ) -> AppResult<Vec<String>> {
+        let _guard = self.gate.lock().await;
+        let supplier = self
+            .providers()
+            .await?
+            .into_iter()
+            .find(|p| p.id == provider_id)
+            .ok_or_else(|| invalid("供应商不存在"))?;
+        let endpoint = supplier
+            .endpoints
+            .iter()
+            .find(|e| e.api_mode == api_mode)
+            .ok_or_else(|| invalid("供应商未配置该协议"))?;
+        let secret = harness_platform::get_secret(&supplier.credential_ref)?.unwrap_or_default();
+        if secret.is_empty() {
             return Err(AppError::new("MODEL_CREDENTIAL", "请先配置供应商密钥"));
         }
-        Ok(Arc::new(HttpModel { config, secret }))
+        fetch_model_ids(
+            &endpoint.base_url,
+            api_mode,
+            &secret,
+            supplier.proxy.as_deref(),
+        )
+        .await
     }
     pub async fn test_model(&self, id: &str) -> AppResult<()> {
         let config = self
@@ -367,7 +635,10 @@ mod tests {
     #[tokio::test]
     async fn immutable_builtins_and_independent_copy() {
         let (_dir, s) = service().await;
-        assert!(s.list_models().await.unwrap().is_empty());
+        assert!(
+            s.list_models().await.unwrap().iter().all(|m| m.builtin),
+            "尚未保存自定义模型时列表只含内置目录条目"
+        );
         let mut original = s.list_providers().await.unwrap().remove(0);
         original.name = "changed".into();
         assert!(s.save_provider(original, None).await.is_err());
@@ -396,6 +667,7 @@ mod tests {
             model: "m".into(),
             credential_ref: "provider/bigmodel".into(),
             proxy: None,
+            ..ModelConfig::default()
         };
         let saved = s.save_model(config, None).await.unwrap();
         assert_eq!(saved.base_url, "https://api.deepseek.com");
@@ -424,6 +696,7 @@ mod tests {
                         model: "m".into(),
                         credential_ref: String::new(),
                         proxy: None,
+                        ..ModelConfig::default()
                     },
                     None,
                 )
@@ -434,7 +707,15 @@ mod tests {
         while let Some(r) = tasks.join_next().await {
             r.unwrap();
         }
-        assert_eq!(s.list_models().await.unwrap().len(), 12);
+        assert_eq!(
+            s.list_models()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|m| !m.builtin)
+                .count(),
+            12
+        );
     }
     #[tokio::test]
     async fn refuses_builtin_endpoint_override() {
@@ -450,9 +731,13 @@ mod tests {
             model: "m".into(),
             credential_ref: String::new(),
             proxy: None,
+            ..ModelConfig::default()
         };
         assert!(s.save_model(config, None).await.is_err());
-        assert!(s.list_models().await.unwrap().is_empty());
+        assert!(
+            s.list_models().await.unwrap().iter().all(|m| m.builtin),
+            "被拒绝的端点覆盖不得留下自定义模型"
+        );
     }
     #[tokio::test]
     async fn referenced_protocol_cannot_be_removed() {
@@ -470,6 +755,7 @@ mod tests {
                 model: "m".into(),
                 credential_ref: String::new(),
                 proxy: None,
+                ..ModelConfig::default()
             },
             None,
         )
@@ -479,7 +765,15 @@ mod tests {
             .endpoints
             .retain(|e| e.api_mode != ApiMode::Responses);
         assert!(s.save_provider(supplier, None).await.is_err());
-        assert_eq!(s.list_models().await.unwrap().len(), 1);
+        assert_eq!(
+            s.list_models()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|m| !m.builtin)
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -519,6 +813,7 @@ mod tests {
                     model: "test".into(),
                     credential_ref: String::new(),
                     proxy: None,
+                    ..ModelConfig::default()
                 },
                 None,
             )
@@ -553,6 +848,7 @@ mod tests {
                         model: "m".into(),
                         credential_ref: String::new(),
                         proxy: None,
+                        ..ModelConfig::default()
                     },
                     None,
                 )
@@ -623,6 +919,343 @@ mod tests {
         assert!(
             result.is_ok(),
             "connection test must leave enough budget for a short thinking response: {result:?}"
+        );
+    }
+
+    #[test]
+    fn builtin_catalog_declares_models_with_efforts() {
+        let p = builtin_providers();
+        let deepseek = p.iter().find(|provider| provider.id == "deepseek").unwrap();
+        let bigmodel = p.iter().find(|provider| provider.id == "bigmodel").unwrap();
+        let deepseek_ids: Vec<_> = deepseek
+            .builtin_models
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
+        assert_eq!(deepseek_ids, ["deepseek-flash", "deepseek-v4-pro"]);
+        let bigmodel_ids: Vec<_> = bigmodel
+            .builtin_models
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
+        assert_eq!(
+            bigmodel_ids,
+            ["glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5-turbo"]
+        );
+        assert_eq!(bigmodel.builtin_models[0].efforts, ["low", "high", "max"]);
+        assert_eq!(deepseek.builtin_models[0].efforts, ["disabled", "enabled"]);
+        // 内置模型全部走 Anthropic 端点，与 zcode 模板保持一致。
+        for provider in &p {
+            for model in &provider.builtin_models {
+                let config = builtin_model_config(provider, model).unwrap();
+                assert_eq!(config.api_mode, ApiMode::Anthropic);
+                assert!(config.builtin);
+                assert_eq!(config.model, model.id);
+                assert_eq!(config.provider_id, provider.id);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn builtin_models_are_synthesized_and_can_be_disabled() {
+        let (_dir, s) = service().await;
+        let flash = s
+            .list_models()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|m| m.id == "builtin:bigmodel:glm-5.3-flash")
+            .unwrap();
+        assert_eq!(flash.base_url, "https://open.bigmodel.cn/api/anthropic");
+        assert_eq!(flash.compatibility, ProviderCompatibility::BigModel);
+        assert_eq!(flash.credential_ref, "provider/bigmodel");
+        assert!(flash.enabled);
+        assert_eq!(flash.efforts, ["low", "high", "max"]);
+        // 内置模型凭据缺失时不可执行（纯函数校验，避免测试依赖机器凭据状态）。
+        require_credential(&flash, "").unwrap_err();
+        require_credential(&flash, "k").unwrap();
+        // 禁用后条目标记停用，构建在凭据环节之前被拦截。
+        s.set_builtin_model_enabled("bigmodel", "glm-5.3-flash", false)
+            .await
+            .unwrap();
+        let flash = s
+            .list_models()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|m| m.id == "builtin:bigmodel:glm-5.3-flash")
+            .unwrap();
+        assert!(!flash.enabled);
+        assert_eq!(
+            s.build_model(&flash.id).await.err().unwrap().code,
+            "MODEL_DISABLED"
+        );
+        // 重新启用恢复。
+        s.set_builtin_model_enabled("bigmodel", "glm-5.3-flash", true)
+            .await
+            .unwrap();
+        let flash = s
+            .list_models()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|m| m.id == "builtin:bigmodel:glm-5.3-flash")
+            .unwrap();
+        assert!(flash.enabled);
+    }
+
+    #[tokio::test]
+    async fn disabling_provider_hides_all_its_models() {
+        let (_dir, s) = service().await;
+        let mut deepseek = s
+            .list_providers()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == "deepseek")
+            .unwrap();
+        deepseek.enabled = false;
+        s.save_provider(deepseek, None).await.unwrap();
+        assert!(
+            !s.list_providers()
+                .await
+                .unwrap()
+                .iter()
+                .find(|p| p.id == "deepseek")
+                .unwrap()
+                .enabled
+        );
+        // 供应商停用后其模型不可构建。
+        assert_eq!(
+            s.build_model("builtin:deepseek:deepseek-flash")
+                .await
+                .err()
+                .unwrap()
+                .code,
+            "MODEL_DISABLED"
+        );
+        // 重新启用后恢复。
+        let mut deepseek = s
+            .list_providers()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == "deepseek")
+            .unwrap();
+        deepseek.enabled = true;
+        s.save_provider(deepseek, None).await.unwrap();
+        assert!(
+            s.list_providers()
+                .await
+                .unwrap()
+                .iter()
+                .find(|p| p.id == "deepseek")
+                .unwrap()
+                .enabled
+        );
+    }
+
+    #[tokio::test]
+    async fn builtin_provider_saves_only_allow_enable_and_model_toggles() {
+        let (_dir, s) = service().await;
+        let mut bigmodel = s
+            .list_providers()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == "bigmodel")
+            .unwrap();
+        bigmodel.name = "改名".into();
+        assert!(s.save_provider(bigmodel, None).await.is_err());
+        let mut bigmodel = s
+            .list_providers()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == "bigmodel")
+            .unwrap();
+        bigmodel.endpoints.clear();
+        assert!(s.save_provider(bigmodel, None).await.is_err());
+        // 启停、代理与内置模型禁用清单是内置供应商仅有的可改项。
+        let mut bigmodel = s
+            .list_providers()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == "bigmodel")
+            .unwrap();
+        bigmodel.enabled = false;
+        bigmodel.disabled_models = vec!["glm-5-turbo".into()];
+        bigmodel.proxy = Some("http://127.0.0.1:7890".into());
+        let saved = s.save_provider(bigmodel, None).await.unwrap();
+        assert!(!saved.enabled);
+        assert_eq!(saved.disabled_models, ["glm-5-turbo"]);
+        assert_eq!(saved.proxy.as_deref(), Some("http://127.0.0.1:7890"));
+        let merged = s
+            .list_providers()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == "bigmodel")
+            .unwrap();
+        assert!(!merged.enabled);
+        assert_eq!(merged.disabled_models, ["glm-5-turbo"]);
+        assert_eq!(merged.endpoints.len(), 3, "端点保持目录值");
+    }
+
+    #[tokio::test]
+    async fn save_model_validates_efforts_and_refuses_builtin_entries() {
+        let (_dir, s) = service().await;
+        let unsupported: ModelConfig = serde_json::from_value(json!({
+            "id":"","name":"m","providerId":"deepseek","apiMode":"chatCompletions",
+            "baseUrl":"","model":"m","credentialRef":"","proxy":null,
+            "efforts":["low","bogus"],"effort":"low"
+        }))
+        .unwrap();
+        assert!(s.save_model(unsupported, None).await.is_err());
+        let mismatch: ModelConfig = serde_json::from_value(json!({
+            "id":"","name":"m","providerId":"deepseek","apiMode":"chatCompletions",
+            "baseUrl":"","model":"m","credentialRef":"","proxy":null,
+            "efforts":["low","high"],"effort":"max"
+        }))
+        .unwrap();
+        assert!(s.save_model(mismatch, None).await.is_err());
+        let builtin: ModelConfig = serde_json::from_value(json!({
+            "id":"builtin:deepseek:deepseek-flash","name":"DeepSeek Flash","providerId":"deepseek",
+            "apiMode":"anthropic","baseUrl":"","model":"deepseek-flash","credentialRef":"","proxy":null,
+            "builtin":true
+        }))
+        .unwrap();
+        assert!(s.save_model(builtin, None).await.is_err());
+        let valid: ModelConfig = serde_json::from_value(json!({
+            "id":"","name":"m","providerId":"deepseek","apiMode":"chatCompletions",
+            "baseUrl":"","model":"m","credentialRef":"","proxy":null,
+            "efforts":["low","high"],"effort":"high"
+        }))
+        .unwrap();
+        let saved = s.save_model(valid, None).await.unwrap();
+        assert_eq!(saved.effort.as_deref(), Some("high"));
+        assert_eq!(saved.efforts, ["low", "high"]);
+    }
+
+    #[tokio::test]
+    async fn build_model_with_validates_effort_before_credentials() {
+        let (_dir, s) = service().await;
+        // 不在支持档位内的 effort 在读凭据之前就被拒绝。
+        assert_eq!(
+            s.build_model_with("builtin:bigmodel:glm-5.3", Some("bogus".into()))
+                .await
+                .err()
+                .unwrap()
+                .code,
+            "MODEL_EFFORT"
+        );
+        // 查找成功且档位合法时即通过 effort 校验（后续凭据环节由 require_credential 单测覆盖）。
+        let effort = apply_effort(
+            s.list_models()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|m| m.id == "builtin:bigmodel:glm-5.3")
+                .unwrap(),
+            Some("low".into()),
+        )
+        .unwrap();
+        assert_eq!(effort.effort.as_deref(), Some("low"));
+        // 模型不存在仍报 MODEL_NOT_FOUND。
+        assert_eq!(
+            s.build_model_with("builtin:bigmodel:nope", None)
+                .await
+                .err()
+                .unwrap()
+                .code,
+            "MODEL_NOT_FOUND"
+        );
+        // 停用模型在凭据环节之前被拒绝。
+        s.set_builtin_model_enabled("bigmodel", "glm-5.3", false)
+            .await
+            .unwrap();
+        assert_eq!(
+            s.build_model_with("builtin:bigmodel:glm-5.3", None)
+                .await
+                .err()
+                .unwrap()
+                .code,
+            "MODEL_DISABLED"
+        );
+    }
+
+    #[test]
+    fn apply_effort_overrides_and_validates() {
+        let config = builtin_model_config(
+            &builtin_providers()[1],
+            &builtin_providers()[1].builtin_models[0],
+        )
+        .unwrap();
+        assert_eq!(config.effort, None);
+        let config = apply_effort(config, Some("low".into())).unwrap();
+        assert_eq!(config.effort.as_deref(), Some("low"));
+        let error = apply_effort(config.clone(), Some("minimal".into())).unwrap_err();
+        assert_eq!(error.code, "MODEL_EFFORT");
+        // 不支持档位的模型只能跟随默认。
+        let mut plain = config.clone();
+        plain.efforts.clear();
+        assert!(apply_effort(plain, Some("low".into())).is_err());
+        // None 表示清除覆盖，跟随供应商默认。
+        let cleared = apply_effort(config.clone(), None).unwrap();
+        assert_eq!(cleared.effort, None);
+    }
+
+    #[tokio::test]
+    async fn fetch_available_models_requires_credential_and_parses_ids() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (_dir, s) = service().await;
+        // 未配置密钥的供应商副本 → MODEL_CREDENTIAL（不用内置 ID，避免读到机器真实凭据）。
+        let copy = s.copy_provider("bigmodel").await.unwrap();
+        assert_eq!(
+            s.fetch_available_models(&copy.id, ApiMode::Anthropic)
+                .await
+                .unwrap_err()
+                .code,
+            "MODEL_CREDENTIAL"
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut input = vec![0; 8192];
+            let n = stream.read(&mut input).await.unwrap();
+            let request = String::from_utf8_lossy(&input[..n]).to_string();
+            assert!(
+                request.contains("GET /v1/models"),
+                "anthropic 模式应请求 /v1/models：{request}"
+            );
+            assert!(request.contains("x-api-key"));
+            let body = r#"{"data":[{"id":"z-model"},{"id":"a-model"},{"id":"a-model"}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        // 核心解析函数直接测，避免在测试里写入真实系统凭据。
+        let ids = fetch_model_ids(
+            &format!("http://{address}"),
+            ApiMode::Anthropic,
+            "k-test",
+            None,
+        )
+        .await
+        .unwrap();
+        server.await.unwrap();
+        assert_eq!(ids, ["a-model", "z-model"]);
+        // 不存在的供应商报错。
+        assert_eq!(
+            s.fetch_available_models("nope", ApiMode::Anthropic)
+                .await
+                .unwrap_err()
+                .code,
+            "MODEL_CONFIG"
         );
     }
 }

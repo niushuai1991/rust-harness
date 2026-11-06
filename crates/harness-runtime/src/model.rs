@@ -194,7 +194,7 @@ impl ModelProvider for HttpModel {
 pub fn cancelled() -> AppError {
     AppError::new("CANCELLED", "操作已取消")
 }
-fn transport_error(e: reqwest::Error) -> AppError {
+pub(crate) fn transport_error(e: reqwest::Error) -> AppError {
     AppError::new(
         if e.is_timeout() {
             "MODEL_TIMEOUT"

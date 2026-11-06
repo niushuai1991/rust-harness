@@ -13,7 +13,7 @@ export const commands = {
 	sessionActiveList: () => typedError<string[], AppError>(__TAURI_INVOKE("session_active_list")),
 	sessionCreate: (workspaceId: string, title: string) => typedError<SessionInfo, AppError>(__TAURI_INVOKE("session_create", { workspaceId, title })),
 	sessionEvents: (sessionId: string, after: string | null) => typedError<SessionEvent[], AppError>(__TAURI_INVOKE("session_events", { sessionId, after })),
-	sessionSend: (sessionId: string, text: string, modelId: string, onEvent: Channel<LiveEvent>, attachments: string[] | null) => typedError<null, AppError>(__TAURI_INVOKE("session_send", { sessionId, text, modelId, onEvent, attachments })),
+	sessionSend: (sessionId: string, text: string, modelId: string, effort: string | null, onEvent: Channel<LiveEvent>, attachments: string[] | null) => typedError<null, AppError>(__TAURI_INVOKE("session_send", { sessionId, text, modelId, effort, onEvent, attachments })),
 	sessionCancel: (sessionId: string) => typedError<null, AppError>(__TAURI_INVOKE("session_cancel", { sessionId })),
 	sessionExport: (sessionId: string, path: string) => typedError<null, AppError>(__TAURI_INVOKE("session_export", { sessionId, path })),
 	sessionFork: (sessionId: string) => typedError<SessionInfo, AppError>(__TAURI_INVOKE("session_fork", { sessionId })),
@@ -29,6 +29,12 @@ export const commands = {
 	modelList: () => typedError<ModelConfig[], AppError>(__TAURI_INVOKE("model_list")),
 	modelSave: (config: ModelConfig, secret: string | null) => typedError<null, AppError>(__TAURI_INVOKE("model_save", { config, secret })),
 	modelTest: (modelId: string) => typedError<string, AppError>(__TAURI_INVOKE("model_test", { modelId })),
+	modelFetchAvailable: (providerId: string, apiMode: ApiMode) => typedError<string[], AppError>(__TAURI_INVOKE("model_fetch_available", { providerId, apiMode })),
+	defaultSelectionGet: () => typedError<{
+	modelId: string,
+	effort: string | null,
+} | null, AppError>(__TAURI_INVOKE("default_selection_get")),
+	defaultSelectionSave: (selection: DefaultSelection) => typedError<null, AppError>(__TAURI_INVOKE("default_selection_save", { selection })),
 	approvalList: () => typedError<ApprovalRequest[], AppError>(__TAURI_INVOKE("approval_list")),
 	approvalResolve: (id: string, allow: boolean) => typedError<null, AppError>(__TAURI_INVOKE("approval_resolve", { id, allow })),
 	pluginList: () => typedError<PluginInfo[], AppError>(__TAURI_INVOKE("plugin_list")),
@@ -85,6 +91,19 @@ export type ArtifactMetadata = {
 	size: number,
 };
 
+/**  内置供应商随程序分发的只读模型条目；启用状态由个人层的 `disabled_models` 覆盖。 */
+export type BuiltinModel = {
+	id: string,
+	name: string,
+	efforts: string[],
+};
+
+/**  桌面端跨重启保留的上次模型选择；effort 为 None 表示跟随模型默认。 */
+export type DefaultSelection = {
+	modelId: string,
+	effort: string | null,
+};
+
 export type FileChange = {
 	path: string,
 	kind: string,
@@ -123,6 +142,13 @@ export type ModelConfig = {
 	model: string,
 	credentialRef: string,
 	proxy: string | null,
+	/**  支持的推理档位；为空表示不支持，UI 隐藏 effort 选择。 */
+	efforts?: string[],
+	/**  当前默认档位；None 表示不干预、跟随供应商默认行为。 */
+	effort?: string | null,
+	enabled?: boolean,
+	/**  由内置目录合成的条目；不可编辑或删除，只能启用/禁用。 */
+	builtin?: boolean,
 };
 
 /**
@@ -165,6 +191,9 @@ export type ProviderInfo = {
 	defaultModel: string,
 	credentialRef: string,
 	proxy: string | null,
+	enabled?: boolean,
+	builtinModels?: BuiltinModel[],
+	disabledModels?: string[],
 };
 
 export type SessionEvent = {

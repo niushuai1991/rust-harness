@@ -20,6 +20,9 @@ pub struct Args {
     /// 模型 ID（默认 settings 的 cli.default_model，否则报错列出可用模型）
     #[arg(short = 'm', long)]
     pub model: Option<String>,
+    /// 推理档位（必须在所选模型的支持档位内；缺省跟随模型默认）
+    #[arg(short = 'e', long)]
+    pub effort: Option<String>,
     /// 显式指定工作区（与 --session 互斥）
     #[arg(long, conflicts_with = "session")]
     pub workspace: Option<String>,
@@ -68,7 +71,11 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<()> {
     )
     .await?;
     let mut model_id = manage::resolve_model_id(&runtime, args.model.clone()).await?;
-    let mut provider = runtime.models.build_model(&model_id).await?;
+    let effort = args.effort.clone();
+    let mut provider = runtime
+        .models
+        .build_model_with(&model_id, effort.clone())
+        .await?;
     if let Some(warning) = warning {
         eprintln!("{warning}");
     }
@@ -105,7 +112,10 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<()> {
             ChatCommand::Model(Some(id)) => {
                 ensure_model_exists(&runtime.models.list_models().await?, id)?;
                 model_id = id.to_owned();
-                provider = runtime.models.build_model(&model_id).await?;
+                provider = runtime
+                    .models
+                    .build_model_with(&model_id, effort.clone())
+                    .await?;
                 eprintln!("已切换模型：{model_id}（下一回合生效）");
             }
             ChatCommand::Status => {

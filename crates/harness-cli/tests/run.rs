@@ -266,3 +266,75 @@ async fn chat_requires_tty() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("TTY"), "stderr: {stderr}");
 }
+
+#[tokio::test]
+async fn run_forwards_supported_effort_to_model() {
+    let base = mock_finished().await;
+    let dir = tempfile::tempdir().unwrap();
+    let source = source_dir(dir.path());
+    configure_model(&host_dir(&dir), &base).await;
+    // 为 fixture 模型补充支持档位。
+    let params = format!(
+        r#"{{"config":{{"id":"mock","name":"mock","providerId":"fixture","apiMode":"chatCompletions","model":"model","credentialRef":"test/none","baseUrl":"{base}","maxOutputTokens":1024,"efforts":["low","high"],"effort":"high"}}}}"#
+    );
+    let output = harness(&host_dir(&dir))
+        .args(["call", "model.save", &params])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = harness(&host_dir(&dir))
+        .args([
+            "run",
+            "-C",
+            source.to_str().unwrap(),
+            "--approval",
+            "auto",
+            "-m",
+            "mock",
+            "--effort",
+            "high",
+            "任务",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn run_rejects_effort_outside_model_levels() {
+    let base = mock_finished().await;
+    let dir = tempfile::tempdir().unwrap();
+    let source = source_dir(dir.path());
+    configure_model(&host_dir(&dir), &base).await;
+    let output = harness(&host_dir(&dir))
+        .args([
+            "run",
+            "-C",
+            source.to_str().unwrap(),
+            "--approval",
+            "auto",
+            "-m",
+            "mock",
+            "--effort",
+            "high",
+            "任务",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("MODEL_EFFORT"), "stderr: {stderr}");
+}

@@ -5,6 +5,8 @@ use std::{path::PathBuf, sync::Arc};
 use tauri::{State, ipc::Channel};
 
 type Backend<'a> = State<'a, Arc<Runtime>>;
+/// 跨重启保留的上次模型选择（settings KV 键）。
+pub const DEFAULT_SELECTION_KEY: &str = "app.default_selection";
 fn error(e: impl std::fmt::Display) -> AppError {
     AppError::new("DESKTOP", e.to_string())
 }
@@ -101,10 +103,11 @@ pub async fn session_send(
     session_id: String,
     text: String,
     model_id: String,
+    effort: Option<String>,
     on_event: Channel<LiveEvent>,
     attachments: Option<Vec<String>>,
 ) -> AppResult<()> {
-    let provider = state.models.build_model(&model_id).await?;
+    let provider = state.models.build_model_with(&model_id, effort).await?;
     let runtime = state.inner().clone();
     let mut live = runtime.subscribe();
     let sid = session_id.clone();
@@ -228,6 +231,39 @@ pub async fn model_remove(state: Backend<'_>, model_id: String) -> AppResult<()>
 pub async fn model_test(state: Backend<'_>, model_id: String) -> AppResult<String> {
     state.models.test_model(&model_id).await?;
     Ok("连接成功".into())
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn model_fetch_available(
+    state: Backend<'_>,
+    provider_id: String,
+    api_mode: ApiMode,
+) -> AppResult<Vec<String>> {
+    state
+        .models
+        .fetch_available_models(&provider_id, api_mode)
+        .await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn default_selection_get(state: Backend<'_>) -> AppResult<Option<DefaultSelection>> {
+    state
+        .store
+        .get(DEFAULT_SELECTION_KEY)
+        .await?
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|e| AppError::new("MODEL_CONFIG", e.to_string()))
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn default_selection_save(
+    state: Backend<'_>,
+    selection: DefaultSelection,
+) -> AppResult<()> {
+    let value = serde_json::to_value(&selection)
+        .map_err(|e| AppError::new("MODEL_CONFIG", e.to_string()))?;
+    state.store.set(DEFAULT_SELECTION_KEY, &value).await
 }
 #[tauri::command]
 #[specta::specta]
@@ -399,6 +435,9 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         model_list,
         model_save,
         model_test,
+        model_fetch_available,
+        default_selection_get,
+        default_selection_save,
         approval_list,
         approval_resolve,
         plugin_list,

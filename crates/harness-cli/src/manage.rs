@@ -203,9 +203,21 @@ pub async fn models(runtime: Arc<Runtime>, args: ModelsArgs) -> AppResult<()> {
                     .unwrap_or_default()
                     .trim_matches('"')
                     .to_owned();
+                let efforts = if model.efforts.is_empty() {
+                    "-".to_string()
+                } else {
+                    model.efforts.join(",")
+                };
+                let state = if model.enabled { "" } else { "\t停用" };
                 println!(
-                    "{}\t{}\t{}\t{}",
-                    model.id, model.provider_id, mode, model.model
+                    "{}\t{}\t{}\t{}\t{}\t{}{}",
+                    model.id,
+                    model.provider_id,
+                    mode,
+                    model.model,
+                    efforts,
+                    if model.builtin { "内置" } else { "-" },
+                    state
                 );
             }
         }
