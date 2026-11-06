@@ -94,7 +94,7 @@ CLI 的作用域隔离无法纯客户端实现：runtime 在写入 `inbox.queued
 
 ## 其余设计决策
 
-1. **REPL 形态**：简单 readline 循环（`tokio::io::stdin().lines()`）加流式纯文本输出，不引入 ratatui 全屏 TUI；体验升级留待后续计划。
+1. **REPL 形态**：简单 readline 循环（`tokio::io::stdin().lines()`）加流式纯文本输出，不引入 ratatui 全屏 TUI；体验升级留待后续计划。（2026-11-06 已由[输入框斜杠快捷指令计划](slash-commands-plan.md)落地：crossterm 行编辑与 `/` 补全弹窗，仍不做全屏 TUI。）
 2. **默认模型**：优先级为 `-m/--model` > settings 键 `cli.default_model`（经 `Store::get/set` 读写）> 报错并列出可用模型。`models default <id>` 设置前经 `models.list_models()` 校验存在，不存在拒绝保存；`models default`（无参）查看当前值；`models default --clear` 清除（写 `Null` 视为未设置）。
 3. **参数解析**：引入 `clap 4`（derive），替换 `main.rs` 手写解析；`rpc` 与 `call` 行为保持不变（以现有 `tests/rpc.rs` 与新增 `call` 冒烟测试回归）。
 4. **数据目录**：维持现状（`--data-dir`、环境变量 `RUST_HARNESS_DATA_DIR`、默认 `%LOCALAPPDATA%\RustHarness`），`host.lock` 独占与桌面端互斥的关系不变。
