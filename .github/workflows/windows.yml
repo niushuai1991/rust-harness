@@ -1,7 +1,8 @@
 name: Windows desktop
 on:
-  push:
-  pull_request:
+  # 自动构建暂时关闭,恢复时取消以下两行注释
+  # push:
+  # pull_request:
   workflow_dispatch:
 permissions:
   contents: read
