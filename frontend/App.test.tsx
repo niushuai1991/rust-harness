@@ -1,6 +1,7 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {act,cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
 import App,{DiffPanel} from './App';
+import {GOAL_PROMPT,PLAN_PROMPT} from './slashCommands';
 import {useChat} from './store';
 import {open,save} from '@tauri-apps/plugin-dialog';
 import type {LiveEvent,SessionEvent} from './types';
@@ -260,14 +261,14 @@ describe('工作区的首次会话',()=>{
 
 describe('附件与完整输出',()=>{
  const attachment={hash:'a'.repeat(64),name:'说明.txt',mediaType:'text/plain',size:12};
- it('选择附件后只将宿主返回的hash随消息发送',async()=>{
+ it('通过加号菜单选择附件后只将宿主返回的hash随消息发送',async()=>{
   const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name,args)=>name==='artifact_import'?attachment:original(name,args));vi.mocked(open).mockResolvedValueOnce('C:/private/说明.txt');
-  render(<App/>);await screen.findByText('内容 a');fireEvent.click(screen.getByRole('button',{name:'添加附件'}));await screen.findByText('说明.txt');fireEvent.change(screen.getByLabelText('消息'),{target:{value:'读取附件'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  render(<App/>);await screen.findByText('内容 a');fireEvent.click(screen.getByRole('button',{name:'添加内容'}));fireEvent.click(screen.getByRole('menuitem',{name:/^附件/}));await screen.findByText('说明.txt');fireEvent.change(screen.getByLabelText('消息'),{target:{value:'读取附件'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
   await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','读取附件','m',expect.any(Function),[attachment.hash],null));expect(mocks.command).toHaveBeenCalledWith('artifact_import',{sessionId:'a',path:'C:/private/说明.txt'});
  });
  it('导入期间禁止发送，切换会话后丢弃迟到的附件',async()=>{
   let finish!:(value:unknown)=>void;const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name,args)=>name==='artifact_import'?new Promise(resolve=>finish=resolve):original(name,args));vi.mocked(open).mockResolvedValueOnce('C:/private/说明.txt');
-  render(<App/>);await screen.findByText('内容 a');fireEvent.change(screen.getByLabelText('消息'),{target:{value:'任务'}});fireEvent.click(screen.getByRole('button',{name:'添加附件'}));await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('artifact_import',expect.anything()));expect(screen.getByRole('button',{name:'发送消息'})).toBeDisabled();fireEvent.click(screen.getByRole('button',{name:'会话 B'}));await screen.findByText('内容 b');await act(async()=>finish(attachment));expect(screen.queryByText('说明.txt')).not.toBeInTheDocument();
+  render(<App/>);await screen.findByText('内容 a');fireEvent.change(screen.getByLabelText('消息'),{target:{value:'任务'}});fireEvent.click(screen.getByRole('button',{name:'添加内容'}));fireEvent.click(screen.getByRole('menuitem',{name:/^附件/}));await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('artifact_import',expect.anything()));expect(screen.getByRole('button',{name:'发送消息'})).toBeDisabled();fireEvent.click(screen.getByRole('button',{name:'会话 B'}));await screen.findByText('内容 b');await act(async()=>finish(attachment));expect(screen.queryByText('说明.txt')).not.toBeInTheDocument();
   fireEvent.change(screen.getByLabelText('消息'),{target:{value:'无附件'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('b','无附件','m',expect.any(Function),undefined,null));
  });
  it('附件和大输出卡片通过保存对话框导出真实完整内容',async()=>{
@@ -451,6 +452,54 @@ describe('斜杠命令补全',()=>{
  });
 });
 
+describe('加号添加菜单',()=>{
+ it('点 + 弹出菜单，计划/目标插入斜杠命令并关闭菜单',async()=>{
+  render(<App/>);await screen.findByText('内容 a');
+  const plus=screen.getByRole('button',{name:'添加内容'});
+  expect(screen.queryByRole('menu',{name:'添加内容'})).not.toBeInTheDocument();
+  fireEvent.click(plus);
+  const menu=screen.getByRole('menu',{name:'添加内容'});
+  expect(plus).toHaveAttribute('aria-expanded','true');
+  expect(within(menu).getByRole('menuitem',{name:/^附件/})).toBeInTheDocument();
+  fireEvent.click(within(menu).getByRole('menuitem',{name:/^计划/}));
+  expect(screen.getByLabelText('消息')).toHaveValue('/plan ');
+  expect(screen.queryByRole('menu',{name:'添加内容'})).not.toBeInTheDocument();
+  expect(screen.getByLabelText('消息')).toHaveFocus();
+  fireEvent.click(plus);
+  fireEvent.click(screen.getByRole('menuitem',{name:/^目标/}));
+  expect(screen.getByLabelText('消息')).toHaveValue('/goal ');
+ });
+ it('Escape 与点击外部关闭菜单',async()=>{
+  render(<App/>);await screen.findByText('内容 a');
+  fireEvent.click(screen.getByRole('button',{name:'添加内容'}));
+  expect(screen.getByRole('menu',{name:'添加内容'})).toBeInTheDocument();
+  fireEvent.keyDown(screen.getByLabelText('消息'),{key:'Escape'});
+  expect(screen.queryByRole('menu',{name:'添加内容'})).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button',{name:'添加内容'}));
+  fireEvent.mouseDown(screen.getByRole('button',{name:'新建会话'}));
+  expect(screen.queryByRole('menu',{name:'添加内容'})).not.toBeInTheDocument();
+ });
+ it('/plan 带参数发送展开为预置提示词，无参数提示用法且不发送',async()=>{
+  mocks.send.mockResolvedValue(undefined);
+  render(<App/>);await screen.findByText('内容 a');
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'/plan 为导出制定计划'}});
+  fireEvent.keyDown(input,{key:'Enter'});
+  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a',`${PLAN_PROMPT}\n\n任务：为导出制定计划`,'m',expect.any(Function),undefined,null));
+  fireEvent.change(input,{target:{value:'/plan'}});
+  fireEvent.keyDown(input,{key:'Enter'});
+  await screen.findByText('用法：/plan <任务描述>，发送后模型制定实施计划并经 plan_write 记录。');
+  expect(mocks.send).toHaveBeenCalledTimes(1);
+ });
+ it('/goal 带参数发送展开为预置提示词',async()=>{
+  mocks.send.mockResolvedValue(undefined);
+  render(<App/>);await screen.findByText('内容 a');
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'/goal 完成导出功能'}});
+  fireEvent.keyDown(input,{key:'Enter'});
+  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a',`${GOAL_PROMPT}\n\n目标：完成导出功能`,'m',expect.any(Function),undefined,null));
+ });
+});
 describe('能力预设',()=>{
  it('发送框选择预设填充级联，手改级联视为放弃预设',async()=>{
   const original=mocks.command.getMockImplementation()!;
