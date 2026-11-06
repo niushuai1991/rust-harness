@@ -75,6 +75,7 @@ async fn run() -> AppResult<()> {
     let cli = Cli::parse();
     let runtime = harness_runtime::Runtime::open(data_dir(&cli)?).await?;
     let _owner = harness_orchestration::install(runtime.clone())?;
+    let _browser = harness_browser::install(runtime.clone())?;
     match cli.command {
         Commands::Rpc => harness_cli::serve(runtime).await,
         Commands::Acp { model } => {

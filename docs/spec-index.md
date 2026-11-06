@@ -12,6 +12,7 @@
 | [CLI 命令行 Agent 调用计划](specs/cli-plan.md) | 2026-11-05（计划拟制） | 已实施，真实模型端到端验证通过（2026-11-06）；chat 与 ask 交互抽查待用户 | `harness` 命令行 run/chat/diff/apply/models/sessions 能力，参考 codex CLI 设计。 |
 | [ACP 协议接口计划](specs/acp-plan.md) | 2026-11-06（计划拟制） | 已实施，单测/集成/真实模型端到端验证通过（2026-11-06）；Zed 实测待用户 | `harness acp` 子命令：Agent Client Protocol v1 agent 端，官方 Rust SDK，供编辑器客户端接入。 |
 | [LSP 语言服务集成计划](specs/lsp-plan.md) | 2026-11-06（计划拟制） | 已实施，真实 rust-analyzer 沙箱冒烟通过 | P3 提前项：只读五件套 LSP 工具（诊断/悬停/定义/引用/符号），通用 server 配置，默认 rust-analyzer。 |
+| [内置浏览器集成计划](specs/browser-plan.md) | 2026-11-06（计划批准） | 已实施，真实模型端到端验证通过（2026-11-06）；桌面可视面板与多标签页不在范围 | Agent 会话 browser_* 工具组：系统 Edge/Chrome headless + 自研轻量 CDP，DevToolsActivePort 就绪检测与 Job Object 进程树清理。 |
 | [子代理可视化与 spawn 模型选择计划](specs/subagent-visibility-plan.md) | 2026-11-06（计划拟制） | 已实施，单测与前端测试通过（2026-11-06） | 子代理父子关系与运行状态可视化，`agent_spawn` 可选 modelId；ACP 透传与管理面板留待后续。 |
 
 ## 关系说明
@@ -20,6 +21,7 @@
 - CLI 命令行调用计划为宿主接口专项计划，实施后桌面端与 JSON-RPC 约定保持不变。
 - ACP 协议接口计划为宿主接口专项计划，与 CLI 计划并列，均不改变桌面端约定。
 - LSP 语言服务集成计划为模型工具能力专项计划，只读工具免审批，文件改动仍只落隔离副本。
+- 内置浏览器集成计划为模型工具能力专项计划，与 LSP 计划并列；工具默认审批，页面内容视为不可信。
 - 子代理可视化计划为协作能力专项计划，`SessionInfo.parentId` 为运行时推导字段，存储层不落库。
 - 当前完成情况以 [能力状态矩阵](capability-matrix.md) 为准，具体执行与验证证据见 [执行进度](progress.md) 和 [交付记录](delivery.md)。
 - 后续发布仅构建使用系统已有 WebView2 的单一 NSIS 包；专项计划中的双安装包与测试数量仅对应 0.1.2 当次交付。

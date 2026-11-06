@@ -22,6 +22,7 @@
 |NSIS离线包|仅保留0.1.2及以前的历史产物，后续不再提供|后续仅构建系统已有WebView2的单一NSIS包（skip模式）|
 |发布签名与自动更新|Tauri插件接入，信任配置未启用|没有签名证书、更新公钥或发布端点，未发布|
 |LSP只读五件套（诊断/悬停/定义/引用/符号）|已实现并接线|mock server 11项与runtime流程6项测试；真实rust-analyzer经Windows沙箱冒烟通过（E0308诊断与hover到位），测试为`#[ignore]`仅显式运行，见[LSP计划](specs/lsp-plan.md)|
+|内置浏览器（browser_navigate/snapshot/click/type/press/screenshot/evaluate/close）|已实现并接线|11项Rust测试（白名单/stub解析/命令契约/审批链路，含真实Edge headless全链路）通过；真实模型端到端（glm-5.3-flash）navigate→snapshot→type→click→evaluate读到预期文本，turn completed，见[浏览器计划](specs/browser-plan.md)|
 |PTY/SSH执行世界/搜索provider/Office预览|未实现|不能计为P2/P3完成|
 |配置预设分层/脚本工作流/签名插件市场|未实现|不能计为P3完成|
 

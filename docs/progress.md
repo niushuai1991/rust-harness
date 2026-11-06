@@ -74,6 +74,17 @@
 - 全套验证：fmt/clippy(-D warnings)/全工作区 test/build 通过。真实模型端到端（SQLite 快照独立数据目录 + 凭据管理器复用）：真实回合经 read 工具转述文件内容，18 段流式 chunk + end_turn；进程重启后 session/load 回放顺序正确。
 - 边界：mcpServers 参数忽略（stderr 警告）；fs/terminal/elicitation/authenticate 未实现（本 Agent 不调用客户端方法，authMethods 空）；Zed 实测待用户抽查；单宿主 host.lock 约束与 rpc 相同（桌面运行时需独立 --data-dir）。
 
+## 内置浏览器集成（2026-11-06）
+
+- 依据[内置浏览器集成计划](specs/browser-plan.md)：新 crate `harness-browser`，注册 browser_navigate/snapshot/click/type/press/screenshot/evaluate/close 八个工具；统一命令契约 + `BrowserBackend` 抽象（参考 ZCode browser-use 三层架构），默认后端为系统 Edge/Chrome headless + 自研轻量 CDP 客户端（tokio-tungstenite，仅 Page/Runtime/Input 域）；CLI 与桌面端在 `orchestration::install` 之后接入 `harness_browser::install`。
+- Ruling: Edge/Chrome（Windows）launcher 进程转交真身后立即退出，stderr 的 `DevTools listening` 行不可依赖——直接 spawn 版本子目录真身同样立即退出；就绪检测改为轮询 user-data-dir 下 `DevToolsActivePort` 文件（首行端口），进程树清理改用 Job Object（KILL_ON_JOB_CLOSE，spawn 后立即 AssignProcessToJobObject，真身继承 Job），实测关闭 Job 句柄后浏览器进程树全部终止。
+- Ruling: 可执行文件解析顺序为显式指定 > 环境变量 RUST_HARNESS_BROWSER_EXECUTABLE > Edge/Chrome 标准安装路径，命中后优先切换到版本子目录中的真身可执行文件；不自动下载浏览器，未找到时报 BROWSER_NOT_FOUND。
+- 安全边界：导航 scheme 白名单（仅 http/https/about:blank）；快照 ref→CSS 定位映射仅存 Rust 侧，注入脚本为一次性 IIFE 不写入页面 globalThis；浏览器使用独立临时 user-data-dir，不携带用户配置；browser_* 工具默认走审批（与 shell 同级）。
+- TDD：单元测试 8 项（URL 白名单、候选路径、版本子目录 stub 解析、命令契约）先红后绿；工具链路 2 项（审批通过后触达注入的假后端、拒绝不触达）；集成测试 1 项经本地 HTTP 页面驱动真实 Edge headless 走完 navigate→snapshot→type→click→evaluate→screenshot→close。
+- 全套验证：cargo fmt --check 通过；clippy 对 harness-browser 全目标零警告；cargo test --all-features 全绿；cargo build --all-features 通过。分支已 rebase 到 main（LSP PR #11 合并后）重新验证。
+- 真实模型端到端（SQLite 快照独立数据目录 + 凭据管理器复用，glm-5.3-flash，--approval auto）：模型自主完成 navigate→snapshot（识别输入框/按钮 ref）→type(张三)→click→evaluate，读到"你好，张三"并在回复中报告，turn completed。
+- 边界：桌面可视浏览器面板、CLI 调试子命令、多标签页管理未实现（计划范围外）；CI 无浏览器环境时集成测试打印原因跳过（不失败）；CLI 侧 `ContentChunk` 未使用导入告警为 main 基线遗留，与本改动无关。
+
 ## 子代理可视化与 spawn 模型选择（2026-11-06）
 
 - 依据 [子代理可视化与 spawn 模型选择计划](specs/subagent-visibility-plan.md)：核实子代理协作原语与重启恢复已闭环后，补齐"用户看不见子代理"与"spawn 无法指定模型"两个缺口。
