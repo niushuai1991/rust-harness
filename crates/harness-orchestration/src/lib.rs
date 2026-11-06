@@ -73,7 +73,8 @@ impl Installed {
     }
     /// Human panel: schedules owned by one session.
     pub async fn session_schedules(&self, session: &str) -> AppResult<Vec<Schedule>> {
-        let r = self.runtime()?;
+        // Still guard against a shut-down host; the schedule list itself is session-scoped state.
+        self.runtime()?;
         Ok(self
             .state
             .schedules()

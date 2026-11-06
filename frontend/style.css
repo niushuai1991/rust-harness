@@ -15,3 +15,14 @@
 .todo-list{list-style:none;margin:9px 0 12px;padding:0 14px}
 .todo-list li{padding:4px 0;color:#64725f}
 .todo-list li.done{color:#96a48c;text-decoration:line-through}
+
+.plan-groups{display:flex;flex-direction:column;gap:12px;margin-top:12px}
+.plan-group{border:1px solid var(--border);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:10px;background:var(--panel)}
+.plan-group-heading{display:flex;align-items:center;gap:8px}
+.plan-group-heading strong{font-size:14px}
+.plan-group-actions{margin-left:auto;display:flex;gap:8px}
+.plan-group-actions button{border:1px solid var(--border);background:transparent;color:var(--text);border-radius:8px;padding:4px 10px;font-size:12px;cursor:pointer}
+.plan-group-actions button:hover{border-color:var(--accent);color:var(--accent)}
+.plan-entry{display:flex;flex-direction:column;gap:6px}
+.plan-history{border-top:1px dashed var(--border);padding-top:8px;display:flex;flex-direction:column;gap:6px}
+.plan-history-row{display:flex;flex-direction:column;gap:2px;font-size:12px}

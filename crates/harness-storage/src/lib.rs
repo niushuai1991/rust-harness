@@ -269,6 +269,32 @@ impl Store {
         }
         Ok(recovered)
     }
+    /// Latest todo/plan/goal entry per session for the desktop overview panel; derived view.
+    pub async fn latest_states(&self) -> AppResult<Vec<PlanStateOverview>> {
+        let rows = sqlx::query(
+            "SELECT e.session_id,e.kind,e.data,e.created_at,s.title,s.workspace_id FROM events e \
+             JOIN (SELECT session_id,kind,MAX(seq) AS seq FROM events \
+                   WHERE kind IN ('todo.state','plan.state','goal.state') GROUP BY session_id,kind) m \
+             ON e.session_id=m.session_id AND e.kind=m.kind AND e.seq=m.seq \
+             JOIN sessions s ON s.id=e.session_id \
+             ORDER BY s.updated_at DESC,e.kind",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_error)?;
+        rows.iter()
+            .map(|r| {
+                Ok(PlanStateOverview {
+                    session_id: r.get("session_id"),
+                    session_title: r.get("title"),
+                    workspace_id: r.get("workspace_id"),
+                    kind: r.get("kind"),
+                    data: serde_json::from_str(r.get("data")).map_err(db_error)?,
+                    updated_at: r.get("created_at"),
+                })
+            })
+            .collect()
+    }
     pub async fn search(&self, query: &str) -> AppResult<Vec<SessionInfo>> {
         if query.trim().is_empty() {
             return self.sessions(None).await;

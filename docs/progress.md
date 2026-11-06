@@ -101,3 +101,11 @@
 - 新增会话级「后台任务」面板：后台 Shell 任务与定时任务分组列表，运行中任务可取消、pending 定时任务两步确认删除，打开期间每 2 秒轮询（与审批轮询同模式）。
 - TDD：orchestration 3 项新测试（事件合成与会话作用域、取消归属校验、定时宿主 API）先红后绿，连同既有 7 项共 10 项通过；前端新增面板 4 项与事件卡片/徽标 3 项测试，全套 42 项通过；`npm run build` 通过。
 - 边界：空闲期完成的任务靠面板轮询与刷新呈现，不额外推送；跨会话任务中心、完成通知、PTY 不在本次范围。
+## 计划/目标管理面板（2026-11-06）
+
+- 依据 [计划/目标管理面板计划](specs/plan-goal-panel-plan.md)：P2「计划/目标」项收尾。模型工具、`*.state` 事件与会话流卡片此前已交付，本次按用户确认的范围（只读查看、全部会话汇总）补齐独立管理面板。
+- 契约与存储：`harness-contracts` 新增派生视图 DTO `PlanStateOverview`（会话标识/标题/工作区、kind、data、更新时间）；`Store::latest_states()` 单条 SQL 按会话与 kind 取 `MAX(seq)` 最新事件并 JOIN 会话行，按会话 `updated_at` 降序输出；事件流仍是唯一事实来源，不建新表、不新增 UI 写入通道。
+- 桌面新增只读命令 `plan_overview`；前端新增侧边栏「计划与目标」面板：按会话分组展示最新待办（`TodoList` 组件从 `EventCard` 提取共享，完成态划线规则一致）、计划与目标（Markdown）；每会话支持「演变历史」懒加载（复用 `session_events` 过滤三种 state 事件）与「查看会话」跳转，跨工作区跳转经 `pendingJump` 在目标工作区会话列表加载完成后自动定位。
+- 顺手修复 main 预存在告警：`harness-orchestration::session_schedules` 的未使用变量（PR #14 合并遗留），`runtime()?` 保留 SHUTDOWN 检查语义。
+- TDD：`plan_states.rs` 2 项先红（`latest_states` 缺失）后绿；前端 `PlansPanel.test.tsx` 5 项与 App 入口 1 项先红后绿，全套 51 项通过；`cargo fmt --check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test --all-features`（125 项）、`cargo build --all-features`、`npm run build` 通过；`frontend/bindings.ts` 经 `export_bindings` 重新导出。
+- 边界：面板只读，不提供勾选/编辑——手动写入不进模型历史，模型无法感知用户侧修改，需额外注入机制，不在本次范围；CLI/headless/ACP 不透传该视图（事件原样可得）；历史懒加载复用 `session_events` 全量返回，超大会话一次性拉取。

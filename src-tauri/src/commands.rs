@@ -156,6 +156,11 @@ pub async fn session_fork(state: Backend<'_>, session_id: String) -> AppResult<S
 pub async fn session_search(state: Backend<'_>, query: String) -> AppResult<Vec<SessionInfo>> {
     state.store.search(&query).await
 }
+#[tauri::command]
+#[specta::specta]
+pub async fn plan_overview(state: Backend<'_>) -> AppResult<Vec<PlanStateOverview>> {
+    state.store.latest_states().await
+}
 
 #[tauri::command]
 #[specta::specta]
@@ -367,6 +372,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         session_export,
         session_fork,
         session_search,
+        plan_overview,
         provider_list,
         provider_save,
         provider_copy,

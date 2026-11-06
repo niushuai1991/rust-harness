@@ -277,6 +277,20 @@ pub struct LspStatusEntry {
     pub diagnostics: u32,
 }
 
+/// Latest todo/plan/goal entry of one session for the desktop overview panel.
+/// Derived view over the event log; the event stream stays the source of truth.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanStateOverview {
+    pub session_id: String,
+    pub session_title: String,
+    pub workspace_id: String,
+    pub kind: String,
+    #[specta(type = JsonValue)]
+    pub data: Value,
+    pub updated_at: String,
+}
+
 #[cfg(test)]
 mod lsp_config_tests {
     use super::*;
