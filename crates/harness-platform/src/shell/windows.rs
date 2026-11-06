@@ -16,16 +16,16 @@ use windows_sys::Win32::{
 };
 const SE_GROUP_LOGON_ID: u32 = 0xc0000000;
 const SE_GROUP_INTEGRITY: u32 = 0x20;
-fn wide(value: impl AsRef<std::ffi::OsStr>) -> Vec<u16> {
+pub(crate) fn wide(value: impl AsRef<std::ffi::OsStr>) -> Vec<u16> {
     value.as_ref().encode_wide().chain(Some(0)).collect()
 }
-fn error(api: &str) -> AppError {
+pub(crate) fn error(api: &str) -> AppError {
     AppError::new(
         "SANDBOX",
         format!("{api}: {}", std::io::Error::last_os_error()),
     )
 }
-struct Handle(HANDLE);
+pub(crate) struct Handle(pub(crate) HANDLE);
 // Kernel handles are thread safe; this type owns and closes exactly one handle.
 unsafe impl Send for Handle {}
 unsafe impl Sync for Handle {}
@@ -38,7 +38,7 @@ impl Drop for Handle {
         }
     }
 }
-struct Local(*mut c_void);
+pub(crate) struct Local(pub(crate) *mut c_void);
 impl Drop for Local {
     fn drop(&mut self) {
         unsafe {
@@ -48,7 +48,7 @@ impl Drop for Local {
         }
     }
 }
-fn sid(value: &str) -> AppResult<Local> {
+pub(crate) fn sid(value: &str) -> AppResult<Local> {
     unsafe {
         let mut ptr = null_mut();
         if ConvertStringSidToSidW(wide(value).as_ptr(), &mut ptr) == 0 {
@@ -71,7 +71,7 @@ fn entry(sid: PSID, mode: ACCESS_MODE, mask: u32, inheritance: u32) -> EXPLICIT_
         },
     }
 }
-fn grant(root: &Path, capability: PSID, world: PSID) -> AppResult<()> {
+pub(crate) fn grant(root: &Path, capability: PSID, world: PSID) -> AppResult<()> {
     unsafe {
         // Every existing object is independently checked before inherited ACL propagation.
         fn inspect(path: &Path) -> AppResult<()> {
@@ -206,7 +206,7 @@ fn grant(root: &Path, capability: PSID, world: PSID) -> AppResult<()> {
         Ok(())
     }
 }
-fn token(capability: PSID, temp_capability: PSID, world: PSID) -> AppResult<Handle> {
+pub(crate) fn token(capability: PSID, temp_capability: PSID, world: PSID) -> AppResult<Handle> {
     unsafe {
         let mut original = null_mut();
         if OpenProcessToken(
@@ -425,7 +425,7 @@ fn startup(input: HANDLE, output: HANDLE, error_handle: HANDLE) -> AppResult<Sta
         Ok(startup)
     }
 }
-fn capability(id: &str) -> AppResult<Local> {
+pub(crate) fn capability(id: &str) -> AppResult<Local> {
     let uuid = uuid::Uuid::parse_str(id).map_err(io)?;
     let b = uuid.as_bytes();
     sid(&format!(
@@ -457,7 +457,7 @@ impl Drop for StdioLifetime {
         self.done.cancel();
     }
 }
-fn quoted(value: &str) -> String {
+pub(crate) fn quoted(value: &str) -> String {
     let mut out = String::from("\"");
     let mut slashes = 0;
     for c in value.chars() {
@@ -476,6 +476,58 @@ fn quoted(value: &str) -> String {
     out.extend(std::iter::repeat_n('\\', slashes * 2));
     out.push('"');
     out
+}
+/// Resolve and acquire the shared runtime lease of a managed replica root.
+pub(crate) fn sandbox_lease(
+    root: &Path,
+) -> AppResult<(PathBuf, String, WorkspaceManager, crate::WorkspaceLease)> {
+    crate::paths::check(root)?;
+    let root = dunce::canonicalize(root).map_err(io)?;
+    if root.file_name().and_then(|s| s.to_str()) != Some("root") {
+        return Err(AppError::new(
+            "INVALID_WORKSPACE",
+            "Shell requires a managed root",
+        ));
+    }
+    let workspace = root
+        .parent()
+        .ok_or_else(|| AppError::new("INVALID_WORKSPACE", "Missing workspace"))?;
+    let id = workspace
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| AppError::new("INVALID_WORKSPACE", "Missing id"))?
+        .to_owned();
+    let data = workspace
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| AppError::new("INVALID_WORKSPACE", "Missing data directory"))?
+        .to_path_buf();
+    let manager = WorkspaceManager::new(data)?;
+    let lease = manager.acquire(&id)?;
+    if Path::new(&lease.info.replica_path) != root {
+        return Err(AppError::new("INVALID_WORKSPACE", "Root mismatch"));
+    }
+    Ok((root, id, manager, lease))
+}
+/// Child environment: inherited except private TEMP/TMP/TMPDIR pointing at the sandbox temp.
+pub(crate) fn environment_block(temp: &Path) -> Vec<u16> {
+    let mut environment: Vec<(String, String)> = std::env::vars()
+        .filter(|(k, _)| {
+            !["TEMP", "TMP", "TMPDIR"]
+                .iter()
+                .any(|v| k.eq_ignore_ascii_case(v))
+        })
+        .collect();
+    for key in ["TEMP", "TMP", "TMPDIR"] {
+        environment.push((key.into(), temp.to_string_lossy().into_owned()));
+    }
+    environment.sort_by_key(|(k, _)| k.to_ascii_uppercase());
+    let mut env: Vec<u16> = environment
+        .into_iter()
+        .flat_map(|(k, v)| wide(format!("{k}={v}")))
+        .collect();
+    env.push(0);
+    env
 }
 pub(super) fn spawn_stdio(
     root: &Path,
@@ -591,22 +643,7 @@ pub(super) fn spawn_stdio(
             command.push_str(&quoted(argument));
         }
         let mut command = wide(command);
-        let mut environment: Vec<(String, String)> = std::env::vars()
-            .filter(|(k, _)| {
-                !["TEMP", "TMP", "TMPDIR"]
-                    .iter()
-                    .any(|v| k.eq_ignore_ascii_case(v))
-            })
-            .collect();
-        for key in ["TEMP", "TMP", "TMPDIR"] {
-            environment.push((key.into(), temp.path().to_string_lossy().into_owned()));
-        }
-        environment.sort_by_key(|(k, _)| k.to_ascii_uppercase());
-        let mut env: Vec<u16> = environment
-            .into_iter()
-            .flat_map(|(k, v)| wide(format!("{k}={v}")))
-            .collect();
-        env.push(0);
+        let env = environment_block(temp.path());
         let mut process: PROCESS_INFORMATION = std::mem::zeroed();
         if CreateProcessAsUserW(
             token.0,
@@ -682,33 +719,13 @@ pub(super) fn run(
     if cancel.is_cancelled() {
         return Err(AppError::new("CANCELLED", "Shell cancelled"));
     }
-    crate::paths::check(root)?;
-    let root = dunce::canonicalize(root).map_err(io)?;
-    if root.file_name().and_then(|s| s.to_str()) != Some("root") {
-        return Err(AppError::new(
-            "INVALID_WORKSPACE",
-            "Shell requires a managed root",
-        ));
-    }
+    let (root, id, _manager, _lease) = sandbox_lease(root)?;
     let workspace = root
         .parent()
         .ok_or_else(|| AppError::new("INVALID_WORKSPACE", "Missing workspace"))?;
-    let id = workspace
-        .file_name()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| AppError::new("INVALID_WORKSPACE", "Missing id"))?;
-    let data = workspace
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| AppError::new("INVALID_WORKSPACE", "Missing data directory"))?;
-    let manager = WorkspaceManager::new(data.to_path_buf())?;
-    let _lease = manager.acquire(id)?;
-    if Path::new(&_lease.info.replica_path) != root {
-        return Err(AppError::new("INVALID_WORKSPACE", "Root mismatch"));
-    }
     fs::create_dir_all(workspace.join("temp")).map_err(io)?;
     let temp = tempfile::tempdir_in(workspace.join("temp")).map_err(io)?;
-    let capability = capability(id)?;
+    let capability = capability(&id)?;
     let temp_capability = self::capability(&uuid::Uuid::new_v4().to_string())?;
     let world = sid("S-1-1-0")?;
     grant(temp.path(), temp_capability.0, world.0)?;
@@ -759,22 +776,7 @@ pub(super) fn run(
             executable.display(),
             script_path.display()
         ));
-        let mut environment: Vec<(String, String)> = std::env::vars()
-            .filter(|(k, _)| {
-                !["TEMP", "TMP", "TMPDIR"]
-                    .iter()
-                    .any(|v| k.eq_ignore_ascii_case(v))
-            })
-            .collect();
-        for key in ["TEMP", "TMP", "TMPDIR"] {
-            environment.push((key.into(), temp.path().to_string_lossy().into_owned()));
-        }
-        environment.sort_by_key(|(k, _)| k.to_ascii_uppercase());
-        let mut env: Vec<u16> = environment
-            .into_iter()
-            .flat_map(|(k, v)| wide(format!("{k}={v}")))
-            .collect();
-        env.push(0);
+        let env = environment_block(temp.path());
         let mut in_read = null_mut();
         let mut in_write = null_mut();
         let security = SECURITY_ATTRIBUTES {

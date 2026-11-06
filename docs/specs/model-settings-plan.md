@@ -59,7 +59,7 @@
 
 ### 卸载行为
 
-`tauri.conf.json` nsis 配置新增 `"deleteAppDataOnUninstall": true`，卸载页出现"删除应用数据"勾选框；勾选且非升级模式时 `nsis-hooks.nsh` 执行 `--purge-local-data`（删除 `%LOCALAPPDATA%\RustHarness` 与凭据），不勾选则全部保留。模型/供应商设置存于 SQLite 与系统凭据管理器，升级天然保留。
+核实结论：Tauri 2.12 的 NSIS 卸载确认页**无条件提供**"Delete app data"复选框（模板变量 `$DeleteAppDataCheckboxState`，与升级模式变量 `$UpdateMode` 一并由模板定义），无需任何配置字段——`deleteAppDataOnUninstall` 是 Tauri 3 的字段，在本项目锁定的 tauri-build 2.7.4 与 @tauri-apps/cli 2.12.4 双侧 schema 中均不存在，写入会导致构建失败。勾选且非升级模式时，模板先删除 `$APPDATA\BUNDLEID`/`$LOCALAPPDATA\BUNDLEID`，既有 `nsis-hooks.nsh` 借用同一勾选状态执行 `--purge-local-data`（删除 `%LOCALAPPDATA%\RustHarness` 与系统凭据）并跳过模板的递归删除；不勾选则全部保留。模型/供应商设置存于 SQLite 与系统凭据管理器，升级天然保留。
 
 ## 测试与验证
 

@@ -4,9 +4,11 @@ pub mod approval;
 pub mod chat;
 pub mod console;
 pub mod diffview;
+pub mod line_editor;
 pub mod manage;
 pub mod run;
 pub mod scope;
+pub mod slash;
 
 use harness_contracts::*;
 use harness_runtime::{Runtime, model::ModelProvider};

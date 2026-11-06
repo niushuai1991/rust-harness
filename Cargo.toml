@@ -46,6 +46,8 @@ bytes = "1"
 agent-client-protocol = { version = "=5.0.0", features = ["stdio"] }
 tokio-tungstenite = "0.27"
 base64 = "0.22"
+crossterm = "0.29"
+unicode-width = "0.2"
 
 [profile.release]
 lto = "thin"

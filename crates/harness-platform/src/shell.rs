@@ -92,7 +92,7 @@ impl ShellService {
     }
 }
 #[cfg(windows)]
-mod windows;
+pub(crate) mod windows;
 pub(crate) fn prepare(root: &Path, id: &str) -> AppResult<()> {
     #[cfg(windows)]
     {

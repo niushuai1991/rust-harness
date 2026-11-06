@@ -18,6 +18,8 @@ export const commands = {
 	sessionExport: (sessionId: string, path: string) => typedError<null, AppError>(__TAURI_INVOKE("session_export", { sessionId, path })),
 	sessionFork: (sessionId: string) => typedError<SessionInfo, AppError>(__TAURI_INVOKE("session_fork", { sessionId })),
 	sessionSearch: (query: string) => typedError<SessionInfo[], AppError>(__TAURI_INVOKE("session_search", { query })),
+	/**  压缩会话历史为摘要（与 CLI `/compact`、JSON-RPC `session.compact` 同一路径）。 */
+	sessionCompact: (sessionId: string, modelId: string) => typedError<null, AppError>(__TAURI_INVOKE("session_compact", { sessionId, modelId })),
 	planOverview: () => typedError<PlanStateOverview[], AppError>(__TAURI_INVOKE("plan_overview")),
 	providerList: () => typedError<ProviderInfo[], AppError>(__TAURI_INVOKE("provider_list")),
 	providerSave: (config: ProviderInfo, secret: string | null) => typedError<ProviderInfo, AppError>(__TAURI_INVOKE("provider_save", { config, secret })),
