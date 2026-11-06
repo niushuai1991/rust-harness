@@ -110,6 +110,9 @@ impl Store {
                         default_model: model.model.clone(),
                         credential_ref: model.credential_ref.clone(),
                         proxy: model.proxy.clone(),
+                        enabled: true,
+                        builtin_models: Vec::new(),
+                        disabled_models: Vec::new(),
                     });
                     model.provider_id = id;
                 }

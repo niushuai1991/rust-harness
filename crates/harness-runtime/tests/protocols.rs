@@ -244,3 +244,51 @@ fn responses_cross_protocol_assistant_text_uses_easy_input_message() {
         json!({"role":"assistant","content":"previous answer"})
     );
 }
+
+#[test]
+fn effort_levels_map_to_protocol_specific_request_fields() {
+    let messages = vec![ModelMessage::user("hi")];
+    let with_effort = |mode: ApiMode, effort: Option<&str>| {
+        let mut config = config(mode);
+        config.effort = effort.map(str::to_owned);
+        encode_request(&config, &messages, &[]).unwrap().1
+    };
+    // Anthropic：非 disabled 走 adaptive thinking + output_config.effort。
+    let body = with_effort(ApiMode::Anthropic, Some("high"));
+    assert_eq!(body["thinking"], json!({"type":"adaptive"}));
+    assert_eq!(body["output_config"], json!({"effort":"high"}));
+    let body = with_effort(ApiMode::Anthropic, Some("disabled"));
+    assert_eq!(body["thinking"], json!({"type":"disabled"}));
+    assert!(body.get("output_config").is_none());
+    // ChatCompletions：多字段方言，enabled 归一化为 high（对齐 zcode 通用映射）。
+    let body = with_effort(ApiMode::ChatCompletions, Some("high"));
+    assert_eq!(body["thinking"], json!({"type":"enabled"}));
+    assert_eq!(body["enable_thinking"], true);
+    assert_eq!(body["reasoning_effort"], "high");
+    assert_eq!(body["reasoning"], json!({"effort":"high"}));
+    let body = with_effort(ApiMode::ChatCompletions, Some("disabled"));
+    assert_eq!(body["thinking"], json!({"type":"disabled"}));
+    assert_eq!(body["enable_thinking"], false);
+    assert_eq!(body["reasoning_effort"], "none");
+    assert_eq!(body["reasoning"], json!({"effort":"none"}));
+    let body = with_effort(ApiMode::ChatCompletions, Some("enabled"));
+    assert_eq!(body["reasoning_effort"], "high");
+    // Responses：仅在非 disabled 时携带 reasoning.effort。
+    let body = with_effort(ApiMode::Responses, Some("max"));
+    assert_eq!(body["reasoning"], json!({"effort":"max"}));
+    let body = with_effort(ApiMode::Responses, Some("disabled"));
+    assert!(body.get("reasoning").is_none());
+    // 未选择档位（None）时不注入任何 effort 字段，保持供应商默认行为。
+    for mode in [
+        ApiMode::ChatCompletions,
+        ApiMode::Responses,
+        ApiMode::Anthropic,
+    ] {
+        let body = with_effort(mode, None);
+        assert!(body.get("thinking").is_none());
+        assert!(body.get("reasoning").is_none());
+        assert!(body.get("output_config").is_none());
+        assert!(body.get("reasoning_effort").is_none());
+        assert!(body.get("enable_thinking").is_none());
+    }
+}

@@ -32,6 +32,9 @@ pub struct Args {
     /// 模型 ID（默认 settings 的 cli.default_model，否则报错列出可用模型）
     #[arg(short = 'm', long)]
     pub model: Option<String>,
+    /// 推理档位（必须在所选模型的支持档位内；缺省跟随模型默认）
+    #[arg(short = 'e', long)]
+    pub effort: Option<String>,
     /// 显式指定工作区（与 --session 互斥）
     #[arg(long, conflicts_with = "session")]
     pub workspace: Option<String>,
@@ -108,7 +111,10 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<i32> {
         eprintln!("{warning}");
     }
     let model_id = crate::manage::resolve_model_id(&runtime, args.model.clone()).await?;
-    let provider = runtime.models.build_model(&model_id).await?;
+    let provider = runtime
+        .models
+        .build_model_with(&model_id, args.effort.clone())
+        .await?;
     turn_once(
         runtime,
         TurnContext {

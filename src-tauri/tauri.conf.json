@@ -42,6 +42,7 @@
       },
       "nsis": {
         "installMode": "perMachine",
+        "deleteAppDataOnUninstall": true,
         "languages": [
           "SimpChinese",
           "English"

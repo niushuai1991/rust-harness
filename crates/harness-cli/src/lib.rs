@@ -25,6 +25,18 @@ pub async fn provider(runtime: &Runtime, id: &str) -> AppResult<Arc<dyn ModelPro
     runtime.models.build_model(id).await
 }
 
+/// 按可选 effort 档位构建模型（None 跟随模型默认）。
+pub async fn provider_with_effort(
+    runtime: &Runtime,
+    id: &str,
+    effort: Option<&str>,
+) -> AppResult<Arc<dyn ModelProvider>> {
+    runtime
+        .models
+        .build_model_with(id, effort.map(str::to_owned))
+        .await
+}
+
 pub async fn dispatch(runtime: Arc<Runtime>, method: &str, p: Value) -> AppResult<Value> {
     Ok(match method {
         "initialize" => {
@@ -70,7 +82,8 @@ pub async fn dispatch(runtime: Arc<Runtime>, method: &str, p: Value) -> AppResul
                 .await?
         ),
         "session.send" => {
-            let model = provider(&runtime, field(&p, "modelId")?).await?;
+            let model =
+                provider_with_effort(&runtime, field(&p, "modelId")?, p["effort"].as_str()).await?;
             runtime
                 .run_session_with_attachments(
                     field(&p, "sessionId")?.into(),
@@ -177,6 +190,28 @@ pub async fn dispatch(runtime: Arc<Runtime>, method: &str, p: Value) -> AppResul
         "model.test" => {
             runtime.models.test_model(field(&p, "modelId")?).await?;
             json!("连接成功")
+        }
+        "model.fetchAvailable" => json!(
+            runtime
+                .models
+                .fetch_available_models(
+                    field(&p, "providerId")?,
+                    serde_json::from_value(p["apiMode"].clone()).map_err(err)?
+                )
+                .await?
+        ),
+        "model.setBuiltinEnabled" => {
+            runtime
+                .models
+                .set_builtin_model_enabled(
+                    field(&p, "providerId")?,
+                    field(&p, "modelId")?,
+                    p["enabled"]
+                        .as_bool()
+                        .ok_or_else(|| AppError::new("INVALID_PARAMS", "enabled"))?,
+                )
+                .await?;
+            Value::Null
         }
         "plugin.list" => json!(runtime.plugins.list()?),
         "plugin.install" => {

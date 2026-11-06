@@ -173,6 +173,18 @@ pub enum ProviderCompatibility {
     DeepSeek,
     BigModel,
 }
+/// 已知推理档位，语义强度从低到高；efforts 为空表示该模型不提供 effort 选择。
+pub const KNOWN_EFFORTS: [&str; 6] = ["disabled", "minimal", "low", "medium", "high", "max"];
+
+/// 内置供应商随程序分发的只读模型条目；启用状态由个人层的 `disabled_models` 覆盖。
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BuiltinModel {
+    pub id: String,
+    pub name: String,
+    pub efforts: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderInfo {
@@ -185,6 +197,12 @@ pub struct ProviderInfo {
     pub default_model: String,
     pub credential_ref: String,
     pub proxy: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub builtin_models: Vec<BuiltinModel>,
+    #[serde(default)]
+    pub disabled_models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -204,6 +222,50 @@ pub struct ModelConfig {
     pub model: String,
     pub credential_ref: String,
     pub proxy: Option<String>,
+    /// 支持的推理档位；为空表示不支持，UI 隐藏 effort 选择。
+    #[serde(default)]
+    pub efforts: Vec<String>,
+    /// 当前默认档位；None 表示不干预、跟随供应商默认行为。
+    #[serde(default)]
+    pub effort: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// 由内置目录合成的条目；不可编辑或删除，只能启用/禁用。
+    #[serde(default)]
+    pub builtin: bool,
+}
+
+impl Default for ModelConfig {
+    fn default() -> Self {
+        Self {
+            compatibility: ProviderCompatibility::default(),
+            provider_id: String::new(),
+            api_mode: ApiMode::default(),
+            max_output_tokens: None,
+            id: String::new(),
+            name: String::new(),
+            base_url: String::new(),
+            model: String::new(),
+            credential_ref: String::new(),
+            proxy: None,
+            efforts: Vec::new(),
+            effort: None,
+            enabled: true,
+            builtin: false,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// 桌面端跨重启保留的上次模型选择；effort 为 None 表示跟随模型默认。
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DefaultSelection {
+    pub model_id: String,
+    pub effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -313,5 +375,57 @@ mod lsp_config_tests {
         .unwrap();
         assert_eq!(config.args, Vec::<String>::new());
         assert_eq!(config.extensions, vec!["py"]);
+    }
+}
+
+#[cfg(test)]
+mod model_settings_tests {
+    use super::*;
+
+    /// 升级兼容：v2 存储中的旧供应商/模型 JSON 不含新增字段，必须原样读入并取默认值。
+    #[test]
+    fn legacy_provider_and_model_json_defaults() {
+        let provider: ProviderInfo = serde_json::from_str(
+            r#"{"id":"deepseek","name":"DeepSeek","builtin":true,
+                "endpoints":[{"apiMode":"anthropic","baseUrl":"https://api.deepseek.com/anthropic"}],
+                "defaultModel":"deepseek-flash","credentialRef":"provider/deepseek","proxy":null}"#,
+        )
+        .unwrap();
+        assert!(provider.enabled, "旧数据供应商默认启用");
+        assert!(provider.builtin_models.is_empty());
+        assert!(provider.disabled_models.is_empty());
+
+        let model: ModelConfig = serde_json::from_str(
+            r#"{"id":"m1","name":"测试","baseUrl":"https://api.deepseek.com/anthropic",
+                "model":"deepseek-flash","credentialRef":"provider/deepseek","proxy":null,
+                "providerId":"deepseek","compatibility":"deepSeek","apiMode":"anthropic",
+                "maxOutputTokens":null}"#,
+        )
+        .unwrap();
+        assert!(model.enabled, "旧数据模型默认启用");
+        assert!(!model.builtin);
+        assert_eq!(model.effort, None);
+        assert!(model.efforts.is_empty());
+    }
+
+    #[test]
+    fn effort_lists_roundtrip() {
+        let model = ModelConfig {
+            efforts: vec!["low".into(), "high".into()],
+            effort: Some("high".into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&model).unwrap();
+        let back: ModelConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.efforts, model.efforts);
+        assert_eq!(back.effort, model.effort);
+    }
+
+    #[test]
+    fn known_efforts_are_ordered_low_to_high() {
+        assert_eq!(
+            KNOWN_EFFORTS,
+            ["disabled", "minimal", "low", "medium", "high", "max"]
+        );
     }
 }

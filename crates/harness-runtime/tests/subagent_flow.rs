@@ -130,6 +130,7 @@ async fn agent_spawn_with_model_configures_child_provider_and_records_link() {
                 model: "m".into(),
                 credential_ref: String::new(),
                 proxy: None,
+                ..ModelConfig::default()
             },
             None,
         )
