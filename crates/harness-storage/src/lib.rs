@@ -141,6 +141,7 @@ impl Store {
             title: title.into(),
             created_at: now(),
             updated_at: now(),
+            parent_id: None,
         };
         sqlx::query("INSERT INTO sessions VALUES(?,?,?,?,?)")
             .bind(&s.id)
@@ -328,6 +329,7 @@ impl Store {
                 .into(),
             created_at: now(),
             updated_at: now(),
+            parent_id: None,
         };
         let mut tx = self.pool.begin().await.map_err(db_error)?;
         sqlx::query("INSERT INTO sessions VALUES(?,?,?,?,?)")
@@ -424,5 +426,6 @@ fn session_row(r: &sqlx::sqlite::SqliteRow) -> SessionInfo {
         title: r.get("title"),
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
+        parent_id: None,
     }
 }

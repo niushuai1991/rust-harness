@@ -200,3 +200,47 @@ describe('附件与完整输出',()=>{
   render(<App/>);await screen.findByRole('button',{name:'下载 完整输出.txt'});fireEvent.click(screen.getByRole('button',{name:'下载 完整输出.txt'}));await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('artifact_save',{sessionId:'a',hash:attachment.hash,path:'C:/saved/output.txt'}));expect(screen.getByRole('button',{name:'下载 说明.txt'})).toBeInTheDocument();
  });
 });
+
+describe('子代理与任务状态可视化',()=>{
+ it('子代理事件渲染卡片，跳转子会话并显示运行状态与子任务徽标',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'父会话'},{id:'child',workspaceId:'w',title:'依赖梳理子任务',parentId:'a'}];
+   if(name==='session_active_list')return ['child'];
+   if(name==='session_events')return args.sessionId==='a'?[
+    {id:'s1',sessionId:'a',seq:'1',kind:'subagent.created',data:{sessionId:'child'},createdAt:''},
+    {id:'s2',sessionId:'a',seq:'2',kind:'subagent.message_sent',data:{sessionId:'child',content:'梳理依赖'},createdAt:''}
+   ]:[event(`e-${args.sessionId}`,args.sessionId,'1',`内容 ${args.sessionId}`)];
+   return original(name,args);
+  });
+  render(<App/>);
+  await screen.findByText('已创建子代理');
+  expect(screen.getByText('已向子代理投递任务')).toBeInTheDocument();
+  expect(screen.getByText('梳理依赖')).toBeInTheDocument();
+  expect(screen.getAllByLabelText('子代理运行中').length).toBeGreaterThan(0);
+  expect(screen.getByText('子任务')).toBeInTheDocument();
+  fireEvent.click(screen.getAllByRole('button',{name:'查看会话'})[0]);
+  await screen.findByText('内容 child');
+ });
+ it('fork 副本中的历史派生记录不提供跳转',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_events'?[
+   {id:'s1',sessionId:'a',seq:'1',kind:'subagent.created',data:{sessionId:'child',historyOnly:true},createdAt:''}
+  ]:original(name,args));
+  render(<App/>);
+  await screen.findByText('历史派生记录，原父子关系属于源会话。');
+  expect(screen.queryByRole('button',{name:'查看会话'})).not.toBeInTheDocument();
+ });
+ it('todo与plan状态事件渲染为清单与文本卡片',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_events'?[
+   {id:'t1',sessionId:'a',seq:'1',kind:'todo.state',data:{items:[{text:'已完成项',done:true},{text:'待办项'}]},createdAt:''},
+   {id:'p1',sessionId:'a',seq:'2',kind:'plan.state',data:{content:'## 分三步走'},createdAt:''}
+  ]:original(name,args));
+  const {container}=render(<App/>);
+  await screen.findByText('待办清单');
+  expect(container.querySelector('.todo-list li.done')?.textContent).toContain('已完成项');
+  expect(screen.getByText(/待办项/)).toBeInTheDocument();
+  expect(screen.getByRole('heading',{name:'分三步走',level:2})).toBeInTheDocument();
+ });
+});

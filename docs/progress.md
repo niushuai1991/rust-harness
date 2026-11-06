@@ -84,3 +84,12 @@
 - 全套验证：cargo fmt --check 通过；clippy 对 harness-browser 全目标零警告；cargo test --all-features 全绿；cargo build --all-features 通过。分支已 rebase 到 main（LSP PR #11 合并后）重新验证。
 - 真实模型端到端（SQLite 快照独立数据目录 + 凭据管理器复用，glm-5.3-flash，--approval auto）：模型自主完成 navigate→snapshot（识别输入框/按钮 ref）→type(张三)→click→evaluate，读到"你好，张三"并在回复中报告，turn completed。
 - 边界：桌面可视浏览器面板、CLI 调试子命令、多标签页管理未实现（计划范围外）；CI 无浏览器环境时集成测试打印原因跳过（不失败）；CLI 侧 `ContentChunk` 未使用导入告警为 main 基线遗留，与本改动无关。
+
+## 子代理可视化与 spawn 模型选择（2026-11-06）
+
+- 依据 [子代理可视化与 spawn 模型选择计划](specs/subagent-visibility-plan.md)：核实子代理协作原语与重启恢复已闭环后，补齐"用户看不见子代理"与"spawn 无法指定模型"两个缺口。
+- 契约：`SessionInfo` 新增运行时推导的 `parent_id`（存储层恒空）；`Runtime` 维护 child→parent 反向映射（与既有 children 重建同源，fork 的 historyOnly 排除语义保持），新增 `parent_of`/`list_sessions`/`active_ids`。
+- `agent_spawn` 可选 `modelId`：先经 `build_model` 校验再创建子会话（失败不留空会话），`subagent.created` 事件附带 `modelId`；审批要求与 8 个子代理上限不变。桌面新增 `session_active_list` 命令、CLI 新增 `session.active`，`session.list`/桌面 `session_list` 装饰父子关系。
+- 前端：会话列表子任务徽标与缩进、`session_active_list` 并入 2 秒轮询显示运行 live-dot；`EventCard` 渲染 `subagent.created`/`subagent.message_sent`（可跳转子会话）与 `todo.state`/`plan.state`/`goal.state` 卡片。
+- TDD 证据：`subagent_flow.rs` 3 项先红后绿（无效 modelId 拒绝不留子会话、合法 modelId 事件与登记、重启后父子关系重建与列表装饰）；前端 38 项测试通过（新增 3 项），tsc 与 Vite 生产构建通过。测试自身发现并修复：`agent_spawn` 审批未处理导致 600 秒超时（自动批准）、批准助手强引用阻止 host.lock 释放（改 Weak + 重试打开）。
+- 边界：ACP/JSON-RPC 不透传子代理生命周期；子代理工具白名单、深度树管理面板、Todo/Plan/Goal 独立管理面板、会话搜索/fork 前端入口均未实现，保持原状态。

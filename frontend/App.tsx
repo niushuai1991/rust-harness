@@ -1,6 +1,6 @@
 import {Fragment,useEffect,useRef,useState,type FormEvent,type ReactNode} from 'react';
 import {open,save} from '@tauri-apps/plugin-dialog';
-import {ArrowUp,Check,ChevronDown,Folder,FolderOpen,GitCompareArrows,MessageSquare,Plus,Settings2,ShieldCheck,Square,Terminal,Unplug,X,Download,RefreshCw} from 'lucide-react';
+import {ArrowUp,Bot,Check,ChevronDown,Folder,FolderOpen,GitCompareArrows,ListTodo,MessageSquare,Plus,Send,Settings2,ShieldCheck,Square,Target,Terminal,Unplug,X,Download,RefreshCw} from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {command,desktop,errorText,send} from './api';
@@ -19,6 +19,7 @@ export default function App(){
  const [sessions,setSessions]=useState<SessionInfo[]>([]),[sessionId,setSessionId]=useState(''),[sessionBusy,setSessionBusy]=useState(false);
  const [models,setModels]=useState<ModelConfig[]>([]),[modelId,setModelId]=useState('');
  const [approvals,setApprovals]=useState<ApprovalRequest[]>([]),[panel,setPanel]=useState<Panel>(null);
+ const [activeIds,setActiveIds]=useState<Set<string>>(()=>new Set());
  const [text,setText]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false),[running,setRunning]=useState<Record<string,boolean>>({});
  const [notice,setNotice]=useState('');
  const [pluginRevision,setPluginRevision]=useState(0);
@@ -52,7 +53,7 @@ export default function App(){
   return()=>{disposed=true};
  },[workspaceId]);
  useEffect(()=>{if(!sessionId)return;const id=sessionId;void attempt(async()=>{const list=await command<SessionEvent[]>('session_events',{sessionId:id});useChat.getState().replace(id,list)})},[sessionId]);
- useEffect(()=>{if(!desktop())return;let alive=true;const refresh=()=>command<ApprovalRequest[]>('approval_list').then(list=>{if(alive)setApprovals(list)}).catch(e=>{if(alive)setError(errorText(e))});void refresh();const timer=setInterval(refresh,2000);return()=>{alive=false;clearInterval(timer)}},[]);
+ useEffect(()=>{if(!desktop())return;let alive=true;const refresh=()=>{command<ApprovalRequest[]>('approval_list').then(list=>{if(alive)setApprovals(list)}).catch(e=>{if(alive)setError(errorText(e))});command<string[]>('session_active_list').then(ids=>{if(alive)setActiveIds(new Set(ids))}).catch(()=>{})};void refresh();const timer=setInterval(refresh,2000);return()=>{alive=false;clearInterval(timer)}},[]);
  useEffect(()=>{end.current?.scrollIntoView?.({behavior:'smooth'})},[events,stream]);
  async function openWorkspace(){setBusy(true);await attempt(async()=>{const path=await open({directory:true,multiple:false,title:'选择原项目目录'});if(!path)return;const ws=await command<WorkspaceInfo>('workspace_open',{path});setWorkspaces(old=>[...old.filter(w=>w.id!==ws.id),ws]);setWorkspaceId(ws.id);setNotice('已创建托管工作副本。原项目仅在确认同步后写入。')});setBusy(false)}
  function createSessionFor(targetWorkspaceId:string):Promise<SessionInfo>{
@@ -85,6 +86,7 @@ export default function App(){
  }
  async function submit(e:FormEvent){e.preventDefault();if(sessionBusy||importing||!sessionId||(!text.trim()&&!attachments.length)||running[sessionId]||!modelId)return;const id=sessionId,input=text,hashes=attachments.map(a=>a.hash);setText('');setAttachments([]);setRunning(old=>({...old,[id]:true}));await attempt(async()=>{if(hashes.length)await send(id,input,modelId,useChat.getState().receive,hashes);else await send(id,input,modelId,useChat.getState().receive)});useChat.getState().clearStream(id);try{useChat.getState().replace(id,await command<SessionEvent[]>('session_events',{sessionId:id}))}catch(e){setError(errorText(e))}setRunning(old=>({...old,[id]:false}))}
  async function cancel(){await attempt(()=>command('session_cancel',{sessionId}))}
+ async function openSession(id:string){if(!workspaceId||id===sessionId)return;await attempt(async()=>{let target=sessions.find(s=>s.id===id);if(!target){target=(await command<SessionInfo[]>('session_list',{workspaceId})).find(s=>s.id===id)}if(!target)return;if(target.workspaceId!==workspaceId)throw new Error('子会话不属于当前工作区。');setSessions(old=>old.some(s=>s.id===target!.id)?old:[target!,...old]);setSessionId(target.id);setText('')})}
  async function resolve(id:string,allow:boolean){await attempt(async()=>{await command('approval_resolve',{id,allow});setApprovals(old=>old.filter(a=>a.id!==id))})}
  async function exportSession(){await attempt(async()=>{const path=await save({defaultPath:'rust-harness-session.json',filters:[{name:'JSON',extensions:['json']}]});if(!path)return;await command('session_export',{sessionId,path});setNotice('会话已导出。')})}
  return <div className="app">
@@ -93,7 +95,7 @@ export default function App(){
    <button className="workspace-picker" onClick={openWorkspace} disabled={busy||!desktop()}><FolderOpen size={19}/><span>{workspace?basename(workspace.sourcePath):'打开工作区'}<small>{workspace?'托管工作副本':'从本地项目开始'}</small></span><ChevronDown size={16}/></button>
    {workspaces.length>1&&<select aria-label="工作区" value={workspaceId} onChange={e=>setWorkspaceId(e.target.value)}>{workspaces.map(w=><option key={w.id} value={w.id}>{basename(w.sourcePath)}</option>)}</select>}
    <div className="section-label">会话 <button aria-label="新建会话" title="新建会话" onClick={newSession} disabled={!workspaceId||sessionBusy}><Plus size={17}/></button></div>
-   <nav className="sessions">{sessions.map(s=><button key={s.id} className={sessionId===s.id?'active':''} onClick={()=>{setSessionId(s.id);setText('')}}><MessageSquare size={16}/><span>{s.title}</span>{running[s.id]&&<i className="live-dot"/>}</button>)}{!sessions.length&&<p className="muted empty-small">{workspaceId?'还没有会话，点击 + 开始':'打开工作区后，会话将保存在本机。'}</p>}</nav>
+   <nav className="sessions">{sessions.map(s=><button key={s.id} className={`${sessionId===s.id?'active':''}${s.parentId?' child':''}`} title={s.parentId?'子代理会话':undefined} onClick={()=>{setSessionId(s.id);setText('')}}><MessageSquare size={16}/><span>{s.title}</span>{s.parentId&&<em className="subagent-badge">子任务</em>}{(running[s.id]||activeIds.has(s.id))&&<i className="live-dot"/>}</button>)}{!sessions.length&&<p className="muted empty-small">{workspaceId?'还没有会话，点击 + 开始':'打开工作区后，会话将保存在本机。'}</p>}</nav>
    <div className="sidebar-bottom"><div className="local-badge"><i className="live-dot"/> 本地优先 · 无遥测</div><button onClick={()=>setPanel('plugins')}><Unplug size={17}/>插件与权限</button><button onClick={()=>setPanel('models')}><Settings2 size={17}/>模型设置 <span className="count">{models.length}</span></button></div>
   </aside>
   <main className="main"><header className="topbar"><div className="breadcrumb"><Folder size={15}/>{workspace?basename(workspace.sourcePath):'工作台'}<span>/</span><strong>{session?.title??'新的可能，从这里开始'}</strong></div><div className="toolbar"><button className="icon-button" title="导出会话" aria-label="导出会话" disabled={!sessionId} onClick={exportSession}><Download size={17}/></button><button className="soft" onClick={()=>setPanel('diff')} disabled={!workspaceId}><GitCompareArrows size={16}/>查看更改</button></div></header>
@@ -102,7 +104,7 @@ export default function App(){
    {notice&&<div role="status" className="notice"><Check size={15}/>{notice}<button aria-label="关闭提示" onClick={()=>setNotice('')}><X size={15}/></button></div>}
    <section className="conversation" aria-label="聊天消息">
     {!events.length&&!stream&&<div className="welcome"><span className="welcome-icon"><Terminal size={35}/></span><div className="eyebrow">BUILD WITH CONFIDENCE</div><h1>想把什么变成现实？</h1><p>理解代码、探索想法，或完成下一次改进。<br/>在独立的工作副本中协作，每一处更改都由你掌控。</p><div className="suggestions">{['梳理项目结构和关键模块','检查代码，找出值得改进的地方','帮我规划并实现一个新功能'].map((s,i)=><button key={s} onClick={()=>setText(s)} disabled={!sessionId}><span>0{i+1}</span>{s}<ArrowUp size={14}/></button>)}</div><div className="welcome-foot"><ShieldCheck size={15}/>工作副本隔离 · 操作可审批 · 更改可预览</div></div>}
-    <div className="messages"><ConversationEvents events={events} workspaceId={workspaceId}/>{stream&&<article className="message assistant"><div className="avatar">R</div><div className="message-body"><div className="message-label">Rust Harness <span className="stream-label">正在思考与执行</span></div>{stream.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{stream.reasoning}</pre></details>}<div className="prose"><Markdown content={stream.text||'正在处理…'}/><span className="cursor"/></div></div></article>}<div ref={end}/></div>
+    <div className="messages"><ConversationEvents events={events} workspaceId={workspaceId} onOpenSession={openSession} activeIds={activeIds}/>{stream&&<article className="message assistant"><div className="avatar">R</div><div className="message-body"><div className="message-label">Rust Harness <span className="stream-label">正在思考与执行</span></div>{stream.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{stream.reasoning}</pre></details>}<div className="prose"><Markdown content={stream.text||'正在处理…'}/><span className="cursor"/></div></div></article>}<div ref={end}/></div>
    </section>
    <footer className="composer-area"><form className="composer" onSubmit={submit}><textarea aria-label="消息" placeholder={sessionBusy?'正在准备会话…':sessionId?'描述任务，或继续你的想法…':workspaceId?'点击“新建会话”重试，开始协作':'打开工作区，开始协作'} value={text} onChange={e=>setText(e.target.value)} disabled={!sessionId||sessionBusy} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit()}}}/>{attachments.length>0&&<div className="permission-tags">{attachments.map(a=><span key={a.hash}>{a.name} <button type="button" aria-label={`移除附件 ${a.name}`} onClick={()=>setAttachments(old=>old.filter(item=>item.hash!==a.hash))}><X size={12}/></button></span>)}</div>}<div className="composer-bottom"><button type="button" aria-label="添加附件" disabled={!sessionId||sessionBusy||importing||!!running[sessionId]||attachments.length>=20} onClick={addAttachment}>{importing?'导入中…':'添加附件'}</button><div className="model-select"><span className="model-dot"/><select aria-label="当前模型" value={modelId} onChange={e=>setModelId(e.target.value)}><option value="" disabled>选择模型</option>{models.map(m=><option value={m.id} key={m.id}>{m.name}</option>)}</select></div><div className="send-controls"><span>Enter 发送 · Shift + Enter 换行</span>{running[sessionId]?<button type="button" className="send" aria-label="取消生成" onClick={cancel}><Square size={16}/></button>:<button className="send" type="submit" aria-label="发送消息" disabled={sessionBusy||importing||(!text.trim()&&!attachments.length)||!sessionId||!modelId}><ArrowUp size={19}/></button>}</div></div></form><div className="footer-note">原项目保持安全。模型生成的更改需要你确认后才会同步。</div></footer>
   </main>
@@ -121,30 +123,41 @@ function durationLabel(start?:SessionEvent,end?:SessionEvent){
  const seconds=Math.floor((endAt-startAt)/1000),hours=Math.floor(seconds/3600),minutes=Math.floor(seconds%3600/60),remaining=seconds%60;
  return `本轮已完成，用时${hours?`${hours}小时`:''}${hours||minutes?`${minutes}分`:''}${remaining}秒`;
 }
-function CompletedTurn({events,workspaceId}:{events:SessionEvent[];workspaceId?:string}){
+type EventCardExtras={workspaceId?:string;onOpenSession?:(id:string)=>void;activeIds?:Set<string>};
+function CompletedTurn({events,...extras}:{events:SessionEvent[]}&EventCardExtras){
  const finalIndex=events.map(e=>e.kind).lastIndexOf('assistant.message');
  const process=events.filter((event,index)=>index!==finalIndex&&!['turn.start','turn.end','user.message'].includes(event.kind));
  const user=events.find(event=>event.kind==='user.message'),final=finalIndex>=0?events[finalIndex]:undefined;
  const start=events.find(event=>event.kind==='turn.start'),end=events.at(-1);
- return <>{user&&<EventCard event={user} workspaceId={workspaceId}/>} {process.length>0&&<details className="turn-details" open><summary>{durationLabel(start,end)}<ChevronDown size={14}/></summary>{process.map(event=><EventCard key={event.id} event={event} workspaceId={workspaceId}/>)}</details>} {final&&<EventCard event={final} workspaceId={workspaceId}/>}</>;
+ return <>{user&&<EventCard event={user} {...extras}/>} {process.length>0&&<details className="turn-details" open><summary>{durationLabel(start,end)}<ChevronDown size={14}/></summary>{process.map(event=><EventCard key={event.id} event={event} {...extras}/>)}</details>} {final&&<EventCard event={final} {...extras}/>}</>;
 }
-function ConversationEvents({events,workspaceId}:{events:SessionEvent[];workspaceId?:string}){
+function ConversationEvents({events,...extras}:{events:SessionEvent[]}&EventCardExtras){
  const cards:ReactNode[]=[];let start=-1;
  for(let index=0;index<events.length;index++){
   const event=events[index];
-  if(event.kind==='turn.start'){if(start>=0)cards.push(<Fragment key={`open-${events[start].id}`}>{events.slice(start,index).map(item=><EventCard key={item.id} event={item} workspaceId={workspaceId}/>)}</Fragment>);start=index;continue}
-  if(event.kind==='turn.end'&&start>=0){const turn=events.slice(start,index+1);cards.push(event.data.status==='completed'?<CompletedTurn key={event.id} events={turn} workspaceId={workspaceId}/>:<Fragment key={event.id}>{turn.map(item=><EventCard key={item.id} event={item} workspaceId={workspaceId}/>)}</Fragment>);start=-1;continue}
-  if(start<0)cards.push(<EventCard key={event.id} event={event} workspaceId={workspaceId}/>);
+  if(event.kind==='turn.start'){if(start>=0)cards.push(<Fragment key={`open-${events[start].id}`}>{events.slice(start,index).map(item=><EventCard key={item.id} event={item} {...extras}/>)}</Fragment>);start=index;continue}
+  if(event.kind==='turn.end'&&start>=0){const turn=events.slice(start,index+1);cards.push(event.data.status==='completed'?<CompletedTurn key={event.id} events={turn} {...extras}/>:<Fragment key={event.id}>{turn.map(item=><EventCard key={item.id} event={item} {...extras}/>)}</Fragment>);start=-1;continue}
+  if(start<0)cards.push(<EventCard key={event.id} event={event} {...extras}/>);
  }
- if(start>=0)cards.push(<Fragment key={`open-${events[start].id}`}>{events.slice(start).map(event=><EventCard key={event.id} event={event} workspaceId={workspaceId}/>)}</Fragment>);
+ if(start>=0)cards.push(<Fragment key={`open-${events[start].id}`}>{events.slice(start).map(event=><EventCard key={event.id} event={event} {...extras}/>)}</Fragment>);
  return <>{cards}</>;
 }
-export function EventCard({event,workspaceId}:{event:SessionEvent;workspaceId?:string}) {
+export function EventCard({event,...extras}:{event:SessionEvent}&EventCardExtras) {
  const {kind,data}=event;
+ if(kind==='subagent.created'||kind==='subagent.message_sent'){
+  const childId=typeof data.sessionId==='string'?data.sessionId:'';
+  const sent=kind==='subagent.message_sent';
+  return <article className="tool-card subagent-card"><div className="subagent-row">{sent?<Send size={15}/>:<Bot size={15}/>}<strong>{sent?'已向子代理投递任务':'已创建子代理'}</strong>{childId&&data.historyOnly!==true&&extras.onOpenSession&&<button type="button" onClick={()=>extras.onOpenSession?.(childId)}>查看会话</button>}{childId&&extras.activeIds?.has(childId)&&<i className="live-dot" aria-label="子代理运行中"/>}</div>{data.historyOnly===true&&<p className="muted">历史派生记录，原父子关系属于源会话。</p>}{sent&&<pre>{printable(data.content)}</pre>}</article>;
+ }
+ if(kind==='todo.state'){
+  const items=Array.isArray(data.items)?(data.items as Record<string,unknown>[]):[];
+  return <article className="tool-card todo-card"><div className="subagent-row"><ListTodo size={15}/><strong>待办清单</strong></div>{items.length?<ul className="todo-list">{items.map((item,index)=>{const text=String(item.text??item.content??item.title??printable(item));const done=item.done===true||item.completed===true||item.status==='completed';return <li key={index} className={done?'done':undefined}>{done?'✓':'○'} {text}</li>})}</ul>:<p className="muted">清单为空。</p>}</article>;
+ }
+ if(kind==='plan.state'||kind==='goal.state')return <article className="tool-card"><div className="subagent-row">{kind==='plan.state'?<ListTodo size={15}/>:<Target size={15}/>}<strong>{kind==='plan.state'?'计划':'目标'}</strong></div><div className="prose"><Markdown content={printable(data.content)}/></div></article>;
  if(kind==='user.message')return <article className="message user"><div className="avatar">你</div><div className="message-body"><div className="message-label">你</div><div className="prose">{printable(data.content)}</div>{Array.isArray(data.attachments)&&data.attachments.map((a,index)=><ArtifactDownload key={index} sessionId={event.sessionId} artifact={a as ArtifactMetadata}/>)}</div></article>;
  if(kind==='assistant.message'||kind==='assistant.attempt')return <article className="message assistant"><div className="avatar">R</div><div className="message-body"><div className="message-label">Rust Harness</div>{!!data.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{printable(data.reasoning)}</pre></details>}<div className="prose"><Markdown content={printable(data.content)}/></div>{!!data.error&&<div className="inline-error">{printable(data.error)}</div>}</div></article>;
- if(kind==='tool.call'||kind==='tool.result')return <details className="tool-card"><summary><Terminal size={15}/><strong>{printable(data.name)}</strong><span>{kind==='tool.call'?'工具调用':data.isError?'执行失败':'已完成'}</span></summary>{kind==='tool.result'&&String(data.name).startsWith('plugin__')?<PluginResultCards workspaceId={workspaceId} content={printable(data.content)}/>:<pre>{printable(data.arguments??data.content)}</pre>}{!!data.artifact&&<ArtifactDownload sessionId={event.sessionId} artifact={data.artifact as ArtifactMetadata}/>}</details>;
- if(kind==='plugin.command.result')return <article className="tool-card"><strong>{printable(data.name)}</strong><PluginResultCards workspaceId={workspaceId} content={printable(data.content)}/></article>;
+ if(kind==='tool.call'||kind==='tool.result')return <details className="tool-card"><summary><Terminal size={15}/><strong>{printable(data.name)}</strong><span>{kind==='tool.call'?'工具调用':data.isError?'执行失败':'已完成'}</span></summary>{kind==='tool.result'&&String(data.name).startsWith('plugin__')?<PluginResultCards workspaceId={extras.workspaceId} content={printable(data.content)}/>:<pre>{printable(data.arguments??data.content)}</pre>}{!!data.artifact&&<ArtifactDownload sessionId={event.sessionId} artifact={data.artifact as ArtifactMetadata}/>}</details>;
+ if(kind==='plugin.command.result')return <article className="tool-card"><strong>{printable(data.name)}</strong><PluginResultCards workspaceId={extras.workspaceId} content={printable(data.content)}/></article>;
  if(kind==='compaction.summary')return <details className="tool-card"><summary>上下文摘要</summary><pre>{printable(data.content)}</pre></details>;
  if(kind==='turn.end'&&data.status&&data.status!=='completed')return <div className="turn-status">本轮状态：{printable(data.status)}</div>;
  return null;
