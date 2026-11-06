@@ -121,7 +121,7 @@ describe('后台任务可视化',()=>{
   expect(screen.getByText(/定时任务 sch-1：已完成/)).toBeInTheDocument();
   expect(screen.queryByText('ghost')).not.toBeInTheDocument();
  });
- it('顶栏按钮统计未终结的后台任务并打开面板',async()=>{
+ it('顶栏按钮统计未终结的后台任务并以浮层开关面板',async()=>{
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
    if(name==='session_events')return jobEvents.filter(e=>['s1','f1','s2'].includes(e.id));
@@ -134,8 +134,12 @@ describe('后台任务可视化',()=>{
   const button=screen.getByRole('button',{name:/后台任务/});
   expect(button).toHaveTextContent('1');
   fireEvent.click(button);
-  await screen.findByRole('dialog',{name:'后台任务'});
+  const panel=await screen.findByRole('region',{name:'后台任务'});
+  expect(button).toHaveAttribute('aria-expanded','true');
   expect(mocks.command).toHaveBeenCalledWith('job_list',{sessionId:'a'});
+  fireEvent.click(button);
+  expect(panel).not.toBeInTheDocument();
+  expect(button).toHaveAttribute('aria-expanded','false');
  });
 });
 
