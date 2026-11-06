@@ -10,9 +10,10 @@ import {McpPanel} from './McpPanel';
 import {PluginContributionsPanel,PluginThemeHost} from './PluginContributionsPanel';
 import {PluginResultCards} from './PluginResultCards';
 import {BackgroundTasksPanel,JOB_STATUS,SCHEDULE_STATUS} from './BackgroundTasksPanel';
+import {PlansPanel} from './PlansPanel';
 import type {WorkspaceInfo,SessionInfo,SessionEvent,ModelConfig,ApprovalRequest,PluginInfo,FileChange,ArtifactMetadata} from './types';
 
-type Panel='models'|'plugins'|'diff'|'tasks'|null;
+type Panel='models'|'plugins'|'diff'|'tasks'|'plans'|null;
 const basename=(path:string)=>path.split(/[\\/]/).filter(Boolean).at(-1)??path;
 const printable=(value:unknown)=>typeof value==='string'?value:JSON.stringify(value,null,2);
 export default function App(){
@@ -26,6 +27,7 @@ export default function App(){
  const [pluginRevision,setPluginRevision]=useState(0);
  const [attachments,setAttachments]=useState<ArtifactMetadata[]>([]),[importing,setImporting]=useState(false);
  const attachmentEpoch=useRef(0),activeSessionId=useRef(sessionId);activeSessionId.current=sessionId;
+ const pendingJump=useRef('');
  useEffect(()=>{attachmentEpoch.current++;setAttachments([]);setImporting(false)},[sessionId,workspaceId]);
  const events=useChat(s=>s.events[sessionId]??EMPTY_EVENTS),stream=useChat(s=>s.streams[sessionId]);
  const workspace=workspaces.find(w=>w.id===workspaceId),session=sessions.find(s=>s.id===sessionId);
@@ -48,7 +50,10 @@ export default function App(){
     if(!list.length)list=[await createSessionFor(targetWorkspaceId)];
     if(!current())return;
     if(list.some(s=>s.workspaceId&&s.workspaceId!==targetWorkspaceId))throw new Error('会话不属于当前工作区，请重新打开工作区。');
-    setSessions(list);setSessionId(list[0]?.id??'');
+    setSessions(list);
+    const jump=pendingJump.current;
+    if(jump&&list.some(s=>s.id===jump)){pendingJump.current='';setSessionId(jump)}
+    else setSessionId(list[0]?.id??'');
    }catch(e){if(current())setError(errorText(e))}
    finally{if(current())setSessionBusy(false)}
   })();
@@ -89,6 +94,7 @@ export default function App(){
  async function submit(e:FormEvent){e.preventDefault();if(sessionBusy||importing||!sessionId||(!text.trim()&&!attachments.length)||running[sessionId]||!modelId)return;const id=sessionId,input=text,hashes=attachments.map(a=>a.hash);setText('');setAttachments([]);setRunning(old=>({...old,[id]:true}));await attempt(async()=>{if(hashes.length)await send(id,input,modelId,useChat.getState().receive,hashes);else await send(id,input,modelId,useChat.getState().receive)});useChat.getState().clearStream(id);try{useChat.getState().replace(id,await command<SessionEvent[]>('session_events',{sessionId:id}))}catch(e){setError(errorText(e))}setRunning(old=>({...old,[id]:false}))}
  async function cancel(){await attempt(()=>command('session_cancel',{sessionId}))}
  async function openSession(id:string){if(!workspaceId||id===sessionId)return;await attempt(async()=>{let target=sessions.find(s=>s.id===id);if(!target){target=(await command<SessionInfo[]>('session_list',{workspaceId})).find(s=>s.id===id)}if(!target)return;if(target.workspaceId!==workspaceId)throw new Error('子会话不属于当前工作区。');setSessions(old=>old.some(s=>s.id===target!.id)?old:[target!,...old]);setSessionId(target.id);setText('')})}
+ function openFromPanel(id:string,workspace:string){setPanel(null);if(workspace===workspaceId){void openSession(id);return}pendingJump.current=id;setWorkspaceId(workspace)}
  async function resolve(id:string,allow:boolean){await attempt(async()=>{await command('approval_resolve',{id,allow});setApprovals(old=>old.filter(a=>a.id!==id))})}
  async function exportSession(){await attempt(async()=>{const path=await save({defaultPath:'rust-harness-session.json',filters:[{name:'JSON',extensions:['json']}]});if(!path)return;await command('session_export',{sessionId,path});setNotice('会话已导出。')})}
  return <div className="app">
@@ -98,7 +104,7 @@ export default function App(){
    {workspaces.length>1&&<select aria-label="工作区" value={workspaceId} onChange={e=>setWorkspaceId(e.target.value)}>{workspaces.map(w=><option key={w.id} value={w.id}>{basename(w.sourcePath)}</option>)}</select>}
    <div className="section-label">会话 <button aria-label="新建会话" title="新建会话" onClick={newSession} disabled={!workspaceId||sessionBusy}><Plus size={17}/></button></div>
    <nav className="sessions">{sessions.map(s=><button key={s.id} className={`${sessionId===s.id?'active':''}${s.parentId?' child':''}`} title={s.parentId?'子代理会话':undefined} onClick={()=>{setSessionId(s.id);setText('')}}><MessageSquare size={16}/><span>{s.title}</span>{s.parentId&&<em className="subagent-badge">子任务</em>}{(running[s.id]||activeIds.has(s.id))&&<i className="live-dot"/>}</button>)}{!sessions.length&&<p className="muted empty-small">{workspaceId?'还没有会话，点击 + 开始':'打开工作区后，会话将保存在本机。'}</p>}</nav>
-   <div className="sidebar-bottom"><div className="local-badge"><i className="live-dot"/> 本地优先 · 无遥测</div><button onClick={()=>setPanel('plugins')}><Unplug size={17}/>插件与权限</button><button onClick={()=>setPanel('models')}><Settings2 size={17}/>模型设置 <span className="count">{models.length}</span></button></div>
+   <div className="sidebar-bottom"><div className="local-badge"><i className="live-dot"/> 本地优先 · 无遥测</div><button onClick={()=>setPanel('plans')}><Target size={17}/>计划与目标</button><button onClick={()=>setPanel('plugins')}><Unplug size={17}/>插件与权限</button><button onClick={()=>setPanel('models')}><Settings2 size={17}/>模型设置 <span className="count">{models.length}</span></button></div>
   </aside>
   <main className="main"><header className="topbar"><div className="breadcrumb"><Folder size={15}/>{workspace?basename(workspace.sourcePath):'工作台'}<span>/</span><strong>{session?.title??'新的可能，从这里开始'}</strong></div><div className="toolbar"><button className="icon-button" title="导出会话" aria-label="导出会话" disabled={!sessionId} onClick={exportSession}><Download size={17}/></button><button className="soft" onClick={()=>setPanel('tasks')} disabled={!sessionId}><ListTodo size={16}/>后台任务{taskCount>0&&<span className="count">{taskCount}</span>}</button><button className="soft" onClick={()=>setPanel('diff')} disabled={!workspaceId}><GitCompareArrows size={16}/>查看更改</button></div></header>
    {!desktop()&&<div className="host-banner"><Terminal size={16}/>当前为界面预览，需要桌面宿主才能访问工作区和模型。</div>}
@@ -115,6 +121,7 @@ export default function App(){
   {panel==='plugins'&&<PluginPanel workspaceId={workspaceId} sessionId={sessionId} revision={pluginRevision} onChanged={()=>setPluginRevision(v=>v+1)} onClose={()=>setPanel(null)}/>}
   {panel==='diff'&&<DiffPanel key={workspaceId} workspaceId={workspaceId} onClose={()=>setPanel(null)}/>}
   {panel==='tasks'&&sessionId&&<BackgroundTasksPanel sessionId={sessionId} onClose={()=>setPanel(null)}/>}
+  {panel==='plans'&&<PlansPanel currentSessionId={sessionId} onOpenSession={openFromPanel} onClose={()=>setPanel(null)}/>}
   {approvals[0]&&<Modal title="操作需要你的批准" onClose={()=>void resolve(approvals[0].id,false)}><div className="approval-heading"><ShieldCheck size={24}/><strong>{approvals[0].tool}</strong></div><p>{approvals[0].reason}</p><pre className="code-block">{printable(approvals[0].arguments)}</pre><p className="muted">会话：{sessions.find(s=>s.id===approvals[0].sessionId)?.title??approvals[0].sessionId}</p><div className="actions"><button onClick={()=>resolve(approvals[0].id,false)}>拒绝</button><button className="primary" onClick={()=>resolve(approvals[0].id,true)}>批准此次操作</button></div></Modal>}
  </div>
 }
@@ -154,7 +161,7 @@ export function EventCard({event,...extras}:{event:SessionEvent}&EventCardExtras
  }
  if(kind==='todo.state'){
   const items=Array.isArray(data.items)?(data.items as Record<string,unknown>[]):[];
-  return <article className="tool-card todo-card"><div className="subagent-row"><ListTodo size={15}/><strong>待办清单</strong></div>{items.length?<ul className="todo-list">{items.map((item,index)=>{const text=String(item.text??item.content??item.title??printable(item));const done=item.done===true||item.completed===true||item.status==='completed';return <li key={index} className={done?'done':undefined}>{done?'✓':'○'} {text}</li>})}</ul>:<p className="muted">清单为空。</p>}</article>;
+  return <article className="tool-card todo-card"><div className="subagent-row"><ListTodo size={15}/><strong>待办清单</strong></div><TodoList items={items}/></article>;
  }
  if(kind==='plan.state'||kind==='goal.state')return <article className="tool-card"><div className="subagent-row">{kind==='plan.state'?<ListTodo size={15}/>:<Target size={15}/>}<strong>{kind==='plan.state'?'计划':'目标'}</strong></div><div className="prose"><Markdown content={printable(data.content)}/></div></article>;
  if(kind==='user.message')return <article className="message user"><div className="avatar">你</div><div className="message-body"><div className="message-label">你</div><div className="prose">{printable(data.content)}</div>{Array.isArray(data.attachments)&&data.attachments.map((a,index)=><ArtifactDownload key={index} sessionId={event.sessionId} artifact={a as ArtifactMetadata}/>)}</div></article>;
@@ -178,6 +185,9 @@ function ArtifactDownload({sessionId,artifact}:{sessionId:string;artifact:Artifa
  const [error,setError]=useState(''),[busy,setBusy]=useState(false);
  async function download(){setBusy(true);setError('');try{const path=await save({defaultPath:artifact.name});if(path)await command('artifact_save',{sessionId,hash:artifact.hash,path})}catch(e){setError(errorText(e))}finally{setBusy(false)}}
  return <div><button type="button" disabled={busy} aria-label={`下载 ${artifact.name}`} onClick={download}><Download size={14}/>{artifact.name} ({artifact.size} 字节)</button>{error&&<p role="alert">{error}</p>}</div>
+}
+export function TodoList({items}:{items:Record<string,unknown>[]}) {
+ return items.length?<ul className="todo-list">{items.map((item,index)=>{const text=String(item.text??item.content??item.title??printable(item));const done=item.done===true||item.completed===true||item.status==='completed';return <li key={index} className={done?'done':undefined}>{done?'✓':'○'} {text}</li>})}</ul>:<p className="muted">清单为空。</p>;
 }
 export function Modal({title,onClose,children,wide=false}:{title:string;onClose:()=>void;children:ReactNode;wide?:boolean}) {
  const dialog=useRef<HTMLElement>(null);

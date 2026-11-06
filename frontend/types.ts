@@ -18,3 +18,6 @@ export interface ArtifactChunk {encoding:'utf8'|'base64';content:string;nextOffs
 // Orchestration payloads (serde JSON from harness-orchestration JobInfo/Schedule).
 export interface JobInfo {id:string;command:string;status:string;cancelRequested:boolean;output:{stdout:string;stderr:string;exit_code:number}|null;error:unknown|null;createdAt:string}
 export interface ScheduleInfo {id:string;sessionId:string;workspaceId:string;at:string;task:string;modelId:string;status:string}
+
+// Derived view for the plans/goals panel (harness-contracts PlanStateOverview); event log stays authoritative.
+export interface PlanStateOverview {sessionId:string;sessionTitle:string;workspaceId:string;kind:string;data:Record<string,unknown>;updatedAt:string}

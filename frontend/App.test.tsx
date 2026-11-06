@@ -1,5 +1,5 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
-import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
+import {act,cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
 import App,{DiffPanel} from './App';
 import {useChat} from './store';
 import {open,save} from '@tauri-apps/plugin-dialog';
@@ -293,5 +293,24 @@ describe('子代理与任务状态可视化',()=>{
   expect(container.querySelector('.todo-list li.done')?.textContent).toContain('已完成项');
   expect(screen.getByText(/待办项/)).toBeInTheDocument();
   expect(screen.getByRole('heading',{name:'分三步走',level:2})).toBeInTheDocument();
+ });
+});
+describe('计划与目标面板',()=>{
+ it('侧边栏入口打开面板并跨会话汇总，可跳转同工作区会话',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='plan_overview'?[
+   {sessionId:'a',sessionTitle:'会话 A',workspaceId:'w',kind:'todo.state',data:{items:[{text:'修复登录',done:true},{text:'补充测试'}]},updatedAt:'2026-11-06T10:00:00Z'},
+   {sessionId:'a',sessionTitle:'会话 A',workspaceId:'w',kind:'plan.state',data:{content:'## 先写测试'},updatedAt:'2026-11-06T09:00:00Z'}
+  ]:original(name,args));
+  const {container}=render(<App/>);
+  await screen.findByText('内容 a');
+  fireEvent.click(screen.getByRole('button',{name:'计划与目标'}));
+  const dialog=await screen.findByRole('dialog',{name:'计划与目标'});
+  expect(within(dialog).getByText('会话 A')).toBeInTheDocument();
+  expect(container.querySelector('.todo-list li.done')?.textContent).toContain('修复登录');
+  expect(container.querySelector('.todo-list li:not(.done)')?.textContent).toContain('补充测试');
+  expect(within(dialog).getByRole('heading',{name:'先写测试',level:2})).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole('button',{name:'当前会话'}));
+  await waitFor(()=>expect(screen.queryByRole('dialog',{name:'计划与目标'})).not.toBeInTheDocument());
  });
 });

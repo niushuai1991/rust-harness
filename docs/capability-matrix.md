@@ -13,7 +13,7 @@
 |MCP HTTP/stdio、资源、取消|已实现并接线|官方SDK本地HTTP和stdio fixtures；自动后台重连未实现|
 |后台Shell、子代理spawn/fork/send/wait/interrupt|已实现并接线|协作与后台任务测试；桌面端事件卡片与会话级任务面板（查询/取消/删除定时）见[P2后台任务计划](specs/p2-background-tasks-plan.md)|
 |子代理可视化与spawn模型选择|已实现并接线|父子关系重建与modelId校验3项测试、前端3项测试通过；会话列表子任务徽标、事件卡片跳转、运行状态live-dot；ACP透传与管理面板未实现|
-|Todo/Plan/Goal|事件与模型工具已实现，会话流渲染清单/计划/目标卡片|独立管理面板未实现|
+|Todo/Plan/Goal|事件与模型工具已实现，会话流渲染清单/计划/目标卡片；桌面「计划与目标」面板已实现并接线（跨会话只读汇总、演变历史、跳转会话，见[面板计划](specs/plan-goal-panel-plan.md)）|storage 派生查询 2 项与前端 6 项新增测试通过；面板为只读派生视图，UI 手动写入不在范围，桌面 UI 抽查待用户|
 |调度、会话压缩|应用存活期间单次调度、显式压缩服务已实现|missed不补跑、缺模型failed和原日志保留测试|
 |headless/stdio JSON-RPC|已实现|真实子进程协议错误恢复和请求测试通过|
 |ACP v1 agent 端（harness acp）|已实现并接线|官方SDK 5.0.0；16项映射/fixture单测与11项duplex集成测试（initialize门禁、审批ask双路径、取消、load回放、子进程冒烟）通过；真实模型端到端流式chunk、end_turn与重启load回放通过；mcpServers参数忽略，Zed实测待用户|

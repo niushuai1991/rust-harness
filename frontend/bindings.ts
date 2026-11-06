@@ -18,6 +18,7 @@ export const commands = {
 	sessionExport: (sessionId: string, path: string) => typedError<null, AppError>(__TAURI_INVOKE("session_export", { sessionId, path })),
 	sessionFork: (sessionId: string) => typedError<SessionInfo, AppError>(__TAURI_INVOKE("session_fork", { sessionId })),
 	sessionSearch: (query: string) => typedError<SessionInfo[], AppError>(__TAURI_INVOKE("session_search", { query })),
+	planOverview: () => typedError<PlanStateOverview[], AppError>(__TAURI_INVOKE("plan_overview")),
 	providerList: () => typedError<ProviderInfo[], AppError>(__TAURI_INVOKE("provider_list")),
 	providerSave: (config: ProviderInfo, secret: string | null) => typedError<ProviderInfo, AppError>(__TAURI_INVOKE("provider_save", { config, secret })),
 	providerCopy: (id: string) => typedError<ProviderInfo, AppError>(__TAURI_INVOKE("provider_copy", { id })),
@@ -120,6 +121,19 @@ export type ModelConfig = {
 	model: string,
 	credentialRef: string,
 	proxy: string | null,
+};
+
+/**
+ *  Latest todo/plan/goal entry of one session for the desktop overview panel.
+ *  Derived view over the event log; the event stream stays the source of truth.
+ */
+export type PlanStateOverview = {
+	sessionId: string,
+	sessionTitle: string,
+	workspaceId: string,
+	kind: string,
+	data: JsonValue,
+	updatedAt: string,
 };
 
 export type PluginInfo = {
