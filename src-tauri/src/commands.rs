@@ -156,6 +156,23 @@ pub async fn session_fork(state: Backend<'_>, session_id: String) -> AppResult<S
 pub async fn session_search(state: Backend<'_>, query: String) -> AppResult<Vec<SessionInfo>> {
     state.store.search(&query).await
 }
+/// 压缩会话历史为摘要（与 CLI `/compact`、JSON-RPC `session.compact` 同一路径）。
+#[tauri::command]
+#[specta::specta]
+pub async fn session_compact(
+    state: Backend<'_>,
+    session_id: String,
+    model_id: String,
+) -> AppResult<()> {
+    let provider = state.models.build_model(&model_id).await?;
+    harness_orchestration::compact_session(
+        state.inner().clone(),
+        &session_id,
+        provider,
+        Default::default(),
+    )
+    .await
+}
 #[tauri::command]
 #[specta::specta]
 pub async fn plan_overview(state: Backend<'_>) -> AppResult<Vec<PlanStateOverview>> {
@@ -372,6 +389,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         session_export,
         session_fork,
         session_search,
+        session_compact,
         plan_overview,
         provider_list,
         provider_save,

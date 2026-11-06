@@ -26,3 +26,9 @@
 .plan-entry{display:flex;flex-direction:column;gap:6px}
 .plan-history{border-top:1px dashed var(--border);padding-top:8px;display:flex;flex-direction:column;gap:6px}
 .plan-history-row{display:flex;flex-direction:column;gap:2px;font-size:12px}
+.composer{position:relative}
+.slash-menu{position:absolute;bottom:calc(100% + 6px);left:0;right:0;background:var(--panel);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(36,51,44,.12);padding:5px;display:flex;flex-direction:column;z-index:10;max-height:280px;overflow:auto}
+.slash-menu button{display:flex;gap:10px;align-items:baseline;justify-content:flex-start;border:none;background:transparent;padding:7px 10px;border-radius:7px;font-size:13px}
+.slash-menu button strong{font-weight:600;color:#344b37}
+.slash-menu button span{color:var(--muted);font-size:12px}
+.slash-menu button.selected,.slash-menu button:hover{background:#e4eddb}
