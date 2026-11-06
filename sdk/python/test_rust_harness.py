@@ -36,13 +36,18 @@ class ProviderApiTest(unittest.TestCase):
             })
             self.assertEqual(model["baseUrl"], copy["endpoints"][0]["baseUrl"])
             self.assertEqual(model["compatibility"], "deepSeek")
-            self.assertEqual(client.list_models()[0]["id"], model["id"])
+            models = client.list_models()
+            # model_list 含合成的内置目录条目；自定义模型排在其中且可被识别。
+            self.assertTrue(all(m["builtin"] for m in models if m["id"] != model["id"]))
+            self.assertIn(model["id"], [m["id"] for m in models])
+            self.assertEqual([m for m in models if m["providerId"] == copy["id"]][0]["id"], model["id"])
             with self.assertRaises(RuntimeError):
                 client.remove_provider(copy["id"])
             client.remove_model(model["id"])
             client.remove_provider(copy["id"])
             self.assertEqual(len(client.list_providers()), 2)
-            self.assertEqual(client.list_models(), [])
+            self.assertEqual([m for m in client.list_models() if not m["builtin"]], [])
+            self.assertTrue(all(m["enabled"] for m in client.list_models()))
 
 if __name__ == "__main__":
     unittest.main()
