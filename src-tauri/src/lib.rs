@@ -52,6 +52,9 @@ pub fn run() {
             harness_orchestration::install(runtime.clone())
         })?;
         app.manage(orchestration);
+        let browser =
+            tauri::async_runtime::block_on(async { harness_browser::install(runtime.clone()) })?;
+        app.manage(browser);
         app.manage(runtime);
         desktop::setup(app)?;
         Ok(())

@@ -51,6 +51,10 @@ impl WorkspaceManager {
         fs::create_dir_all(data_dir.join("workspaces")).map_err(io)?;
         Ok(Self { data_dir })
     }
+    /// 宿主数据目录（截图等浏览器产物存放其下）。
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
     fn dir(&self, id: &str) -> AppResult<PathBuf> {
         uuid::Uuid::parse_str(id).map_err(|_| AppError::new("INVALID_ID", id))?;
         Ok(self.data_dir.join("workspaces").join(id))
