@@ -1,4 +1,4 @@
-# 能力状态（2026-11-06）
+# 能力状态（2026-11-08）
 
 状态说明：已实现表示存在实际执行代码；已验证另需对应测试或实际构建证据。不以计划或接口占位替代功能。
 
@@ -6,6 +6,7 @@
 |---|---|---|
 |Rust/Tauri桌面、中文聊天与设置|已实现并验证|0.1.4前端34项测试与生产构建通过；Windows 11 guest 中完成输入、审批、同步、托盘、单实例与重启继续会话|
 |DeepSeek/智谱双供应商与Chat/Responses/Anthropic|已实现并接线|六条固定路由、三协议本地HTTP/SSE工具审批及重启回放、复制兼容与凭据隔离；两供应商六条真实连接及 Agent 工具链路已通过|
+|ChatGPT 账号供应商（浏览器 OAuth 登录、token 自动刷新与吊销、ChatGPT 后端 Responses 变体、CLI login/logout 与桌面登录卡片）|已实现并接线|OAuth 模块 16 项单测与 6 项 mock issuer e2e（回调保存/state 校验/取消/刷新轮换/永久失败）通过；真实抽查通过：Chrome 授权登录、`login status`、gpt-5.6-luna 真实流式回合、effort 档位、工具闭环（write→审批→read）、桌面已登录状态两端共享。已知缺口：内置模型目录为 codex 全量列表，free 套餐仅部分模型可用（其余 400），待按账号从 /models 过滤；国内访问需代理（CLI 走 HTTPS_PROXY 环境变量，桌面走供应商代理字段）|
 |SQLite WAL、游标、恢复、FTS、JSONL、附件/spill|已实现并验证|持久顺序、未知结果结算、导入事务；schema2备份迁移、回滚和重试；附件导入、会话隔离、分块读取、下载与重启回归|
 |原项目/执行副本分离与人工同步|已实现|冲突、预览hash、ignore、链接、Git独立副本回归；桌面右侧面板行级diff审阅与文件预览已实现（见[右侧面板计划](specs/side-panel-plan.md)），UI抽查待用户|
 |Windows受限token/Low IL/ACL/Job/stdio|已实现|真实Windows内部允许、外部拒绝、取消子树和split生命周期测试|
