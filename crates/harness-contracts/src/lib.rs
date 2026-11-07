@@ -193,6 +193,15 @@ pub enum ProviderCompatibility {
     DeepSeek,
     BigModel,
 }
+
+/// 供应商认证方式：静态 API key 或 ChatGPT 账号 OAuth（token 由登录流程动态维护）。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ProviderAuth {
+    #[default]
+    ApiKey,
+    ChatGptOAuth,
+}
 /// 已知推理档位，语义强度从低到高；efforts 为空表示该模型不提供 effort 选择。
 pub const KNOWN_EFFORTS: [&str; 6] = ["disabled", "minimal", "low", "medium", "high", "max"];
 
@@ -213,6 +222,8 @@ pub struct BuiltinModel {
 pub struct ProviderInfo {
     #[serde(default)]
     pub compatibility: ProviderCompatibility,
+    #[serde(default)]
+    pub auth: ProviderAuth,
     pub id: String,
     pub name: String,
     pub builtin: bool,
@@ -233,6 +244,8 @@ pub struct ProviderInfo {
 pub struct ModelConfig {
     #[serde(default)]
     pub compatibility: ProviderCompatibility,
+    #[serde(default)]
+    pub auth: ProviderAuth,
     #[serde(default)]
     pub provider_id: String,
     #[serde(default)]
@@ -262,6 +275,7 @@ impl Default for ModelConfig {
     fn default() -> Self {
         Self {
             compatibility: ProviderCompatibility::default(),
+            auth: ProviderAuth::default(),
             provider_id: String::new(),
             api_mode: ApiMode::default(),
             max_output_tokens: None,
@@ -306,6 +320,44 @@ pub struct ProviderUsageSnapshot {
     /// 套餐显示名（如 GLM Coding Pro）；由接口 level 字段归一化而来。
     pub plan_name: Option<String>,
     pub cards: Vec<ProviderUsageCard>,
+}
+
+/// ChatGPT 登录流程状态机（桌面端轮询）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ChatGptLoginStatus {
+    /// 本窗口未发起过登录。
+    #[default]
+    Idle,
+    /// 等待浏览器回调。
+    Pending,
+    /// 登录成功且凭据已保存。
+    Completed,
+    /// 登录失败（error 携带原因）。
+    Failed,
+    /// 用户取消。
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatGptLoginState {
+    pub status: ChatGptLoginStatus,
+    pub email: Option<String>,
+    pub plan_type: Option<String>,
+    pub error: Option<String>,
+}
+
+/// ChatGPT 账号登录信息查询；不含任何 token。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatGptAccountInfo {
+    pub logged_in: bool,
+    pub email: Option<String>,
+    pub plan_type: Option<String>,
+    /// access token 到期时间（Unix 秒，远小于 2^53）。
+    #[specta(type = f64)]
+    pub expires_at: Option<i64>,
 }
 
 fn default_true() -> bool {
@@ -570,5 +622,33 @@ mod model_settings_tests {
             KNOWN_EFFORTS,
             ["disabled", "minimal", "low", "medium", "high", "max"]
         );
+    }
+
+    /// 新增 auth 字段对旧 JSON 缺省为 ApiKey；ChatGptOAuth 以 camelCase 序列化。
+    #[test]
+    fn provider_auth_defaults_and_roundtrip() {
+        let provider: ProviderInfo = serde_json::from_str(
+            r#"{"id":"chatgpt","name":"ChatGPT","builtin":true,
+                "endpoints":[{"apiMode":"responses","baseUrl":"https://chatgpt.com/backend-api/codex"}],
+                "defaultModel":"gpt-5.5","credentialRef":"provider/chatgpt","proxy":null,
+                "auth":"chatGptOAuth"}"#,
+        )
+        .unwrap();
+        assert_eq!(provider.auth, ProviderAuth::ChatGptOAuth);
+
+        let legacy: ProviderInfo = serde_json::from_str(
+            r#"{"id":"deepseek","name":"DeepSeek","builtin":true,
+                "endpoints":[],"defaultModel":"deepseek-flash",
+                "credentialRef":"provider/deepseek","proxy":null}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.auth, ProviderAuth::ApiKey);
+
+        let model = ModelConfig {
+            auth: ProviderAuth::ChatGptOAuth,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&model).unwrap();
+        assert!(json.contains("\"auth\":\"chatGptOAuth\""));
     }
 }

@@ -100,6 +100,7 @@ impl Store {
                     let id = format!("legacy-{}", model.id);
                     providers.push(ProviderInfo {
                         compatibility: ProviderCompatibility::Standard,
+                        auth: ProviderAuth::ApiKey,
                         id: id.clone(),
                         name: model.name.clone(),
                         builtin: false,

@@ -24,7 +24,7 @@ pub fn builtin_providers() -> Vec<ProviderInfo> {
         ("glm-5.2", "GLM-5.2", &["disabled", "high", "max"]),
         ("glm-5-turbo", "GLM-5 Turbo", &["disabled", "enabled"]),
     ];
-    [
+    let mut providers: Vec<ProviderInfo> = [
         (
             "deepseek",
             "DeepSeek",
@@ -55,6 +55,7 @@ pub fn builtin_providers() -> Vec<ProviderInfo> {
         } else {
             ProviderCompatibility::BigModel
         },
+        auth: ProviderAuth::ApiKey,
         id: id.into(),
         name: name.into(),
         builtin: true,
@@ -84,17 +85,94 @@ pub fn builtin_providers() -> Vec<ProviderInfo> {
             .collect(),
         disabled_models: Vec::new(),
     })
-    .collect()
+    .collect();
+    providers.push(chatgpt_provider());
+    providers
 }
 
-/// 由内置目录条目合成的可路由模型配置；api_mode 固定为供应商的 Anthropic 端点。
+/// ChatGPT 账号供应商：OAuth 登录（非 API key），唯一 Responses 端点指向 ChatGPT 后端。
+/// 模型目录与 effort 档位照搬 codex `models-manager/models.json` 的 picker 可见条目。
+fn chatgpt_provider() -> ProviderInfo {
+    let models: [(&str, &str, &[&str]); 9] = [
+        (
+            "gpt-6.1-sol",
+            "GPT-6.1-Sol",
+            &["low", "medium", "high", "xhigh", "max"],
+        ),
+        (
+            "gpt-6-astra",
+            "GPT-6-Astra",
+            &["low", "medium", "high", "xhigh", "max"],
+        ),
+        (
+            "gpt-6-sol",
+            "GPT-6-Sol",
+            &["low", "medium", "high", "xhigh", "max"],
+        ),
+        (
+            "gpt-6-luna",
+            "GPT-6-Luna",
+            &["low", "medium", "high", "xhigh", "max"],
+        ),
+        (
+            "gpt-5.6-sol",
+            "GPT-5.6-Sol",
+            &["low", "medium", "high", "xhigh", "max"],
+        ),
+        (
+            "gpt-6.1-terra",
+            "GPT-6.1 Terra",
+            &["low", "medium", "high", "xhigh", "max"],
+        ),
+        (
+            "gpt-5.6-terra",
+            "GPT-5.6-Terra",
+            &["low", "medium", "high", "xhigh", "max"],
+        ),
+        (
+            "gpt-5.6-luna",
+            "GPT-5.6-Luna",
+            &["low", "medium", "high", "xhigh", "max"],
+        ),
+        ("gpt-5.5", "GPT-5.5", &["low", "medium", "high", "xhigh"]),
+    ];
+    ProviderInfo {
+        compatibility: ProviderCompatibility::Standard,
+        auth: ProviderAuth::ChatGptOAuth,
+        id: "chatgpt".into(),
+        name: "ChatGPT 账号".into(),
+        builtin: true,
+        default_model: "gpt-6.1-sol".into(),
+        credential_ref: crate::chatgpt::CREDENTIAL_MAIN.into(),
+        proxy: None,
+        enabled: true,
+        endpoints: vec![ProtocolEndpoint {
+            api_mode: ApiMode::Responses,
+            base_url: crate::chatgpt::CHATGPT_BASE_URL.into(),
+        }],
+        builtin_models: models
+            .iter()
+            .map(|(id, name, efforts)| BuiltinModel {
+                id: (*id).into(),
+                name: (*name).into(),
+                efforts: efforts.iter().map(|e| (*e).into()).collect(),
+            })
+            .collect(),
+        disabled_models: Vec::new(),
+    }
+}
+
+/// 由内置目录条目合成的可路由模型配置；api_mode 取供应商协议端点
+/// （既有目录固定 Anthropic，chatgpt 仅有 Responses）。
 fn builtin_model_config(provider: &ProviderInfo, model: &BuiltinModel) -> Option<ModelConfig> {
     let endpoint = provider
         .endpoints
         .iter()
-        .find(|e| e.api_mode == ApiMode::Anthropic)?;
+        .find(|e| e.api_mode == ApiMode::Anthropic)
+        .or_else(|| provider.endpoints.first())?;
     Some(ModelConfig {
         provider_id: provider.id.clone(),
+        auth: provider.auth,
         id: format!("builtin:{}:{}", provider.id, model.id),
         name: model.name.clone(),
         base_url: endpoint.base_url.clone(),
@@ -102,7 +180,7 @@ fn builtin_model_config(provider: &ProviderInfo, model: &BuiltinModel) -> Option
         credential_ref: provider.credential_ref.clone(),
         proxy: provider.proxy.clone(),
         compatibility: provider.compatibility,
-        api_mode: ApiMode::Anthropic,
+        api_mode: endpoint.api_mode,
         max_output_tokens: None,
         efforts: model.efforts.clone(),
         effort: None,
@@ -112,7 +190,14 @@ fn builtin_model_config(provider: &ProviderInfo, model: &BuiltinModel) -> Option
 }
 
 /// 内置供应商的模型必须配置密钥才能执行；自定义供应商允许空密钥（请求时由端点拒绝）。
+/// OAuth 供应商的凭据由登录流程维护，不经此通道（见 `oauth_material`）。
 fn require_credential(config: &ModelConfig, secret: &str) -> AppResult<()> {
+    if config.auth == ProviderAuth::ChatGptOAuth {
+        return Err(AppError::new(
+            "MODEL_CREDENTIAL",
+            "请先使用 ChatGPT 账号登录",
+        ));
+    }
     if secret.is_empty()
         && builtin_providers()
             .iter()
@@ -121,6 +206,26 @@ fn require_credential(config: &ModelConfig, secret: &str) -> AppResult<()> {
         return Err(AppError::new("MODEL_CREDENTIAL", "请先配置供应商密钥"));
     }
     Ok(())
+}
+
+/// ChatGPT OAuth 供应商的请求材料：刷新后的 access_token 与身份/路由 header。
+/// 未登录报 `MODEL_CREDENTIAL`；凭据临近过期时自动刷新并回写存储。
+async fn oauth_material(
+    token_store: &dyn crate::chatgpt::TokenStore,
+    config: &ModelConfig,
+    now: i64,
+) -> AppResult<(String, Vec<(String, String)>)> {
+    use crate::chatgpt::{ISSUER, ORIGINATOR, ensure_access_token, load_bundle};
+    let bundle = load_bundle(token_store)?
+        .ok_or_else(|| AppError::new("MODEL_CREDENTIAL", "请先使用 ChatGPT 账号登录"))?;
+    let bundle =
+        ensure_access_token(token_store, bundle, ISSUER, now, config.proxy.as_deref()).await?;
+    let extra_headers = vec![
+        ("chatgpt-account-id".to_string(), bundle.account_id.clone()),
+        ("originator".to_string(), ORIGINATOR.to_string()),
+        ("session-id".to_string(), new_id()),
+    ];
+    Ok((bundle.access_token, extra_headers))
 }
 
 /// 错误提示用的启用模型 id 清单（与 CLI 侧报错风格对齐）。
@@ -343,12 +448,21 @@ fn validate_url(raw: &str) -> AppResult<()> {
 pub struct ModelService {
     store: Store,
     gate: Arc<Mutex<()>>,
+    /// ChatGPT OAuth 凭据存储；默认落系统凭据管理器，测试注入内存实现。
+    token_store: Arc<dyn crate::chatgpt::TokenStore>,
 }
 impl ModelService {
     pub fn new(store: Store) -> Self {
+        Self::with_token_store(store, Arc::new(crate::chatgpt::PlatformTokenStore))
+    }
+    pub fn with_token_store(
+        store: Store,
+        token_store: Arc<dyn crate::chatgpt::TokenStore>,
+    ) -> Self {
         Self {
             store,
             gate: Arc::new(Mutex::new(())),
+            token_store,
         }
     }
     async fn read<T: DeserializeOwned>(&self, key: &str) -> AppResult<Vec<T>> {
@@ -490,6 +604,7 @@ impl ModelService {
             .find(|p| p.api_mode == model.api_mode)
             .ok_or_else(|| invalid("供应商未配置该协议"))?;
         model.compatibility = supplier.compatibility;
+        model.auth = supplier.auth;
         model.base_url = endpoint.base_url.clone();
         model.proxy = supplier.proxy.clone();
         model.credential_ref = supplier.credential_ref.clone();
@@ -604,9 +719,22 @@ impl ModelService {
             return Err(AppError::new("MODEL_DISABLED", "供应商已停用"));
         }
         config = apply_effort(config, effort)?;
+        if config.auth == ProviderAuth::ChatGptOAuth {
+            let (secret, extra_headers) =
+                oauth_material(&*self.token_store, &config, chrono::Utc::now().timestamp()).await?;
+            return Ok(Arc::new(HttpModel {
+                config,
+                secret,
+                extra_headers,
+            }));
+        }
         let secret = harness_platform::get_secret(&config.credential_ref)?.unwrap_or_default();
         require_credential(&config, &secret)?;
-        Ok(Arc::new(HttpModel { config, secret }))
+        Ok(Arc::new(HttpModel {
+            config,
+            secret,
+            extra_headers: Vec::new(),
+        }))
     }
     /// 内置目录模型的启用/禁用；写个人覆盖层，内置目录本身不变。
     pub async fn set_builtin_model_enabled(
@@ -637,6 +765,7 @@ impl ModelService {
             None => {
                 all.push(ProviderInfo {
                     compatibility: Default::default(),
+                    auth: Default::default(),
                     id: provider_id.to_string(),
                     name: String::new(),
                     builtin: true,
@@ -663,6 +792,17 @@ impl ModelService {
         api_mode: ApiMode,
     ) -> AppResult<Vec<String>> {
         let _guard = self.gate.lock().await;
+        let supplier = self
+            .providers()
+            .await?
+            .into_iter()
+            .find(|p| p.id == provider_id)
+            .ok_or_else(|| invalid("供应商不存在"))?;
+        if supplier.auth == ProviderAuth::ChatGptOAuth {
+            return Err(invalid(
+                "ChatGPT 供应商的模型目录随程序内置，不支持从 API 获取",
+            ));
+        }
         let supplier = self
             .providers()
             .await?
@@ -714,24 +854,33 @@ impl ModelService {
             .into_iter()
             .find(|m| m.id == id)
             .ok_or_else(|| invalid("模型不存在"))?;
-        let secret = harness_platform::get_secret(&config.credential_ref)?.unwrap_or_default();
-        if secret.is_empty()
-            && builtin_providers()
-                .iter()
-                .any(|p| p.id == config.provider_id)
-        {
-            return Err(AppError::new("MODEL_CREDENTIAL", "请先配置供应商密钥"));
-        }
         let mut config = config;
         config.max_output_tokens = Some(512);
-        let answer = HttpModel { config, secret }
-            .complete(
-                vec![ModelMessage::user("Reply OK.")],
-                vec![],
-                tokio_util::sync::CancellationToken::new(),
-                Arc::new(|_| {}),
-            )
-            .await?;
+        let (secret, extra_headers) = if config.auth == ProviderAuth::ChatGptOAuth {
+            oauth_material(&*self.token_store, &config, chrono::Utc::now().timestamp()).await?
+        } else {
+            let secret = harness_platform::get_secret(&config.credential_ref)?.unwrap_or_default();
+            if secret.is_empty()
+                && builtin_providers()
+                    .iter()
+                    .any(|p| p.id == config.provider_id)
+            {
+                return Err(AppError::new("MODEL_CREDENTIAL", "请先配置供应商密钥"));
+            }
+            (secret, Vec::new())
+        };
+        let answer = HttpModel {
+            config,
+            secret,
+            extra_headers,
+        }
+        .complete(
+            vec![ModelMessage::user("Reply OK.")],
+            vec![],
+            tokio_util::sync::CancellationToken::new(),
+            Arc::new(|_| {}),
+        )
+        .await?;
         if answer.content.trim().is_empty() || !answer.calls.is_empty() {
             return Err(AppError::new(
                 "MODEL_PROTOCOL",
@@ -752,11 +901,23 @@ mod tests {
     #[test]
     fn builtin_catalog_is_exact_and_protocol_specific() {
         let p = builtin_providers();
-        assert_eq!(p.len(), 2);
+        assert_eq!(p.len(), 3);
         assert_eq!(p[0].id, "deepseek");
         assert_eq!(p[0].default_model, "deepseek-flash");
+        assert_eq!(p[0].auth, ProviderAuth::ApiKey);
         assert_eq!(p[1].id, "bigmodel");
         assert_eq!(p[1].default_model, "glm-5.3");
+        assert_eq!(p[1].auth, ProviderAuth::ApiKey);
+        assert_eq!(p[2].id, "chatgpt");
+        assert_eq!(p[2].auth, ProviderAuth::ChatGptOAuth);
+        assert_eq!(p[2].credential_ref, "provider/chatgpt");
+        assert_eq!(p[2].endpoints.len(), 1);
+        assert_eq!(p[2].endpoints[0].api_mode, ApiMode::Responses);
+        assert_eq!(
+            p[2].endpoints[0].base_url,
+            "https://chatgpt.com/backend-api/codex"
+        );
+        assert_eq!(p[2].default_model, "gpt-6.1-sol");
         assert_eq!(
             p[0].endpoints[2].base_url,
             "https://api.deepseek.com/anthropic"
@@ -774,6 +935,85 @@ mod tests {
             "https://open.bigmodel.cn/api/anthropic"
         );
     }
+    #[tokio::test]
+    async fn chatgpt_models_require_login_before_build() {
+        let (dir, service) = service().await;
+        let err = service
+            .build_model("builtin:chatgpt:gpt-6.1-sol")
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(err.code, "MODEL_CREDENTIAL");
+        assert!(err.message.contains("ChatGPT"));
+        drop(dir);
+    }
+
+    /// 内存凭据存储：验证 OAuth 材料构造与 build 链路，不触碰真实凭据管理器。
+    #[derive(Default)]
+    struct MemoryTokenStore(std::sync::Mutex<std::collections::HashMap<String, String>>);
+    impl crate::chatgpt::TokenStore for MemoryTokenStore {
+        fn load(&self, reference: &str) -> AppResult<Option<String>> {
+            Ok(self.0.lock().unwrap().get(reference).cloned())
+        }
+        fn save(&self, reference: &str, value: &str) -> AppResult<()> {
+            self.0
+                .lock()
+                .unwrap()
+                .insert(reference.to_string(), value.to_string());
+            Ok(())
+        }
+        fn delete(&self, reference: &str) -> AppResult<()> {
+            self.0.lock().unwrap().remove(reference);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn oauth_material_yields_access_token_and_identity_headers() {
+        use crate::chatgpt::{TokenBundle, save_bundle};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("config.db")).await.unwrap();
+        let memory = std::sync::Arc::new(MemoryTokenStore::default());
+        save_bundle(
+            &*memory,
+            &TokenBundle {
+                access_token: "acc-token".into(),
+                refresh_token: "rt".into(),
+                account_id: "acc-9".into(),
+                expires_at: chrono::Utc::now().timestamp() + 3600,
+                email: None,
+                plan_type: None,
+            },
+        )
+        .unwrap();
+        let service = ModelService::with_token_store(store, memory.clone());
+        let config = service
+            .list_models()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|m| m.id == "builtin:chatgpt:gpt-6.1-sol")
+            .unwrap();
+        assert_eq!(config.auth, ProviderAuth::ChatGptOAuth);
+        assert_eq!(config.api_mode, ApiMode::Responses);
+        let (secret, headers) =
+            oauth_material(memory.as_ref(), &config, chrono::Utc::now().timestamp())
+                .await
+                .unwrap();
+        assert_eq!(secret, "acc-token");
+        assert!(headers.contains(&("chatgpt-account-id".to_string(), "acc-9".to_string())));
+        assert!(headers.contains(&("originator".to_string(), "codex_cli_rs".to_string())));
+        assert!(headers.iter().any(|(name, _)| name == "session-id"));
+        // 未过期的 token 不触发刷新（无网络），build 链路走通并指向 ChatGPT 后端。
+        let model = service
+            .build_model("builtin:chatgpt:gpt-6.1-sol")
+            .await
+            .unwrap();
+        let route = model.route().unwrap();
+        assert_eq!(route.base_url, "https://chatgpt.com/backend-api/codex");
+        drop(dir);
+    }
+
     #[test]
     fn maps_quota_response_to_remaining_cards() {
         // 样例取自真实接口响应（2026-11 实测）：percentage 为已用口径，展示前反转。
@@ -1158,11 +1398,19 @@ mod tests {
         );
         assert_eq!(bigmodel.builtin_models[0].efforts, ["low", "high", "max"]);
         assert_eq!(deepseek.builtin_models[0].efforts, ["disabled", "enabled"]);
-        // 内置模型全部走 Anthropic 端点，与 zcode 模板保持一致。
+        // 内置模型走供应商声明的协议端点（既有目录为 Anthropic，chatgpt 为 Responses）。
         for provider in &p {
+            let expected_endpoint = provider
+                .endpoints
+                .iter()
+                .find(|e| e.api_mode == ApiMode::Anthropic)
+                .or_else(|| provider.endpoints.first())
+                .unwrap();
             for model in &provider.builtin_models {
                 let config = builtin_model_config(provider, model).unwrap();
-                assert_eq!(config.api_mode, ApiMode::Anthropic);
+                assert_eq!(config.api_mode, expected_endpoint.api_mode);
+                assert_eq!(config.base_url, expected_endpoint.base_url);
+                assert_eq!(config.auth, provider.auth);
                 assert!(config.builtin);
                 assert_eq!(config.model, model.id);
                 assert_eq!(config.provider_id, provider.id);

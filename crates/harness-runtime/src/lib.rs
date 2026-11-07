@@ -1,5 +1,6 @@
 //! Agent runtime, independent of the desktop carrier.
 pub mod agent;
+pub mod chatgpt;
 pub mod model;
 mod registry;
 pub use agent::Runtime;

@@ -156,6 +156,7 @@ async fn all_protocols_execute_approved_tools_and_replay_after_restart() {
         let (base, mut requests, server) = fixture(mode, 4).await;
         let config:ModelConfig=serde_json::from_value(json!({"id":"test","name":"test","baseUrl":base,"model":"model","credentialRef":"","proxy":null,"providerId":"fixture","apiMode":mode,"maxOutputTokens":1024})).unwrap();
         let provider = Arc::new(HttpModel {
+            extra_headers: Vec::new(),
             config,
             secret: "fixture-secret".into(),
         });
@@ -284,6 +285,7 @@ async fn waiting_for_a_stream_can_be_cancelled() {
     let token = cancel.clone();
     let task = tokio::spawn(async move {
         HttpModel {
+            extra_headers: Vec::new(),
             config,
             secret: String::new(),
         }
@@ -339,6 +341,7 @@ async fn provider_errors_are_classified_without_exposing_echoed_keys() {
         )
         .unwrap();
         let error = HttpModel {
+            extra_headers: Vec::new(),
             config,
             secret: "echoed-secret".into(),
         }

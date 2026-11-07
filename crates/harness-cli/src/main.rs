@@ -56,6 +56,10 @@ enum Commands {
     Presets(manage::PresetsArgs),
     /// 技能管理
     Skills(manage::SkillsArgs),
+    /// ChatGPT 账号登录（浏览器 OAuth）
+    Login(manage::LoginArgs),
+    /// 登出 ChatGPT 账号并清除本地凭据
+    Logout,
 }
 
 fn data_dir(cli: &Cli) -> AppResult<PathBuf> {
@@ -108,5 +112,7 @@ async fn run() -> AppResult<()> {
         Commands::Models(args) => manage::models(runtime, args).await,
         Commands::Presets(args) => manage::presets(runtime, args).await,
         Commands::Skills(args) => manage::skills(runtime, args).await,
+        Commands::Login(args) => manage::login(runtime, args).await,
+        Commands::Logout => manage::logout(runtime).await,
     }
 }

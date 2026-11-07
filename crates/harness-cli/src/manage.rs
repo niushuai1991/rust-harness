@@ -76,6 +76,96 @@ pub enum ModelsCmd {
     },
 }
 
+#[derive(Debug, clap::Args)]
+pub struct LoginArgs {
+    #[command(subcommand)]
+    pub cmd: Option<LoginCmd>,
+}
+
+#[derive(Debug, clap::Subcommand)]
+pub enum LoginCmd {
+    /// 查看 ChatGPT 账号登录状态
+    Status,
+}
+
+/// ChatGPT 登录相关实现使用的内置供应商 id。
+pub const CHATGPT_PROVIDER_ID: &str = "chatgpt";
+
+/// ChatGPT 账号 OAuth 登录；`login status` 查看状态。
+pub async fn login(runtime: Arc<Runtime>, args: LoginArgs) -> AppResult<()> {
+    if let Some(LoginCmd::Status) = args.cmd {
+        return login_status().await;
+    }
+    login_browser(runtime).await
+}
+
+async fn login_status() -> AppResult<()> {
+    use harness_runtime::chatgpt::{PlatformTokenStore, load_bundle};
+    match load_bundle(&PlatformTokenStore)? {
+        Some(bundle) => {
+            println!(
+                "已登录：{}",
+                bundle.email.as_deref().unwrap_or("(未知邮箱)")
+            );
+            if let Some(plan) = bundle.plan_type.as_deref() {
+                println!("套餐：{plan}");
+            }
+            println!("账号 ID：{}", bundle.account_id);
+            let minutes = (bundle.expires_at - chrono::Utc::now().timestamp()) / 60;
+            println!("access token 约 {minutes} 分钟后到期");
+        }
+        None => println!("未登录。运行 `harness login` 通过浏览器登录 ChatGPT 账号。"),
+    }
+    Ok(())
+}
+
+async fn login_browser(runtime: Arc<Runtime>) -> AppResult<()> {
+    use harness_runtime::chatgpt::{LoginOptions, PlatformTokenStore, start_login};
+    let proxy = chatgpt_proxy(&runtime).await?;
+    let options = LoginOptions {
+        proxy,
+        ..LoginOptions::new(std::sync::Arc::new(PlatformTokenStore))
+    };
+    let handle = start_login(options).await?;
+    println!("本地回调端口：{}", handle.port);
+    println!("正在打开浏览器完成 ChatGPT 登录…");
+    if webbrowser::open(&handle.auth_url).is_err() {
+        println!(
+            "无法自动打开浏览器，请手动访问以下链接：\n{}",
+            handle.auth_url
+        );
+    }
+    let bundle = tokio::time::timeout(std::time::Duration::from_secs(600), handle.wait())
+        .await
+        .map_err(|_| AppError::new("LOGIN_TIMEOUT", "登录超时（10 分钟），请重试"))??;
+    println!(
+        "登录成功：{}",
+        bundle.email.as_deref().unwrap_or(&bundle.account_id)
+    );
+    Ok(())
+}
+
+/// 读取 chatgpt 供应商个人覆盖层配置的代理（OAuth 请求与模型请求同源）。
+async fn chatgpt_proxy(runtime: &Arc<Runtime>) -> AppResult<Option<String>> {
+    Ok(runtime
+        .models
+        .list_providers()
+        .await?
+        .into_iter()
+        .find(|p| p.id == CHATGPT_PROVIDER_ID)
+        .and_then(|p| p.proxy)
+        .filter(|p| !p.is_empty()))
+}
+
+/// 登出 ChatGPT 账号：吊销 refresh_token 并清除本地凭据。
+pub async fn logout(runtime: Arc<Runtime>) -> AppResult<()> {
+    use harness_runtime::chatgpt::{ISSUER, PlatformTokenStore, logout as oauth_logout};
+    let proxy = chatgpt_proxy(&runtime).await?;
+    oauth_logout(&PlatformTokenStore, ISSUER, proxy.as_deref()).await?;
+    println!("已登出并清除本地凭据。");
+    Ok(())
+}
+
 pub async fn sessions(runtime: Arc<Runtime>, args: SessionsArgs) -> AppResult<()> {
     match args.cmd.unwrap_or(SessionsCmd::List) {
         SessionsCmd::List => {
