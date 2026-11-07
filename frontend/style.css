@@ -161,3 +161,41 @@
 .file-chip:hover{background:#e2edcf;border-color:#c3d6a8}
 .file-chip span,.file-chip{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 @media(max-width:1100px){.side-panel{width:340px!important}}
+
+/* ---- 自动化面板 ---- */
+.auto-toolbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+.auto-toolbar button{padding:6px 11px;font-size:11.5px}
+.auto-note{color:#93a08b;font-size:11px;margin:4px 0 14px;line-height:1.8}
+.auto-count{text-align:right;font-size:10px;margin:14px 0 0}
+.plugin-list article.paused{opacity:.62}
+.state-badge{font-style:normal;font-size:9px;border-radius:4px;padding:1px 6px;background:#e4edd8;color:#5f7c48;flex-shrink:0}
+.state-badge.off{background:#f3e6dc;color:#a06a43}
+.auto-switch{margin-left:auto;display:flex;align-items:center}
+.auto-switch input{accent-color:#608147;padding:0;width:15px;height:15px;margin:0}
+.plugin-list p.next{color:#5f7257;font-size:11px;margin:7px 0 0}
+.plugin-list p.next b{font-weight:550;font-variant-numeric:tabular-nums}
+details.runs{margin-top:10px;border-top:1px dashed #e6ebdf;padding-top:8px}
+details.runs summary{cursor:pointer;font-size:11px;color:#718064;list-style:none;display:flex;align-items:center;gap:5px;user-select:none}
+details.runs summary::-webkit-details-marker{display:none}
+details.runs summary svg{transition:transform .15s;color:#9aa795}
+details.runs[open] summary svg{transform:rotate(180deg)}
+.run-list{margin:8px 0 0;padding:0;list-style:none}
+.run-list li{display:flex;align-items:center;gap:8px;padding:4px 0;font-size:11px;color:#66755f;border-bottom:1px dotted #eef1e8;min-width:0}
+.run-list li:last-child{border-bottom:0}
+.run-list time{font-variant-numeric:tabular-nums;color:#829084;flex-shrink:0}
+.run-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.run-dot.ok{background:#63804b}
+.run-dot.fail{background:#a34e41}
+.run-dot.run{background:#c2a24a}
+.run-manual{font-size:9px;background:#eef2e7;color:#7b8b74;border-radius:4px;padding:0 5px;flex-shrink:0}
+.run-session{margin-left:auto;color:#93a08b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.field-hint{font-size:10px;color:#9aa795;margin-top:2px}
+.preview-line{font-size:11px;color:#5f7257;background:#eff4e7;border-radius:7px;padding:9px 12px;display:flex;align-items:center;gap:8px}
+.preview-line svg{flex-shrink:0;color:#6c8b58}
+.wd-row{display:flex;gap:5px}
+.wd-item{flex:1;display:flex;align-items:center;justify-content:center;gap:4px;border:1px solid var(--border);border-radius:7px;padding:7px 0;font-size:11px;color:#5c6b53;cursor:pointer;background:#fbfcf9;position:relative}
+.wd-item:has(input:checked){background:#e4eddb;border-color:#acbf98;color:#3c5a41;font-weight:550}
+.wd-item input{position:absolute;opacity:0;width:0;height:0}
+.pair-row{display:flex;gap:9px}
+.pair-row label{flex:1}
+.form-label-inline{font-size:11px;color:#718064;margin-bottom:5px}

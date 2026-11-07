@@ -1,7 +1,7 @@
 //! Durable jobs, scoped agent messaging and application-lifetime scheduling.
 mod terminals;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Days, Local, NaiveDate, TimeZone, Utc};
 use harness_contracts::*;
 use harness_platform::ShellService;
 use harness_runtime::{
@@ -20,6 +20,9 @@ pub use terminals::{PlatformWorld, PtyWorld, TerminalSession};
 use terminals::{TERMINAL_LIMIT, TerminalEntry};
 use tokio_util::sync::CancellationToken;
 const SCHEDULE_KEY: &str = "orchestration.schedules.v1";
+const AUTOMATION_KEY: &str = "orchestration.automations.v1";
+const AUTOMATION_LIMIT: usize = 1000;
+const AUTOMATION_RUNS_KEEP: usize = 20;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Schedule {
@@ -30,6 +33,67 @@ pub struct Schedule {
     pub task: String,
     pub model_id: String,
     pub status: String,
+}
+/// 自动化任务的周期类型；单次固定时刻，其余按本地日历循环。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AutomationKind {
+    Once,
+    Daily,
+    Weekly,
+    Monthly,
+    Yearly,
+}
+/// 自动化任务的一次触发记录；内嵌于 [`Automation`]，仅保留最近若干条。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationRun {
+    pub id: String,
+    pub scheduled_at: Option<String>,
+    pub triggered_at: String,
+    pub trigger: String,
+    pub status: String,
+    pub session_id: String,
+    pub error: Option<String>,
+}
+/// 用户通过桌面面板创建与管理的周期自动化任务；执行复用 [`run_owned`] 回合通道。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Automation {
+    pub id: String,
+    pub title: String,
+    pub prompt: String,
+    pub session_id: Option<String>,
+    pub workspace_id: String,
+    pub kind: AutomationKind,
+    pub at: Option<String>,
+    pub time: Option<String>,
+    pub weekdays: Option<Vec<u8>>,
+    pub month_day: Option<u8>,
+    pub month: Option<u8>,
+    pub enabled: bool,
+    pub status: String,
+    pub next_run_at: Option<String>,
+    pub last_run_at: Option<String>,
+    pub run_count: u64,
+    pub runs: Vec<AutomationRun>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+/// 创建/编辑自动化任务的参数；`at` 为 RFC3339（once），`time` 为 "HH:MM"（其余周期）。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationParams {
+    pub workspace_id: String,
+    pub title: Option<String>,
+    pub prompt: String,
+    pub session_id: Option<String>,
+    pub kind: AutomationKind,
+    pub at: Option<String>,
+    pub time: Option<String>,
+    pub weekdays: Option<Vec<u8>>,
+    pub month_day: Option<u8>,
+    pub month: Option<u8>,
 }
 /// Merged human view of one background shell job, derived from durable session events.
 #[derive(Clone, Serialize)]
@@ -93,6 +157,162 @@ impl Installed {
     pub async fn delete_schedule(&self, session: &str, id: &str) -> AppResult<()> {
         let r = self.runtime()?;
         self.state.delete_schedule(&r, session, id).await
+    }
+    /// Human panel: automations of one workspace, newest first.
+    pub async fn automation_list(&self, workspace: &str) -> AppResult<Vec<Automation>> {
+        self.runtime()?;
+        Ok(self
+            .state
+            .automations()
+            .await?
+            .into_iter()
+            .filter(|a| a.workspace_id == workspace)
+            .collect())
+    }
+    /// Human panel: create an automation from validated panel input.
+    pub async fn automation_create(&self, p: AutomationParams) -> AppResult<Automation> {
+        let r = self.runtime()?;
+        validate_automation(&p)?;
+        let _lock = self.state.schedules_lock.lock().await;
+        let mut all = self.state.automations().await?;
+        if all.len() >= AUTOMATION_LIMIT {
+            return Err(AppError::new("AUTOMATION_LIMIT", "自动化任务最多1000项"));
+        }
+        self.state
+            .check_automation_session(&r, p.session_id.as_deref(), &p.workspace_id)
+            .await?;
+        let at_utc = p
+            .kind
+            .eq(&AutomationKind::Once)
+            .then(|| automation_at_utc(&p));
+        let mut a = Automation {
+            id: new_id(),
+            title: p.title.unwrap_or_default(),
+            prompt: p.prompt,
+            session_id: p.session_id,
+            workspace_id: p.workspace_id,
+            kind: p.kind,
+            at: at_utc,
+            time: p.time,
+            weekdays: p.weekdays,
+            month_day: p.month_day,
+            month: p.month,
+            enabled: true,
+            status: "active".into(),
+            next_run_at: None,
+            last_run_at: None,
+            run_count: 0,
+            runs: Vec::new(),
+            created_at: now(),
+            updated_at: now(),
+        };
+        a.next_run_at = automation_next_run_at(&Local, &a, Local::now()).map(|t| t.to_rfc3339());
+        all.insert(0, a.clone());
+        self.state.save_automations(&all).await?;
+        Ok(a)
+    }
+    /// Human panel: replace fields of one automation and recompute the next run.
+    pub async fn automation_update(&self, id: &str, p: AutomationParams) -> AppResult<Automation> {
+        let r = self.runtime()?;
+        validate_automation(&p)?;
+        let _lock = self.state.schedules_lock.lock().await;
+        let mut all = self.state.automations().await?;
+        let Some(a) = all.iter_mut().find(|x| x.id == id) else {
+            return Err(AppError::new("NOT_FOUND", "自动化任务不存在"));
+        };
+        self.state
+            .check_automation_session(&r, p.session_id.as_deref(), &p.workspace_id)
+            .await?;
+        let at_utc = p
+            .kind
+            .eq(&AutomationKind::Once)
+            .then(|| automation_at_utc(&p));
+        a.title = p.title.unwrap_or_default();
+        a.prompt = p.prompt;
+        a.session_id = p.session_id;
+        a.kind = p.kind;
+        a.at = at_utc;
+        a.time = p.time;
+        a.weekdays = p.weekdays;
+        a.month_day = p.month_day;
+        a.month = p.month;
+        a.updated_at = now();
+        a.next_run_at = automation_next_run_at(&Local, a, Local::now()).map(|t| t.to_rfc3339());
+        // 编辑把未来触发点带回来的任务复活；paused 保持暂停，等用户手动启用。
+        if a.status != "paused" {
+            a.status = "active".into();
+        }
+        let updated = a.clone();
+        self.state.save_automations(&all).await?;
+        Ok(updated)
+    }
+    /// Human panel: remove one automation.
+    pub async fn automation_delete(&self, id: &str) -> AppResult<()> {
+        let _lock = self.state.schedules_lock.lock().await;
+        let mut all = self.state.automations().await?;
+        let before = all.len();
+        all.retain(|x| x.id != id);
+        if all.len() == before {
+            return Err(AppError::new("NOT_FOUND", "自动化任务不存在"));
+        }
+        self.state.save_automations(&all).await
+    }
+    /// Human panel: pause or resume; resuming recomputes an overdue next run instead of catching up.
+    pub async fn automation_set_enabled(&self, id: &str, enabled: bool) -> AppResult<Automation> {
+        let _lock = self.state.schedules_lock.lock().await;
+        let mut all = self.state.automations().await?;
+        let Some(a) = all.iter_mut().find(|x| x.id == id) else {
+            return Err(AppError::new("NOT_FOUND", "自动化任务不存在"));
+        };
+        a.enabled = enabled;
+        a.updated_at = now();
+        if !enabled {
+            a.status = "paused".into();
+        } else if a.status == "paused" {
+            a.status = "active".into();
+            a.next_run_at = automation_next_run_at(&Local, a, Local::now()).map(|t| t.to_rfc3339());
+        }
+        let updated = a.clone();
+        self.state.save_automations(&all).await?;
+        Ok(updated)
+    }
+    /// Human panel: dispatch one manual run immediately; never moves the planned schedule.
+    pub async fn automation_run_now(&self, id: &str) -> AppResult<Automation> {
+        let r = self.runtime()?;
+        let _lock = self.state.schedules_lock.lock().await;
+        let mut all = self.state.automations().await?;
+        let Some(a) = all.iter_mut().find(|x| x.id == id) else {
+            return Err(AppError::new("NOT_FOUND", "自动化任务不存在"));
+        };
+        let provider = automation_provider_of(&r).await?;
+        let session_id = self.state.automation_session(&r, a).await?;
+        let run = AutomationRun {
+            id: new_id(),
+            scheduled_at: None,
+            triggered_at: now(),
+            trigger: "manual".into(),
+            status: "running".into(),
+            session_id: session_id.clone(),
+            error: None,
+        };
+        a.runs.insert(0, run.clone());
+        a.runs.truncate(AUTOMATION_RUNS_KEEP);
+        a.run_count += 1;
+        a.last_run_at = Some(now());
+        let updated = a.clone();
+        self.state.save_automations(&all).await?;
+        drop(_lock);
+        let automation_id = updated.id.clone();
+        let run_id = run.id.clone();
+        let state = self.state.clone();
+        let rt = r.clone();
+        let stop = self.state.stop.child_token();
+        tokio::spawn(async move {
+            state
+                .dispatch_automation(rt, automation_id, run_id, session_id, provider, stop)
+                .await;
+        });
+        Ok(updated)
     }
 }
 impl Drop for Installed {
@@ -170,6 +390,15 @@ pub fn install_with(runtime: Arc<Runtime>, world: Arc<dyn PtyWorld>) -> AppResul
             {
                 let _ = r.append(&s.id, "schedule.error", json!({"error":e})).await;
             }
+            if let Err(e) = ticker.tick_automations(first).await
+                && let Some(r) = ticker.runtime.upgrade()
+                && let Ok(sessions) = r.store.sessions(None).await
+                && let Some(s) = sessions.first()
+            {
+                let _ = r
+                    .append(&s.id, "automation.error", json!({"error":e}))
+                    .await;
+            }
             first = false;
             tokio::select! {_=ticker.stop.cancelled()=>break,_=tokio::time::sleep(Duration::from_millis(250))=>{}}
         }
@@ -197,6 +426,176 @@ fn scope(runtime: &Runtime, parent: &str, target: &str) -> AppResult<()> {
     } else {
         Err(AppError::new("AGENT_SCOPE", "只能访问本会话创建的子代理"))
     }
+}
+fn parse_hhmm(s: &str) -> Option<(u32, u32)> {
+    let (h, m) = s.split_once(':')?;
+    let (h, m) = (h.trim().parse::<u32>().ok()?, m.trim().parse::<u32>().ok()?);
+    (h < 24 && m < 60).then_some((h, m))
+}
+/// 在指定时区构造 `date` 当天 `HH:MM` 的时刻；DST 缺失该时刻时返回 None（视为该日无此时刻）。
+fn tz_at<Tz: TimeZone>(tz: &Tz, date: NaiveDate, h: u32, m: u32) -> Option<DateTime<Tz>> {
+    tz.from_local_datetime(&date.and_hms_opt(h, m, 0)?).single()
+}
+/// 计算自动化任务自 `from`（按 `tz` 本地日历解释）起的下一次触发时刻（UTC）。
+///
+/// 缺日跳过：短月无 `month_day`、平年无 2/29 时继续搜索后续月份；单次任务直接返回其固定时刻。
+pub fn automation_next_run_at<Tz: TimeZone>(
+    tz: &Tz,
+    a: &Automation,
+    from: DateTime<Tz>,
+) -> Option<DateTime<Utc>> {
+    match a.kind {
+        AutomationKind::Once => {
+            a.at.as_deref()
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|t| t.with_timezone(&Utc))
+        }
+        AutomationKind::Daily => {
+            let (h, m) = parse_hhmm(a.time.as_deref()?)?;
+            for days in 0..=1u64 {
+                let date = from.date_naive().checked_add_days(Days::new(days))?;
+                if let Some(t) = tz_at(tz, date, h, m)
+                    && t > from
+                {
+                    return Some(t.with_timezone(&Utc));
+                }
+            }
+            None
+        }
+        AutomationKind::Weekly => {
+            let (h, m) = parse_hhmm(a.time.as_deref()?)?;
+            let weekdays = a.weekdays.as_ref()?;
+            for days in 0..8u64 {
+                let date = from.date_naive().checked_add_days(Days::new(days))?;
+                // number_from_monday: 1=周一..7=周日，与 weekdays 存储一致。
+                if !weekdays.contains(&(date.weekday().number_from_monday() as u8)) {
+                    continue;
+                }
+                if let Some(t) = tz_at(tz, date, h, m)
+                    && t > from
+                {
+                    return Some(t.with_timezone(&Utc));
+                }
+            }
+            None
+        }
+        AutomationKind::Monthly => {
+            let (h, m) = parse_hhmm(a.time.as_deref()?)?;
+            let day = a.month_day?;
+            let (mut year, mut month) = (from.year(), from.month());
+            for _ in 0..48 {
+                if let Some(date) = NaiveDate::from_ymd_opt(year, month, day as u32)
+                    && let Some(t) = tz_at(tz, date, h, m)
+                    && t > from
+                {
+                    return Some(t.with_timezone(&Utc));
+                }
+                if month == 12 {
+                    year += 1;
+                    month = 1;
+                } else {
+                    month += 1;
+                }
+            }
+            None
+        }
+        AutomationKind::Yearly => {
+            let (h, m) = parse_hhmm(a.time.as_deref()?)?;
+            let (month, day) = (a.month?, a.month_day?);
+            let (mut year, mut mon) = (from.year(), from.month());
+            for _ in 0..120 {
+                if mon == month as u32
+                    && let Some(date) = NaiveDate::from_ymd_opt(year, mon, day as u32)
+                    && let Some(t) = tz_at(tz, date, h, m)
+                    && t > from
+                {
+                    return Some(t.with_timezone(&Utc));
+                }
+                if mon == 12 {
+                    year += 1;
+                    mon = 1;
+                } else {
+                    mon += 1;
+                }
+            }
+            None
+        }
+    }
+}
+/// 校验创建/编辑参数；once 的时刻必须在未来，周期字段按类型域检查。
+fn validate_automation(p: &AutomationParams) -> AppResult<()> {
+    if p.prompt.trim().is_empty() || p.prompt.len() > 1024 * 1024 {
+        return Err(AppError::new(
+            "AUTOMATION_ARGUMENTS",
+            "任务内容不能为空且不超过1MiB",
+        ));
+    }
+    if p.title.as_deref().is_some_and(|t| t.len() > 512) {
+        return Err(AppError::new("AUTOMATION_ARGUMENTS", "标题不得超过512字节"));
+    }
+    match p.kind {
+        AutomationKind::Once => {
+            let at =
+                p.at.as_deref()
+                    .ok_or_else(|| AppError::new("AUTOMATION_ARGUMENTS", "单次任务缺少执行时间"))?;
+            let parsed = DateTime::parse_from_rfc3339(at).map_err(|e| {
+                AppError::new("AUTOMATION_ARGUMENTS", format!("执行时间格式无效: {e}"))
+            })?;
+            if parsed <= Utc::now() {
+                return Err(AppError::new("AUTOMATION_TIME", "执行时间必须在未来"));
+            }
+        }
+        AutomationKind::Daily => {
+            parse_hhmm(p.time.as_deref().unwrap_or_default()).ok_or_else(|| {
+                AppError::new("AUTOMATION_ARGUMENTS", "时间必须为合法的 24 小时制 HH:MM")
+            })?;
+        }
+        AutomationKind::Weekly => {
+            let days = p.weekdays.as_deref().unwrap_or_default();
+            if days.is_empty() || days.iter().any(|d| !(1..=7).contains(d)) {
+                return Err(AppError::new(
+                    "AUTOMATION_ARGUMENTS",
+                    "周几必须为 1（周一）到 7（周日）的非空列表",
+                ));
+            }
+        }
+        AutomationKind::Monthly => {
+            if !p.month_day.is_some_and(|d| (1..=31).contains(&d)) {
+                return Err(AppError::new("AUTOMATION_ARGUMENTS", "几号必须为 1-31"));
+            }
+        }
+        AutomationKind::Yearly => {
+            if !p.month.is_some_and(|m| (1..=12).contains(&m))
+                || !p.month_day.is_some_and(|d| (1..=31).contains(&d))
+            {
+                return Err(AppError::new(
+                    "AUTOMATION_ARGUMENTS",
+                    "年份日期必须为合法的月份（1-12）与几号（1-31）",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+/// Resolve the execution provider: host default selection first, then the first enabled model.
+async fn automation_provider_of(r: &Runtime) -> AppResult<Arc<dyn ModelProvider>> {
+    if let Some(v) = r.store.get("app.default_selection").await?
+        && let Ok(sel) = serde_json::from_value::<DefaultSelection>(v)
+    {
+        return r.models.build_model_with(&sel.model_id, sel.effort).await;
+    }
+    let models = r.models.list_models().await?;
+    let first = models
+        .iter()
+        .find(|m| m.enabled)
+        .ok_or_else(|| AppError::new("AUTOMATION_MODEL", "没有已启用的模型"))?;
+    r.models.build_model(&first.id).await
+}
+/// 归一化 `at` 为 UTC RFC3339 存储。
+fn automation_at_utc(p: &AutomationParams) -> String {
+    DateTime::parse_from_rfc3339(p.at.as_deref().unwrap_or_default())
+        .map(|t| t.with_timezone(&Utc).to_rfc3339())
+        .unwrap_or_default()
 }
 #[async_trait]
 impl ExternalTool for Tool {
@@ -773,6 +1172,256 @@ impl State {
             .upgrade()
             .ok_or_else(|| AppError::new("SHUTDOWN", "应用已关闭"))?;
         r.store.set(SCHEDULE_KEY, &json!(s)).await
+    }
+    async fn automations(&self) -> AppResult<Vec<Automation>> {
+        let r = self
+            .runtime
+            .upgrade()
+            .ok_or_else(|| AppError::new("SHUTDOWN", "应用已关闭"))?;
+        serde_json::from_value(r.store.get(AUTOMATION_KEY).await?.unwrap_or(json!([])))
+            .map_err(error)
+    }
+    async fn save_automations(&self, a: &[Automation]) -> AppResult<()> {
+        let r = self
+            .runtime
+            .upgrade()
+            .ok_or_else(|| AppError::new("SHUTDOWN", "应用已关闭"))?;
+        r.store.set(AUTOMATION_KEY, &json!(a)).await
+    }
+    /// Bound target session must exist; unbound automations get a fresh session in their workspace.
+    async fn automation_session(&self, r: &Runtime, a: &Automation) -> AppResult<String> {
+        match a.session_id.as_deref() {
+            Some(sid) => {
+                r.store.session(sid).await?;
+                Ok(sid.to_owned())
+            }
+            None => {
+                let title = if a.title.trim().is_empty() {
+                    "自动化任务".to_owned()
+                } else {
+                    a.title.clone()
+                };
+                Ok(r.store.create_session(&a.workspace_id, &title).await?.id)
+            }
+        }
+    }
+    /// Creation/update guard: a bound session must exist and belong to the automation's workspace.
+    async fn check_automation_session(
+        &self,
+        r: &Runtime,
+        session_id: Option<&str>,
+        workspace: &str,
+    ) -> AppResult<()> {
+        let Some(sid) = session_id else {
+            return Ok(());
+        };
+        let s = r.store.session(sid).await?;
+        if s.workspace_id != workspace {
+            return Err(AppError::new(
+                "AUTOMATION_SESSION",
+                "绑定的会话必须属于当前工作区",
+            ));
+        }
+        Ok(())
+    }
+    /// Run one dispatched automation turn in the target session, then settle its run record.
+    async fn dispatch_automation(
+        self: Arc<Self>,
+        r: Arc<Runtime>,
+        automation_id: String,
+        run_id: String,
+        session_id: String,
+        provider: Arc<dyn ModelProvider>,
+        stop: CancellationToken,
+    ) {
+        let (title, prompt) = {
+            let _lock = self.schedules_lock.lock().await;
+            match self.automations().await.ok().and_then(|all| {
+                all.iter()
+                    .find(|x| x.id == automation_id)
+                    .map(|a| (a.title.clone(), a.prompt.clone()))
+            }) {
+                Some(v) => v,
+                None => return,
+            }
+        };
+        let _ = r
+            .append(
+                &session_id,
+                "automation.triggered",
+                json!({"id":automation_id,"runId":run_id,"title":title}),
+            )
+            .await;
+        let result = run_owned(r.clone(), session_id.clone(), prompt, provider, stop).await;
+        let _ = self
+            .settle_automation_run(&r, &automation_id, &run_id, &session_id, result)
+            .await;
+    }
+    /// Write back the terminal state of one run; once-kind automations end, periodic ones continue.
+    async fn settle_automation_run(
+        &self,
+        r: &Runtime,
+        automation_id: &str,
+        run_id: &str,
+        session_id: &str,
+        result: AppResult<()>,
+    ) -> AppResult<()> {
+        let _lock = self.schedules_lock.lock().await;
+        let mut all = self.automations().await?;
+        let Some(a) = all.iter_mut().find(|x| x.id == automation_id) else {
+            return Ok(());
+        };
+        let (status, err) = match &result {
+            Ok(()) => ("succeeded", None),
+            Err(e) => ("failed", Some(e.to_string())),
+        };
+        if let Some(run) = a.runs.iter_mut().find(|x| x.id == run_id) {
+            run.status = status.into();
+            run.error = err.clone();
+        }
+        a.status = match (a.kind, result.is_ok()) {
+            (AutomationKind::Once, true) => "completed".into(),
+            (AutomationKind::Once, false) => "failed".into(),
+            _ => "active".into(),
+        };
+        let _ = r
+            .append(
+                session_id,
+                "automation.finished",
+                json!({"id":automation_id,"runId":run_id,"status":status,"error":err}),
+            )
+            .await;
+        self.save_automations(&all).await
+    }
+    /// Scheduler pass over automations; mirrors [`Self::tick`] with catch-up never replayed.
+    async fn tick_automations(self: &Arc<Self>, recover: bool) -> AppResult<()> {
+        let _lock = self.schedules_lock.lock().await;
+        let Some(r) = self.runtime.upgrade() else {
+            return Ok(());
+        };
+        let mut all = self.automations().await?;
+        let mut dispatch = Vec::new();
+        for a in &mut all {
+            if recover && a.status == "running" {
+                a.status = "interrupted".into();
+                if let Some(sid) = &a.session_id {
+                    let _ = r
+                        .append(sid, "automation.interrupted", json!({"id":a.id}))
+                        .await;
+                }
+                continue;
+            }
+            if !a.enabled || a.status != "active" {
+                continue;
+            }
+            let due = a
+                .next_run_at
+                .as_deref()
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|t| t.with_timezone(&Utc));
+            let Some(next) = due else {
+                // Missing next run (e.g. legacy data): recompute instead of firing blindly.
+                a.next_run_at =
+                    automation_next_run_at(&Local, a, Local::now()).map(|t| t.to_rfc3339());
+                continue;
+            };
+            if next > Utc::now() {
+                continue;
+            }
+            if recover {
+                // Missed runs are never replayed; one-shot automations end as missed.
+                if a.kind == AutomationKind::Once {
+                    a.status = "missed".into();
+                    if let Some(sid) = &a.session_id {
+                        let _ = r.append(sid, "automation.missed", json!({"id":a.id})).await;
+                    }
+                } else {
+                    a.next_run_at =
+                        automation_next_run_at(&Local, a, Local::now()).map(|t| t.to_rfc3339());
+                }
+                continue;
+            }
+            let scheduled_at = a.next_run_at.clone();
+            // Persist the claim before dispatch so a restart never repeats an ambiguous side effect.
+            if a.kind == AutomationKind::Once {
+                a.status = "running".into();
+            } else {
+                a.next_run_at =
+                    automation_next_run_at(&Local, a, Local::now()).map(|t| t.to_rfc3339());
+            }
+            let provider = match automation_provider_of(&r).await {
+                Err(e) => {
+                    let record_run = a.kind == AutomationKind::Once;
+                    if record_run {
+                        a.status = "failed".into();
+                    }
+                    a.runs.insert(
+                        0,
+                        AutomationRun {
+                            id: new_id(),
+                            scheduled_at,
+                            triggered_at: now(),
+                            trigger: "schedule".into(),
+                            status: "failed".into(),
+                            session_id: a.session_id.clone().unwrap_or_default(),
+                            error: Some(e.to_string()),
+                        },
+                    );
+                    a.runs.truncate(AUTOMATION_RUNS_KEEP);
+                    continue;
+                }
+                Ok(p) => p,
+            };
+            match self.automation_session(&r, a).await {
+                Err(e) => {
+                    if a.kind == AutomationKind::Once {
+                        a.status = "failed".into();
+                    }
+                    a.runs.insert(
+                        0,
+                        AutomationRun {
+                            id: new_id(),
+                            scheduled_at,
+                            triggered_at: now(),
+                            trigger: "schedule".into(),
+                            status: "failed".into(),
+                            session_id: a.session_id.clone().unwrap_or_default(),
+                            error: Some(e.to_string()),
+                        },
+                    );
+                    a.runs.truncate(AUTOMATION_RUNS_KEEP);
+                }
+                Ok(session_id) => {
+                    let run = AutomationRun {
+                        id: new_id(),
+                        scheduled_at,
+                        triggered_at: now(),
+                        trigger: "schedule".into(),
+                        status: "running".into(),
+                        session_id: session_id.clone(),
+                        error: None,
+                    };
+                    let run_id = run.id.clone();
+                    a.runs.insert(0, run);
+                    a.runs.truncate(AUTOMATION_RUNS_KEEP);
+                    a.run_count += 1;
+                    a.last_run_at = Some(now());
+                    dispatch.push((a.id.clone(), run_id, session_id, provider));
+                }
+            }
+        }
+        self.save_automations(&all).await?;
+        for (automation_id, run_id, session_id, provider) in dispatch {
+            let state = self.clone();
+            let rt = r.clone();
+            let stop = self.stop.child_token();
+            tokio::spawn(async move {
+                state
+                    .dispatch_automation(rt, automation_id, run_id, session_id, provider, stop)
+                    .await;
+            });
+        }
+        Ok(())
     }
     async fn tick(self: &Arc<Self>, recover: bool) -> AppResult<()> {
         let _lock = self.schedules_lock.lock().await;

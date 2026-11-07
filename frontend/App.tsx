@@ -1,6 +1,6 @@
 import {Fragment,useEffect,useMemo,useRef,useState,type FormEvent,type ReactNode} from 'react';
 import {open,save} from '@tauri-apps/plugin-dialog';
-import {ArrowUp,Bot,Bookmark,CalendarClock,Check,ChevronDown,FileCode,Folder,FolderOpen,GitCompareArrows,ListTodo,MessageSquare,Paperclip,Plus,Send,Settings2,ShieldCheck,Square,Target,Terminal,Unplug,X,Download} from 'lucide-react';
+import {ArrowUp,Bot,Bookmark,CalendarClock,Check,ChevronDown,FileCode,Folder,FolderOpen,GitCompareArrows,ListTodo,MessageSquare,Paperclip,Plus,Send,Settings2,ShieldCheck,Square,Target,Terminal,Timer,Unplug,X,Download} from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {command,desktop,errorText,send} from './api';
@@ -14,11 +14,12 @@ import {PluginContributionsPanel,PluginThemeHost} from './PluginContributionsPan
 import {PluginResultCards} from './PluginResultCards';
 import {BackgroundTasksPanel,JOB_STATUS,SCHEDULE_STATUS} from './BackgroundTasksPanel';
 import {PlansPanel} from './PlansPanel';
+import {AutomationsPanel} from './AutomationsPanel';
 import {SidePanel} from './SidePanel';
 import {useSidePanel} from './sidePanelStore';
 import type {WorkspaceInfo,SessionInfo,SessionEvent,ModelConfig,ProviderInfo,DefaultSelection,ApprovalRequest,PluginInfo,ArtifactMetadata,PresetInfo} from './types';
 
-type Panel='models'|'presets'|'plugins'|'tasks'|'plans'|null;
+type Panel='models'|'presets'|'plugins'|'tasks'|'plans'|'automations'|null;
 const TERMINAL_STATUS:{[status:string]:string}={running:'运行中',exited:'已退出',terminated:'已终止',interrupted:'已中断'};
 const PLAN_USAGE='用法：/plan <任务描述>，发送后模型制定实施计划并经 plan_write 记录。';
 const GOAL_USAGE='用法：/goal <目标描述>，发送后模型经 goal_write 记录本会话目标。';
@@ -30,6 +31,7 @@ export default function App(){
  const [models,setModels]=useState<ModelConfig[]>([]),[modelId,setModelId]=useState(''),[providers,setProviders]=useState<ProviderInfo[]>([]),[effort,setEffort]=useState<string|null>(null);
  const [presets,setPresets]=useState<PresetInfo[]>([]),[presetId,setPresetId]=useState('');
  const [approvals,setApprovals]=useState<ApprovalRequest[]>([]),[panel,setPanel]=useState<Panel>(null);
+ const [automationCount,setAutomationCount]=useState<number|null>(null);
  const sideOpen=useSidePanel(s=>s.open);
  const [activeIds,setActiveIds]=useState<Set<string>>(()=>new Set());
  const [text,setText]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false),[running,setRunning]=useState<Record<string,boolean>>({});
@@ -48,6 +50,8 @@ export default function App(){
  useEffect(()=>{attachmentEpoch.current++;setAttachments([]);setImporting(false)},[sessionId,workspaceId]);
  // 切换工作区时重置右侧面板（预览路径与视图归属工作区，避免串状态）。
  useEffect(()=>{useSidePanel.getState().reset()},[workspaceId]);
+ // 侧栏「自动化」徽标：跟随工作区拉取任务数，面板增删后经 onChanged 刷新。
+ useEffect(()=>{if(!workspaceId||!desktop()){setAutomationCount(null);return}let alive=true;command<unknown[]>('automation_list',{workspaceId}).then(list=>{if(alive)setAutomationCount(list.length)}).catch(()=>{if(alive)setAutomationCount(null)});return()=>{alive=false}},[workspaceId]);
  const events=useChat(s=>s.events[sessionId]??EMPTY_EVENTS),stream=useChat(s=>s.streams[sessionId]);
  const workspace=workspaces.find(w=>w.id===workspaceId),session=sessions.find(s=>s.id===sessionId);
  const slashToken=commandTokenUnderCursor(text,cursor);
@@ -176,7 +180,7 @@ export default function App(){
    {workspaces.length>1&&<select aria-label="工作区" value={workspaceId} onChange={e=>setWorkspaceId(e.target.value)}>{workspaces.map(w=><option key={w.id} value={w.id}>{basename(w.sourcePath)}</option>)}</select>}
    <div className="section-label">会话 <button aria-label="新建会话" title="新建会话" onClick={newSession} disabled={!workspaceId||sessionBusy}><Plus size={17}/></button></div>
    <nav className="sessions">{sessions.map(s=><button key={s.id} className={`${sessionId===s.id?'active':''}${s.parentId?' child':''}`} title={s.parentId?'子代理会话':undefined} onClick={()=>{setSessionId(s.id);setText('')}}><MessageSquare size={16}/><span>{s.title}</span>{s.parentId&&<em className="subagent-badge">子任务</em>}{(running[s.id]||activeIds.has(s.id))&&<i className="live-dot"/>}</button>)}{!sessions.length&&<p className="muted empty-small">{workspaceId?'还没有会话，点击 + 开始':'打开工作区后，会话将保存在本机。'}</p>}</nav>
-   <div className="sidebar-bottom"><div className="local-badge"><i className="live-dot"/> 本地优先 · 无遥测</div><button onClick={()=>setPanel('plans')}><Target size={17}/>计划与目标</button><button onClick={()=>setPanel('presets')}><Bookmark size={17}/>能力预设</button><button onClick={()=>setPanel('plugins')}><Unplug size={17}/>插件与权限</button><button onClick={()=>setPanel('models')}><Settings2 size={17}/>模型设置 <span className="count">{models.length}</span></button></div>
+   <div className="sidebar-bottom"><div className="local-badge"><i className="live-dot"/> 本地优先 · 无遥测</div><button onClick={()=>setPanel('plans')}><Target size={17}/>计划与目标</button><button onClick={()=>setPanel('presets')}><Bookmark size={17}/>能力预设</button><button onClick={()=>setPanel('automations')}><Timer size={17}/>自动化{automationCount!==null&&<span className="count">{automationCount}</span>}</button><button onClick={()=>setPanel('plugins')}><Unplug size={17}/>插件与权限</button><button onClick={()=>setPanel('models')}><Settings2 size={17}/>模型设置 <span className="count">{models.length}</span></button></div>
   </aside>
   <main className="main"><header className="topbar"><div className="breadcrumb"><Folder size={15}/>{workspace?basename(workspace.sourcePath):'工作台'}<span>/</span><strong>{session?.title??'新的可能，从这里开始'}</strong></div><div className="toolbar"><button className="icon-button" title="导出会话" aria-label="导出会话" disabled={!sessionId} onClick={exportSession}><Download size={17}/></button><button className="soft" aria-expanded={panel==='tasks'} aria-controls="task-popover" onClick={()=>setPanel(p=>p==='tasks'?null:'tasks')} disabled={!sessionId}><ListTodo size={16}/>后台任务{taskCount>0&&<span className="count">{taskCount}</span>}</button><button className="soft" aria-expanded={sideOpen} onClick={()=>useSidePanel.getState().toggle()} disabled={!workspaceId}><GitCompareArrows size={16}/>查看更改</button>{panel==='tasks'&&sessionId&&<BackgroundTasksPanel sessionId={sessionId} onClose={()=>setPanel(null)}/>}</div></header>
    {!desktop()&&<div className="host-banner"><Terminal size={16}/>当前为界面预览，需要桌面宿主才能访问工作区和模型。</div>}
@@ -194,6 +198,7 @@ export default function App(){
   <PluginThemeHost workspaceId={workspaceId} revision={pluginRevision}/>
   {panel==='plugins'&&<PluginPanel workspaceId={workspaceId} sessionId={sessionId} revision={pluginRevision} onChanged={()=>setPluginRevision(v=>v+1)} onClose={()=>setPanel(null)}/>}
   {panel==='plans'&&<PlansPanel currentSessionId={sessionId} onOpenSession={openFromPanel} onClose={()=>setPanel(null)}/>}
+  {panel==='automations'&&<Modal title="自动化任务" onClose={()=>setPanel(null)}><AutomationsPanel workspaceId={workspaceId} sessions={sessions} onChanged={()=>{if(workspaceId)command<unknown[]>('automation_list',{workspaceId}).then(list=>setAutomationCount(list.length)).catch(()=>{})}}/></Modal>}
   {approvals[0]&&<Modal title="操作需要你的批准" onClose={()=>void resolve(approvals[0].id,false)}><div className="approval-heading"><ShieldCheck size={24}/><strong>{approvals[0].tool}</strong></div><p>{approvals[0].reason}</p><pre className="code-block">{printable(approvals[0].arguments)}</pre><p className="muted">会话：{sessions.find(s=>s.id===approvals[0].sessionId)?.title??approvals[0].sessionId}</p><div className="actions"><button onClick={()=>resolve(approvals[0].id,false)}>拒绝</button><button className="primary" onClick={()=>resolve(approvals[0].id,true)}>批准此次操作</button></div></Modal>}
  </div>
 }
