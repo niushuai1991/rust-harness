@@ -398,7 +398,7 @@ pub struct PresetInfo {
     pub broken: Option<String>,
 }
 
-/// 技能目录行：SKILL.md 扫描结果附禁用标记（docs/specs/skills-plan.md）。
+/// 技能目录行：SKILL.md 扫描结果附禁用标记（docs/specs/skills-spec.md）。
 #[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillInfo {

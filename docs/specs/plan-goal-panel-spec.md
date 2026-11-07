@@ -1,10 +1,8 @@
-# 计划/目标管理面板计划
+# 计划/目标管理面板规范
 
-拟制日期：2026-11-06。
-
-状态：计划拟制（2026-11-06），实施记录见文末。
-
-依据：P2 阶段验收项「计划/目标」中，模型工具（`todo_write`/`plan_write`/`goal_write`，免审批，写入 `*.state` 事件）与会话流卡片已随子代理可视化专项交付；能力矩阵与子代理可视化计划均记载「独立管理面板未实现」。经用户确认两个范围决策：**只读查看**（不新增 UI 写入通道）、**全部会话汇总**（跨会话才是独立面板的增量价值）。据此拟制本计划。
+- 日期：2026-11-06（计划拟制）
+- 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
+- 范围：P2「计划/目标」收尾：跨会话只读汇总面板，`plan_overview` 命令与状态演变历史；不做 UI 写入通道。
 
 ## 背景与目标
 
@@ -42,24 +40,9 @@
   - 手动刷新按钮，无自动轮询（状态变化低频，与后台任务面板的 2 秒轮询不同）。
 - `App.tsx`：`Panel` 联合增加 `'plans'`；侧边栏底部新增「计划与目标」入口按钮；条件渲染挂载面板。
 
-## 测试（TDD）
-
-- `crates/harness-storage/tests/plan_states.rs`（新文件，先红后绿）：
-  - 同会话同 kind 多次写入只取最新一条；不同 kind 各取最新；
-  - 无状态事件的会话不出现；排序按会话 `updated_at` 降序；
-  - 附带 `session_title`/`workspace_id` 正确。
-- 前端 `frontend/PlansPanel.test.tsx`（新文件）：分组渲染、todo 完成态、plan/goal Markdown、跳转回调参数、历史懒加载与空态。
-- `frontend/App.test.tsx` 增加 1 项：侧边栏入口打开面板并展示汇总。
-
 ## 边界
 
 - 面板为桌面端专属；CLI/headless/ACP 不透传该视图（事件原样可得）。
+- 面板只读，无 UI 写入通道；跨工作区跳转依赖既有工作区切换 effect，目标会话缺失时回落列表首个会话。
 - 历史懒加载受既有 `session_events` 全量返回约束，超大会话一次性拉取；与重启回放路径一致，可接受。
 - `parent_id` 不参与面板展示（子代理会话以普通会话条目出现，标题区分）。
-
-## 实施记录（2026-11-06）
-
-- TDD：`crates/harness-storage/tests/plan_states.rs` 2 项先红（`latest_states` 方法缺失编译失败）后绿；前端 `PlansPanel.test.tsx` 5 项与 `App.test.tsx` 入口用例 1 项先红后绿（测试自身修正三处：todo 项文本含 `✓ ` 前缀须用 querySelector 断言；当前会话按钮文案为「当前会话」；关闭面板是宿主 `openFromPanel` 的责任，组件只回调 `onOpenSession`）。
-- 全套验证：`cargo fmt --check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test --all-features`（125 项）、`cargo build --all-features`、`npm ci` + `npm test`（51 项）、`npm run build` 通过；`frontend/bindings.ts` 经 `export_bindings` 测试重新导出（新增 `plan_overview` 与 `PlanStateOverview`）。
-- 顺手修复：`harness-orchestration::session_schedules` 未使用变量告警（PR #14 合并遗留），`runtime()?` 调用保留 SHUTDOWN 检查语义。
-- 边界确认：面板只读，无 UI 写入通道；跨工作区跳转依赖既有工作区切换 effect，目标会话缺失时回落列表首个会话；历史懒加载复用既有 `session_events` 命令；`TodoList` 从 `EventCard` 提取为共享导出组件，会话流卡片渲染不变。

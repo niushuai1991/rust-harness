@@ -1,10 +1,10 @@
-# Rust Harness 实施计划
+# Rust Harness 总体规范
 
-设计确认日期：2026-11-03（原文依据）。
+- 日期：2026-11-03（设计确认，原文依据）
+- 状态：现行规范；各阶段能力与验证状态见[能力状态矩阵](../capability-matrix.md)
+- 范围：全局架构、模块职责、安全不变量、交付阶段划分与阶段验收要求。
 
-状态：实施中，部分阶段尚未完成。当前完成情况见 [能力状态矩阵](../capability-matrix.md)。
-
-本文件落实用户于 2026-11-03 确认的设计。参考 deepseek-harness `ce7073d512` 与 OpenIDEA `00e717d8`。
+设计来源参考 deepseek-harness `ce7073d512` 与 OpenIDEA `00e717d8`。
 
 ## 全局约束
 
@@ -17,21 +17,6 @@
 - WASM独立Store、256MiB、5e9 fuel、hook5s/tool60s；权限取声明、授权、工作区策略交集。
 - NSIS简中/英文，后续版本仅提供单一安装包，默认系统已安装WebView2，使用skip模式，不内嵌、下载或安装运行时；升级保留数据。安装权限按2026-11-04用户反馈修订：0.1.1起使用perMachine，在开始安装前请求UAC，以支持受保护目录。
 - 不改用户全局配置，不触碰参考项目。密钥用Windows凭据管理器，遥测关闭。
-
-## 任务 1：共享接口与事件存储
-类型化IPC数据、SQLite迁移/WAL、会话事件、恢复、搜索、导入导出、设置、附件/spill。验证事件排序、重启恢复、未来schema拒绝、失败输入。
-
-## 任务 2：平台、工作副本与Windows隔离
-独立Git/普通文件副本、路径检查、宿主基线、差异预览/冲突/备份应用、进程树和系统沙箱、凭据。验证越界、链接、冲突、真实进程写入边界。
-
-## 任务 3：插件体系
-manifest/API版本/依赖、目录/ZIP安全安装、WIT+Wasmtime、声明式贡献、权限和生命周期、MCP stdio/HTTP。验证崩溃、超限、授权、安装攻击和在途停用。
-
-## 任务 4：Agent循环与能力
-模型SSE、工具流水线、审批、取消、工作区指令与skills、文件/Shell、子代理/jobs/todo/plan/goal、压缩、调度、预设、CLI。验证录制流、完整工具循环、拒绝/取消/恢复。
-
-## 任务 5：桌面、安装与扩展交付
-Tauri IPC/Channel/Specta、聊天/工作区/模型/审批/插件/同步UI、托盘、NSIS单包（系统已有WebView2）、CI、更新边界。P3: SSH/LSP/web/document、headless JSON-RPC/SDK/ACP、市场签名和脚本workflow。
 
 ## 阶段验收
 

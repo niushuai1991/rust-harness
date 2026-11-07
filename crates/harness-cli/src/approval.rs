@@ -1,4 +1,4 @@
-//! CLI 审批策略：auto|ask|never，及 TTY 缺省规则（docs/specs/cli-plan.md）。
+//! CLI 审批策略：auto|ask|never，及 TTY 缺省规则（docs/specs/cli-spec.md）。
 use clap::ValueEnum;
 use harness_contracts::{AppError, AppResult, ApprovalRequest};
 

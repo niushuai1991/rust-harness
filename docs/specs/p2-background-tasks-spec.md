@@ -1,15 +1,17 @@
-# P2 后台任务桌面可视化计划
+# P2 后台任务桌面可视化规范
 
-计划拟制日期：2026-11-06。
+- 日期：2026-11-06（计划拟制）
+- 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
+- 范围：消息流事件卡片 + 会话级后台任务面板 + 宿主查询/操作命令；不改变后台任务的后端语义（审批、工作区锁、事件持久化、重启不重放）。
 
 ## 背景与范围
 
-P2 阶段验收项「后台任务」的后端能力已由 `harness-orchestration` 实现（后台 Shell 的 `background_run/status/cancel`、子代理的 `agent_fork/send/wait`、单次调度的 `schedule_write/list/delete`），并有 7 项单测覆盖。但桌面端存在可见性缺口：
+P2 阶段验收项「后台任务」的后端能力由 `harness-orchestration` 实现（后台 Shell 的 `background_run/status/cancel`、子代理的 `agent_fork/send/wait`、单次调度的 `schedule_write/list/delete`）。桌面端存在可见性缺口：
 
 - `job.started/finished/cancel_requested`、`schedule.*`、`subagent.*` 事件在消息流中不渲染，模型调用后台任务时用户在界面上看不到任何反馈。
 - 没有后台任务管理入口，无法查看运行中的后台 Shell 任务与定时任务，也无法人工取消或删除。
 
-本计划补齐该闭环：消息流事件卡片 + 会话级后台任务面板 + 宿主查询/操作命令。不改变后台任务的后端语义（审批、工作区锁、事件持久化、重启不重放）。
+本规范约定补齐该闭环的界面与宿主接口设计。
 
 ## 设计
 
@@ -51,10 +53,4 @@ P2 阶段验收项「后台任务」的后端能力已由 `harness-orchestration
 
 - 面板与命令均为人工接口，不向模型工具暴露新能力；工具审批策略不变。
 - 事件卡片只读呈现，不承担操作；操作集中在面板。
-- 跨会话任务中心、完成通知、PTY 不在本次范围。
-
-## 验证
-
-- Rust：`harness-orchestration` 新增公共 API 测试（会话作用域、取消归属校验、定时删除事件）；`cargo fmt --check`、`clippy -D warnings`、`test --all-features`、`build --all-features`。
-- 前端：事件卡片渲染测试、面板加载/取消/删除/作用域错误测试；`npm test`、`npm run build`。
-- 绑定：运行 `export_bindings` 测试后 `bindings.ts` 与命令一致。
+- 跨会话任务中心、完成通知、PTY 不在范围。

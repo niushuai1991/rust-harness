@@ -1,4 +1,4 @@
-//! 工作副本改动的 unified diff 渲染（docs/specs/cli-plan.md diff 契约）。
+//! 工作副本改动的 unified diff 渲染（docs/specs/cli-spec.md diff 契约）。
 //! CLI 与桌面端共享同一渲染语义；CLI 专属的着色与交互选择见 harness-cli。
 use harness_contracts::FileChange;
 use similar::TextDiff;

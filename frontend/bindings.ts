@@ -322,7 +322,7 @@ export type SessionInfo = {
 	parentId: string | null,
 };
 
-/**  技能目录行：SKILL.md 扫描结果附禁用标记（docs/specs/skills-plan.md）。 */
+/**  技能目录行：SKILL.md 扫描结果附禁用标记（docs/specs/skills-spec.md）。 */
 export type SkillInfo = {
 	name: string,
 	description?: string | null,

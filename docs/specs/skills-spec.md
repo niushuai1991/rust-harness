@@ -1,12 +1,14 @@
-# Skills（技能）支持计划
+# Skills（技能）支持规范
 
-计划批准日期：2026-11-07。
+- 日期：2026-11-07（计划批准）
+- 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
+- 范围：技能目录（项目级 + 用户级 + 兜底扫描）、frontmatter 解析、catalog 注入系统提示、`$name` 显式提及全文注入、禁用名单落库；CLI 管理子命令/`/skills`/`$` 补全与桌面面板/composer 补全；承接[配置预设分层规范](config-presets-spec.md)列为另行立项的 skills 启停项，并落地斜杠快捷指令当时列为非目标的 codex `$` skill 体系。
 
 ## 背景与范围
 
-当前对技能只有雏形支持：`workspace_context`（`crates/harness-runtime/src/agent.rs`）扫描工作副本内 `SKILL.md` 文件，在系统提示中列一行裸路径「可按需读取的技能：…」。模型不知道每个技能的用途，无法判断何时使用；无用户级技能、无启停管理、无显式触发。配置预设计划（2026-11-07）明确将「skills 启停」列为另行立项项，本计划即该立项；同时落地斜杠指令计划当时列为非目标的 codex `$` skill 体系。
+此前对技能只有雏形支持：`workspace_context`（`crates/harness-runtime/src/agent.rs`）扫描工作副本内 `SKILL.md` 文件，在系统提示中列一行裸路径「可按需读取的技能：…」。模型不知道每个技能的用途，无法判断何时使用；无用户级技能、无启停管理、无显式触发。
 
-本计划交付：
+本规范约定：
 
 - **技能目录与发现**：项目级 `.agents/skills/<name>/SKILL.md` + 用户级 `~/.agents/skills/` + 工作副本内其余任意 `SKILL.md` 兜底扫描（向后兼容 `scripts/p1-desktop-cdp.mjs` fixture 的 `.skills/p1/SKILL.md`）。
 - **catalog 注入**：系统提示注入带 name/description 的技能目录与触发规则文本，模型自主按描述匹配并按需读取。
@@ -15,7 +17,7 @@
 
 设计参考 codex skills 体系（SKILL.md + frontmatter + catalog 注入 + `$` sigil + 宿主全文注入），按本项目体量简化。参考仓库：`D:\code\codex`（`codex-rs/skills`、`codex-rs/ext/skills`）。
 
-不在本次范围（边界）：技能参数占位符（`$ARGUMENTS`）、插件命名空间技能、系统内置技能、Claude commands 迁移管道、token 级预算（仅字符截断）、CLI console 与 ACP 对 `skill.loaded` 事件的显示/透传、`skills.list`/`skills.read` 类专用工具（读取走现有免审批 `read`）。
+不在范围：技能参数占位符（`$ARGUMENTS`）、插件命名空间技能、系统内置技能、Claude commands 迁移管道、token 级预算（仅字符截断）、CLI console 与 ACP 对 `skill.loaded` 事件的显示/透传、`skills.list`/`skills.read` 类专用工具（读取走现有免审批 `read`）。
 
 ## 设计
 
@@ -31,7 +33,7 @@
 
 ### catalog 注入与 workspace_context
 
-- `workspace_context` 签名改为接收现成 catalog 文本（保持纯函数可测）；调用点（`steps()` 每回合开头）先经服务计算再传入。**不改 `context.snapshot` 事件结构**（`data.content` 仍为系统提示全文），化解配置预设计划点名的顾虑。
+- `workspace_context` 签名改为接收现成 catalog 文本（保持纯函数可测）；调用点（`steps()` 每回合开头）先经服务计算再传入。**不改 `context.snapshot` 事件结构**（`data.content` 仍为系统提示全文）。
 - catalog 格式（无启用技能时整段不注入）：
 
   ```
@@ -47,7 +49,7 @@
 - 挂点：回合入口（append `user.message` 处）。扫描 `\$([A-Za-z0-9_-]+)`，仅命中启用技能名单的名字才算提及（`$PATH` 等环境变量因不在名单天然排除）；原文不改写（同 codex）。
 - 命中后 append 新事件 kind=`skill.loaded`，data `{name, path, content}`（SKILL.md 剥离 frontmatter 后的正文，32KiB 字节截断，风格同 AGENTS.md 的 32000 字符；name/description 已在 catalog 与 `<skill>` 标记中，正文不重复携带元数据）；同回合多个提及逐个注入。
 - `project_messages` 新增 `skill.loaded` 分支：转为附加 user 消息 `<skill name="…" path="…">\n全文\n</skill>`，紧随其 user.message 之后。
-- `resolve(root, name)`：按排序取第一同名（简化，不拒绝重名——见风险）。
+- `resolve(root, name)`：按排序取第一同名（简化，不拒绝重名——见边界与风险）。
 
 ### 启停管理（仿 presets.rs 存储模式）
 
@@ -65,7 +67,7 @@
 **桌面（src-tauri + frontend/）**：
 
 - 命令 `skill_list(workspace_id)`（经 workspace root 扫描，settings 叠加启停）、`skill_set_enabled(workspace_id, path, enabled)`（specta 模式同 `preset_list/preset_save`），重新导出 bindings。
-- `frontend/types.ts` 手写镜像 `SkillInfo`；新增 `SkillsPanel`（仿 PresetsPanel 双栏：列表 + 启用开关 + broken 标记 + scope 徽标），Panel 联合类型加 `'skills'`。
+- `frontend/types.ts` 手写镜像 `SkillInfo`；`SkillsPanel`（仿 PresetsPanel 双栏：列表 + 启用开关 + broken 标记 + scope 徽标），Panel 联合类型加 `'skills'`。
 - composer `$` 补全：镜像现有 slash-menu 模式，输入 `$` 弹技能候选（来自 `skill_list`），选中补全 `$name `。
 - `EventCard` 加 `skill.loaded` 分支：一行「已加载技能 {name}」+ 可展开全文；不改 `context.snapshot` 渲染（维持不显示）。
 
@@ -75,10 +77,3 @@
 - `$` 解析按「命中启用技能名单才算提及」白名单式防误报，但仍可能把恰与技能同名的普通文本解析为提及；后果是注入一段技能全文，不丢用户语义。
 - 用户级目录依赖 `USERPROFILE`/`HOME` 环境变量，缺失时静默跳过用户级。
 - `skill.loaded` 为持久事件：会话重放时注入内容随历史重现，与 `user.message` 同生命周期；技能改名/删除后旧会话重放不受影响（事件已含全文）。
-- `scripts/p1-desktop-cdp.mjs` 断言 system 消息含 `SKILL.md` 字样：catalog 行含路径，预期仍通过，实施时运行确认。
-
-## 验证
-
-- TDD 先红后绿：runtime skills 单测（frontmatter 解析矩阵、三源扫描与排序、禁用标记、catalog 渲染与截断、resolve 命中/重名/禁用）；`agent_flow.rs` 集成测试（catalog 注入 system、`$name` 触发 `skill.loaded` 与消息注入、禁用后不注入）；CLI manage/slash/line_editor 各带测试；前端 Vitest（SkillsPanel 列表与启停、composer `$` 补全、EventCard skill.loaded、bindings 导出）。
-- 标准四连：`cargo fmt --check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test --all-features`、`cargo build --all-features`；`npm ci && npm test && npm run build`（worktree 根目录）。
-- 真实模型端到端（catalog 出现与模型自主读技能、`$name` 注入回合）与桌面 UI 抽查留给用户。

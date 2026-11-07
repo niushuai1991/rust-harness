@@ -1,7 +1,7 @@
-# 模型选择方式优化计划（参考 zcode）
+# 模型选择方式优化规范（参考 zcode）
 
-- 文档日期：2026-11-07（计划拟制）
-- 状态：已实施，Rust 与前端测试通过（2026-11-07）；两端交互与真实模型端到端抽查待用户
+- 日期：2026-11-07（计划拟制）
+- 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
 - 范围：CLI `/model`、`/effort` 内联建议面板与切换语义；桌面发送框浮层卡片选择器（搜索、供应商分组、档位滑块、管理模型入口）；默认档位=最高档语义；切换静默持久化与会话流临时切换标记；`/model` 手误不再退出 REPL；`session_compact` 传递档位；`MODEL_NOT_FOUND` 错误列出可用模型。
 
 ## 背景与痛点
@@ -12,7 +12,7 @@
 - 桌面：发送框为 4 个原生 `<select>` 级联（预设/供应商/模型/档位），模型下拉只列当前供应商条目，无搜索、无跨供应商总览；桌面 `/model` 只是打开重型设置面板；`chooseModel` 将档位重置为模型 `effort` 字段（可为空），与 CLI「保留档位」语义不一致。
 - 两端都没有对「切换模型」这一动作的会话内反馈。
 
-参考 zcode 的交互（TUI 内联建议面板 + `/effort` 两步；桌面单按钮分组下拉；`defaultLevel = values.at(-1)`）做对齐，交互形态先经可交互演示页与用户确认。
+参考 zcode 的交互（TUI 内联建议面板 + `/effort` 两步；桌面单按钮分组下拉；`defaultLevel = values.at(-1)`）做对齐。
 
 ## 设计
 
@@ -24,7 +24,7 @@
 
 ### CLI（harness-cli）
 
-- `line_editor` 弹窗泛化：候选从 `&'static SlashSpec` 扩展为 `Candidate::{Slash,Model,Effort}`；首 token 恰为 `/model`、`/effort` 时展示参数面板（大小写不敏感子串过滤 id/名称/供应商），其余行为（命令补全、Esc 驳回、↑↓ 环绕、绝对行号重绘）不变。面板目录由 chat 每轮 `list_models`/`list_providers` 刷新传入（不缓存，目录读取失败退化为纯命令补全）。渲染：`› ` 选中符 + 当前标记 + 模型行供应商右对齐列。
+- `line_editor` 弹窗泛化：候选从 `&'static SlashSpec` 扩展为 `Candidate::{Slash,Model,Effort}`；首 token 恰为 `/model`、`/effort` 时展示参数面板（大小写不敏感子串过滤 id/名称/供应商），其余行为（命令补全、Esc 驳回、↑↓ 环绕、绝对行号重绘）不变。面板目录由 chat 每轮 `list_models`/`list_providers` 刷新传入（不缓存，目录读取失败退化为纯命令补全；本地 SQLite 读取，开销可忽略）。渲染：`› ` 选中符 + 当前标记 + 模型行供应商右对齐列。
 - 键位：输入即过滤；↑↓ 选择；Enter 将缓冲改写为完整命令（`/model <id>`、`/effort <level>`）并提交；Tab 补全并收起面板；Esc 关闭。
 - 新增 `/effort [level]` 命令（注册表、解析、处理）；`/model` 无参列表增加档位列。
 - 切换失败（id 不存在、模型停用、构建失败）只打印错误并继续会话；错误列出可用模型 id。
@@ -35,7 +35,7 @@
 
 - 新组件 `ModelSelect`：单触发按钮（当前模型名 + 档位徽标）+ 浮层卡片——搜索框、按启用供应商分组（内置/自定义标记）的模型列表（`✓` 当前、停用模型灰显标注、键盘 ↑↓/Enter/Esc）、底部「推理档位」滑块区（居中当前档位 + 重置为最高档 + 刻度圆点轨道）、「管理模型」页脚入口（进 ModelPanel）。选模型后卡片保持展开供连续调档；点击当前模型行或 Esc/外部关闭。
 - 发送框改为「能力预设 select（不动）+ ModelSelect」；移除供应商/模型/档位三个原生 select。
-- 桌面 `/model` 改为打开浮层卡片（ModelPanel 仍从侧栏与卡片页脚进入）。
+- 桌面 `/model` 改为打开浮层卡片（ModelPanel 仍从侧栏与卡片页脚进入，入口未减少）。
 - 切换模型后在会话流插入**临时**分隔标记 `.model-note`（React 内存态，不作为会话事件落库，刷新即逝）；不做「已保存」类提示。
 - `session_compact` 增加 `effort` 参数，改用 `build_model_with`，压缩模型与用户当前档位一致；`frontend/bindings.ts` 经 `export_bindings` 再生。
 
@@ -44,27 +44,3 @@
 - 统一 CLI 与桌面的默认选择 KV（`cli.default_model`/`cli.default_effort` 与 `app.default_selection` 各自保留，与 zcode CLI/桌面分离存储一致）。
 - 会话流切换标记落库（zcode 的 `model_change` timeline 事件）；如需回看持久化再立项。
 - 最近使用/常用模型置顶；`provider/model$effort` 直选语法；桌面 `/effort` 斜杠命令。
-
-## 改动清单
-
-- `crates/harness-cli/src/line_editor.rs`：Candidate/ModelRow/EffortRow/PickerContext、过滤函数、popup_mode、Tab/Enter 改写、渲染右对齐。
-- `crates/harness-cli/src/slash.rs`：`/effort` 注册与解析。
-- `crates/harness-cli/src/chat.rs`：切换/档位命令处理、picker_context、prepare_model_switch、/status 增档位。
-- `crates/harness-cli/src/manage.rs`：`cli.default_effort`、normalize_effort、fallback_effort、persist_default_selection、enabled_id_list。
-- `crates/harness-cli/src/run.rs`：档位回落链。
-- `crates/harness-runtime/src/providers.rs`：`build_model_with` 的 MODEL_NOT_FOUND 附启用模型清单。
-- `frontend/ModelSelect.tsx`（新）、`frontend/App.tsx`、`frontend/style.css`、`frontend/bindings.ts`（再生成）。
-- `src-tauri/src/commands.rs`：`session_compact` 增 `effort`。
-- `frontend/App.test.tsx`：模型选择/能力预设/发送档位断言更新 + 新增 6 个浮层卡片用例。
-
-## 验证
-
-- `cargo fmt --check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test --all-features`、`cargo build --all-features` 全部通过。
-- worktree 根 `npm ci` + `npm test`：82 项全绿（含新增浮层卡片、切换标记、/model 打开卡片用例）。
-- 待用户：CLI 真实终端抽查（面板键位、错 id 不退出、重启后默认沿用）；桌面浮层卡片与切换标记抽查；真实模型回合。
-
-## 风险
-
-- `line_editor` 为 PR #17 核心文件，弹窗泛化通过既有斜杠补全测试全数保留验证；真实 PTY 下的渲染只能靠 CI（开发机 ConPTY 客户端失效）。
-- CLI 每轮循环多一次 `list_models`（本地 SQLite，开销可忽略）。
-- 桌面 `/model` 行为变化（原开设置面板），ModelPanel 入口未减少。

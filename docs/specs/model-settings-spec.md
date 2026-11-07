@@ -1,8 +1,8 @@
-# 模型设置：厂商→模型两级选择与 effort 档位计划
+# 模型设置：厂商→模型两级选择与 effort 档位规范
 
-- 文档日期：2026-11-06（计划批准）
-- 状态：已实施，Rust 与前端测试通过（2026-11-06）；桌面 UI 与真实模型端到端抽查待用户
-- 范围：模型设置两级结构（供应商→模型）、内置供应商与内置模型目录、reasoning effort 档位、按 API 自动检测模型列表、发送框级联选择、卸载"清理用户数据"勾选框修复。
+- 日期：2026-11-06（计划批准）
+- 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
+- 范围：模型设置两级结构（供应商→模型）、内置供应商与内置模型目录、reasoning effort 档位、按 API 自动检测模型列表、发送框级联选择、卸载"清理用户数据"勾选行为。
 
 ## 背景与目标
 
@@ -16,6 +16,8 @@
 4. 模型可 API 自动检测或手动录入；自定义供应商/模型支持增删改与启停。
 5. effort 按模型声明档位，按协议映射请求参数。
 6. 模型设置随升级保留；卸载时按"清理用户数据"勾选决定是否保留。
+
+本规范替代[多协议接入规范](multi-protocol-spec.md)中"模型标识手动录入"的单层模型形态。
 
 ## 设计：两层目录 + 个人覆盖
 
@@ -59,14 +61,7 @@
 
 ### 卸载行为
 
-核实结论：Tauri 2.12 的 NSIS 卸载确认页**无条件提供**"Delete app data"复选框（模板变量 `$DeleteAppDataCheckboxState`，与升级模式变量 `$UpdateMode` 一并由模板定义），无需任何配置字段——`deleteAppDataOnUninstall` 是 Tauri 3 的字段，在本项目锁定的 tauri-build 2.7.4 与 @tauri-apps/cli 2.12.4 双侧 schema 中均不存在，写入会导致构建失败。勾选且非升级模式时，模板先删除 `$APPDATA\BUNDLEID`/`$LOCALAPPDATA\BUNDLEID`，既有 `nsis-hooks.nsh` 借用同一勾选状态执行 `--purge-local-data`（删除 `%LOCALAPPDATA%\RustHarness` 与系统凭据）并跳过模板的递归删除；不勾选则全部保留。模型/供应商设置存于 SQLite 与系统凭据管理器，升级天然保留。
-
-## 测试与验证
-
-- Rust：契约旧 JSON 兼容与档位 round-trip；内置目录与档位；覆盖层合并与内置供应商仅允许启停类变更；合成模型字段/停用过滤/拒改；`save_model` effort 校验；`apply_effort`/`require_credential` 纯函数；三协议 effort 编码；CLI `--effort` 转发与拒绝（本地 SSE mock）。
-- 前端 vitest：ModelPanel 内置徽标/启停写入覆盖层/内置模型只读卡/档位多选与默认档位/API 获取填充/删除保护/复制清密钥；App 供应商→模型→档位级联、禁用模型过滤、`default_selection_save` 持久化与启动恢复、无档位隐藏 effort。
-- 全量门禁：`cargo fmt --check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test --all-features`、`cargo build --all-features`、`npm ci && npm test`。
-- CLI 冒烟：独立 `RUST_HARNESS_DATA_DIR` 验证 `models list`（含 builtin 条目）、`run --effort`。
+Tauri 2.12 的 NSIS 卸载确认页**无条件提供**"Delete app data"复选框（模板变量 `$DeleteAppDataCheckboxState`，与升级模式变量 `$UpdateMode` 一并由模板定义），无需任何配置字段——`deleteAppDataOnUninstall` 是 Tauri 3 的字段，在本项目锁定的 tauri-build 2.7.4 与 @tauri-apps/cli 2.12.4 双侧 schema 中均不存在，写入会导致构建失败。勾选且非升级模式时，模板先删除 `$APPDATA\BUNDLEID`/`$LOCALAPPDATA\BUNDLEID`，既有 `nsis-hooks.nsh` 借用同一勾选状态执行 `--purge-local-data`（删除 `%LOCALAPPDATA%\RustHarness` 与系统凭据）并跳过模板的递归删除；不勾选则全部保留。模型/供应商设置存于 SQLite 与系统凭据管理器，升级天然保留。
 
 ## 边界与风险
 

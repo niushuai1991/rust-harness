@@ -48,9 +48,9 @@ Rust / Tauri 2 宿主，React 19 界面，SQLite 事件存储。所有模型改�
 
 | 文档 | 内容 |
 |---|---|
-| [规格文档索引](docs/spec-index.md) | 全部设计规范与实施计划入口 |
+| [规格文档索引](docs/spec-index.md) | 全部设计规范入口 |
 | [能力状态矩阵](docs/capability-matrix.md) | 各能力的实现与验证状态 |
-| [总体实施计划](docs/specs/implementation-plan.md) | 全局架构、模块职责与阶段规划 |
+| [总体规范](docs/specs/overall-spec.md) | 全局架构、模块职责与阶段规划 |
 | [三协议交付说明](docs/multi-protocol-delivery.md) | 供应商与协议配置、连接测试细节 |
 
 ### CLI 与 SDK
