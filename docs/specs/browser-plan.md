@@ -60,7 +60,7 @@ Agent 会话
 - Ruling: 不自动下载浏览器；未在标准路径找到 Edge/Chrome 时返回 `BROWSER_NOT_FOUND` 并提示可用 `RUST_HARNESS_BROWSER_EXECUTABLE` 指定。
 - TDD：单元测试 8 项（URL 白名单、候选路径、版本子目录 stub 解析、命令契约）先红后绿；工具链路 2 项（审批通过后触达注入的假后端、拒绝不触达）；集成测试 1 项经本地 HTTP 页面驱动真实 Edge headless 走完全链路（无浏览器环境打印原因跳过）。
 - 全套验证：`cargo fmt --check`、`cargo clippy`（harness-browser 全目标零警告）、`cargo test --all-features`、`cargo build --all-features` 通过；分支 rebase 到 main（LSP 合并后）重新验证。
-- 真实模型端到端（SQLite 快照独立数据目录 + 凭据管理器复用，glm-5.3-flash，`--approval auto`）：模型自主完成 navigate→snapshot→type(张三)→click→evaluate，读到"你好，张三"并报告，turn completed。记录见[执行进度](../progress.md)。
+- 真实模型端到端（SQLite 快照独立数据目录 + 凭据管理器复用，glm-5.3-flash，`--approval auto`）：模型自主完成 navigate→snapshot→type(张三)→click→evaluate，读到"你好，张三"并报告，turn completed。
 - 边界：CI 无浏览器环境时集成测试跳过（不失败）；桌面可视面板、CLI 调试子命令、多标签页管理未实现，协议层（命令契约 + 后端 trait）为其留位。
 
 ## 验收标准
