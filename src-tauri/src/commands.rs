@@ -35,6 +35,29 @@ pub async fn workspace_diff(
         .await
         .map_err(error)?
 }
+/// 右侧面板懒加载的单文件 unified diff（unified 为 None 表示二进制或超限）。
+#[tauri::command]
+#[specta::specta]
+pub async fn workspace_file_diff(
+    state: Backend<'_>,
+    workspace_id: String,
+    path: String,
+) -> AppResult<WorkspaceFileDiff> {
+    let manager = state.workspaces.clone();
+    tokio::task::spawn_blocking(move || manager.diff_view(&workspace_id, &path))
+        .await
+        .map_err(error)?
+}
+/// 右侧面板的文件预览（32KiB 截断 + 二进制占位）。
+#[tauri::command]
+#[specta::specta]
+pub async fn workspace_file_preview(
+    state: Backend<'_>,
+    workspace_id: String,
+    path: String,
+) -> AppResult<WorkspaceFilePreview> {
+    state.inner().workspace_file_preview(&workspace_id, &path)
+}
 #[tauri::command]
 #[specta::specta]
 pub async fn workspace_apply(
@@ -438,6 +461,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         workspace_list,
         workspace_open,
         workspace_diff,
+        workspace_file_diff,
+        workspace_file_preview,
         workspace_apply,
         workspace_refresh,
         session_list,

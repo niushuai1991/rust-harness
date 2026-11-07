@@ -217,3 +217,56 @@ fn junction_components_are_rejected_before_host_operations() {
     assert_eq!(fs::read_to_string(source.join("a.txt")).unwrap(), "initial");
     fs::remove_dir(root.join("junction")).unwrap();
 }
+
+#[test]
+fn diff_view_renders_unified_diff_per_file() {
+    let (_temp, source, manager) = fixture();
+    let info = manager.create(&source).unwrap();
+    let replica = std::path::Path::new(&info.replica_path);
+    write_file(
+        replica,
+        "a.txt",
+        "edited
+more
+",
+    )
+    .unwrap();
+    write_file(
+        replica,
+        "b.txt",
+        "new file
+",
+    )
+    .unwrap();
+    // modified：unified diff 带文件头与增删标记
+    let view = manager.diff_view(&info.id, "a.txt").unwrap();
+    assert_eq!(view.path, "a.txt");
+    let unified = view.unified.unwrap();
+    assert!(unified.contains("--- a.txt"));
+    assert!(unified.contains("+edited"));
+    // added：before 侧视为空
+    let view = manager.diff_view(&info.id, "b.txt").unwrap();
+    assert!(view.unified.unwrap().contains("+new file"));
+    // 二进制：unified 为 None
+    fs::write(replica.join("bin.dat"), [0xFFu8, 0x00, 0x0A]).unwrap();
+    let view = manager.diff_view(&info.id, "bin.dat").unwrap();
+    assert!(view.unified.is_none());
+    // 副本未动过的文件不产生改动视图
+    assert_eq!(
+        manager.diff_view(&info.id, "missing.txt").unwrap_err().code,
+        "NOT_FOUND"
+    );
+}
+
+#[test]
+fn diff_view_still_renders_when_source_side_conflicts() {
+    let (_temp, source, manager) = fixture();
+    let info = manager.create(&source).unwrap();
+    write_file(std::path::Path::new(&info.replica_path), "a.txt", "edited").unwrap();
+    fs::write(source.join("a.txt"), "external").unwrap();
+    let changes = manager.diff(&info.id).unwrap();
+    assert!(changes[0].conflict);
+    // 冲突文件渲染的是基线与副本的差异，apply 由既有哈希校验兜底。
+    let view = manager.diff_view(&info.id, "a.txt").unwrap();
+    assert!(view.unified.unwrap().contains("+edited"));
+}

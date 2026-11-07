@@ -24,7 +24,6 @@ dunce.workspace = true
 reqwest.workspace = true
 dirs.workspace = true
 clap.workspace = true
-similar.workspace = true
 agent-client-protocol.workspace = true
 crossterm.workspace = true
 unicode-width.workspace = true

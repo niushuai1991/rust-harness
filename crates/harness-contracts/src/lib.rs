@@ -68,6 +68,26 @@ pub struct FileChange {
     pub after_text: Option<String>,
 }
 
+/// 单文件 unified diff 视图（桌面端右侧面板懒加载）；unified 为 None 表示二进制或超限。
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFileDiff {
+    pub path: String,
+    pub unified: Option<String>,
+}
+
+/// 工作副本文件的有界预览（桌面端右侧面板）。
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFilePreview {
+    pub path: String,
+    pub content: String,
+    pub truncated: bool,
+    pub binary: bool,
+    #[specta(type = f64)]
+    pub size_bytes: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionInfo {

@@ -7,6 +7,10 @@ export const commands = {
 	workspaceList: () => typedError<WorkspaceInfo[], AppError>(__TAURI_INVOKE("workspace_list")),
 	workspaceOpen: (path: string) => typedError<WorkspaceInfo, AppError>(__TAURI_INVOKE("workspace_open", { path })),
 	workspaceDiff: (workspaceId: string) => typedError<FileChange[], AppError>(__TAURI_INVOKE("workspace_diff", { workspaceId })),
+	/**  右侧面板懒加载的单文件 unified diff（unified 为 None 表示二进制或超限）。 */
+	workspaceFileDiff: (workspaceId: string, path: string) => typedError<WorkspaceFileDiff, AppError>(__TAURI_INVOKE("workspace_file_diff", { workspaceId, path })),
+	/**  右侧面板的文件预览（32KiB 截断 + 二进制占位）。 */
+	workspaceFilePreview: (workspaceId: string, path: string) => typedError<WorkspaceFilePreview, AppError>(__TAURI_INVOKE("workspace_file_preview", { workspaceId, path })),
 	workspaceApply: (workspaceId: string, paths: string[], reviewed: FileChange[]) => typedError<FileChange[], AppError>(__TAURI_INVOKE("workspace_apply", { workspaceId, paths, reviewed })),
 	workspaceRefresh: (workspaceId: string) => typedError<WorkspaceInfo, AppError>(__TAURI_INVOKE("workspace_refresh", { workspaceId })),
 	sessionList: (workspaceId: string) => typedError<SessionInfo[], AppError>(__TAURI_INVOKE("session_list", { workspaceId })),
@@ -257,6 +261,21 @@ export type ToolResult = {
 
 /**  供应商剩余额度的卡片类别；与智谱 quota/limit 接口的 type/unit 匹配规则对应。 */
 export type UsageCardKind = "fiveHour" | "weekly" | "tools";
+
+/**  单文件 unified diff 视图（桌面端右侧面板懒加载）；unified 为 None 表示二进制或超限。 */
+export type WorkspaceFileDiff = {
+	path: string,
+	unified: string | null,
+};
+
+/**  工作副本文件的有界预览（桌面端右侧面板）。 */
+export type WorkspaceFilePreview = {
+	path: string,
+	content: string,
+	truncated: boolean,
+	binary: boolean,
+	sizeBytes: number | null,
+};
 
 export type WorkspaceInfo = {
 	id: string,

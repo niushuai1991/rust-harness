@@ -153,13 +153,23 @@ pub fn read_file(root: &Path, relative: &str) -> AppResult<String> {
 }
 /// Bounded human preview using the same guarded handle as full replica reads.
 pub fn read_file_bounded(root: &Path, relative: &str, max_bytes: usize) -> AppResult<String> {
+    let (text, _, _) = read_file_bounded_sized(root, relative, max_bytes)?;
+    Ok(text)
+}
+/// 有界读取并附带文件完整字节数与实际读取字节数（用于截断判定）。
+pub fn read_file_bounded_sized(
+    root: &Path,
+    relative: &str,
+    max_bytes: usize,
+) -> AppResult<(String, u64, u64)> {
     let guard = guarded(root, relative, true)?;
+    let size = fs::metadata(&guard.path).map_err(io)?.len();
     let mut bytes = Vec::new();
-    open_read(&guard.path)?
+    let read = open_read(&guard.path)?
         .take(max_bytes.min(1 << 20) as u64)
         .read_to_end(&mut bytes)
-        .map_err(io)?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+        .map_err(io)? as u64;
+    Ok((String::from_utf8_lossy(&bytes).into_owned(), size, read))
 }
 pub(crate) fn bytes(root: &Path, relative: &str) -> AppResult<Vec<u8>> {
     let guard = guarded(root, relative, true)?;

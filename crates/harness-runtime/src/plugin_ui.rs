@@ -1,6 +1,6 @@
 //! Human-only declarative plugin entry points. Agent-facing tools continue through agent approval.
 use crate::Runtime;
-use harness_contracts::{AppError, AppResult, ToolCall, ToolResult, new_id};
+use harness_contracts::{AppError, AppResult, ToolCall, ToolResult, WorkspaceFilePreview, new_id};
 use serde_json::{Value, json};
 use std::{path::Path, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -123,6 +123,27 @@ impl Runtime {
     pub fn plugin_file_preview(&self, workspace: &str, path: &str) -> AppResult<String> {
         let info = self.workspaces.get(workspace)?;
         harness_platform::read_file_bounded(Path::new(&info.replica_path), path, 32768)
+    }
+    /// 桌面端右侧面板的文件预览：32KiB 截断 + 二进制占位语义。
+    pub fn workspace_file_preview(
+        &self,
+        workspace: &str,
+        path: &str,
+    ) -> AppResult<WorkspaceFilePreview> {
+        let info = self.workspaces.get(workspace)?;
+        let (content, size, read) =
+            harness_platform::read_file_bounded_sized(Path::new(&info.replica_path), path, 32768)?;
+        Ok(WorkspaceFilePreview {
+            path: path.to_owned(),
+            truncated: read < size,
+            binary: content.contains('\0'),
+            content: if content.contains('\0') {
+                String::new()
+            } else {
+                content
+            },
+            size_bytes: size,
+        })
     }
 }
 /// Called exclusively from the WASM blocking worker, after the Store capability check.
