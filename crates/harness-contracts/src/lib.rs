@@ -346,6 +346,30 @@ pub struct PresetInfo {
     pub broken: Option<String>,
 }
 
+/// 技能目录行：SKILL.md 扫描结果附禁用标记（docs/specs/skills-plan.md）。
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillInfo {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// 项目级为相对工作副本的路径，用户级为绝对路径；统一正斜杠。
+    pub path: String,
+    pub scope: SkillScope,
+    pub enabled: bool,
+    /// 技能不可用的原因（name 非法等）；None 表示可用。
+    #[serde(default)]
+    pub broken_reason: Option<String>,
+}
+
+/// 技能来源层：项目级（工作副本）与用户级（主目录 `~/.agents/skills/`）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SkillScope {
+    Project,
+    User,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginInfo {

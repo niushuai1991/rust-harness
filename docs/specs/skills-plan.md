@@ -45,7 +45,7 @@
 ### `$name` 显式提及（runtime 层统一解析，全端受益）
 
 - 挂点：回合入口（append `user.message` 处）。扫描 `\$([A-Za-z0-9_-]+)`，仅命中启用技能名单的名字才算提及（`$PATH` 等环境变量因不在名单天然排除）；原文不改写（同 codex）。
-- 命中后 append 新事件 kind=`skill.loaded`，data `{name, path, content}`（SKILL.md 全文，32KiB 截断，风格同 AGENTS.md 的 32000 字符）；同回合多个提及逐个注入。
+- 命中后 append 新事件 kind=`skill.loaded`，data `{name, path, content}`（SKILL.md 剥离 frontmatter 后的正文，32KiB 字节截断，风格同 AGENTS.md 的 32000 字符；name/description 已在 catalog 与 `<skill>` 标记中，正文不重复携带元数据）；同回合多个提及逐个注入。
 - `project_messages` 新增 `skill.loaded` 分支：转为附加 user 消息 `<skill name="…" path="…">\n全文\n</skill>`，紧随其 user.message 之后。
 - `resolve(root, name)`：按排序取第一同名（简化，不拒绝重名——见风险）。
 
