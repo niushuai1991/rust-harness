@@ -1,4 +1,4 @@
-//! 运行作用域：messageId 回合认领、子代理作用域集合与 Lagged 降级（docs/specs/cli-spec.md）。
+//! 运行作用域：messageId 回合认领、子代理作用域集合与 Lagged 降级（docs/specs/cli.md）。
 use harness_contracts::SessionEvent;
 use std::collections::BTreeSet;
 

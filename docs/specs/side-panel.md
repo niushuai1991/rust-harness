@@ -27,7 +27,7 @@
 
 ### 后端
 
-- unified diff 渲染自 `harness-cli/src/diffview.rs` 迁移为共享模块 `harness-platform/src/diffview.rs`（`sides`/`render`/`fallback_note`/`MAX_DIFF_BYTES`/`MAX_DIFF_LINES`），CLI re-export 保持原路径可用，CLI 专属的 `ColorChoice`/`select`/`write_listing` 留在 CLI；CLI 不再直接依赖 `similar`。渲染语义不变，沿用 [CLI 命令行规范](cli-spec.md) 的 diff 契约（1MiB 阈值、2000 行显示截断、二进制不渲染正文）。
+- unified diff 渲染自 `harness-cli/src/diffview.rs` 迁移为共享模块 `harness-platform/src/diffview.rs`（`sides`/`render`/`fallback_note`/`MAX_DIFF_BYTES`/`MAX_DIFF_LINES`），CLI re-export 保持原路径可用，CLI 专属的 `ColorChoice`/`select`/`write_listing` 留在 CLI；CLI 不再直接依赖 `similar`。渲染语义不变，沿用 [CLI 命令行规范](cli.md) 的 diff 契约（1MiB 阈值、2000 行显示截断、二进制不渲染正文）。
 - `WorkspaceManager::diff_view(id, path)`：单文件改动视图，复用 `changes()` 后按 path 过滤，渲染 unified diff；未变更文件返回 `NOT_FOUND`。冲突文件照常渲染（对比的是基线与副本，apply 侧哈希校验兜底）。
 - `harness_platform::read_file_bounded_sized(root, relative, max)`：有界读取并附带文件完整字节数与实际读取字节数，供截断判定。
 - 契约新增（`harness-contracts`，specta 导出）：

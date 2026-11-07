@@ -6,25 +6,25 @@
 
 | 文档 | 文档日期 | 范围 |
 |---|---|---|
-| [总体规范](specs/overall-spec.md) | 2026-11-03（设计确认） | 全局架构、模块职责、安全不变量、交付阶段划分与阶段验收要求。 |
-| [双供应商、多协议接入](specs/multi-protocol-spec.md) | 2026-11-04（计划批准） | 固定供应商目录、三协议适配、配置迁移及桌面和 CLI 接入。 |
-| [P1 验收与缺口补齐](specs/p1-acceptance-spec.md) | 2026-11-04（验收启动） | P1 验收范围、附件及插件缺口、安装清理和完成门槛。 |
-| [CLI 命令行 Agent 调用](specs/cli-spec.md) | 2026-11-05（计划拟制） | `harness` 命令行 run/chat/diff/apply/models/sessions 能力，参考 codex CLI 设计。 |
-| [ACP 协议接口](specs/acp-spec.md) | 2026-11-06（计划拟制） | `harness acp` 子命令：Agent Client Protocol v1 agent 端，官方 Rust SDK，供编辑器客户端接入。 |
-| [LSP 语言服务集成](specs/lsp-spec.md) | 2026-11-06（计划拟制） | P3 提前项：只读五件套 LSP 工具（诊断/悬停/定义/引用/符号），通用 server 配置，默认 rust-analyzer。 |
-| [内置浏览器集成](specs/browser-spec.md) | 2026-11-06（计划批准） | Agent 会话 browser_* 工具组：系统 Edge/Chrome headless + 自研轻量 CDP，DevToolsActivePort 就绪检测与 Job Object 进程树清理。 |
-| [子代理可视化与 spawn 模型选择](specs/subagent-visibility-spec.md) | 2026-11-06（计划拟制） | 子代理父子关系与运行状态可视化，`agent_spawn` 可选 modelId；ACP 透传与管理面板留待后续。 |
-| [P2 后台任务桌面可视化](specs/p2-background-tasks-spec.md) | 2026-11-06（计划拟制） | P2 项：后台 Shell/子代理/定时任务事件卡片渲染与会话级任务面板，宿主查询/取消/删除命令。 |
-| [计划/目标管理面板](specs/plan-goal-panel-spec.md) | 2026-11-06（计划拟制） | P2「计划/目标」收尾：跨会话只读汇总面板，`plan_overview` 命令与状态演变历史；不做 UI 写入通道。 |
-| [模型设置两级选择与 effort](specs/model-settings-spec.md) | 2026-11-06（计划批准） | 模型设置供应商→模型两级结构、内置模型目录与启停、effort 档位按协议编码、API 自动检测模型列表、发送框级联选择与选择持久化、卸载清理勾选行为。 |
-| [输入框斜杠快捷指令](specs/slash-commands-spec.md) | 2026-11-06（计划批准）；2026-11-07 扩展 | CLI chat 斜杠命令注册表、crossterm 行编辑与 `/` 补全弹窗、新增命令；桌面端 composer 菜单、加号添加菜单与 `session_compact`。 |
-| [PTY 执行世界（本地沙箱终端）](specs/pty-execution-world-spec.md) | 2026-11-06（计划拟制） | P2 项：沙箱内 ConPTY 持久终端，`terminal_open/write/read/close` 工具组；自研 ConPTY + 受限 token spawn；SSH 远端仅留 trait seam。 |
-| [智谱 Coding Plan 剩余额度与模型设置布局](specs/coding-plan-usage-spec.md) | 2026-11-07（计划批准） | 智谱套餐名与三张剩余额度卡（quota/limit 接口）、模型设置左栏分组导航/右栏详情/模型编辑弹窗化。 |
-| [配置预设分层](specs/config-presets-spec.md) | 2026-11-07（计划拟制） | P2 项「预设」：命名会话能力配置包（模型/effort/审批策略），解析按显式参数>预设>宿主缺省三层；内置合成与用户自定义两层目录，CLI/JSON-RPC/ACP/桌面四端接入。 |
-| [模型选择方式优化](specs/model-selection-spec.md) | 2026-11-07（计划拟制） | CLI `/model` `/effort` 内联面板与不退出 REPL；桌面浮层卡片选择器（搜索/分组/档位滑块/管理模型入口）；默认档位=最高档语义；切换静默持久化与会话流临时切换标记；`session_compact` 传档位。 |
-| [右侧面板（文件预览与改动审阅）](specs/side-panel-spec.md) | 2026-11-07（计划拟制） | 桌面右侧面板承载更改审阅（行级 unified diff + 同步）与工作副本文件预览（32KiB 截断/二进制占位）；unified 渲染迁移 harness-platform 与 CLI 共享；write/edit 工具卡文件按钮联动；参考 zcode 交互取舍。 |
-| [自动化任务（周期调度）](specs/automation-spec.md) | 2026-11-07（计划拟制） | 桌面端用户可管理的周期自动化任务：单次/每天/每周/每月/每年五类周期（24 小时制、单次含秒）、可选绑定会话或自动新建会话投递回合；缺日跳过、错过不补跑；独立管理面板（列表/启停/编辑/删除/立即执行/运行历史）；参考 zcode 自动化取舍。 |
-| [Skills（技能）支持](specs/skills-spec.md) | 2026-11-07（计划批准） | 技能目录（项目级 `.agents/skills/` + 用户级 `~/.agents/skills/` + 兜底扫描）、frontmatter 解析、catalog 注入系统提示、`$name` 显式提及全文注入、禁用名单落库；CLI 管理子命令/`/skills`/`$` 补全与桌面面板/composer 补全；参考 codex skills 体系。 |
+| [总体规范](specs/overall.md) | 2026-11-03（设计确认） | 全局架构、模块职责、安全不变量、交付阶段划分与阶段验收要求。 |
+| [双供应商、多协议接入](specs/multi-protocol.md) | 2026-11-04（计划批准） | 固定供应商目录、三协议适配、配置迁移及桌面和 CLI 接入。 |
+| [P1 验收与缺口补齐](specs/p1-acceptance.md) | 2026-11-04（验收启动） | P1 验收范围、附件及插件缺口、安装清理和完成门槛。 |
+| [CLI 命令行 Agent 调用](specs/cli.md) | 2026-11-05（计划拟制） | `harness` 命令行 run/chat/diff/apply/models/sessions 能力，参考 codex CLI 设计。 |
+| [ACP 协议接口](specs/acp.md) | 2026-11-06（计划拟制） | `harness acp` 子命令：Agent Client Protocol v1 agent 端，官方 Rust SDK，供编辑器客户端接入。 |
+| [LSP 语言服务集成](specs/lsp.md) | 2026-11-06（计划拟制） | P3 提前项：只读五件套 LSP 工具（诊断/悬停/定义/引用/符号），通用 server 配置，默认 rust-analyzer。 |
+| [内置浏览器集成](specs/browser.md) | 2026-11-06（计划批准） | Agent 会话 browser_* 工具组：系统 Edge/Chrome headless + 自研轻量 CDP，DevToolsActivePort 就绪检测与 Job Object 进程树清理。 |
+| [子代理可视化与 spawn 模型选择](specs/subagent-visibility.md) | 2026-11-06（计划拟制） | 子代理父子关系与运行状态可视化，`agent_spawn` 可选 modelId；ACP 透传与管理面板留待后续。 |
+| [P2 后台任务桌面可视化](specs/p2-background-tasks.md) | 2026-11-06（计划拟制） | P2 项：后台 Shell/子代理/定时任务事件卡片渲染与会话级任务面板，宿主查询/取消/删除命令。 |
+| [计划/目标管理面板](specs/plan-goal-panel.md) | 2026-11-06（计划拟制） | P2「计划/目标」收尾：跨会话只读汇总面板，`plan_overview` 命令与状态演变历史；不做 UI 写入通道。 |
+| [模型设置两级选择与 effort](specs/model-settings.md) | 2026-11-06（计划批准） | 模型设置供应商→模型两级结构、内置模型目录与启停、effort 档位按协议编码、API 自动检测模型列表、发送框级联选择与选择持久化、卸载清理勾选行为。 |
+| [输入框斜杠快捷指令](specs/slash-commands.md) | 2026-11-06（计划批准）；2026-11-07 扩展 | CLI chat 斜杠命令注册表、crossterm 行编辑与 `/` 补全弹窗、新增命令；桌面端 composer 菜单、加号添加菜单与 `session_compact`。 |
+| [PTY 执行世界（本地沙箱终端）](specs/pty-execution-world.md) | 2026-11-06（计划拟制） | P2 项：沙箱内 ConPTY 持久终端，`terminal_open/write/read/close` 工具组；自研 ConPTY + 受限 token spawn；SSH 远端仅留 trait seam。 |
+| [智谱 Coding Plan 剩余额度与模型设置布局](specs/coding-plan-usage.md) | 2026-11-07（计划批准） | 智谱套餐名与三张剩余额度卡（quota/limit 接口）、模型设置左栏分组导航/右栏详情/模型编辑弹窗化。 |
+| [配置预设分层](specs/config-presets.md) | 2026-11-07（计划拟制） | P2 项「预设」：命名会话能力配置包（模型/effort/审批策略），解析按显式参数>预设>宿主缺省三层；内置合成与用户自定义两层目录，CLI/JSON-RPC/ACP/桌面四端接入。 |
+| [模型选择方式优化](specs/model-selection.md) | 2026-11-07（计划拟制） | CLI `/model` `/effort` 内联面板与不退出 REPL；桌面浮层卡片选择器（搜索/分组/档位滑块/管理模型入口）；默认档位=最高档语义；切换静默持久化与会话流临时切换标记；`session_compact` 传档位。 |
+| [右侧面板（文件预览与改动审阅）](specs/side-panel.md) | 2026-11-07（计划拟制） | 桌面右侧面板承载更改审阅（行级 unified diff + 同步）与工作副本文件预览（32KiB 截断/二进制占位）；unified 渲染迁移 harness-platform 与 CLI 共享；write/edit 工具卡文件按钮联动；参考 zcode 交互取舍。 |
+| [自动化任务（周期调度）](specs/automation.md) | 2026-11-07（计划拟制） | 桌面端用户可管理的周期自动化任务：单次/每天/每周/每月/每年五类周期（24 小时制、单次含秒）、可选绑定会话或自动新建会话投递回合；缺日跳过、错过不补跑；独立管理面板（列表/启停/编辑/删除/立即执行/运行历史）；参考 zcode 自动化取舍。 |
+| [Skills（技能）支持](specs/skills.md) | 2026-11-07（计划批准） | 技能目录（项目级 `.agents/skills/` + 用户级 `~/.agents/skills/` + 兜底扫描）、frontmatter 解析、catalog 注入系统提示、`$name` 显式提及全文注入、禁用名单落库；CLI 管理子命令/`/skills`/`$` 补全与桌面面板/composer 补全；参考 codex skills 体系。 |
 
 ## 关系说明
 

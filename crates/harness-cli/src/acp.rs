@@ -2,7 +2,7 @@
 //!
 //! 协议类型与 ndjson 帧处理来自官方 SDK `agent-client-protocol`；本模块负责
 //! 协议到运行时的映射：会话生命周期、事件流转发、审批转交互式授权与历史回放。
-//! 详见 `docs/specs/acp-spec.md`。
+//! 详见 `docs/specs/acp.md`。
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::schema::{

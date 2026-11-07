@@ -1,4 +1,4 @@
-//! 工作副本改动的 unified diff 渲染与 apply 选择（docs/specs/cli-spec.md diff 契约）。
+//! 工作副本改动的 unified diff 渲染与 apply 选择（docs/specs/cli.md diff 契约）。
 //! 渲染语义与桌面端共享自 harness-platform；此处仅保留 CLI 专属的着色开关与交互选择。
 use clap::ValueEnum;
 use harness_contracts::FileChange;

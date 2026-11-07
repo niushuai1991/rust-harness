@@ -27,7 +27,7 @@ headless 此前只有自研 `harness rpc`（ndjson JSON-RPC，`harness-cli/src/l
 
 - 连接级共享状态（`Arc` 捕获进各 handler）：`initialized` 标志（未 initialize 前的 session 方法回 `-32600`）、`model_id`（`--model` 参数）、`sessions: BTreeMap<sessionId, {workspaceId, 审批策略}>`。
 - 审批策略即 ACP modes：`ask`（默认）/`auto`/`never`；`session/new`、`session/load` 响应携带 `modes`（`SessionModeState`）；`session/set_mode` 更新策略并回发 `current_mode_update`。
-- 模型选择：`harness acp --model <id>` > settings `cli.default_model`（复用 `manage.rs::resolve_model_id`）；ACP v1 无 per-prompt 模型概念。`harness acp --preset` 启动解析一次预设（见[配置预设分层规范](config-presets-spec.md)）。
+- 模型选择：`harness acp --model <id>` > settings `cli.default_model`（复用 `manage.rs::resolve_model_id`）；ACP v1 无 per-prompt 模型概念。`harness acp --preset` 启动解析一次预设（见[配置预设分层规范](config-presets.md)）。
 - 退出（EOF/进程结束）时 `runtime.cancel_all()`，与 `serve()` 口径一致。
 
 ### 事件映射（写成纯函数，单元测试覆盖）

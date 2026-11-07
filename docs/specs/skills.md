@@ -2,7 +2,7 @@
 
 - 日期：2026-11-07（计划批准）
 - 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
-- 范围：技能目录（项目级 + 用户级 + 兜底扫描）、frontmatter 解析、catalog 注入系统提示、`$name` 显式提及全文注入、禁用名单落库；CLI 管理子命令/`/skills`/`$` 补全与桌面面板/composer 补全；承接[配置预设分层规范](config-presets-spec.md)列为另行立项的 skills 启停项，并落地斜杠快捷指令当时列为非目标的 codex `$` skill 体系。
+- 范围：技能目录（项目级 + 用户级 + 兜底扫描）、frontmatter 解析、catalog 注入系统提示、`$name` 显式提及全文注入、禁用名单落库；CLI 管理子命令/`/skills`/`$` 补全与桌面面板/composer 补全；承接[配置预设分层规范](config-presets.md)列为另行立项的 skills 启停项，并落地斜杠快捷指令当时列为非目标的 codex `$` skill 体系。
 
 ## 背景与范围
 

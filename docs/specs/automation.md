@@ -6,7 +6,7 @@
 
 ## 背景与范围
 
-现有调度能力只有模型工具 `schedule_write`（单次、绑定创建会话、missed 不补跑，见 [P2 后台任务规范](p2-background-tasks-spec.md) 与能力矩阵「应用存活期间单次调度」条目），面向模型而非用户。本规范在 `harness-orchestration` 中约定平行的 **Automation（自动化任务）** 机制，由用户在桌面端创建与管理，到期自动向目标会话投递任务内容并执行一个回合。
+现有调度能力只有模型工具 `schedule_write`（单次、绑定创建会话、missed 不补跑，见 [P2 后台任务规范](p2-background-tasks.md) 与能力矩阵「应用存活期间单次调度」条目），面向模型而非用户。本规范在 `harness-orchestration` 中约定平行的 **Automation（自动化任务）** 机制，由用户在桌面端创建与管理，到期自动向目标会话投递任务内容并执行一个回合。
 
 范围：
 

@@ -1,4 +1,4 @@
-// 斜杠命令注册表：桌面端可执行子集，与 CLI docs/specs/slash-commands-spec.md 保持镜像。
+// 斜杠命令注册表：桌面端可执行子集，与 CLI docs/specs/slash-commands.md 保持镜像。
 export interface SlashSpec {name:string;description:string}
 
 export const SLASH_COMMANDS:SlashSpec[] = [

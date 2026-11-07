@@ -18,7 +18,7 @@ P2 阶段验收项中的「预设」。此前会话能力全部由调用方逐�
 2. 所选预设的字段；
 3. 宿主既有缺省回落（`cli.default_model`、非 TTY 必须显式 `--approval` 的 TTY 规则、effort 缺省跟随模型默认）。
 
-**目录来源两层**（与[模型设置规范](model-settings-spec.md)的内置目录/个人覆盖同构）：合成内置预设 `builtin:default`（无任何覆盖、选中即现状行为、只读不落库、save/remove 拒绝），用户自定义预设存 SQLite `settings` 表 `presets` 键（JSON 数组，`Store::get/set` 复用，无 schema 迁移）。
+**目录来源两层**（与[模型设置规范](model-settings.md)的内置目录/个人覆盖同构）：合成内置预设 `builtin:default`（无任何覆盖、选中即现状行为、只读不落库、save/remove 拒绝），用户自定义预设存 SQLite `settings` 表 `presets` 键（JSON 数组，`Store::get/set` 复用，无 schema 迁移）。
 
 不在范围：附加工作区指令注入与 skills 启停（需动 `context.snapshot` 事件结构，另行立项）；`agent_spawn`/`schedule_write` 接受 presetId；桌面端审批策略接管（桌面保持交互式审批）；SDK 封装（SDK 尚未包装 session.send）；会话绑定预设落库（sessions 表不加列，预设每次调用显式解析，与会话进行中可换模型语义一致）。
 

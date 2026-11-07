@@ -92,7 +92,7 @@ CLI 的作用域隔离无法纯客户端实现：runtime 在写入 `inbox.queued
 
 ## 其余设计决策
 
-1. **REPL 形态**：简单 readline 循环加流式纯文本输出，不引入 ratatui 全屏 TUI。（体验升级已由[输入框斜杠快捷指令规范](slash-commands-spec.md)落地：crossterm 行编辑与 `/` 补全弹窗，仍不做全屏 TUI。）
+1. **REPL 形态**：简单 readline 循环加流式纯文本输出，不引入 ratatui 全屏 TUI。（体验升级已由[输入框斜杠快捷指令规范](slash-commands.md)落地：crossterm 行编辑与 `/` 补全弹窗，仍不做全屏 TUI。）
 2. **默认模型**：优先级为 `-m/--model` > settings 键 `cli.default_model`（经 `Store::get/set` 读写）> 报错并列出可用模型。`models default <id>` 设置前经 `models.list_models()` 校验存在，不存在拒绝保存；`models default`（无参）查看当前值；`models default --clear` 清除（写 `Null` 视为未设置）。
 3. **参数解析**：`clap 4`（derive）；`rpc` 与 `call` 行为保持不变。
 4. **数据目录**：维持现状（`--data-dir`、环境变量 `RUST_HARNESS_DATA_DIR`、默认 `%LOCALAPPDATA%\RustHarness`），`host.lock` 独占与桌面端互斥的关系不变。
@@ -113,7 +113,7 @@ harness run [PROMPT]     # 别名 e；一次性执行，流式输出，结束退
   退出码：同 messageId 的 turn.end 为 completed 返回 0；error 或发送失败返回 1；取消（Ctrl+C / cancel_message）返回 130
   结束时副本存在改动则在 stderr 提示 diff/apply 命令
 
-harness chat             # readline 循环；斜杠命令见[输入框斜杠快捷指令规范](slash-commands-spec.md)
+harness chat             # readline 循环；斜杠命令见[输入框斜杠快捷指令规范](slash-commands.md)
 
 harness sessions [list|show <id>]
   list 走 dispatch session.list；show 打印会话信息与尾部事件摘要（store.session + session.events）
@@ -151,7 +151,7 @@ crates/harness-cli/
 ├── src/console.rs      # 渲染器（human：正文 stdout、工具/审批/推理 stderr；json：逐行 JSON）
 ├── src/approval.rs     # auto|ask|never 策略，作用域集合内审批处理
 ├── src/scope.rs        # messageId 认领、子代理作用域集合、Lagged 降级
-├── src/diffview.rs     # unified diff 渲染（re-export harness-platform 共享实现，见[右侧面板规范](side-panel-spec.md)）
+├── src/diffview.rs     # unified diff 渲染（re-export harness-platform 共享实现，见[右侧面板规范](side-panel.md)）
 ├── src/run.rs          # 一次性执行（初始化规则 → enqueue → 事件消费 → 同 messageId turn.end）
 ├── src/chat.rs         # REPL（复用 run 的单轮执行内核）
 ├── src/manage.rs       # sessions/diff/apply/models
@@ -176,4 +176,4 @@ crates/harness-cli/
 - `auto` 为显式选项且默认关闭（默认 `ask`）；`auto` 下 `shell` 可读取系统与访问网络，作用域含子代理会话，副作用边界已在审批策略表列明。
 - 数据目录被桌面端占用时 CLI 无法启动（既有 `host.lock` 独占设计），本规范不改变该约束。
 - `--json` 输出格式为 CLI 内部契约（终行 schema 已定义），SDK 消费方如需稳定契约需另行登记。
-- diff 渲染依赖 `similar`，现位于 `harness-platform` 共享模块（CLI re-export，见[右侧面板规范](side-panel-spec.md)）。
+- diff 渲染依赖 `similar`，现位于 `harness-platform` 共享模块（CLI re-export，见[右侧面板规范](side-panel.md)）。
