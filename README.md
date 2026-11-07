@@ -1,27 +1,85 @@
 # Rust Harness
 
-Windows 11 上运行的本地开发协作工具：Rust / Tauri 2 宿主，React 19 界面，SQLite 事件存储，独立托管工作副本。模型与工具修改工作副本，用户审阅差异后同步原项目。
+> Windows 上的本地 AI 编程协作宿主：模型在隔离的工作副本里修改代码，你审阅差异后同步回原项目。
 
-打开工作区后会自动选择已有会话；没有历史会话时自动创建首个会话，准备完成即可输入。若创建失败，可查看错误并点击“新建会话”重试。
+[![Release](https://img.shields.io/github/v/release/niushuai1991/rust-harness)](https://github.com/niushuai1991/rust-harness/releases)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%2011-blue)](https://github.com/niushuai1991/rust-harness/releases)
 
-## 模型供应商
+Rust / Tauri 2 宿主，React 19 界面，SQLite 事件存储。所有模型改动只发生在独立托管的执行副本中，原项目始终由你掌控。
 
-内置 DeepSeek 与智谱 Coding Plan 两个供应商，每家内部支持 Chat Completions、Responses、Anthropic 三种协议。内置端点只读，需要改地址时复制为自定义供应商。协议间共享该供应商的 API Key 与代理；保存模型后可进行少量实际生成连接测试。详见[三协议交付说明](docs/multi-protocol-delivery.md)。
+## ✨ 功能特性
 
-## 开发
+- **隔离协作**：原项目与执行副本分离，模型产物经差异审阅、人工确认后同步；冲突预览、ignore 规则与基线管理齐备。
+- **多供应商多协议**：内置 DeepSeek 与智谱 Coding Plan，各支持 Chat Completions、Responses、Anthropic 三种协议；协议间共享 API Key 与代理配置。
+- **完整 Agent 工具链**：文件编辑、后台 Shell、PTY 沙箱终端（自研 ConPTY + 受限 token）、内置浏览器（Edge/Chrome CDP）、LSP 只读工具（诊断/悬停/定义/引用/符号）、子代理 spawn/fork。
+- **多种接入形态**：桌面端、`harness` CLI（run/chat/diff/apply/models/sessions）、ACP v1 agent 端（供编辑器客户端接入）、JSON-RPC over stdio、Python / TypeScript SDK。
+- **插件与扩展**：WASM(WIT) 组件权限沙箱、MCP（HTTP/stdio）、命名配置预设（模型/effort/审批策略组合）。
+- **安全模型**：Windows 受限 token 与 Job Object 沙箱、API Key 仅写入凭据管理器、工作区策略与审批策略分层管控。
+- **协作可视化**：Todo/Plan/Goal 卡片、后台任务面板、子代理运行状态、跨会话计划与目标总览、托盘常驻。
 
-需要 Rust stable（当前验证版本 1.98.1）、MSVC C++ Build Tools、Windows SDK、WebView2，以及 Node.js 22。Node 仅用于开发和打包，最终应用运行时不依赖 Node。
+## 🚀 快速开始
+
+### 安装
+
+从 [Releases](https://github.com/niushuai1991/rust-harness/releases) 下载最新 NSIS 安装包：系统级安装（安装时请求管理员权限），需要系统已有 WebView2，支持简体中文与英文界面。覆盖安装和升级保留会话、托管副本等用户数据；卸载默认保留用户数据和凭据。
+
+也可以从源码构建，见[开发](#-开发)一节。
+
+### 首次使用
+
+1. 打开应用，选择一个本地项目目录作为工作区；
+2. 在「模型设置」中配置供应商 API Key（仅写入 Windows 凭据管理器，界面不会回显）；
+3. 发起会话——模型在隔离副本中工作，你在差异视图中审阅并同步回原项目。
+
+打开工作区会自动恢复上次会话；没有历史会话时自动创建首个会话。关闭主窗口会保留后台会话并隐藏到托盘。
+
+## 📖 文档
+
+| 文档 | 内容 |
+|---|---|
+| [规格文档索引](docs/spec-index.md) | 全部设计规范与实施计划入口 |
+| [能力状态矩阵](docs/capability-matrix.md) | 各能力的实现与验证状态 |
+| [总体实施计划](docs/specs/implementation-plan.md) | 全局架构、模块职责与阶段规划 |
+| [三协议交付说明](docs/multi-protocol-delivery.md) | 供应商与协议配置、连接测试细节 |
+
+### CLI 与 SDK
+
+```powershell
+# CLI
+cargo run -p harness-cli -- --help
+cargo run -p harness-cli -- --data-dir .cache/cli-data call workspace.list '{}'
+
+# JSON-RPC over stdio（headless）
+cargo run -p harness-cli -- --data-dir .cache/cli-data rpc
+
+# ACP agent 端
+cargo run -p harness-cli -- acp
+```
+
+标准输入/输出为逐行 JSON-RPC，支持工作区、会话、模型、审批、插件和 MCP；`session.event` 推送日志和模型增量。Python 客户端位于 `sdk/python/rust_harness.py`，TypeScript 客户端位于 `sdk/typescript/client.ts`。
+
+同一数据目录只允许一个宿主进程；桌面运行时请给 CLI 指定独立 `--data-dir`。
+
+## 🏗 架构
+
+- 桌面宿主 Tauri 2 + React 19；SQLite（WAL）事件存储为唯一事实来源，支持游标、恢复、全文检索与 JSONL 导出。
+- 执行世界基于 Windows 受限 token、Low IL 与 Job Object 的本地沙箱；PTY、浏览器（CDP）与 LSP 由独立模块承载。
+- crate 划分：`harness-contracts` / `harness-storage` / `harness-orchestration` / `harness-runtime` / `harness-platform` / `harness-extensions` / `harness-browser` / `harness-cli`。
+
+## 🛠 开发
+
+环境要求：Rust stable（经 `rust-toolchain.toml` 指定）、MSVC C++ Build Tools、Windows SDK、WebView2、Node.js 22。Node 仅用于开发和打包，最终应用运行时不依赖 Node。
 
 项目唯一依赖锁为 `package-lock.json`，CI 和开发均使用 npm；不要生成第二套 pnpm/yarn 锁文件。
 
 ```powershell
 npm ci --no-audit --no-fund
-npm run tauri dev
+npm run tauri dev   # 桌面端
+npm run dev         # 仅浏览器界面预览（无桌面宿主能力）
 ```
 
-`npm run dev` 只启动浏览器界面预览，需要桌面宿主才能使用工作区、会话、模型与插件。界面预览不会伪造模型响应。
-
-## 验证
+测试与验证：
 
 ```powershell
 npm test
@@ -32,35 +90,23 @@ cargo check -p rust-harness-desktop
 python -m unittest discover -s sdk/python -p 'test_*.py' -v
 ```
 
-## Windows 安装包
+构建 Windows 安装包：
 
 ```powershell
-# 系统级安装（开始时请求UAC），使用系统已有 WebView2
-./scripts/build-windows.ps1
-# 仅打包（先自行完成安装依赖与测试）
-npm run desktop:build
-# 验证已构建桌面进程启动、第二实例退出
-./scripts/smoke-windows.ps1
+./scripts/build-windows.ps1   # 系统级 NSIS 安装包
+./scripts/smoke-windows.ps1   # 冒烟：桌面进程启动、第二实例退出
 ```
 
-NSIS 产物位于 `target/release/bundle/nsis`。从0.1.1起采用系统级安装，安装开始时由Windows请求管理员权限（UAC），可安装到Program Files或其他受保护目录，卸载信息写入HKLM。应用本身仍以普通用户权限启动。支持简体中文与英文、LZMA压缩；后续版本只提供一种安装包，默认系统已安装 WebView2；安装器不内嵌、下载或安装 WebView2。构建脚本及CI使用 `scripts/verify-installer.py` 读取生成EXE的PE清单，确认其为 `requireAdministrator`。仓库不带伪造的更新endpoint或签名公钥。
+产物位于 `target/release/bundle/nsis`。
 
-关闭主窗口会保留后台会话并隐藏到托盘，托盘菜单可以重新打开或退出应用。
+## 📍 当前状态
 
-## 数据与权限
+项目处于开发预览阶段，迭代较快。已完成能力的实现与验证边界见[能力状态矩阵](docs/capability-matrix.md)；尚未实现 SSH 远端执行世界、搜索 provider、Office 预览、脚本工作流、签名插件市场、发布签名与自动更新。
 
-应用文件与用户数据分开存储。覆盖安装和升级保留会话、托管副本、基线、同步日志与备份；卸载默认保留用户数据和凭据。API 密钥仅写入 Windows 凭据管理器，模型列表不会读取或回显密钥。插件仅在声明、授权与工作区策略交集内运行。请先导出会话、处理待同步更改，再显式清理应用数据。
+## 🤝 贡献
 
-规范入口见 [Spec 文档索引](docs/spec-index.md)。实现与验收边界见 [实施计划](docs/specs/implementation-plan.md)、[桌面交付报告](docs/desktop-report.md)。
+欢迎提交 Issue 与 PR。涉及功能、架构或交付要求时，请先查阅[规格文档索引](docs/spec-index.md)及相关规范，并在 PR 中附改动摘要与验证结果。
 
-## Headless 与 SDK
+## 📄 许可
 
-```powershell
-cargo run -p harness-cli -- --help
-cargo run -p harness-cli -- --data-dir .cache/cli-data rpc
-cargo run -p harness-cli -- --data-dir .cache/cli-data call workspace.list '{}'
-```
-
-标准输入/输出为逐行 JSON-RPC，支持工作区、会话、模型、审批、插件和 MCP；`session.event` 推送日志和模型增量。同步方法必须传递完整 `reviewed` 差异快照。Python 标准库客户端位于 `sdk/python/rust_harness.py`，TypeScript 客户端位于 `sdk/typescript/client.ts`。同一数据目录只允许一个宿主，桌面运行时请给 CLI 指定独立目录。
-
-当前交付为开发预览。阶段完成度和未实现项目见 [能力矩阵](docs/capability-matrix.md)。尚未实现 ACP、SSH、LSP、真实 PTY、签名插件市场及脚本工作流。0.1.2曾生成标准和离线安装包，作为历史产物保留；后续版本仅构建使用系统 WebView2 的单一 NSIS 包；尚未做干净虚拟机安装验收。正式更新需提供公钥、端点并启用 `signed-updates` 功能，默认不会初始化未配置的更新服务。
+本项目基于 [Apache-2.0](LICENSE) 发布；第三方依赖各自保留其原有许可。
