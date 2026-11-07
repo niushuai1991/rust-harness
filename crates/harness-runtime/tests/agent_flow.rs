@@ -389,3 +389,136 @@ async fn attachments_enter_model_history_and_spilled_output_is_readable_after_re
             .any(|e| e.kind == "user.message")
     );
 }
+
+#[tokio::test]
+async fn skills_catalog_enters_system_prompt_and_mention_injects_body() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let skill_dir = source.join(".agents").join("skills").join("review");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: review\ndescription: 代码审查流程\n---\n审查正文内容",
+    )
+    .unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime.workspaces.create(&source).unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "skills")
+        .await
+        .unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            content: "ok".into(),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .run_session(
+            session.id.clone(),
+            "请 $review 审查，注意 $PATH 是环境变量".into(),
+            provider.clone(),
+        )
+        .await
+        .unwrap();
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    let loaded: Vec<_> = events.iter().filter(|e| e.kind == "skill.loaded").collect();
+    assert_eq!(loaded.len(), 1, "$PATH 不在技能名单不注入");
+    assert_eq!(loaded[0].data["name"], "review");
+    assert_eq!(
+        loaded[0].data["content"], "审查正文内容",
+        "正文剥离 frontmatter"
+    );
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    let system = requests[0]
+        .iter()
+        .find(|m| m.role == MessageRole::System)
+        .unwrap();
+    assert!(system.content.contains("## 可用技能"));
+    assert!(system.content.contains("- review: 代码审查流程"));
+    assert!(system.content.contains("使用规则"));
+    assert!(
+        !system.content.contains("可按需读取的技能"),
+        "旧裸路径清单已被 catalog 取代"
+    );
+    assert!(
+        requests[0]
+            .iter()
+            .any(|m| m.role == MessageRole::User && m.content.contains("<skill name=\"review\""))
+    );
+}
+
+#[tokio::test]
+async fn disabled_skill_is_absent_from_catalog_and_mention() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let skill_dir = source
+        .join(".agents")
+        .join("skills")
+        .join("zskills-fixture");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    let skill_path = skill_dir.join("SKILL.md");
+    std::fs::write(
+        &skill_path,
+        "---\ndescription: 代码审查流程\n---\n审查正文内容",
+    )
+    .unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime.workspaces.create(&source).unwrap();
+    runtime
+        .skills
+        .set_enabled(".agents/skills/zskills-fixture/SKILL.md", false)
+        .await
+        .unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "disabled")
+        .await
+        .unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer::default()])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .run_session(
+            session.id.clone(),
+            "请 $zskills-fixture 审查".into(),
+            provider.clone(),
+        )
+        .await
+        .unwrap();
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    assert!(!events.iter().any(|e| e.kind == "skill.loaded"));
+    {
+        let requests = provider.requests.lock().unwrap();
+        let system = &requests[0]
+            .iter()
+            .find(|m| m.role == MessageRole::System)
+            .unwrap()
+            .content;
+        assert!(
+            !system.contains("zskills-fixture"),
+            "禁用的技能不进 catalog（用户级技能可能存在，不整段断言）"
+        );
+        assert!(!requests[0].iter().any(|m| m.role == MessageRole::User
+            && m.content.contains("<skill name=\"zskills-fixture\"")));
+    }
+    let list = runtime
+        .skills
+        .list(std::path::Path::new(&workspace.replica_path))
+        .await
+        .unwrap();
+    let fixture = list
+        .iter()
+        .find(|s| s.path == ".agents/skills/zskills-fixture/SKILL.md")
+        .expect("fixture 技能在目录中");
+    assert!(!fixture.enabled);
+    assert!(skill_path.exists(), "禁用不动文件");
+}

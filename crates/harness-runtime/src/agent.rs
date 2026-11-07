@@ -44,6 +44,7 @@ pub struct Runtime {
     pub store: Store,
     pub models: crate::providers::ModelService,
     pub presets: crate::presets::PresetService,
+    pub skills: crate::skills::SkillService,
     pub workspaces: WorkspaceManager,
     pub plugins: Arc<PluginManager>,
     pub approvals: Approvals,
@@ -115,6 +116,7 @@ impl Runtime {
         let models = crate::providers::ModelService::new(store.clone());
         Ok(Arc::new(Self {
             presets: crate::presets::PresetService::new(store.clone(), models.clone()),
+            skills: crate::skills::SkillService::new(store.clone()),
             models,
             store,
             workspaces,
@@ -584,6 +586,8 @@ impl Runtime {
                 json!({"content":text,"attachments":attached}),
             )
             .await?;
+            self.load_skill_mentions(&session_id, &text, Path::new(&lease.info.replica_path))
+                .await?;
             self.steps(
                 &session_id,
                 &session.workspace_id,
@@ -614,6 +618,35 @@ impl Runtime {
         ending?;
         result
     }
+    /// 解析用户消息中的 `$name` 提及：命中启用技能时 append `skill.loaded` 注入正文。
+    /// 单个技能加载失败仅告警跳过，不阻塞回合。
+    async fn load_skill_mentions(&self, session: &str, text: &str, root: &Path) -> AppResult<()> {
+        let skills = self.skills.list(root).await?;
+        let known: std::collections::BTreeSet<String> = skills
+            .iter()
+            .filter(|s| s.enabled && s.broken_reason.is_none())
+            .map(|s| s.name.clone())
+            .collect();
+        for name in crate::skills::extract_mentions(text, &known) {
+            match self.skills.resolve(root, &name).await {
+                Ok(Some(resolved)) => {
+                    self.append(
+                        session,
+                        "skill.loaded",
+                        json!({
+                            "name":resolved.info.name,
+                            "path":resolved.info.path,
+                            "content":resolved.content
+                        }),
+                    )
+                    .await?;
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!(session, name, error = %e, "技能加载失败，跳过"),
+            }
+        }
+        Ok(())
+    }
     async fn steps(
         self: &Arc<Self>,
         session: &str,
@@ -634,7 +667,8 @@ impl Runtime {
                 "kv".into(),
             ],
         );
-        let context = workspace_context(root)?;
+        let skills_catalog = self.skills.catalog(root).await?;
+        let context = workspace_context(root, &skills_catalog)?;
         self.append(session, "context.snapshot", json!({"content":context}))
             .await?;
         let mut reads = HashMap::new();
@@ -1218,7 +1252,7 @@ fn requires_approval(name: &str) -> bool {
             | "agent_status"
     )
 }
-fn workspace_context(root: &Path) -> AppResult<String> {
+fn workspace_context(root: &Path, skills_catalog: &str) -> AppResult<String> {
     let mut context = format!(
         "你是本地开发助手。执行根为隔离工作副本 {}。文件工具只接受相对路径。先读取再编辑，原项目变更需用户在差异界面单独确认。",
         root.display()
@@ -1231,13 +1265,9 @@ fn workspace_context(root: &Path) -> AppResult<String> {
             ));
         }
     }
-    if let Ok(files) = harness_platform::list_files(root) {
-        let skills: Vec<_> = files
-            .into_iter()
-            .filter(|f| f.ends_with("SKILL.md"))
-            .take(100)
-            .collect();
-        context.push_str(&format!("\n可按需读取的技能：{}", skills.join(", ")));
+    if !skills_catalog.is_empty() {
+        context.push_str("\n\n");
+        context.push_str(skills_catalog);
     }
     Ok(context)
 }
@@ -1261,6 +1291,12 @@ pub fn project_messages(events: &[SessionEvent]) -> Vec<ModelMessage> {
                 }
                 history.push(ModelMessage::user(message));
             }
+            "skill.loaded" => history.push(ModelMessage::user(format!(
+                "<skill name=\"{}\" path=\"{}\">\n{}\n</skill>",
+                e.data["name"].as_str().unwrap_or(""),
+                e.data["path"].as_str().unwrap_or(""),
+                content()
+            ))),
             "plugin.context" => history.push(ModelMessage::user(content())),
             "assistant.message" => history.push(ModelMessage {
                 role: MessageRole::Assistant,
