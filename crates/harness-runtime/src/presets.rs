@@ -1,4 +1,4 @@
-//! 配置预设：命名的会话能力配置包（docs/specs/config-presets-plan.md）。
+//! 配置预设：命名的会话能力配置包（docs/specs/config-presets.md）。
 //! 分层解析在各宿主端进行：显式参数 > 预设字段 > 宿主缺省回落。
 
 use std::sync::Arc;

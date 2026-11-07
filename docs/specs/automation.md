@@ -1,12 +1,12 @@
-# 自动化任务（周期调度）计划
+# 自动化任务（周期调度）规范
 
-- 文档日期：2026-11-07（计划拟制）
-- 状态：已实施，Rust 5 项与前端 16 项新增测试通过，全量检查通过（2026-11-07）；桌面 UI 抽查待用户
-- 交互原型已按项目现有风格制作演示页并经用户确认（参考 zcode 自动化功能的形态取舍，本地 `D:\code\zcode`）。
+- 日期：2026-11-07（计划拟制）
+- 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
+- 范围：桌面端用户可管理的周期自动化任务：五类周期、可选绑定会话或自动新建会话投递回合；独立管理面板（列表/启停/编辑/删除/立即执行/运行历史）；参考 zcode 自动化取舍。
 
 ## 背景与范围
 
-现有调度能力只有模型工具 `schedule_write`（单次、绑定创建会话、missed 不补跑，见 `docs/specs/p2-background-tasks-plan.md` 与能力矩阵「应用存活期间单次调度」条目），面向模型而非用户。本计划在 `harness-orchestration` 中新增平行的 **Automation（自动化任务）** 机制，由用户在桌面端创建与管理，到期自动向目标会话投递任务内容并执行一个回合。
+现有调度能力只有模型工具 `schedule_write`（单次、绑定创建会话、missed 不补跑，见 [P2 后台任务规范](p2-background-tasks.md) 与能力矩阵「应用存活期间单次调度」条目），面向模型而非用户。本规范在 `harness-orchestration` 中约定平行的 **Automation（自动化任务）** 机制，由用户在桌面端创建与管理，到期自动向目标会话投递任务内容并执行一个回合。
 
 范围：
 
@@ -58,10 +58,10 @@
 - `automation_delete(id)`、`automation_set_enabled(id, enabled)`（恢复启用时若 next_run_at 已过则重算）、`automation_run_now(id)`。
 - 命令实现为 `Installed` 上的公开方法（`harness-orchestration`），命令层仅做参数转发与 JsonPayload 包装。
 
-### 前端（React，演示页已确认形态）
+### 前端（React）
 
 - `frontend/types.ts`：手写 `AutomationInfo`/`AutomationRunInfo`（同 `JobInfo` 模式）。
-- `frontend/AutomationsPanel.tsx` + `automations.ts`（纯函数模块）+ 配套 `.test.tsx`：
+- `frontend/AutomationsPanel.tsx` + `automations.ts`（纯函数模块）+ 配套测试：
   - 列表视图：新建按钮 + 数量上限徽标 + 说明文案；任务卡片（图标、标题、启用徽章、启停开关、周期描述、目标会话、已执行次数、下次执行、运行历史 `<details>`、立即执行/编辑/删除）；删除二段式确认；打开期间 2 秒轮询。
   - 表单视图：标题、任务内容、目标会话（当前工作区会话，默认「每次新建会话」）、执行周期 select、按周期切换的输入（单次 `datetime-local step=1` 默认今天+当前 HH:mm+秒 00；每天 `time`；每周周几多选一~日；每月几号；每年月+日）、缺日提示、内联错误（校验失败保留输入）。
   - `automations.ts` 纯函数：`fmtSchedule`（周期中文描述）、`nextRunAt`（前端镜像计算，仅作预览提示，以后端落库为准）、`defaultOnceValue`（今天+当前 HH:mm+秒 00）。
@@ -76,9 +76,3 @@
 - 前端预览时间与后端计算为两份实现（镜像逻辑），预览仅提示，落库以后端为准；两者偏差不阻塞主流程。
 - 绑定会话在执行时可能已被删除：投递前校验会话存在，缺失则该次 run 记 failed（不自动改绑）。
 - 手动执行与计划触发可能在同一会话上并发排队，由既有会话队列锁串行，不合并。
-
-## 验证
-
-- Rust（`harness-orchestration`）：`automation_next_run_at` 表驱动用例（当天已过/未过、周几命中、短月跳过、平年 2/29 跳过、跨年）；创建校验失败分支；tick 到期触发（绑定/新建会话、单次 completed、周期前推）；恢复语义（missed/前推/interrupted）；启停与 run_now 不改计划时间。
-- 前端 vitest：`fmtSchedule`/`nextRunAt`/`defaultOnceValue` 纯函数；表单周期切换与默认值；面板操作调用正确命令与确认流程。
-- 全量：`cargo fmt --check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test --all-features`、`cargo build --all-features`；前端 `npm ci` 后 `npm test`、`npm run build`；bindings 重新导出无漂移。

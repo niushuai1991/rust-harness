@@ -1,12 +1,12 @@
-# 右侧面板（文件预览与改动审阅）计划
+# 右侧面板（文件预览与改动审阅）规范
 
-- 文档日期：2026-11-07（计划拟制）
-- 状态：已实施，Rust 与前端测试通过（2026-11-07）；桌面 UI 抽查待用户
-- 交互原型已按项目现有风格制作演示页并经用户确认（参考 zcode 右侧面板的形态取舍）。
+- 日期：2026-11-07（计划拟制）
+- 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
+- 范围：主界面右侧面板统一承载「更改审阅」（行级 unified diff + 同步）与「工作副本文件预览」（32KiB 截断/二进制占位）；参考 zcode 右侧面板的形态取舍。
 
 ## 背景与范围
 
-桌面端查看工作副本改动此前只有居中 Modal `DiffPanel`：before/after 原文双栏并排，无行级差异；聊天流中的 write/edit 工具卡仅渲染参数 JSON，无法直接查看目标文件。本计划新增主界面右侧面板，统一承载「更改审阅」与「文件预览」。
+桌面端查看工作副本改动此前只有居中 Modal `DiffPanel`：before/after 原文双栏并排，无行级差异；聊天流中的 write/edit 工具卡仅渲染参数 JSON，无法直接查看目标文件。本规范新增主界面右侧面板，统一承载「更改审阅」与「文件预览」。
 
 范围：
 
@@ -27,7 +27,7 @@
 
 ### 后端
 
-- unified diff 渲染自 `harness-cli/src/diffview.rs` 迁移为共享模块 `harness-platform/src/diffview.rs`（`sides`/`render`/`fallback_note`/`MAX_DIFF_BYTES`/`MAX_DIFF_LINES`），CLI re-export 保持原路径可用，CLI 专属的 `ColorChoice`/`select`/`write_listing` 留在 CLI；CLI 不再直接依赖 `similar`。渲染语义不变，沿用 `docs/specs/cli-plan.md` 的 diff 契约（1MiB 阈值、2000 行显示截断、二进制不渲染正文）。
+- unified diff 渲染自 `harness-cli/src/diffview.rs` 迁移为共享模块 `harness-platform/src/diffview.rs`（`sides`/`render`/`fallback_note`/`MAX_DIFF_BYTES`/`MAX_DIFF_LINES`），CLI re-export 保持原路径可用，CLI 专属的 `ColorChoice`/`select`/`write_listing` 留在 CLI；CLI 不再直接依赖 `similar`。渲染语义不变，沿用 [CLI 命令行规范](cli.md) 的 diff 契约（1MiB 阈值、2000 行显示截断、二进制不渲染正文）。
 - `WorkspaceManager::diff_view(id, path)`：单文件改动视图，复用 `changes()` 后按 path 过滤，渲染 unified diff；未变更文件返回 `NOT_FOUND`。冲突文件照常渲染（对比的是基线与副本，apply 侧哈希校验兜底）。
 - `harness_platform::read_file_bounded_sized(root, relative, max)`：有界读取并附带文件完整字节数与实际读取字节数，供截断判定。
 - 契约新增（`harness-contracts`，specta 导出）：
@@ -54,10 +54,3 @@
 - 展开的 diff 与轮询刷新不联动（懒加载缓存），手动刷新重算；后续如需实时可在 tool.result 事件上挂钩。
 - 大文件沿用 1MiB/2000 行阈值，超限显示占位说明；无虚拟滚动。
 - 面板关闭即卸载，重开重新拉取；预览路径与视图状态跨开关保留（同工作区内）。
-
-## 验证
-
-- Rust：`harness-platform` 10 项 diffview 迁移测试 + 2 项 `diff_view` 集成测试；CLI 渲染/选择测试迁移后全部通过。
-- 前端：新增 `DiffView` 9 项、`PreviewView` 6 项、`ChangesView` 7 项、`SidePanel` 6 项、store 3 项测试；`App.test.tsx` 同步审阅三用例迁至 ChangesView 并新增右侧面板集成 3 用例（顶栏开关 + 行级差异 + Escape、工具卡文件按钮预览、`/diff`）；合计 116 项通过。
-- 命令：`cargo fmt --check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test --all-features`、`cargo build --all-features`、`npm test`（vitest）、`npm run build`（tsc + vite）全部通过。
-- 桌面端真实 UI 抽查（打开工作区 → agent 修改文件 → 面板审阅/同步/预览联动）待用户。

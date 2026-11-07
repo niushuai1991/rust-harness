@@ -1,5 +1,5 @@
 //! Skills（技能）：SKILL.md 目录发现、frontmatter 解析、catalog 注入与 `$name` 提及
-//! 解析（docs/specs/skills-plan.md）。设计参考 codex skills 体系，按本项目体量简化。
+//! 解析（docs/specs/skills.md）。设计参考 codex skills 体系，按本项目体量简化。
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

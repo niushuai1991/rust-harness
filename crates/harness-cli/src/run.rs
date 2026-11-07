@@ -1,4 +1,4 @@
-//! `harness run`：一次性执行 Agent 任务（docs/specs/cli-plan.md）。
+//! `harness run`：一次性执行 Agent 任务（docs/specs/cli.md）。
 use crate::{
     approval::{self, Approval, Decision},
     console::{Console, RunResult},

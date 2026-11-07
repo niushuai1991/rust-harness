@@ -1,15 +1,13 @@
-# 子代理可视化与 spawn 模型选择计划
+# 子代理可视化与 spawn 模型选择规范
 
-拟制日期：2026-11-06。
-
-状态：已实施（2026-11-06 完成，实施记录见文末）。
-
-依据：用户在 CLI、ACP、LSP 专项完成后要求继续总体计划中未做的任务，选择「子代理」方向。经核实，子代理协作原语（spawn/status/interrupt/send/wait/fork）与重启恢复（`Store::recover()` 为所有会话补 `tool.result{status:unknown}` 与 `turn.end{interrupted}`）均已闭环；真实缺口是子代理对用户不可见，以及 `agent_spawn` 无法指定模型。据此拟制本计划。
+- 日期：2026-11-06（计划拟制）
+- 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
+- 范围：子代理父子关系与运行状态可视化，`agent_spawn` 可选 modelId；ACP 透传与管理面板留待后续。
 
 ## 背景与目标
 
 - `subagent.created`/`subagent.message_sent` 事件在前端 `EventCard` 中被静默丢弃（返回 null），用户在父会话看不到子代理的创建与投递；会话列表无父子标识，无法跳转子代理会话，也看不到其运行状态。
-- Todo/Plan/Goal 的 `*.state` 事件同样被丢弃，能力矩阵记载「尚无独立管理面板」。本计划先补会话流内的状态渲染，独立管理面板留待后续。
+- Todo/Plan/Goal 的 `*.state` 事件同样被丢弃，能力矩阵记载「尚无独立管理面板」。本规范先约定会话流内的状态渲染，独立管理面板留待后续（后由[计划/目标管理面板规范](plan-goal-panel.md)承接）。
 - `agent_spawn` 只能继承父会话模型，无法为子代理指定已配置的其他模型。
 
 ## 范围决策
@@ -46,18 +44,8 @@
   - `plan.state`/`goal.state`：计划/目标文本卡片（Markdown 渲染）。
 - 样式追加 `sessions button.child`、`subagent-badge`、`subagent-row`、`subagent-card`、`todo-list`。
 
-## 测试（TDD）
+## 边界
 
-- `crates/harness-runtime/tests/subagent_flow.rs`（新文件，先红后绿）：
-  - 无效 `modelId` → 工具结果 `isError` 含 `MODEL_NOT_FOUND`，且不创建子会话（工作区仅父会话）；
-  - 合法 `modelId`（自定义供应商副本 + 本地死端点，空密钥可构建）→ `subagent.created` 事件含 `modelId`、子会话已登记、工具结果无错；
-  - `parent_of` 在 spawn 后正确；丢弃 Runtime 重开后（子任务短暂持锁，重试等待 host.lock）父子关系从事件重建正确，且 `list_sessions` 装饰 `parentId`（父会话为 None）。
-  - 注意点：`agent_spawn` 需审批，测试须自动批准；批准助手持 `Weak<Runtime>`，避免阻止 host.lock 释放。
-- 前端 `frontend/App.test.tsx` 新增 3 项：子代理事件卡片渲染、跳转子会话、运行状态与「子任务」徽标；fork 历史记录不提供跳转；todo/plan 状态渲染。
-
-## 实施记录（2026-11-06）
-
-- TDD：`subagent_flow.rs` 3 项先红（`parent_of`/`list_sessions` 编译失败确认缺失），实现后转绿（0.17s）。中途发现两处测试自身问题：未处理 `agent_spawn` 审批导致各测试等待 600 秒审批超时（自动批准解决）；批准助手持强引用阻止 host.lock 释放导致重启用例 `HOST_RUNNING`（改 Weak + 重试打开解决）。
-- 前端 38 项测试通过（含新增 3 项）；`tsc --noEmit` 与 Vite 生产构建通过。发现并修复重构引入的 `workspaceId` 解构引用遗漏。
-- 全套验证：`cargo fmt --check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test --all-features`、`cargo build --all-features` 通过（见 PR 描述）。
-- 边界：`parent_id` 为运行时推导，CLI/桌面旧客户端多收到一个可为 null 的字段；`agent_spawn` 的 8 个子代理上限、审批要求、180 秒工具超时均不变；`session_active_list` 仅反映当前进程内存状态（重启后为空，子代理未完成回合已由 `Store::recover()` 结算）。
+- `parent_id` 为运行时推导，CLI/桌面旧客户端多收到一个可为 null 的字段。
+- `agent_spawn` 的 8 个子代理上限、审批要求、180 秒工具超时均不变。
+- `session_active_list` 仅反映当前进程内存状态（重启后为空，子代理未完成回合已由 `Store::recover()` 结算）。

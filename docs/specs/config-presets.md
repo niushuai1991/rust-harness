@@ -1,12 +1,14 @@
-# 配置预设分层计划
+# 配置预设分层规范
 
-计划拟制日期：2026-11-07。
+- 日期：2026-11-07（计划拟制）
+- 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
+- 范围：P2 项「预设」：命名会话能力配置包（模型/effort/审批策略），解析为显式参数>预设>宿主缺省三层；CLI/JSON-RPC/ACP/桌面四端接入。
 
 ## 背景与范围
 
-P2 阶段验收项中的「预设」尚未开工（能力矩阵与交付记录标注「配置预设分层 未实现」，此前无任何规范定义其形态）。当前会话能力全部由调用方逐参数指定：模型与 effort 为每回合参数（`Runtime::run_session_with_attachments` / 桌面 `session_send` / RPC `session.send`），审批策略在宿主侧（CLI `approval::resolve_policy` 三档 ask/auto/never、ACP per-session Policy、桌面固定交互式）。重复性任务组合（例如「glm-5.3 + high effort + auto 审批」跑批量重构、「逐条 ask 审批」做敏感修改）每次都要手动改多处。
+P2 阶段验收项中的「预设」。此前会话能力全部由调用方逐参数指定：模型与 effort 为每回合参数（`Runtime::run_session_with_attachments` / 桌面 `session_send` / RPC `session.send`），审批策略在宿主侧（CLI `approval::resolve_policy` 三档 ask/auto/never、ACP per-session Policy、桌面固定交互式）。重复性任务组合（例如「glm-5.3 + high effort + auto 审批」跑批量重构、「逐条 ask 审批」做敏感修改）每次都要手动改多处。
 
-本计划定义并交付**配置预设**：一个命名的会话能力配置包，一次选定、三端生效。完成即计 P2 的预设项。
+本规范定义**配置预设**：一个命名的会话能力配置包，一次选定、三端生效。
 
 **预设包含的能力字段**：`modelId`、`effort`、`approval`（审批策略）。
 
@@ -16,9 +18,9 @@ P2 阶段验收项中的「预设」尚未开工（能力矩阵与交付记录�
 2. 所选预设的字段；
 3. 宿主既有缺省回落（`cli.default_model`、非 TTY 必须显式 `--approval` 的 TTY 规则、effort 缺省跟随模型默认）。
 
-**目录来源两层**（与模型设置计划的内置目录/个人覆盖同构）：合成内置预设 `builtin:default`（无任何覆盖、选中即现状行为、只读不落库、save/remove 拒绝），用户自定义预设存 SQLite `settings` 表 `presets` 键（JSON 数组，`Store::get/set` 复用，无 schema 迁移）。
+**目录来源两层**（与[模型设置规范](model-settings.md)的内置目录/个人覆盖同构）：合成内置预设 `builtin:default`（无任何覆盖、选中即现状行为、只读不落库、save/remove 拒绝），用户自定义预设存 SQLite `settings` 表 `presets` 键（JSON 数组，`Store::get/set` 复用，无 schema 迁移）。
 
-不在本次范围（边界）：附加工作区指令注入与 skills 启停（需动 `context.snapshot` 事件结构，另行立项）；`agent_spawn`/`schedule_write` 接受 presetId；桌面端审批策略接管（桌面保持交互式审批）；SDK 封装（SDK 尚未包装 session.send）；会话绑定预设落库（sessions 表不加列，预设每次调用显式解析，与会话进行中可换模型语义一致）。
+不在范围：附加工作区指令注入与 skills 启停（需动 `context.snapshot` 事件结构，另行立项）；`agent_spawn`/`schedule_write` 接受 presetId；桌面端审批策略接管（桌面保持交互式审批）；SDK 封装（SDK 尚未包装 session.send）；会话绑定预设落库（sessions 表不加列，预设每次调用显式解析，与会话进行中可换模型语义一致）。
 
 ## 设计
 
@@ -27,7 +29,7 @@ P2 阶段验收项中的「预设」尚未开工（能力矩阵与交付记录�
 - `PresetConfig { id, name, description: Option<String>, model_id: Option<String>, effort: Option<String>, approval: Option<String> }`，serde camelCase，仿 `ModelConfig`。
 - `KNOWN_APPROVALS = ["ask","auto","never"]`，仿 `KNOWN_EFFORTS`。
 - `PresetInfo` 列表行：`PresetConfig` 全字段 + 计算字段 `broken: Option<String>`（不落库）——modelId 不在目录、模型/供应商已停用、effort 不在该模型 efforts 内时给出原因，列表可读但不可直接用（仿 deepseek-harness agent-preset roster 的 broken 语义）。
-- 校验只查模型目录（`ModelService::list_models`/`list_providers`），不做真实凭据读取与网络（凭据管理器真实密钥教训，providers.rs 测试先例）。
+- 校验只查模型目录（`ModelService::list_models`/`list_providers`），不做真实凭据读取与网络。
 
 ### 预设服务（harness-runtime，新文件 presets.rs）
 
@@ -57,7 +59,7 @@ chat 初始解析同 run；`/approval`、`/model` 斜杠命令仍可运行中覆
 **桌面（src-tauri + frontend/）**：
 
 - 命令 `preset_list/preset_save/preset_remove`（specta 模式同 `default_selection_get/save`），重新导出 bindings。
-- 新增 `PresetsPanel`（Panel 联合类型加 `'presets'`，仿 ModelPanel）：列表（builtin 只读行、broken 标记）、新建/编辑表单（名称/描述/模型/effort/审批策略）、删除；审批字段标注「仅 CLI/JSON-RPC/ACP 生效」。
+- `PresetsPanel`（Panel 联合类型加 `'presets'`，仿 ModelPanel）：列表（builtin 只读行、broken 标记）、新建/编辑表单（名称/描述/模型/effort/审批策略）、删除；审批字段标注「仅 CLI/JSON-RPC/ACP 生效」。
 - 发送框增预设下拉（「不使用预设」+ 各预设）：选中即以预设 modelId/effort 填充既有三级联（级联持久化沿用 `app.default_selection`，不新增桌面默认键）；手改级联即视为放弃预设。桌面审批保持交互式（安全模型不变）。
 
 ## 边界与风险
@@ -66,9 +68,3 @@ chat 初始解析同 run；`/approval`、`/model` 斜杠命令仍可运行中覆
 - `session.send` 的 `modelId` 由必填改为可选是契约放宽：SDK 未包装该方法，桌面不经此路径，破坏面为零。
 - 预设校验在保存时做，模型后续被删/停用不阻止列表展示，以 `broken` 标记呈现（resolve 时调用方 `build_model_with` 的既有错误自然兜底）。
 - 桌面不读 `cli.default_preset`；两端默认互不干扰。
-
-## 验证
-
-- TDD 先红后绿：runtime presets 单测（CRUD、校验矩阵、broken 计算、builtin 合成与拒绝覆盖）；CLI 三链优先级单测（approval/model/effort）与 presets 子命令；RPC dispatch 测试（stub provider 走 session.send presetId、preset.* 方法）；ACP options 解析测试；前端 Vitest（PresetsPanel 增删改与 broken、发送框下拉填充级联）。
-- 标准四连：`cargo fmt --check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test --all-features`、`cargo build --all-features`；`npm ci && npm test && npm run build`（worktree 根目录）。
-- 真实模型端到端抽查（`harness run --preset …`）与桌面 UI 抽查留给用户。
