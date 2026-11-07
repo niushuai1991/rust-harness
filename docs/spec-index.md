@@ -24,6 +24,7 @@
 | [模型选择方式优化计划](specs/model-selection-plan.md) | 2026-11-07（计划拟制） | 已实施，Rust 与前端 82 项测试通过（2026-11-07）；两端交互与真实模型抽查待用户 | CLI `/model` `/effort` 内联面板与不退出 REPL；桌面浮层卡片选择器（搜索/分组/档位滑块/管理模型入口）；默认档位=最高档语义；切换静默持久化与会话流临时切换标记；`session_compact` 传档位。 |
 | [右侧面板（文件预览与改动审阅）计划](specs/side-panel-plan.md) | 2026-11-07（计划拟制） | 已实施，Rust 与前端 116 项测试通过（2026-11-07）；桌面 UI 抽查待用户 | 桌面右侧面板承载更改审阅（行级 unified diff + 同步）与工作副本文件预览（32KiB 截断/二进制占位）；unified 渲染迁移 harness-platform 与 CLI 共享；write/edit 工具卡文件按钮联动；参考 zcode 交互取舍。 |
 | [自动化任务（周期调度）计划](specs/automation-plan.md) | 2026-11-07（计划拟制） | 已实施，Rust 5 项与前端 16 项新增测试通过（2026-11-07）；桌面 UI 抽查待用户 | 桌面端用户可管理的周期自动化任务：单次/每天/每周/每月/每年五类周期（24 小时制、单次含秒）、可选绑定会话或自动新建会话投递回合；缺日跳过、错过不补跑；独立管理面板（列表/启停/编辑/删除/立即执行/运行历史）；参考 zcode 自动化取舍。 |
+| [Skills（技能）支持计划](specs/skills-plan.md) | 2026-11-07（计划批准） | 实施中 | 技能目录（项目级 `.agents/skills/` + 用户级 `~/.agents/skills/` + 兜底扫描）、frontmatter 解析、catalog 注入系统提示、`$name` 显式提及全文注入、禁用名单落库；CLI 管理子命令/`/skills`/`$` 补全与桌面面板/composer 补全；参考 codex skills 体系。 |
 
 ## 关系说明
 
@@ -43,6 +44,7 @@
 - 模型选择方式优化计划依附模型设置计划的两级目录，只改选择交互与档位语义（默认=最高档），不改存储结构；CLI 与桌面默认选择 KV 各自保留，切换标记为会话流临时展示不落库。
 - 右侧面板计划为桌面可视化专项计划，unified diff 渲染语义与 CLI diff 契约共享自 harness-platform；预览与审阅均为只读展示，写入仍走既有 `workspace_apply` 审阅快照校验，agent 写文件不自动弹面板。
 - 自动化任务计划与 P2 后台任务计划同属 orchestration 调度域：复用 `run_owned` 回合通道、250ms ticker 与 `schedules_lock`，KV 键独立（`orchestration.automations.v1`）；面向用户桌面管理而非模型工具，错过不补跑语义与既有单次调度基线一致。
+- Skills 支持计划闭环配置预设计划列为「另行立项」的 skills 启停项，并落地斜杠指令计划当时列为非目标的 codex `$` skill 体系；catalog 注入不改变 `context.snapshot` 事件结构，技能读取走现有免审批 `read` 工具，不新增模型工具。
 - 当前完成情况以 [能力状态矩阵](capability-matrix.md) 为准，具体执行与验证证据见 [交付记录](delivery.md)。
 - 后续发布仅构建使用系统已有 WebView2 的单一 NSIS 包；专项计划中的双安装包与测试数量仅对应 0.1.2 当次交付。
 
