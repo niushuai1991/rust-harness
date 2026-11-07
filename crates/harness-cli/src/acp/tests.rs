@@ -2,8 +2,7 @@
 
 use super::*;
 use agent_client_protocol::v1::schema::{
-    ContentChunk, PermissionOptionId, RequestPermissionResponse, ResourceLink,
-    SelectedPermissionOutcome,
+    RequestPermissionResponse, ResourceLink, SelectedPermissionOutcome,
 };
 use harness_contracts::AppError;
 use serde_json::json;
@@ -41,7 +40,7 @@ fn permission_outcome_parses_selected_shape() {
         response.outcome,
         RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new("allow"))
     );
-    let selected = serde_json::to_value(&RequestPermissionOutcome::Selected(
+    let selected = serde_json::to_value(RequestPermissionOutcome::Selected(
         SelectedPermissionOutcome::new("reject"),
     ))
     .unwrap();

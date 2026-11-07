@@ -250,7 +250,7 @@ async fn mock_model(
         }
         // 预置响应耗尽后，后续连接挂住不响应（socket 由永不完成的 future 持有）。
         loop {
-            let (socket, _) = listener.accept().await.unwrap();
+            let (_socket, _) = listener.accept().await.unwrap();
             let _ = tx.send(()).await;
             std::future::pending::<()>().await;
         }

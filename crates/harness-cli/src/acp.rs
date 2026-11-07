@@ -524,10 +524,9 @@ async fn run_turn(
             session_id: sid,
             status: end,
         } = event
+            && sid == session_id
         {
-            if sid == session_id {
-                status = end;
-            }
+            status = end;
         }
     }
     Ok(status)

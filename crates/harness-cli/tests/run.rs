@@ -354,7 +354,7 @@ async fn run_resolves_model_effort_and_approval_from_preset() {
     for (method, params) in [
         ("model.save", effortful),
         (
-            "preset.save".into(),
+            "preset.save",
             r#"{"preset":{"id":"refactor","name":"批量重构","modelId":"mock","effort":"low","approval":"auto"}}"#.to_string(),
         ),
     ] {
