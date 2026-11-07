@@ -318,7 +318,10 @@ pub async fn preset_remove(state: Backend<'_>, id: String) -> AppResult<()> {
 #[specta::specta]
 pub async fn skill_list(state: Backend<'_>, workspace_id: String) -> AppResult<Vec<SkillInfo>> {
     let info = state.workspaces.get(&workspace_id)?;
-    state.skills.list(std::path::Path::new(&info.replica_path)).await
+    state
+        .skills
+        .list(std::path::Path::new(&info.replica_path))
+        .await
 }
 /// 启停技能（写 settings 禁用名单，path 为 skill_list 输出中的路径）。
 #[tauri::command]
