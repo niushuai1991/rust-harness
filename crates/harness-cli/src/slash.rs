@@ -109,6 +109,12 @@ pub static SLASH_COMMANDS: &[SlashSpec] = &[
         arg_hint: Some("[auto|ask|never]"),
     },
     SlashSpec {
+        name: "skills",
+        aliases: &[],
+        description: "查看当前会话生效的技能",
+        arg_hint: None,
+    },
+    SlashSpec {
         name: "quit",
         aliases: &["exit", "q"],
         description: "退出 chat",
@@ -159,6 +165,7 @@ pub enum ChatCommand<'a> {
     Diff,
     Apply,
     Approval(Option<&'a str>),
+    Skills,
     Unknown(&'a str),
     Message,
 }
@@ -189,6 +196,7 @@ pub fn parse_command(line: &str) -> ChatCommand<'_> {
         "diff" => ChatCommand::Diff,
         "apply" => ChatCommand::Apply,
         "approval" => ChatCommand::Approval(rest),
+        "skills" => ChatCommand::Skills,
         _ => ChatCommand::Unknown(name),
     }
 }
@@ -204,7 +212,7 @@ mod tests {
             names,
             [
                 "help", "model", "effort", "status", "clear", "compact", "init", "plan", "goal",
-                "resume", "sessions", "diff", "apply", "approval", "quit"
+                "resume", "sessions", "diff", "apply", "approval", "skills", "quit"
             ]
         );
     }
@@ -238,6 +246,7 @@ mod tests {
             vec![
                 find_spec("status").unwrap() as &SlashSpec,
                 find_spec("sessions").unwrap() as &SlashSpec,
+                find_spec("skills").unwrap() as &SlashSpec,
             ]
         );
         // 容忍前导 '/'

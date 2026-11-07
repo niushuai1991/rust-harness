@@ -54,6 +54,8 @@ enum Commands {
     Models(manage::ModelsArgs),
     /// 预设管理
     Presets(manage::PresetsArgs),
+    /// 技能管理
+    Skills(manage::SkillsArgs),
 }
 
 fn data_dir(cli: &Cli) -> AppResult<PathBuf> {
@@ -105,5 +107,6 @@ async fn run() -> AppResult<()> {
         Commands::Apply(args) => manage::apply(runtime, args).await,
         Commands::Models(args) => manage::models(runtime, args).await,
         Commands::Presets(args) => manage::presets(runtime, args).await,
+        Commands::Skills(args) => manage::skills(runtime, args).await,
     }
 }
