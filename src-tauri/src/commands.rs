@@ -313,6 +313,25 @@ pub async fn preset_save(state: Backend<'_>, preset: PresetConfig) -> AppResult<
 pub async fn preset_remove(state: Backend<'_>, id: String) -> AppResult<()> {
     state.presets.remove(&id).await
 }
+/// 技能目录：经工作区隔离副本扫描（项目级 + 兜底）与用户级主目录，叠加禁用名单。
+#[tauri::command]
+#[specta::specta]
+pub async fn skill_list(state: Backend<'_>, workspace_id: String) -> AppResult<Vec<SkillInfo>> {
+    let info = state.workspaces.get(&workspace_id)?;
+    state.skills.list(std::path::Path::new(&info.replica_path)).await
+}
+/// 启停技能（写 settings 禁用名单，path 为 skill_list 输出中的路径）。
+#[tauri::command]
+#[specta::specta]
+pub async fn skill_set_enabled(
+    state: Backend<'_>,
+    workspace_id: String,
+    path: String,
+    enabled: bool,
+) -> AppResult<()> {
+    state.workspaces.get(&workspace_id)?;
+    state.skills.set_enabled(&path, enabled).await
+}
 #[tauri::command]
 #[specta::specta]
 pub async fn approval_list(state: Backend<'_>) -> AppResult<Vec<ApprovalRequest>> {
@@ -612,6 +631,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         preset_list,
         preset_save,
         preset_remove,
+        skill_list,
+        skill_set_enabled,
         approval_list,
         approval_resolve,
         plugin_list,

@@ -41,3 +41,7 @@ export const KNOWN_APPROVALS=['ask','auto','never'] as const;
 export type ApprovalPolicy=(typeof KNOWN_APPROVALS)[number];
 export interface PresetConfig {id:string;name:string;description:string|null;modelId:string|null;effort:string|null;approval:string|null}
 export type PresetInfo=PresetConfig&{broken:string|null};
+
+// 技能（harness-contracts SkillInfo/SkillScope）：SKILL.md 目录行附启停标记。
+export type SkillScope='project'|'user';
+export interface SkillInfo {name:string;description:string|null;path:string;scope:SkillScope;enabled:boolean;brokenReason:string|null}
