@@ -43,6 +43,10 @@ export const commands = {
 	presetList: () => typedError<PresetInfo[], AppError>(__TAURI_INVOKE("preset_list")),
 	presetSave: (preset: PresetConfig) => typedError<PresetConfig, AppError>(__TAURI_INVOKE("preset_save", { preset })),
 	presetRemove: (id: string) => typedError<null, AppError>(__TAURI_INVOKE("preset_remove", { id })),
+	/**  技能目录：经工作区隔离副本扫描（项目级 + 兜底）与用户级主目录，叠加禁用名单。 */
+	skillList: (workspaceId: string) => typedError<SkillInfo[], AppError>(__TAURI_INVOKE("skill_list", { workspaceId })),
+	/**  启停技能（写 settings 禁用名单，path 为 skill_list 输出中的路径）。 */
+	skillSetEnabled: (workspaceId: string, path: string, enabled: boolean) => typedError<null, AppError>(__TAURI_INVOKE("skill_set_enabled", { workspaceId, path, enabled })),
 	approvalList: () => typedError<ApprovalRequest[], AppError>(__TAURI_INVOKE("approval_list")),
 	approvalResolve: (id: string, allow: boolean) => typedError<null, AppError>(__TAURI_INVOKE("approval_resolve", { id, allow })),
 	pluginList: () => typedError<PluginInfo[], AppError>(__TAURI_INVOKE("plugin_list")),
@@ -273,6 +277,21 @@ export type SessionInfo = {
 	/**  子代理归属的父会话；由运行时从 subagent.created 事件推导，存储层恒为空。 */
 	parentId: string | null,
 };
+
+/**  技能目录行：SKILL.md 扫描结果附禁用标记（docs/specs/skills-plan.md）。 */
+export type SkillInfo = {
+	name: string,
+	description?: string | null,
+	/**  项目级为相对工作副本的路径，用户级为绝对路径；统一正斜杠。 */
+	path: string,
+	scope: SkillScope,
+	enabled: boolean,
+	/**  技能不可用的原因（name 非法等）；None 表示可用。 */
+	brokenReason?: string | null,
+};
+
+/**  技能来源层：项目级（工作副本）与用户级（主目录 `~/.agents/skills/`）。 */
+export type SkillScope = "project" | "user";
 
 export type ToolResult = {
 	content: string,

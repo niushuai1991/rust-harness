@@ -121,7 +121,7 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<()> {
     let mut history = Vec::new();
     loop {
         // 每轮刷新面板目录快照（不缓存）；读取失败时面板退化为纯命令补全。
-        let picker = picker_context(&runtime, &model_id, effort.as_deref()).await;
+        let picker = picker_context(&runtime, &workspace_id, &model_id, effort.as_deref()).await;
         let line = match line_editor::read_line("你> ", &mut history, picker) {
             Ok(LineResult::Line(line)) => line,
             Ok(LineResult::Interrupt) | Ok(LineResult::Eof) => break,
@@ -373,6 +373,38 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<()> {
                 policy = parsed;
                 eprintln!("审批策略已切换：{policy:?}");
             }
+            ChatCommand::Skills => match skill_rows_all(runtime.clone(), &workspace_id).await {
+                Ok(skills) if skills.is_empty() => {
+                    eprintln!("当前工作副本与用户目录没有可用技能。");
+                }
+                Ok(skills) => {
+                    eprintln!("技能（项目级与用户级）：");
+                    for skill in &skills {
+                        let state = match (&skill.broken_reason, skill.enabled) {
+                            (Some(reason), _) => format!("不可用（{reason}）"),
+                            (None, false) => "已禁用".to_owned(),
+                            (None, true) => String::new(),
+                        };
+                        let scope = match skill.scope {
+                            harness_contracts::SkillScope::Project => "项目",
+                            harness_contracts::SkillScope::User => "用户",
+                        };
+                        eprintln!(
+                            "  ${}<TAB>补全	{}	{}	{}{}",
+                            skill.name,
+                            scope,
+                            skill.path,
+                            skill.description.as_deref().unwrap_or("（无描述）"),
+                            if state.is_empty() {
+                                String::new()
+                            } else {
+                                format!("	{state}")
+                            }
+                        );
+                    }
+                }
+                Err(error) => eprintln!("读取技能失败：{error}"),
+            },
             ChatCommand::Unknown(command) => {
                 eprintln!("未知命令 {command}；/help 查看可用命令。");
             }
@@ -432,6 +464,7 @@ async fn current_model_efforts(runtime: &Arc<Runtime>, model_id: &str) -> AppRes
 /// 目录读取失败时退化为空面板（`/model`、`/effort` 仍可作普通命令补全）。
 async fn picker_context(
     runtime: &Arc<Runtime>,
+    workspace_id: &str,
     model_id: &str,
     effort: Option<&str>,
 ) -> PickerContext {
@@ -470,7 +503,40 @@ async fn picker_context(
         models: rows,
         efforts,
         current_effort: effort.map(str::to_owned),
+        skills: skill_rows(runtime, workspace_id).await,
     }
+}
+
+/// `/skills` 展示用：全部技能（含禁用与 broken）。
+async fn skill_rows_all(
+    runtime: Arc<Runtime>,
+    workspace_id: &str,
+) -> AppResult<Vec<harness_contracts::SkillInfo>> {
+    let info = runtime.workspaces.get(workspace_id)?;
+    runtime
+        .skills
+        .list(std::path::Path::new(&info.replica_path))
+        .await
+}
+
+/// 当前工作副本的启用技能行（`$` 补全与 `/skills` 列出共用）；读取失败退化为空。
+async fn skill_rows(runtime: &Arc<Runtime>, workspace_id: &str) -> Vec<line_editor::SkillRow> {
+    let Ok(info) = runtime.workspaces.get(workspace_id) else {
+        return Vec::new();
+    };
+    let replica = std::path::Path::new(&info.replica_path);
+    runtime
+        .skills
+        .list(replica)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|skill| skill.enabled && skill.broken_reason.is_none())
+        .map(|skill| line_editor::SkillRow {
+            name: skill.name,
+            description: skill.description.unwrap_or_default(),
+        })
+        .collect()
 }
 
 #[cfg(test)]

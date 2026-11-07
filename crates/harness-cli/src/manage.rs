@@ -398,6 +398,76 @@ pub enum PresetsCmd {
     },
 }
 
+#[derive(Debug, clap::Args)]
+pub struct SkillsArgs {
+    #[command(subcommand)]
+    pub cmd: Option<SkillsCmd>,
+}
+
+#[derive(Debug, clap::Subcommand)]
+pub enum SkillsCmd {
+    /// 列出技能（项目目录 + 用户级 ~/.agents/skills，附启停与可用性标记）
+    List {
+        /// 扫描的项目目录（缺省当前目录）
+        #[arg(default_value = ".")]
+        path: std::path::PathBuf,
+    },
+    /// 启用一个技能（path 取自 skills list 输出）
+    Enable {
+        /// 技能文件路径（项目级相对路径或用户级绝对路径）
+        path: String,
+    },
+    /// 禁用一个技能
+    Disable {
+        /// 技能文件路径
+        path: String,
+    },
+}
+
+pub async fn skills(runtime: Arc<Runtime>, args: SkillsArgs) -> AppResult<()> {
+    match args.cmd.unwrap_or(SkillsCmd::List {
+        path: std::path::PathBuf::from("."),
+    }) {
+        SkillsCmd::List { path } => {
+            let skills = runtime.skills.list(&path).await?;
+            if skills.is_empty() {
+                println!(
+                    "（无技能；在 .agents/skills/<name>/SKILL.md 或 ~/.agents/skills/ 放置技能文件）"
+                );
+                return Ok(());
+            }
+            for skill in &skills {
+                let scope = match skill.scope {
+                    harness_contracts::SkillScope::Project => "项目",
+                    harness_contracts::SkillScope::User => "用户",
+                };
+                let state = match (&skill.broken_reason, skill.enabled) {
+                    (Some(reason), _) => format!("	不可用（{reason}）"),
+                    (None, false) => "	已禁用".to_owned(),
+                    (None, true) => String::new(),
+                };
+                println!(
+                    "{}	{}	{}	{}{}",
+                    skill.name,
+                    scope,
+                    skill.path,
+                    skill.description.as_deref().unwrap_or("（无描述）"),
+                    state
+                );
+            }
+        }
+        SkillsCmd::Enable { path } => {
+            runtime.skills.set_enabled(&path, true).await?;
+            println!("已启用 {path}");
+        }
+        SkillsCmd::Disable { path } => {
+            runtime.skills.set_enabled(&path, false).await?;
+            println!("已禁用 {path}");
+        }
+    }
+    Ok(())
+}
+
 pub async fn presets(runtime: Arc<Runtime>, args: PresetsArgs) -> AppResult<()> {
     match args.cmd.unwrap_or(PresetsCmd::List) {
         PresetsCmd::List => {

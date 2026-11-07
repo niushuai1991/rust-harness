@@ -10,3 +10,4 @@ mod artifacts;
 
 pub mod plugin_ui;
 pub mod presets;
+pub mod skills;

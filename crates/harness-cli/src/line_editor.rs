@@ -45,12 +45,13 @@ pub struct EffortRow {
     pub current: bool,
 }
 
-/// 弹窗候选行：斜杠命令 / 模型 / 档位。
+/// 弹窗候选行：斜杠命令 / 模型 / 档位 / 技能。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Candidate {
     Slash(&'static SlashSpec),
     Model(ModelRow),
     Effort(EffortRow),
+    Skill(SkillRow),
 }
 
 impl Candidate {
@@ -60,6 +61,7 @@ impl Candidate {
             Candidate::Slash(spec) => spec.display(),
             Candidate::Model(row) => row.label.clone(),
             Candidate::Effort(row) => row.level.clone(),
+            Candidate::Skill(row) => format!("${}", row.name),
         }
     }
 
@@ -81,6 +83,7 @@ impl Candidate {
                     String::new()
                 }
             }
+            Candidate::Skill(row) => row.description.clone(),
         }
     }
 
@@ -93,12 +96,20 @@ impl Candidate {
     }
 }
 
-/// 内联面板上下文：模型目录与当前模型档位；chat 每轮传入，不做缓存。
+/// 技能候选行（`$` 补全用）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillRow {
+    pub name: String,
+    pub description: String,
+}
+
+/// 内联面板上下文：模型目录、当前模型档位与技能名单；chat 每轮传入，不做缓存。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PickerContext {
     pub models: Vec<ModelRow>,
     pub efforts: Vec<String>,
     pub current_effort: Option<String>,
+    pub skills: Vec<SkillRow>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,6 +117,7 @@ enum PopupMode {
     Slash,
     Models,
     Efforts,
+    Skills,
 }
 
 /// 大小写不敏感子串过滤模型行：匹配 id、名称与供应商；空查询返回全量。
@@ -119,6 +131,19 @@ pub fn filter_model_rows(rows: &[ModelRow], query: &str) -> Vec<Candidate> {
                 || row.provider.to_ascii_lowercase().contains(&query)
         })
         .map(|row| Candidate::Model(row.clone()))
+        .collect()
+}
+
+/// 大小写不敏感子串过滤技能行：匹配 name 与描述；空查询返回全量，保持目录排序。
+pub fn filter_skill_rows(rows: &[SkillRow], query: &str) -> Vec<Candidate> {
+    let query = query.trim().to_ascii_lowercase();
+    rows.iter()
+        .filter(|row| {
+            query.is_empty()
+                || row.name.to_ascii_lowercase().contains(&query)
+                || row.description.to_ascii_lowercase().contains(&query)
+        })
+        .map(|row| Candidate::Skill(row.clone()))
         .collect()
 }
 
@@ -403,6 +428,7 @@ impl Editor {
                 self.dismissed = self.current_token().map(str::to_owned);
                 self.sync_popup();
             }
+            Some(Candidate::Skill(row)) => self.apply_skill_completion(&row.name),
             None => {}
         }
     }
@@ -414,7 +440,13 @@ impl Editor {
         self.popup_open = false;
         self.selected = 0;
         self.candidates.clear();
-        self.dismissed = self.current_token().map(str::to_owned);
+        // 斜杠上下文记录首 token；`$` 上下文记录光标处 token，同一 token 内不再自动弹出。
+        self.dismissed = if self.buffer.starts_with('/') {
+            self.current_token().map(str::to_owned)
+        } else {
+            self.token_at_cursor()
+                .map(|(start, end)| self.buffer[start..end].to_owned())
+        };
     }
 
     fn submit(&mut self) -> Option<Outcome> {
@@ -430,10 +462,32 @@ impl Editor {
                     self.cursor = self.buffer.len();
                 }
                 Some(Candidate::Slash(spec)) => self.apply_completion(spec),
+                // 技能补全只改写 `$token` 为完整引用，消息还要继续写，不提交。
+                Some(Candidate::Skill(row)) => {
+                    self.apply_skill_completion(&row.name);
+                    return None;
+                }
                 None => {}
             }
         }
         Some(Outcome::Submitted)
+    }
+
+    /// 把光标处 `$token` 改写为 `$name `（token 后已有空格则不重复补），用于技能补全。
+    fn apply_skill_completion(&mut self, name: &str) {
+        let Some((start, end)) = self.token_at_cursor() else {
+            return;
+        };
+        let completed = if self.buffer[end..].starts_with(' ') {
+            format!("${name}")
+        } else {
+            format!("${name} ")
+        };
+        self.buffer.replace_range(start..end, &completed);
+        self.cursor = start + completed.len();
+        // 已选定该技能：同一 `$name` token 内不再弹窗，继续输入后按新 token 重新过滤。
+        self.dismissed = Some(format!("${name}"));
+        self.sync_popup();
     }
 
     fn interrupt_or_clear(&mut self) -> Option<Outcome> {
@@ -479,27 +533,64 @@ impl Editor {
         Some(&self.buffer[..end])
     }
 
-    /// 当前弹窗模式：首 token 恰为 `/model`、`/effort` 时展示参数面板，
-    /// 其余情况在首 token 内做命令补全（光标越过 token 则不弹）。
+    /// 光标所在 token 的字节区间；光标越过 token 末尾后返回 None。
+    /// `$` 补全可出现在消息任意位置，不受首 token `/` 约束。
+    fn token_at_cursor(&self) -> Option<(usize, usize)> {
+        let mut start = self.buffer[..self.cursor]
+            .rfind(char::is_whitespace)
+            .map_or(0, |i| i + 1);
+        while start < self.cursor && !self.buffer.is_char_boundary(start) {
+            start += 1;
+        }
+        let end = self.buffer[start..]
+            .find(char::is_whitespace)
+            .map_or(self.buffer.len(), |i| start + i);
+        if self.cursor > end {
+            return None;
+        }
+        Some((start, end))
+    }
+
+    /// 当前弹窗模式：自由文本中光标处 `$token` 触发技能补全；
+    /// 斜杠上下文（缓冲以 `/` 开头）保持原有命令/参数面板逻辑，不受 `$` 干扰。
     fn popup_mode(&self) -> Option<PopupMode> {
-        if !self.buffer.starts_with('/') {
+        if self.buffer.starts_with('/') {
+            let end = self.first_token_end()?;
+            let token = &self.buffer[..end];
+            if self.dismissed.as_deref() == Some(token) {
+                return None;
+            }
+            if token == "/model" && !self.picker.models.is_empty() {
+                return Some(PopupMode::Models);
+            }
+            if token == "/effort" && !self.picker.efforts.is_empty() {
+                return Some(PopupMode::Efforts);
+            }
+            if self.cursor <= end {
+                return Some(PopupMode::Slash);
+            }
             return None;
         }
-        let end = self.first_token_end()?;
-        let token = &self.buffer[..end];
-        if self.dismissed.as_deref() == Some(token) {
+        let (start, end) = self.token_at_cursor()?;
+        let token = &self.buffer[start..end];
+        if !token.starts_with('$') || self.dismissed.as_deref() == Some(token) {
             return None;
         }
-        if token == "/model" && !self.picker.models.is_empty() {
-            return Some(PopupMode::Models);
-        }
-        if token == "/effort" && !self.picker.efforts.is_empty() {
-            return Some(PopupMode::Efforts);
-        }
-        if self.cursor <= end {
-            return Some(PopupMode::Slash);
+        if !self.picker.skills.is_empty() {
+            return Some(PopupMode::Skills);
         }
         None
+    }
+
+    /// 光标处 `$token` 去掉前缀后的查询文本。
+    fn skill_query(&self) -> String {
+        match self.token_at_cursor() {
+            Some((start, end)) => self.buffer[start..end]
+                .strip_prefix('$')
+                .unwrap_or_default()
+                .to_owned(),
+            None => String::new(),
+        }
     }
 
     /// `/model`、`/effort` 之后已输入的参数文本。
@@ -512,7 +603,14 @@ impl Editor {
 
     /// 每次缓冲/光标变化后同步弹窗显隐与候选。
     fn sync_popup(&mut self) {
-        if self.current_token().map(str::to_owned).as_deref() != self.dismissed.as_deref() {
+        // dismissed 记录的 token 与当前上下文（斜杠首 token / 光标处 token）一致时保持关闭。
+        let current = if self.buffer.starts_with('/') {
+            self.current_token().map(str::to_owned)
+        } else {
+            self.token_at_cursor()
+                .map(|(start, end)| self.buffer[start..end].to_owned())
+        };
+        if current.as_deref() != self.dismissed.as_deref() {
             self.dismissed = None;
         }
         let candidates = match self.popup_mode() {
@@ -530,6 +628,7 @@ impl Editor {
                 self.picker.current_effort.as_deref(),
                 &self.argument_query(),
             ),
+            Some(PopupMode::Skills) => filter_skill_rows(&self.picker.skills, &self.skill_query()),
             None => Vec::new(),
         };
         if candidates != self.candidates {
@@ -774,6 +873,7 @@ mod tests {
             ],
             efforts: vec!["low".into(), "high".into(), "max".into()],
             current_effort: Some("high".into()),
+            skills: Vec::new(),
         }
     }
 
@@ -811,6 +911,98 @@ mod tests {
         for c in text.chars() {
             editor.handle(KeyAction::Char(c));
         }
+    }
+
+    fn skill_picker() -> PickerContext {
+        PickerContext {
+            skills: vec![
+                SkillRow {
+                    name: "review".into(),
+                    description: "代码审查".into(),
+                },
+                SkillRow {
+                    name: "deploy".into(),
+                    description: "部署".into(),
+                },
+            ],
+            ..PickerContext::default()
+        }
+    }
+
+    fn skill_candidates(e: &Editor) -> Vec<String> {
+        e.popup_candidates()
+            .iter()
+            .filter_map(|candidate| match candidate {
+                Candidate::Skill(row) => Some(row.name.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn dollar_token_opens_skill_popup_anywhere_in_message() {
+        let mut e = Editor::new(Vec::new(), skill_picker());
+        type_str(&mut e, "请先 $rev");
+        assert!(e.popup_open(), "光标处 $token 触发技能补全");
+        assert_eq!(skill_candidates(&e), vec!["review".to_string()]);
+    }
+
+    #[test]
+    fn dollar_completion_replaces_token_and_keeps_tail() {
+        let mut e = Editor::new(Vec::new(), skill_picker());
+        type_str(&mut e, "$rev");
+        e.handle(KeyAction::Tab);
+        assert_eq!(e.buffer(), "$review ");
+        assert_eq!(e.cursor_bytes(), "$review ".len());
+        // 尾部文本保留：光标移回 token 内再补全
+        let mut e = Editor::new(Vec::new(), skill_picker());
+        type_str(&mut e, "$rev x");
+        for _ in 0..2 {
+            e.handle(KeyAction::Left);
+        }
+        e.handle(KeyAction::Enter);
+        assert_eq!(e.buffer(), "$review x", "Enter 补全 $token 不提交整行");
+        assert!(!e.popup_open());
+    }
+
+    #[test]
+    fn slash_context_keeps_command_popup_over_dollar() {
+        let mut e = Editor::new(Vec::new(), skill_picker());
+        type_str(&mut e, "/model $rev");
+        assert!(
+            skill_candidates(&e).is_empty(),
+            "斜杠命令上下文中 $token 不触发技能弹窗"
+        );
+    }
+
+    #[test]
+    fn plain_text_without_dollar_stays_closed() {
+        let mut e = Editor::new(Vec::new(), skill_picker());
+        type_str(&mut e, "普通消息 review");
+        assert!(!e.popup_open());
+    }
+
+    #[test]
+    fn esc_dismisses_dollar_popup_until_token_changes() {
+        let mut e = Editor::new(Vec::new(), skill_picker());
+        type_str(&mut e, "$rev");
+        assert!(e.popup_open());
+        e.handle(KeyAction::Esc);
+        assert!(!e.popup_open());
+        // 仅移动光标（token 不变）不重弹，语义与斜杠弹窗一致
+        e.handle(KeyAction::Left);
+        e.handle(KeyAction::Right);
+        assert!(!e.popup_open());
+        type_str(&mut e, " $dep");
+        assert!(e.popup_open(), "换新 token 重新弹出");
+        assert_eq!(skill_candidates(&e), vec!["deploy".to_string()]);
+    }
+
+    #[test]
+    fn skill_popup_filters_by_query_case_insensitive() {
+        let mut e = Editor::new(Vec::new(), skill_picker());
+        type_str(&mut e, "$DEP");
+        assert_eq!(skill_candidates(&e), vec!["deploy".to_string()]);
     }
 
     #[test]
