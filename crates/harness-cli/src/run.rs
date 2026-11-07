@@ -127,10 +127,14 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<i32> {
             .or_else(|| crate::manage::preset_model(&preset)),
     )
     .await?;
-    let effort = args
+    let effort = match args
         .effort
         .clone()
-        .or_else(|| crate::manage::preset_effort(&preset));
+        .or_else(|| crate::manage::preset_effort(&preset))
+    {
+        Some(explicit) => Some(explicit),
+        None => crate::manage::fallback_effort(&runtime, &model_id).await?,
+    };
     let provider = runtime.models.build_model_with(&model_id, effort).await?;
     turn_once(
         runtime,

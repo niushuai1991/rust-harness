@@ -2,13 +2,13 @@
 use crate::{
     approval::Approval,
     diffview::ColorChoice,
-    line_editor::{self, LineResult},
-    manage::{self, ensure_model_exists},
+    line_editor::{self, LineResult, ModelRow, PickerContext},
+    manage::{self},
     run,
     slash::{ChatCommand, SLASH_COMMANDS, parse_command},
 };
 use clap::ValueEnum;
-use harness_contracts::{AppError, AppResult};
+use harness_contracts::{AppError, AppResult, ModelConfig};
 use harness_runtime::Runtime;
 use std::{io::IsTerminal, path::PathBuf, sync::Arc};
 
@@ -20,7 +20,7 @@ pub struct Args {
     /// 模型 ID（默认 settings 的 cli.default_model，否则报错列出可用模型）
     #[arg(short = 'm', long)]
     pub model: Option<String>,
-    /// 推理档位（必须在所选模型的支持档位内；缺省跟随模型默认）
+    /// 推理档位（必须在所选模型的支持档位内；缺省取 CLI 默认档位，否则模型最高档）
     #[arg(short = 'e', long)]
     pub effort: Option<String>,
     /// 显式指定工作区（与 --session 互斥）
@@ -100,10 +100,15 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<()> {
         args.model.clone().or_else(|| manage::preset_model(&preset)),
     )
     .await?;
-    let effort = args
+    // 档位解析：-e/预设显式传入（不支持时由构建报错），否则 CLI 默认档位 > 模型最高档。
+    let mut effort = match args
         .effort
         .clone()
-        .or_else(|| manage::preset_effort(&preset));
+        .or_else(|| manage::preset_effort(&preset))
+    {
+        Some(explicit) => Some(explicit),
+        None => manage::fallback_effort(&runtime, &model_id).await?,
+    };
     let mut provider = runtime
         .models
         .build_model_with(&model_id, effort.clone())
@@ -115,7 +120,9 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<()> {
 
     let mut history = Vec::new();
     loop {
-        let line = match line_editor::read_line("你> ", &mut history) {
+        // 每轮刷新面板目录快照（不缓存）；读取失败时面板退化为纯命令补全。
+        let picker = picker_context(&runtime, &model_id, effort.as_deref()).await;
+        let line = match line_editor::read_line("你> ", &mut history, picker) {
             Ok(LineResult::Line(line)) => line,
             Ok(LineResult::Interrupt) | Ok(LineResult::Eof) => break,
             Err(error) => return Err(AppError::new("TTY", error.to_string())),
@@ -135,26 +142,112 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<()> {
         match parse_command(trimmed) {
             ChatCommand::Quit => break,
             ChatCommand::Help => eprintln!("{}", help_text()),
-            ChatCommand::Model(None) => {
-                for model in runtime.models.list_models().await? {
-                    let marker = if model.id == model_id { " *当前" } else { "" };
-                    eprintln!("{}\t{}{marker}", model.id, model.model);
+            ChatCommand::Model(None) => match runtime.models.list_models().await {
+                Ok(models) => {
+                    for model in &models {
+                        let marker = if model.id == model_id { " *当前" } else { "" };
+                        let efforts = if model.efforts.is_empty() {
+                            "-".to_owned()
+                        } else {
+                            model.efforts.join(",")
+                        };
+                        eprintln!("{}\t{}\t{}{marker}", model.id, model.model, efforts);
+                    }
+                }
+                Err(error) => eprintln!("读取模型目录失败：{error}"),
+            },
+            ChatCommand::Model(Some(id)) => {
+                // 校验/切档失败只打印错误并继续，不再让手误退出整个会话。
+                match prepare_model_switch(&runtime, &effort, id).await {
+                    Ok(new_effort) => {
+                        match runtime
+                            .models
+                            .build_model_with(id, new_effort.clone())
+                            .await
+                        {
+                            Ok(new_provider) => {
+                                eprintln!(
+                                    "── 模型已切换：{model_id} → {id}（档位：{}）──",
+                                    new_effort.as_deref().unwrap_or("默认")
+                                );
+                                model_id = id.to_owned();
+                                effort = new_effort;
+                                provider = new_provider;
+                                // 静默写入持久化默认；失败仅警告，不影响本次切换。
+                                if let Err(error) = manage::persist_default_selection(
+                                    &runtime,
+                                    &model_id,
+                                    effort.as_deref(),
+                                )
+                                .await
+                                {
+                                    eprintln!("警告：默认模型写入失败：{error}");
+                                }
+                            }
+                            Err(error) => eprintln!("切换失败：{error}"),
+                        }
+                    }
+                    Err(error) => eprintln!("{error}"),
                 }
             }
-            ChatCommand::Model(Some(id)) => {
-                ensure_model_exists(&runtime.models.list_models().await?, id)?;
-                model_id = id.to_owned();
-                provider = runtime
-                    .models
-                    .build_model_with(&model_id, effort.clone())
-                    .await?;
-                eprintln!("已切换模型：{model_id}（下一回合生效）");
+            ChatCommand::Effort(None) => match current_model_efforts(&runtime, &model_id).await {
+                Ok(levels) => eprintln!(
+                    "当前档位：{}（可用：{}）",
+                    effort.as_deref().unwrap_or("默认"),
+                    levels.join("、")
+                ),
+                Err(error) => eprintln!("读取模型目录失败：{error}"),
+            },
+            ChatCommand::Effort(Some(level)) => {
+                match current_model_efforts(&runtime, &model_id).await {
+                    Ok(levels) => {
+                        match levels
+                            .iter()
+                            .find(|candidate| candidate.eq_ignore_ascii_case(level))
+                        {
+                            Some(matched) => {
+                                let previous = effort.clone();
+                                match runtime
+                                    .models
+                                    .build_model_with(&model_id, Some(matched.clone()))
+                                    .await
+                                {
+                                    Ok(new_provider) => {
+                                        effort = Some(matched.clone());
+                                        provider = new_provider;
+                                        eprintln!(
+                                            "── 档位已切换：{} → {matched} ──",
+                                            previous.as_deref().unwrap_or("默认")
+                                        );
+                                        if let Err(error) = manage::persist_default_selection(
+                                            &runtime,
+                                            &model_id,
+                                            effort.as_deref(),
+                                        )
+                                        .await
+                                        {
+                                            eprintln!("警告：默认档位写入失败：{error}");
+                                        }
+                                    }
+                                    Err(error) => eprintln!("切换失败：{error}"),
+                                }
+                            }
+                            None => eprintln!(
+                                "档位 {level} 不受当前模型支持。可用：{}",
+                                levels.join("、")
+                            ),
+                        }
+                    }
+                    Err(error) => eprintln!("读取模型目录失败：{error}"),
+                }
             }
             ChatCommand::Status => {
                 let info = runtime.workspaces.get(&workspace_id)?;
                 eprintln!(
-                    "会话    {session_id}\n工作区  {}\n副本    {}\n模型    {model_id}\n审批    {policy:?}",
-                    info.source_path, info.replica_path,
+                    "会话    {session_id}\n工作区  {}\n副本    {}\n模型    {model_id}\n档位    {}\n审批    {policy:?}",
+                    info.source_path,
+                    info.replica_path,
+                    effort.as_deref().unwrap_or("默认"),
                 );
             }
             ChatCommand::Clear => {
@@ -292,6 +385,92 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<()> {
     }
     eprintln!("已退出 chat。");
     Ok(())
+}
+
+/// `/model <id>` 的前置校验与档位归一：目标必须存在且启用；
+/// 当前档位被新模型支持则保留，否则回落其最高档。
+async fn prepare_model_switch(
+    runtime: &Arc<Runtime>,
+    current_effort: &Option<String>,
+    target: &str,
+) -> AppResult<Option<String>> {
+    let models = runtime.models.list_models().await?;
+    let config = models
+        .iter()
+        .find(|model| model.id == target)
+        .ok_or_else(|| {
+            AppError::new(
+                "MODEL_NOT_FOUND",
+                format!(
+                    "模型 {target} 不存在。可用模型：{}",
+                    manage::enabled_id_list(&models)
+                ),
+            )
+        })?;
+    if !config.enabled {
+        return Err(AppError::new(
+            "MODEL_DISABLED",
+            format!("模型 {target} 已停用，无法切换。"),
+        ));
+    }
+    Ok(manage::normalize_effort(config, current_effort.clone()))
+}
+
+/// 当前模型支持的档位列表（目录读取失败向上传播，由调用方打印并继续）。
+async fn current_model_efforts(runtime: &Arc<Runtime>, model_id: &str) -> AppResult<Vec<String>> {
+    Ok(runtime
+        .models
+        .list_models()
+        .await?
+        .iter()
+        .find(|model| model.id == model_id)
+        .map(|model| model.efforts.clone())
+        .unwrap_or_default())
+}
+
+/// 每轮输入前刷新内联面板上下文（目录不缓存，与桌面端一致）；
+/// 目录读取失败时退化为空面板（`/model`、`/effort` 仍可作普通命令补全）。
+async fn picker_context(
+    runtime: &Arc<Runtime>,
+    model_id: &str,
+    effort: Option<&str>,
+) -> PickerContext {
+    let models = runtime.models.list_models().await.unwrap_or_default();
+    let providers = runtime.models.list_providers().await.unwrap_or_default();
+    let usable = |model: &ModelConfig| {
+        model.enabled
+            && providers
+                .iter()
+                .any(|provider| provider.id == model.provider_id && provider.enabled)
+    };
+    let rows = models
+        .iter()
+        .filter(|model| usable(model))
+        .map(|model| ModelRow {
+            id: model.id.clone(),
+            label: if model.name.is_empty() {
+                model.model.clone()
+            } else {
+                model.name.clone()
+            },
+            provider: providers
+                .iter()
+                .find(|provider| provider.id == model.provider_id)
+                .map(|provider| provider.name.clone())
+                .unwrap_or_default(),
+            current: model.id == model_id,
+        })
+        .collect();
+    let efforts = models
+        .iter()
+        .find(|model| model.id == model_id)
+        .map(|model| model.efforts.clone())
+        .unwrap_or_default();
+    PickerContext {
+        models: rows,
+        efforts,
+        current_effort: effort.map(str::to_owned),
+    }
 }
 
 #[cfg(test)]

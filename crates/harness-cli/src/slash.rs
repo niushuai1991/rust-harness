@@ -37,6 +37,12 @@ pub static SLASH_COMMANDS: &[SlashSpec] = &[
         arg_hint: Some("[id]"),
     },
     SlashSpec {
+        name: "effort",
+        aliases: &[],
+        description: "查看或切换推理档位",
+        arg_hint: Some("[level]"),
+    },
+    SlashSpec {
         name: "status",
         aliases: &[],
         description: "显示会话与运行状态",
@@ -141,6 +147,7 @@ pub enum ChatCommand<'a> {
     Quit,
     Help,
     Model(Option<&'a str>),
+    Effort(Option<&'a str>),
     Clear,
     Compact,
     Init,
@@ -170,6 +177,7 @@ pub fn parse_command(line: &str) -> ChatCommand<'_> {
         "quit" => ChatCommand::Quit,
         "help" => ChatCommand::Help,
         "model" => ChatCommand::Model(rest),
+        "effort" => ChatCommand::Effort(rest),
         "clear" => ChatCommand::Clear,
         "compact" => ChatCommand::Compact,
         "init" => ChatCommand::Init,
@@ -195,8 +203,8 @@ mod tests {
         assert_eq!(
             names,
             [
-                "help", "model", "status", "clear", "compact", "init", "plan", "goal", "resume",
-                "sessions", "diff", "apply", "approval", "quit"
+                "help", "model", "effort", "status", "clear", "compact", "init", "plan", "goal",
+                "resume", "sessions", "diff", "apply", "approval", "quit"
             ]
         );
     }
@@ -252,6 +260,11 @@ mod tests {
         assert_eq!(parse_command("/h"), ChatCommand::Help);
         assert_eq!(parse_command("/model"), ChatCommand::Model(None));
         assert_eq!(parse_command("/model glm"), ChatCommand::Model(Some("glm")));
+        assert_eq!(parse_command("/effort"), ChatCommand::Effort(None));
+        assert_eq!(
+            parse_command("/effort high"),
+            ChatCommand::Effort(Some("high"))
+        );
         assert_eq!(parse_command("/status"), ChatCommand::Status);
         assert_eq!(parse_command("/clear"), ChatCommand::Clear);
         assert_eq!(parse_command("/new"), ChatCommand::Clear);
@@ -297,6 +310,7 @@ mod tests {
     #[test]
     fn display_includes_arg_hint() {
         assert_eq!(find_spec("model").unwrap().display(), "/model [id]");
+        assert_eq!(find_spec("effort").unwrap().display(), "/effort [level]");
         assert_eq!(find_spec("quit").unwrap().display(), "/quit");
     }
 }
