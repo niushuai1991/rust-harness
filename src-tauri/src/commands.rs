@@ -1,6 +1,7 @@
 //! Typed desktop adapters. Agent tools never call these human-only synchronization endpoints.
 use harness_contracts::*;
 use harness_runtime::Runtime;
+use serde::Deserialize;
 use std::{path::PathBuf, sync::Arc};
 use tauri::{State, ipc::Channel};
 
@@ -456,6 +457,126 @@ pub async fn schedule_delete(
     orch.delete_schedule(&session_id, &id).await
 }
 
+/// 桌面面板提交的自动化任务字段；kind 为 once|daily|weekly|monthly|yearly。
+#[derive(Debug, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationPayload {
+    pub workspace_id: String,
+    pub title: Option<String>,
+    pub prompt: String,
+    pub session_id: Option<String>,
+    pub kind: String,
+    pub at: Option<String>,
+    pub time: Option<String>,
+    pub weekdays: Option<Vec<u8>>,
+    pub month_day: Option<u8>,
+    pub month: Option<u8>,
+}
+
+fn parse_automation_kind(s: &str) -> AppResult<harness_orchestration::AutomationKind> {
+    use harness_orchestration::AutomationKind::*;
+    match s {
+        "once" => Ok(Once),
+        "daily" => Ok(Daily),
+        "weekly" => Ok(Weekly),
+        "monthly" => Ok(Monthly),
+        "yearly" => Ok(Yearly),
+        _ => Err(AppError::new(
+            "AUTOMATION_ARGUMENTS",
+            format!("未知周期类型 {s}"),
+        )),
+    }
+}
+
+fn build_automation_params(
+    p: AutomationPayload,
+) -> AppResult<harness_orchestration::AutomationParams> {
+    let AutomationPayload {
+        workspace_id,
+        title,
+        prompt,
+        session_id,
+        kind,
+        at,
+        time,
+        weekdays,
+        month_day,
+        month,
+    } = p;
+    Ok(harness_orchestration::AutomationParams {
+        workspace_id,
+        title,
+        prompt,
+        session_id,
+        kind: parse_automation_kind(&kind)?,
+        at,
+        time,
+        weekdays,
+        month_day,
+        month,
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn automation_list(
+    orch: Orchestration<'_>,
+    workspace_id: String,
+) -> AppResult<Vec<JsonPayload>> {
+    orch.automation_list(&workspace_id)
+        .await?
+        .into_iter()
+        .map(payload)
+        .collect()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn automation_create(
+    orch: Orchestration<'_>,
+    params: AutomationPayload,
+) -> AppResult<JsonPayload> {
+    payload(
+        orch.automation_create(build_automation_params(params)?)
+            .await?,
+    )
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn automation_update(
+    orch: Orchestration<'_>,
+    id: String,
+    params: AutomationPayload,
+) -> AppResult<JsonPayload> {
+    payload(
+        orch.automation_update(&id, build_automation_params(params)?)
+            .await?,
+    )
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn automation_delete(orch: Orchestration<'_>, id: String) -> AppResult<()> {
+    orch.automation_delete(&id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn automation_set_enabled(
+    orch: Orchestration<'_>,
+    id: String,
+    enabled: bool,
+) -> AppResult<JsonPayload> {
+    payload(orch.automation_set_enabled(&id, enabled).await?)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn automation_run_now(orch: Orchestration<'_>, id: String) -> AppResult<JsonPayload> {
+    payload(orch.automation_run_now(&id).await?)
+}
+
 pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
     tauri_specta::Builder::new().commands(tauri_specta::collect_commands![
         workspace_list,
@@ -507,6 +628,12 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         job_cancel,
         schedule_list,
         schedule_delete,
+        automation_list,
+        automation_create,
+        automation_update,
+        automation_delete,
+        automation_set_enabled,
+        automation_run_now,
         crate::artifact_commands::artifact_import,
         crate::artifact_commands::artifact_read,
         crate::artifact_commands::artifact_save,

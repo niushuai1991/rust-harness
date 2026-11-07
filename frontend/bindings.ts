@@ -59,6 +59,12 @@ export const commands = {
 	jobCancel: (sessionId: string, jobId: string) => typedError<null, AppError>(__TAURI_INVOKE("job_cancel", { sessionId, jobId })),
 	scheduleList: (sessionId: string) => typedError<JsonPayload[], AppError>(__TAURI_INVOKE("schedule_list", { sessionId })),
 	scheduleDelete: (sessionId: string, id: string) => typedError<null, AppError>(__TAURI_INVOKE("schedule_delete", { sessionId, id })),
+	automationList: (workspaceId: string) => typedError<JsonPayload[], AppError>(__TAURI_INVOKE("automation_list", { workspaceId })),
+	automationCreate: (params: AutomationPayload) => typedError<JsonPayload, AppError>(__TAURI_INVOKE("automation_create", { params })),
+	automationUpdate: (id: string, params: AutomationPayload) => typedError<JsonPayload, AppError>(__TAURI_INVOKE("automation_update", { id, params })),
+	automationDelete: (id: string) => typedError<null, AppError>(__TAURI_INVOKE("automation_delete", { id })),
+	automationSetEnabled: (id: string, enabled: boolean) => typedError<JsonPayload, AppError>(__TAURI_INVOKE("automation_set_enabled", { id, enabled })),
+	automationRunNow: (id: string) => typedError<JsonPayload, AppError>(__TAURI_INVOKE("automation_run_now", { id })),
 	artifactImport: (sessionId: string, path: string) => typedError<ArtifactMetadata, AppError>(__TAURI_INVOKE("artifact_import", { sessionId, path })),
 	artifactRead: (sessionId: string, hash: string, offset: number, length: number) => typedError<ArtifactChunk, AppError>(__TAURI_INVOKE("artifact_read", { sessionId, hash, offset, length })),
 	artifactSave: (sessionId: string, hash: string, path: string) => typedError<null, AppError>(__TAURI_INVOKE("artifact_save", { sessionId, hash, path })),
@@ -97,6 +103,20 @@ export type ArtifactMetadata = {
 	name: string,
 	mediaType: string,
 	size: number,
+};
+
+/**  桌面面板提交的自动化任务字段；kind 为 once|daily|weekly|monthly|yearly。 */
+export type AutomationPayload = {
+	workspaceId: string,
+	title: string | null,
+	prompt: string,
+	sessionId: string | null,
+	kind: string,
+	at: string | null,
+	time: string | null,
+	weekdays: number[] | null,
+	monthDay: number | null,
+	month: number | null,
 };
 
 /**  内置供应商随程序分发的只读模型条目；启用状态由个人层的 `disabled_models` 覆盖。 */
