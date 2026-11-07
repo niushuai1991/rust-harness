@@ -4524,7 +4524,10 @@ dependencies = [
  "tauri-specta",
  "tokio",
  "tokio-util",
+ "tracing",
  "tracing-subscriber",
+ "webview2-com",
+ "windows",
 ]
 
 [[package]]
