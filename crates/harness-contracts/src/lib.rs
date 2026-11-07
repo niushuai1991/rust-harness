@@ -218,6 +218,9 @@ pub struct BuiltinModel {
     pub id: String,
     pub name: String,
     pub efforts: Vec<String>,
+    /// 上下文窗口（tokens）；旧存储缺省为 None，未知窗口时前端隐藏用量指示器。
+    #[serde(default)]
+    pub context_window: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -255,6 +258,9 @@ pub struct ModelConfig {
     pub api_mode: ApiMode,
     #[serde(default)]
     pub max_output_tokens: Option<u32>,
+    /// 上下文窗口（tokens）；旧存储缺省为 None，未知窗口时前端隐藏用量指示器。
+    #[serde(default)]
+    pub context_window: Option<u32>,
     pub id: String,
     pub name: String,
     pub base_url: String,
@@ -282,6 +288,7 @@ impl Default for ModelConfig {
             provider_id: String::new(),
             api_mode: ApiMode::default(),
             max_output_tokens: None,
+            context_window: None,
             id: String::new(),
             name: String::new(),
             base_url: String::new(),
@@ -625,6 +632,36 @@ mod model_settings_tests {
             KNOWN_EFFORTS,
             ["disabled", "minimal", "low", "medium", "high", "max"]
         );
+    }
+
+    /// 上下文窗口：旧 JSON 缺省为 None；新 JSON 以 camelCase `contextWindow` 序列化。
+    #[test]
+    fn context_window_defaults_and_roundtrip() {
+        let legacy: ModelConfig = serde_json::from_str(
+            r#"{"id":"m1","name":"测试","baseUrl":"https://api.deepseek.com",
+                "model":"deepseek-flash","credentialRef":"provider/deepseek","proxy":null,
+                "providerId":"deepseek","compatibility":"deepSeek","apiMode":"anthropic",
+                "maxOutputTokens":null}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.context_window, None, "旧数据模型窗口缺省为 None");
+
+        let builtin: BuiltinModel =
+            serde_json::from_str(r#"{"id":"glm-4.7","name":"GLM-4.7","efforts":["low","high"]}"#)
+                .unwrap();
+        assert_eq!(
+            builtin.context_window, None,
+            "旧内置模型条目窗口缺省为 None"
+        );
+
+        let model = ModelConfig {
+            context_window: Some(200_000),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&model).unwrap();
+        assert!(json.contains("\"contextWindow\":200000"));
+        let back: ModelConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.context_window, Some(200_000));
     }
 
     /// 新增 auth 字段对旧 JSON 缺省为 ApiKey；ChatGptOAuth 以 camelCase 序列化。

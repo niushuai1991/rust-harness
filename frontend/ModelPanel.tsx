@@ -1,21 +1,14 @@
 import {useEffect,useRef,useState,type FormEvent} from 'react';
 import {Pencil,Plus,RefreshCw,Trash2} from 'lucide-react';
 import {command,desktop,errorText} from './api';
+import {formatResetTime,USAGE_CARD_LABELS} from './contextUsage';
 import {Modal} from './App';
-import {KNOWN_EFFORTS,type ApiMode,type ChatGptAccountInfo,type ChatGptLoginState,type ModelConfig,type ProviderInfo,type ProviderUsageSnapshot,type UsageCardKind} from './types';
+import {KNOWN_EFFORTS,type ApiMode,type ChatGptAccountInfo,type ChatGptLoginState,type ModelConfig,type ProviderInfo,type ProviderUsageSnapshot} from './types';
 const modes:{id:ApiMode;name:string}[]=[{id:'chatCompletions',name:'Chat Completions'},{id:'responses',name:'Responses'},{id:'anthropic',name:'Anthropic'}];
 const blankProvider=():ProviderInfo=>({id:crypto.randomUUID(),name:'自定义供应商',builtin:false,compatibility:'standard',auth:'apiKey',endpoints:modes.map(m=>({apiMode:m.id,baseUrl:''})),defaultModel:'',credentialRef:'',proxy:null,enabled:true,builtinModels:[],disabledModels:[]});
-const blankModel=(p:ProviderInfo):ModelConfig=>({id:crypto.randomUUID(),name:'',providerId:p.id,compatibility:p.compatibility,auth:p.auth,apiMode:p.endpoints[0]?.apiMode??'chatCompletions',baseUrl:p.endpoints[0]?.baseUrl??'',model:p.defaultModel,credentialRef:p.credentialRef,proxy:p.proxy,maxOutputTokens:null,efforts:[],effort:null,enabled:true,builtin:false});
+const blankModel=(p:ProviderInfo):ModelConfig=>({id:crypto.randomUUID(),name:'',providerId:p.id,compatibility:p.compatibility,auth:p.auth,apiMode:p.endpoints[0]?.apiMode??'chatCompletions',baseUrl:p.endpoints[0]?.baseUrl??'',model:p.defaultModel,credentialRef:p.credentialRef,proxy:p.proxy,maxOutputTokens:null,contextWindow:null,efforts:[],effort:null,enabled:true,builtin:false});
 const snapshot=(p:ProviderInfo)=>JSON.stringify(p);
 const snapshotModel=(m:ModelConfig)=>JSON.stringify(m);
-const USAGE_CARD_LABELS:Record<UsageCardKind,string>={fiveHour:'5 小时剩余',weekly:'每周剩余',tools:'工具调用'};
-function formatResetTime(resetAt:number|null,kind:UsageCardKind):string{
- if(resetAt==null)return'';
- const date=new Date(resetAt),suffix=' 重置';
- if(kind==='fiveHour'){const now=new Date();const sameDay=date.getFullYear()===now.getFullYear()&&date.getMonth()===now.getMonth()&&date.getDate()===now.getDate();
-  if(sameDay)return`${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}${suffix}`;}
- return`${date.getMonth()+1}月${date.getDate()}日${suffix}`;
-}
 export function ModelPanel({models,onClose,onSaved}:{models:ModelConfig[];onClose:()=>void;onSaved:()=>Promise<void>}) {
  const [providers,setProviders]=useState<ProviderInfo[]>([]),[provider,setProvider]=useState<ProviderInfo|null>(null);
  const [draft,setDraft]=useState<ModelConfig|null>(null),[viewBuiltin,setViewBuiltin]=useState<string|null>(null);
@@ -27,12 +20,13 @@ export function ModelPanel({models,onClose,onSaved}:{models:ModelConfig[];onClos
  const originals=useRef<ProviderInfo[]>([]),revision=useRef(0),alive=useRef(true),locked=useRef(false);
  const usageRevision=useRef(0),usageLoadedAt=useRef(0),usageInflight=useRef(false);
  useEffect(()=>{alive.current=true;void command<ProviderInfo[]>('provider_list').then(list=>{if(!alive.current)return;originals.current=list;setProviders(list);if(list[0])choose(list[0])}).catch(e=>{if(alive.current)setError(errorText(e))});return()=>{alive.current=false;revision.current++}},[]);
- const codingPlan=!!provider&&provider.builtin&&provider.compatibility==='bigModel';
+ // 支持额度查询的内置供应商：智谱 Coding Plan 与 ChatGPT 订阅。
+ const usageSupported=!!provider&&provider.builtin&&(provider.compatibility==='bigModel'||provider.auth==='chatGptOAuth');
  useEffect(()=>{
-  if(!codingPlan||!provider?.credentialRef){setUsage(null);setUsageError('');usageLoadedAt.current=0;return}
+  if(!usageSupported||!provider?.credentialRef){setUsage(null);setUsageError('');usageLoadedAt.current=0;return}
   void loadUsage();
   // eslint-disable-next-line react-hooks/exhaustive-deps -- 按供应商与凭据引用变化触发；loadUsage 读取最新 provider。
- },[codingPlan,provider?.id,provider?.credentialRef]);
+ },[usageSupported,provider?.id,provider?.credentialRef]);
  // ChatGPT OAuth 供应商：加载登录状态并轮询进行中的登录流程。
  const chatgptOAuth=!!provider&&provider.builtin&&provider.auth==='chatGptOAuth';
  const loginRevision=useRef(0);
@@ -87,7 +81,7 @@ export function ModelPanel({models,onClose,onSaved}:{models:ModelConfig[];onClos
   originals.current=[...originals.current.filter(x=>x.id!==stored.id),stored];
   setProvider(structuredClone(stored));setSecret('');setSavedProvider(snapshot(stored));
   await refreshLists();if(current(token))setStatus('已保存供应商；密钥由系统凭据管理器保管。');
-  if(codingPlan)void loadUsage(true);
+  if(usageSupported)void loadUsage(true);
  })}
  async function saveModel(e:FormEvent){e.preventDefault();if(!draft||!provider)return;const m=draft;await action(async token=>{
   const next={...m,providerId:provider.id,compatibility:provider.compatibility,baseUrl:provider.endpoints.find(x=>x.apiMode===m.apiMode)?.baseUrl??m.baseUrl,credentialRef:provider.credentialRef,proxy:provider.proxy};
@@ -107,11 +101,11 @@ export function ModelPanel({models,onClose,onSaved}:{models:ModelConfig[];onClos
  const builtinView=provider?.builtinModels.find(m=>m.id===viewBuiltin);
  const currentModels=provider?models.filter(m=>m.providerId===provider.id):[];
  const providerRow=(p:ProviderInfo)=><div key={p.id} className={`provider-row${p.id===provider?.id?' selected':''}`}><button className="provider-name" onClick={()=>choose(p)}>{p.name}{p.builtin&&<em className="builtin-badge">内置</em>}{!p.enabled&&<em className="off-badge">已停用</em>}</button><label className="switch" title={p.enabled?'停用供应商':'启用供应商'}><input type="checkbox" aria-label={`启用供应商 ${p.name}`} checked={p.enabled} disabled={busy} onChange={e=>toggleProvider(p,e.target.checked)}/></label></div>;
- const usageSection=!codingPlan?null:<section className="plan-card" aria-label="套餐与剩余额度">
-  <div className="plan-card-top"><strong>{usage?.planName??'智谱 Coding Plan'}</strong></div>
+ const usageSection=!usageSupported?null:<section className="plan-card" aria-label="套餐与剩余额度">
+  <div className="plan-card-top"><strong>{usage?.planName??(provider.auth==='chatGptOAuth'?'ChatGPT 订阅':'智谱 Coding Plan')}</strong></div>
   <div className="plan-divider"/>
   <p className="plan-label">剩余额度</p>
-  {!provider.credentialRef&&<p className="muted">配置 API 密钥后可查看剩余额度。</p>}
+  {!provider.credentialRef&&provider.auth!=='chatGptOAuth'&&<p className="muted">配置 API 密钥后可查看剩余额度。</p>}
   {provider.credentialRef&&(usageError?<div className="usage-error" role="status">{usageError}<button type="button" disabled={usageBusy} onClick={()=>void loadUsage(true)}>重试</button></div>
    :usageBusy&&!usage?<p className="muted">正在获取额度…</p>
    :usage&&usage.cards.length?<div className="usage-cards">{usage.cards.map(card=>{const pct=card.remainingPercent==null?null:Math.max(0,Math.min(100,Math.round(card.remainingPercent)));return <div key={card.kind} className="usage-card">
@@ -129,7 +123,7 @@ export function ModelPanel({models,onClose,onSaved}:{models:ModelConfig[];onClos
   <button className="nav-add" disabled={busy||!desktop()} onClick={()=>{const p=blankProvider();setProviders(list=>[...list,p]);choose(p)}}>添加自定义供应商</button>
  </nav>
  {provider?<div className="provider-detail">
-  <div className="detail-head"><h3>{provider.name}</h3>{provider.builtin&&<em className="builtin-badge">内置</em>}{!provider.enabled&&<em className="off-badge">已停用</em>}{codingPlan&&<button type="button" className="icon-soft" title="刷新额度" aria-label="刷新额度" disabled={usageBusy} onClick={()=>void loadUsage(true)}><RefreshCw size={14}/></button>}</div>
+  <div className="detail-head"><h3>{provider.name}</h3>{provider.builtin&&<em className="builtin-badge">内置</em>}{!provider.enabled&&<em className="off-badge">已停用</em>}{usageSupported&&<button type="button" className="icon-soft" title="刷新额度" aria-label="刷新额度" disabled={usageBusy} onClick={()=>void loadUsage(true)}><RefreshCw size={14}/></button>}</div>
   {usageSection}
   <form onSubmit={persistProvider} className="settings-form"><h4>连接设置</h4>
   <label>供应商名称<input required readOnly={provider.builtin} value={provider.name} onChange={e=>editProvider({...provider,name:e.target.value})}/></label>
@@ -175,6 +169,7 @@ export function ModelPanel({models,onClose,onSaved}:{models:ModelConfig[];onClos
   <fieldset className="effort-fieldset"><legend>支持的推理档位（可多选）</legend>{KNOWN_EFFORTS.map(level=><label key={level} className="effort-option"><input type="checkbox" aria-label={`档位 ${level}`} checked={draft.efforts.includes(level)} onChange={e=>{const efforts=e.target.checked?[...draft.efforts,level]:draft.efforts.filter(x=>x!==level);editModel({...draft,efforts,effort:efforts.includes(draft.effort??'')?draft.effort:null})}}/>{level}</label>)}</fieldset>
   {!!draft.efforts.length&&<label>默认推理档位<select value={draft.effort??''} onChange={e=>editModel({...draft,effort:e.target.value||null})}><option value="">跟随供应商默认</option>{draft.efforts.map(level=><option key={level} value={level}>{level}</option>)}</select></label>}
   <label>最大输出 Token（可选）<input type="number" min="1" max="2147483647" step="1" value={draft.maxOutputTokens??''} onChange={e=>editModel({...draft,maxOutputTokens:e.target.value?Number(e.target.value):null})}/></label>
+  <label>上下文窗口 Token（可选）<input type="number" min="1" max="4294967295" step="1" value={draft.contextWindow??''} placeholder="未填写时输入区不显示用量环形" onChange={e=>editModel({...draft,contextWindow:e.target.value?Number(e.target.value):null})}/></label>
   <p className="muted">连接测试会向已保存模型发送少量请求并消耗额度。修改配置后需先保存。</p>
   <div className="actions model-actions"><button type="button" disabled={busy||!savedDraft||!modelClean} onClick={()=>action(async token=>{await command<string>('model_test',{modelId:draft.id});if(current(token))setStatus('模型连接成功。')})}>测试已保存配置</button><button className="primary" disabled={busy||!desktop()}>{busy?'处理中…':'保存模型'}</button></div>
  </form></Modal>}

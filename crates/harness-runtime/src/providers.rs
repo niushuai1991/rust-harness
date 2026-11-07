@@ -10,19 +10,36 @@ use tokio::sync::Mutex;
 /// 内置供应商目录（deepseek、bigmodel）及其只读模型清单，与 zcode 内置目录对齐。
 /// 目录身份在升级间保持稳定；用户只能通过个人覆盖层启用/禁用，不能改写。
 pub fn builtin_providers() -> Vec<ProviderInfo> {
-    let deepseek_models: [(&str, &str, &[&str]); 2] = [
-        ("deepseek-flash", "DeepSeek Flash", &["disabled", "enabled"]),
+    // 模型上下文窗口为公开规格预填值（tokens），集中在此便于校正。
+    let deepseek_models: [(&str, &str, &[&str], u32); 2] = [
+        (
+            "deepseek-flash",
+            "DeepSeek Flash",
+            &["disabled", "enabled"],
+            128_000,
+        ),
         (
             "deepseek-v4-pro",
             "DeepSeek V4 Pro",
             &["disabled", "enabled"],
+            128_000,
         ),
     ];
-    let bigmodel_models: [(&str, &str, &[&str]); 4] = [
-        ("glm-5.3", "GLM-5.3", &["low", "high", "max"]),
-        ("glm-5.3-flash", "GLM-5.3 Flash", &["low", "high", "max"]),
-        ("glm-5.2", "GLM-5.2", &["disabled", "high", "max"]),
-        ("glm-5-turbo", "GLM-5 Turbo", &["disabled", "enabled"]),
+    let bigmodel_models: [(&str, &str, &[&str], u32); 4] = [
+        ("glm-5.3", "GLM-5.3", &["low", "high", "max"], 200_000),
+        (
+            "glm-5.3-flash",
+            "GLM-5.3 Flash",
+            &["low", "high", "max"],
+            200_000,
+        ),
+        ("glm-5.2", "GLM-5.2", &["disabled", "high", "max"], 200_000),
+        (
+            "glm-5-turbo",
+            "GLM-5 Turbo",
+            &["disabled", "enabled"],
+            200_000,
+        ),
     ];
     let mut providers: Vec<ProviderInfo> = [
         (
@@ -77,10 +94,11 @@ pub fn builtin_providers() -> Vec<ProviderInfo> {
         enabled: true,
         builtin_models: models
             .iter()
-            .map(|(id, name, efforts)| BuiltinModel {
+            .map(|(id, name, efforts, window)| BuiltinModel {
                 id: (*id).into(),
                 name: (*name).into(),
                 efforts: efforts.iter().map(|e| (*e).into()).collect(),
+                context_window: Some(*window),
             })
             .collect(),
         disabled_models: Vec::new(),
@@ -93,48 +111,62 @@ pub fn builtin_providers() -> Vec<ProviderInfo> {
 /// ChatGPT 账号供应商：OAuth 登录（非 API key），唯一 Responses 端点指向 ChatGPT 后端。
 /// 模型目录与 effort 档位照搬 codex `models-manager/models.json` 的 picker 可见条目。
 fn chatgpt_provider() -> ProviderInfo {
-    let models: [(&str, &str, &[&str]); 9] = [
+    // codex 后端对未知模型统一按 272k 窗口下发（models-manager fallback），此处沿用。
+    let models: [(&str, &str, &[&str], u32); 9] = [
         (
             "gpt-6.1-sol",
             "GPT-6.1-Sol",
             &["low", "medium", "high", "xhigh", "max"],
+            272_000,
         ),
         (
             "gpt-6-astra",
             "GPT-6-Astra",
             &["low", "medium", "high", "xhigh", "max"],
+            272_000,
         ),
         (
             "gpt-6-sol",
             "GPT-6-Sol",
             &["low", "medium", "high", "xhigh", "max"],
+            272_000,
         ),
         (
             "gpt-6-luna",
             "GPT-6-Luna",
             &["low", "medium", "high", "xhigh", "max"],
+            272_000,
         ),
         (
             "gpt-5.6-sol",
             "GPT-5.6-Sol",
             &["low", "medium", "high", "xhigh", "max"],
+            272_000,
         ),
         (
             "gpt-6.1-terra",
             "GPT-6.1 Terra",
             &["low", "medium", "high", "xhigh", "max"],
+            272_000,
         ),
         (
             "gpt-5.6-terra",
             "GPT-5.6-Terra",
             &["low", "medium", "high", "xhigh", "max"],
+            272_000,
         ),
         (
             "gpt-5.6-luna",
             "GPT-5.6-Luna",
             &["low", "medium", "high", "xhigh", "max"],
+            272_000,
         ),
-        ("gpt-5.5", "GPT-5.5", &["low", "medium", "high", "xhigh"]),
+        (
+            "gpt-5.5",
+            "GPT-5.5",
+            &["low", "medium", "high", "xhigh"],
+            272_000,
+        ),
     ];
     ProviderInfo {
         compatibility: ProviderCompatibility::Standard,
@@ -152,10 +184,11 @@ fn chatgpt_provider() -> ProviderInfo {
         }],
         builtin_models: models
             .iter()
-            .map(|(id, name, efforts)| BuiltinModel {
+            .map(|(id, name, efforts, window)| BuiltinModel {
                 id: (*id).into(),
                 name: (*name).into(),
                 efforts: efforts.iter().map(|e| (*e).into()).collect(),
+                context_window: Some(*window),
             })
             .collect(),
         disabled_models: Vec::new(),
@@ -182,6 +215,7 @@ fn builtin_model_config(provider: &ProviderInfo, model: &BuiltinModel) -> Option
         compatibility: provider.compatibility,
         api_mode: endpoint.api_mode,
         max_output_tokens: None,
+        context_window: model.context_window,
         efforts: model.efforts.clone(),
         effort: None,
         enabled: !provider.disabled_models.contains(&model.id),
@@ -427,6 +461,84 @@ fn normalize_plan_level(level: &str) -> Option<String> {
         }
         _ => Some(trimmed.to_string()),
     }
+}
+
+/// ChatGPT 订阅用量端点；与模型基址同域（`CHATGPT_BASE_URL` 的 `/codex` 上一级），路径规则见 codex backend-client。
+const CHATGPT_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
+
+/// 拉取 ChatGPT 订阅用量；凭据由 OAuth 材料提供（自动刷新 access token）。
+async fn fetch_chatgpt_usage_json(
+    token_store: &dyn crate::chatgpt::TokenStore,
+    config: &ModelConfig,
+    now: i64,
+) -> AppResult<serde_json::Value> {
+    let (secret, extra_headers) = oauth_material(token_store, config, now).await?;
+    let client = http_client(config.proxy.as_deref())?;
+    let mut request = client
+        .get(CHATGPT_USAGE_URL)
+        .bearer_auth(secret)
+        .timeout(std::time::Duration::from_secs(20));
+    for (name, value) in extra_headers {
+        request = request.header(name, value);
+    }
+    let response = request.send().await.map_err(transport_error)?;
+    if !response.status().is_success() {
+        return Err(AppError::new(
+            "MODEL_USAGE",
+            format!("获取额度失败：HTTP {}", response.status()),
+        ));
+    }
+    response.json().await.map_err(transport_error)
+}
+
+/// 将 /wham/usage 响应映射为剩余额度快照；used_percent 为已用口径，展示前反转。
+fn map_chatgpt_usage(value: serde_json::Value, now: i64) -> AppResult<ProviderUsageSnapshot> {
+    let plan_name = value
+        .get("plan_type")
+        .and_then(|v| v.as_str())
+        .and_then(chatgpt_plan_name);
+    let windows = value.get("rate_limit");
+    let mut cards = Vec::new();
+    for (kind, key) in [
+        (UsageCardKind::FiveHour, "primary_window"),
+        (UsageCardKind::Weekly, "secondary_window"),
+    ] {
+        let Some(window) = windows.and_then(|w| w.get(key)) else {
+            continue;
+        };
+        let used = window
+            .get("used_percent")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0)
+            .clamp(0.0, 100.0);
+        let reset_at = window
+            .get("reset_at")
+            .and_then(|v| v.as_i64())
+            .or_else(|| {
+                window
+                    .get("reset_after_seconds")
+                    .and_then(|v| v.as_i64())
+                    .map(|after| now + after)
+            })
+            .map(|seconds| seconds * 1000);
+        cards.push(ProviderUsageCard {
+            kind,
+            remaining_percent: Some(100.0 - used),
+            reset_at,
+        });
+    }
+    Ok(ProviderUsageSnapshot { plan_name, cards })
+}
+
+/// plan_type 归一化为套餐显示名（首字母大写并带 ChatGPT 前缀）。
+fn chatgpt_plan_name(plan_type: &str) -> Option<String> {
+    let trimmed = plan_type.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut chars = trimmed.chars();
+    let (first, rest) = (chars.next().unwrap(), chars.as_str());
+    Some(format!("ChatGPT {}{}", first.to_uppercase(), rest))
 }
 fn decode(e: impl std::fmt::Display) -> AppError {
     AppError::new("MODEL_CONFIG", e.to_string())
@@ -826,7 +938,7 @@ impl ModelService {
         )
         .await
     }
-    /// 拉取供应商套餐与剩余额度（当前仅内置智谱 Coding Plan 支持）；快照即查即返，不落库。
+    /// 拉取供应商套餐与剩余额度（内置智谱 Coding Plan 与 ChatGPT 订阅）；快照即查即返，不落库。
     pub async fn fetch_usage(&self, provider_id: &str) -> AppResult<ProviderUsageSnapshot> {
         let _guard = self.gate.lock().await;
         let supplier = self
@@ -835,7 +947,19 @@ impl ModelService {
             .into_iter()
             .find(|p| p.id == provider_id)
             .ok_or_else(|| invalid("供应商不存在"))?;
-        if !supplier.builtin || supplier.compatibility != ProviderCompatibility::BigModel {
+        if !supplier.builtin {
+            return Err(invalid("该供应商不支持额度查询"));
+        }
+        if supplier.auth == ProviderAuth::ChatGptOAuth {
+            let now = chrono::Utc::now().timestamp();
+            let config = ModelConfig {
+                proxy: supplier.proxy.clone(),
+                ..Default::default()
+            };
+            let value = fetch_chatgpt_usage_json(&*self.token_store, &config, now).await?;
+            return map_chatgpt_usage(value, now);
+        }
+        if supplier.compatibility != ProviderCompatibility::BigModel {
             return Err(invalid("该供应商不支持额度查询"));
         }
         let secret = harness_platform::get_secret(&supplier.credential_ref)?.unwrap_or_default();
@@ -937,7 +1061,10 @@ mod tests {
     }
     #[tokio::test]
     async fn chatgpt_models_require_login_before_build() {
-        let (dir, service) = service().await;
+        // 必须注入空凭据存储：系统凭据管理器可能带有开发机真实登录态，会让该测试误判为已登录。
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("config.db")).await.unwrap();
+        let service = ModelService::with_token_store(store, Arc::new(MemoryTokenStore::default()));
         let err = service
             .build_model("builtin:chatgpt:gpt-6.1-sol")
             .await
@@ -1084,6 +1211,48 @@ mod tests {
             map_usage_quota(serde_json::json!({"code":200,"success":true,"data":{"limits":[]}}))
                 .unwrap();
         assert_eq!(snapshot.plan_name, None);
+        assert!(snapshot.cards.is_empty());
+    }
+    #[test]
+    fn maps_chatgpt_usage_response_to_remaining_cards() {
+        // 样例按 codex /wham/usage 的 wire 格式构造：used_percent 为已用口径，展示前反转。
+        let value = serde_json::json!({
+            "plan_type": "plus",
+            "rate_limit": {
+                "allowed": true,
+                "limit_reached": false,
+                "primary_window": {"used_percent": 40, "limit_window_seconds": 18000, "reset_after_seconds": 600, "reset_at": 1794130964},
+                "secondary_window": {"used_percent": 10, "limit_window_seconds": 604800, "reset_after_seconds": 86400}
+            }
+        });
+        let snapshot = map_chatgpt_usage(value, 1_000).unwrap();
+        assert_eq!(snapshot.plan_name.as_deref(), Some("ChatGPT Plus"));
+        assert_eq!(snapshot.cards.len(), 2);
+        assert_eq!(snapshot.cards[0].kind, UsageCardKind::FiveHour);
+        assert_eq!(snapshot.cards[0].remaining_percent, Some(60.0));
+        assert_eq!(snapshot.cards[0].reset_at, Some(1_794_130_964_000));
+        assert_eq!(snapshot.cards[1].kind, UsageCardKind::Weekly);
+        assert_eq!(snapshot.cards[1].remaining_percent, Some(90.0));
+        // reset_at 缺失 → now(1000) + reset_after_seconds(86400)，折毫秒。
+        assert_eq!(snapshot.cards[1].reset_at, Some(87_400_000));
+    }
+    #[test]
+    fn chatgpt_usage_reset_falls_back_to_reset_after() {
+        // reset_at 缺失时按 now + reset_after_seconds 推导（毫秒）。
+        let value = serde_json::json!({
+            "plan_type": "pro",
+            "rate_limit": {
+                "primary_window": {"used_percent": 0, "limit_window_seconds": 18000, "reset_after_seconds": 600}
+            }
+        });
+        let snapshot = map_chatgpt_usage(value, 1_000).unwrap();
+        assert_eq!(snapshot.plan_name.as_deref(), Some("ChatGPT Pro"));
+        assert_eq!(snapshot.cards[0].reset_at, Some(1_600_000));
+    }
+    #[test]
+    fn chatgpt_usage_without_windows_yields_no_cards() {
+        let snapshot = map_chatgpt_usage(serde_json::json!({"plan_type": "free"}), 0).unwrap();
+        assert_eq!(snapshot.plan_name.as_deref(), Some("ChatGPT Free"));
         assert!(snapshot.cards.is_empty());
     }
     #[tokio::test]
