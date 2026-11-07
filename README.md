@@ -24,7 +24,17 @@ Rust / Tauri 2 宿主，React 19 界面，SQLite 事件存储。所有模型改�
 
 从 [Releases](https://github.com/niushuai1991/rust-harness/releases) 下载最新 NSIS 安装包：系统级安装（安装时请求管理员权限），需要系统已有 WebView2，支持简体中文与英文界面。覆盖安装和升级保留会话、托管副本等用户数据；卸载默认保留用户数据和凭据。
 
-也可以从源码构建，见[开发](#-开发)一节。
+也可以[从源码构建安装包](#从源码构建安装包)。
+
+### 从源码构建安装包
+
+环境要求见[开发](#-开发)一节。
+
+```powershell
+./scripts/build-windows.ps1   # 自动执行 npm ci、前端测试、Tauri 打包与安装包权限校验
+```
+
+系统级 NSIS 安装包生成于 `target/release/bundle/nsis`。
 
 ### 首次使用
 
@@ -88,16 +98,10 @@ npm run sdk:check
 cargo test --workspace
 cargo check -p rust-harness-desktop
 python -m unittest discover -s sdk/python -p 'test_*.py' -v
+./scripts/smoke-windows.ps1   # 冒烟：桌面进程启动、第二实例退出（需先构建桌面安装包）
 ```
 
-构建 Windows 安装包：
-
-```powershell
-./scripts/build-windows.ps1   # 系统级 NSIS 安装包
-./scripts/smoke-windows.ps1   # 冒烟：桌面进程启动、第二实例退出
-```
-
-产物位于 `target/release/bundle/nsis`。
+构建桌面安装包见[快速开始](#-快速开始)一节。
 
 ## 📍 当前状态
 
