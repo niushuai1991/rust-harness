@@ -11,6 +11,7 @@ fn io_err(error: std::io::Error) -> AppError {
 }
 
 pub const DEFAULT_MODEL_KEY: &str = "cli.default_model";
+pub const DEFAULT_EFFORT_KEY: &str = "cli.default_effort";
 
 #[derive(Debug, clap::Args)]
 pub struct SessionsArgs {
@@ -284,9 +285,70 @@ pub fn ensure_model_exists(models: &[ModelConfig], id: &str) -> AppResult<()> {
     } else {
         Err(AppError::new(
             "MODEL_NOT_FOUND",
-            format!("模型 {id} 不存在，无法设为默认"),
+            format!("模型 {id} 不存在。可用模型：{}", enabled_id_list(models)),
         ))
     }
+}
+
+/// 错误提示用的启用模型 id 清单。
+pub fn enabled_id_list(models: &[ModelConfig]) -> String {
+    models
+        .iter()
+        .filter(|model| model.enabled)
+        .map(|model| model.id.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// 无效或缺省档位的归一化：回落模型最高档；无档位模型返回 None。
+pub fn normalize_effort(model: &ModelConfig, effort: Option<String>) -> Option<String> {
+    if model.efforts.is_empty() {
+        return None;
+    }
+    match effort {
+        Some(value) if model.efforts.contains(&value) => Some(value),
+        _ => model.efforts.last().cloned(),
+    }
+}
+
+pub async fn current_default_effort(runtime: &Arc<Runtime>) -> AppResult<Option<String>> {
+    Ok(runtime
+        .store
+        .get(DEFAULT_EFFORT_KEY)
+        .await?
+        .and_then(|value| value.as_str().map(str::to_owned)))
+}
+
+/// 未显式指定档位时的回落链：CLI 默认档位 > 模型最高档。
+pub async fn fallback_effort(runtime: &Arc<Runtime>, model_id: &str) -> AppResult<Option<String>> {
+    let catalog = runtime.models.list_models().await?;
+    match catalog.iter().find(|model| model.id == model_id) {
+        Some(config) => {
+            let stored = current_default_effort(runtime).await?;
+            Ok(normalize_effort(config, stored))
+        }
+        None => Ok(None),
+    }
+}
+
+/// 会话内切换后静默写入持久化默认（对齐桌面端 `app.default_selection` 的双写语义）；
+/// 失败由调用方以警告呈现，不影响切换本身。
+pub async fn persist_default_selection(
+    runtime: &Arc<Runtime>,
+    model_id: &str,
+    effort: Option<&str>,
+) -> AppResult<()> {
+    runtime
+        .store
+        .set(DEFAULT_MODEL_KEY, &json!(model_id))
+        .await?;
+    runtime
+        .store
+        .set(
+            DEFAULT_EFFORT_KEY,
+            &effort.map(|value| json!(value)).unwrap_or(Value::Null),
+        )
+        .await
 }
 
 pub const DEFAULT_PRESET_KEY: &str = "cli.default_preset";
@@ -464,5 +526,40 @@ mod tests {
         assert!(ensure_model_exists(&models, "a").is_ok());
         let error = ensure_model_exists(&models, "missing").unwrap_err();
         assert_eq!(error.code, "MODEL_NOT_FOUND");
+        assert!(error.message.contains("可用模型"), "错误应列出可用模型");
+    }
+
+    fn model_with_efforts(id: &str, efforts: &[&str]) -> ModelConfig {
+        let mut config = model(id);
+        config.efforts = efforts.iter().map(|value| value.to_string()).collect();
+        config
+    }
+
+    #[test]
+    fn normalize_effort_falls_back_to_highest_level() {
+        let config = model_with_efforts("m", &["low", "high", "max"]);
+        // 缺省与无效档位都回落最高档
+        assert_eq!(normalize_effort(&config, None).as_deref(), Some("max"));
+        assert_eq!(
+            normalize_effort(&config, Some("ultra".into())).as_deref(),
+            Some("max")
+        );
+        // 支持的档位原样保留
+        assert_eq!(
+            normalize_effort(&config, Some("low".into())).as_deref(),
+            Some("low")
+        );
+        // 无档位模型永远为 None
+        let bare = model_with_efforts("bare", &[]);
+        assert_eq!(normalize_effort(&bare, Some("high".into())), None);
+        assert_eq!(normalize_effort(&bare, None), None);
+    }
+
+    #[test]
+    fn enabled_id_list_skips_disabled_models() {
+        let mut disabled = model("off");
+        disabled.enabled = false;
+        let models = vec![model("on"), disabled];
+        assert_eq!(enabled_id_list(&models), "on");
     }
 }

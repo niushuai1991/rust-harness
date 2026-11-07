@@ -166,8 +166,9 @@ pub async fn session_compact(
     state: Backend<'_>,
     session_id: String,
     model_id: String,
+    effort: Option<String>,
 ) -> AppResult<()> {
-    let provider = state.models.build_model(&model_id).await?;
+    let provider = state.models.build_model_with(&model_id, effort).await?;
     harness_orchestration::compact_session(
         state.inner().clone(),
         &session_id,

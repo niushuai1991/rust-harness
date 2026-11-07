@@ -123,6 +123,16 @@ fn require_credential(config: &ModelConfig, secret: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// 错误提示用的启用模型 id 清单（与 CLI 侧报错风格对齐）。
+fn enabled_id_list(models: &[ModelConfig]) -> String {
+    models
+        .iter()
+        .filter(|model| model.enabled)
+        .map(|model| model.id.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// 应用本次请求的 effort 覆盖；档位必须在模型支持列表内，None 表示清除覆盖、跟随供应商默认。
 fn apply_effort(mut config: ModelConfig, effort: Option<String>) -> AppResult<ModelConfig> {
     match effort {
@@ -571,12 +581,17 @@ impl ModelService {
         id: &str,
         effort: Option<String>,
     ) -> AppResult<Arc<dyn ModelProvider>> {
-        let mut config = self
-            .list_models()
-            .await?
-            .into_iter()
+        let catalog = self.list_models().await?;
+        let mut config = catalog
+            .iter()
             .find(|m| m.id == id)
-            .ok_or_else(|| AppError::new("MODEL_NOT_FOUND", "模型不存在"))?;
+            .ok_or_else(|| {
+                AppError::new(
+                    "MODEL_NOT_FOUND",
+                    format!("模型 {id} 不存在。可用模型：{}", enabled_id_list(&catalog)),
+                )
+            })?
+            .clone();
         if !config.enabled {
             return Err(AppError::new("MODEL_DISABLED", "模型已停用"));
         }

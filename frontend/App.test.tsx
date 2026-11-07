@@ -40,7 +40,7 @@ describe('聊天交互',()=>{
   expect(screen.getByText('内容 other-session')).toBeInTheDocument();
   fireEvent.change(screen.getByLabelText('消息'),{target:{value:'仅发送给 B'}});
   fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('other-session','仅发送给 B','m',expect.any(Function),undefined,null));
+  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('other-session','仅发送给 B','m',expect.any(Function),undefined,'high'));
  });
  it('切换会话只显示该会话的消息',async()=>{render(<App/>);await screen.findByText('内容 a');fireEvent.click(screen.getByRole('button',{name:'会话 B'}));await screen.findByText('内容 b');expect(screen.queryByText('内容 a')).not.toBeInTheDocument()});
  it('完成回合折叠过程但始终显示 Markdown 最终总结',async()=>{
@@ -54,7 +54,7 @@ describe('聊天交互',()=>{
   expect(screen.getByText('最终总结')).toBeVisible();
   expect(screen.getByText('正在检查。')).not.toBeVisible();
  });
- it('发送期间合并增量，结束后读取持久化事件',async()=>{let release!:()=>void;mocks.send.mockImplementation(async(_id:string,_text:string,_model:string,receive:(e:LiveEvent)=>void)=>{receive({type:'delta',sessionId:'a',requestId:'r',index:0,text:'正在输出',reasoning:false});await new Promise<void>(r=>release=r)});render(<App/>);await screen.findByText('内容 a');fireEvent.change(screen.getByLabelText('消息'),{target:{value:'你好'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));await screen.findByText('正在输出');expect(screen.getByRole('button',{name:'取消生成'})).toBeInTheDocument();release();await waitFor(()=>expect(screen.queryByText('正在输出')).not.toBeInTheDocument());expect(mocks.send).toHaveBeenCalledWith('a','你好','m',expect.any(Function),undefined,null)});
+ it('发送期间合并增量，结束后读取持久化事件',async()=>{let release!:()=>void;mocks.send.mockImplementation(async(_id:string,_text:string,_model:string,receive:(e:LiveEvent)=>void)=>{receive({type:'delta',sessionId:'a',requestId:'r',index:0,text:'正在输出',reasoning:false});await new Promise<void>(r=>release=r)});render(<App/>);await screen.findByText('内容 a');fireEvent.change(screen.getByLabelText('消息'),{target:{value:'你好'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));await screen.findByText('正在输出');expect(screen.getByRole('button',{name:'取消生成'})).toBeInTheDocument();release();await waitFor(()=>expect(screen.queryByText('正在输出')).not.toBeInTheDocument());expect(mocks.send).toHaveBeenCalledWith('a','你好','m',expect.any(Function),undefined,'high')});
  it('发送错误可见且不插入假成功消息',async()=>{mocks.send.mockRejectedValue(new Error('连接失败'));render(<App/>);await screen.findByText('内容 a');fireEvent.change(screen.getByLabelText('消息'),{target:{value:'请求'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));await screen.findByText('连接失败');expect(screen.getByRole('button',{name:'发送消息'})).toBeInTheDocument()});
  it('审批通过传递真实请求id',async()=>{const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name,args)=>name==='approval_list'?[{id:'approval-1',sessionId:'a',tool:'shell',arguments:{command:'cargo test'},reason:'执行测试'}]:original(name,args));render(<App/>);await screen.findByRole('dialog',{name:'操作需要你的批准'});fireEvent.click(screen.getByRole('button',{name:'批准此次操作'}));await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('approval_resolve',{id:'approval-1',allow:true}))});
 });
@@ -175,7 +175,7 @@ describe('工作区的首次会话',()=>{
    return original(name,args);
   });
   vi.mocked(open).mockResolvedValueOnce('D:/fresh');
-  render(<App/>);await screen.findByRole('option',{name:'测试模型'});
+  render(<App/>);await screen.findByLabelText('当前模型');
   expect(screen.getByLabelText('消息')).toBeDisabled();
   fireEvent.click(screen.getByRole('button',{name:/打开工作区/}));
   await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_list',{workspaceId:'fresh'}));
@@ -184,7 +184,7 @@ describe('工作区的首次会话',()=>{
   fireEvent.change(input,{target:{value:'梳理项目结构'}});
   expect(input).toHaveValue('梳理项目结构');
   fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('first','梳理项目结构','m',expect.any(Function),undefined,null));
+  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('first','梳理项目结构','m',expect.any(Function),undefined,'high'));
   expect(mocks.command.mock.calls.filter(([name])=>name==='session_create')).toHaveLength(1);
  });
  it('启动时恢复的工作区没有会话也会自动准备首个会话',async()=>{
@@ -234,7 +234,7 @@ describe('工作区的首次会话',()=>{
   expect(screen.getByLabelText('消息')).toBeEnabled();
   fireEvent.change(screen.getByLabelText('消息'),{target:{value:'给 B'}});
   fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('other-session','给 B','m',expect.any(Function),undefined,null));
+  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('other-session','给 B','m',expect.any(Function),undefined,'high'));
  });
  it('快速切走再返回时复用正在创建的首个会话',async()=>{
   let resolveCreation!:(value:unknown)=>void;
@@ -264,12 +264,12 @@ describe('附件与完整输出',()=>{
  it('通过加号菜单选择附件后只将宿主返回的hash随消息发送',async()=>{
   const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name,args)=>name==='artifact_import'?attachment:original(name,args));vi.mocked(open).mockResolvedValueOnce('C:/private/说明.txt');
   render(<App/>);await screen.findByText('内容 a');fireEvent.click(screen.getByRole('button',{name:'添加内容'}));fireEvent.click(screen.getByRole('menuitem',{name:/^附件/}));await screen.findByText('说明.txt');fireEvent.change(screen.getByLabelText('消息'),{target:{value:'读取附件'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','读取附件','m',expect.any(Function),[attachment.hash],null));expect(mocks.command).toHaveBeenCalledWith('artifact_import',{sessionId:'a',path:'C:/private/说明.txt'});
+  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','读取附件','m',expect.any(Function),[attachment.hash],'high'));expect(mocks.command).toHaveBeenCalledWith('artifact_import',{sessionId:'a',path:'C:/private/说明.txt'});
  });
  it('导入期间禁止发送，切换会话后丢弃迟到的附件',async()=>{
   let finish!:(value:unknown)=>void;const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name,args)=>name==='artifact_import'?new Promise(resolve=>finish=resolve):original(name,args));vi.mocked(open).mockResolvedValueOnce('C:/private/说明.txt');
   render(<App/>);await screen.findByText('内容 a');fireEvent.change(screen.getByLabelText('消息'),{target:{value:'任务'}});fireEvent.click(screen.getByRole('button',{name:'添加内容'}));fireEvent.click(screen.getByRole('menuitem',{name:/^附件/}));await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('artifact_import',expect.anything()));expect(screen.getByRole('button',{name:'发送消息'})).toBeDisabled();fireEvent.click(screen.getByRole('button',{name:'会话 B'}));await screen.findByText('内容 b');await act(async()=>finish(attachment));expect(screen.queryByText('说明.txt')).not.toBeInTheDocument();
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'无附件'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('b','无附件','m',expect.any(Function),undefined,null));
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'无附件'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('b','无附件','m',expect.any(Function),undefined,'high'));
  });
  it('附件和大输出卡片通过保存对话框导出真实完整内容',async()=>{
   const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name,args)=>name==='session_events'?[{id:'attached',sessionId:'a',seq:'1',kind:'user.message',data:{content:'查看',attachments:[attachment]},createdAt:''},{id:'output',sessionId:'a',seq:'2',kind:'tool.result',data:{name:'read',content:'预览',artifact:{...attachment,name:'完整输出.txt'}},createdAt:''}]:original(name,args));vi.mocked(save).mockResolvedValueOnce('C:/saved/output.txt');
@@ -347,6 +347,7 @@ describe('模型选择',()=>{
  const models=[
   {id:'builtin:deepseek:deepseek-flash',name:'DeepSeek Flash',compatibility:'deepSeek',providerId:'deepseek',apiMode:'anthropic',maxOutputTokens:null,baseUrl:'https://api.deepseek.com/anthropic',model:'deepseek-flash',credentialRef:'',proxy:null,efforts:['disabled','enabled'],effort:null,enabled:true,builtin:true},
   {id:'custom',name:'自定义 GLM',compatibility:'bigModel',providerId:'bigmodel',apiMode:'anthropic',maxOutputTokens:null,baseUrl:'https://open.bigmodel.cn/api/anthropic',model:'glm-5.3',credentialRef:'',proxy:null,efforts:['low','high','max'],effort:'high',enabled:true,builtin:false},
+  {id:'builtin:bigmodel:glm-5.3',name:'GLM-5.3',compatibility:'bigModel',providerId:'bigmodel',apiMode:'anthropic',maxOutputTokens:null,baseUrl:'https://open.bigmodel.cn/api/anthropic',model:'glm-5.3',credentialRef:'',proxy:null,efforts:['low','high','max'],effort:null,enabled:false,builtin:true},
  ];
  function modelApp(){const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name:string,args:any)=>{
   if(name==='provider_list')return structuredClone(builtinCatalog);
@@ -355,28 +356,56 @@ describe('模型选择',()=>{
   if(name==='default_selection_save')return null;
   return original(name,args);
  })}
- it('发送框按供应商→模型→档位级联选择并持久化',async()=>{
+ it('触发按钮显示当前模型与档位徽标，点击展开浮层卡片',async()=>{
   modelApp();render(<App/>);
-  const providerSelect=await screen.findByLabelText('当前供应商');
-  expect(within(providerSelect).getAllByRole('option').map(o=>o.textContent)).toEqual(['DeepSeek','智谱 Coding Plan']);
-  // 禁用的内置模型不出现在模型列表。
-  const modelSelect=screen.getByLabelText('当前模型');
-  const enabledOptions=()=>within(modelSelect).getAllByRole('option').filter(o=>!(o as HTMLOptionElement).disabled).map(o=>o.textContent);
-  expect(enabledOptions()).toEqual(['DeepSeek Flash']);
-  // 切换供应商后模型列表联动，禁用的 glm-5.3 不在列表。
-  fireEvent.change(providerSelect,{target:{value:'bigmodel'}});
-  expect(enabledOptions()).toEqual(['自定义 GLM']);
-  // 选择模型恢复其默认档位并持久化选择。
-  fireEvent.change(modelSelect,{target:{value:'custom'}});
-  const effortSelect=screen.getByLabelText('推理档位');
-  expect(effortSelect).toHaveValue('high');
-  fireEvent.change(effortSelect,{target:{value:'low'}});
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('default_selection_save',{selection:{modelId:'custom',effort:'low'}}));
+  const trigger=await screen.findByLabelText('当前模型');
+  expect(trigger).toHaveTextContent('DeepSeek Flash');
+  // 默认档位即模型最高档
+  expect(within(trigger).getByText('enabled')).toBeInTheDocument();
+  fireEvent.click(trigger);
+  const menu=screen.getByRole('listbox',{name:'选择模型'});
+  expect(within(menu).getByText('DeepSeek')).toBeInTheDocument();
+  expect(within(menu).getByText('智谱 Coding Plan')).toBeInTheDocument();
+  // 停用模型灰显展示并标注原因，点击不产生任何选择
+  const disabledRow=within(menu).getByText('GLM-5.3').closest('button')!;
+  expect(disabledRow.className).toContain('disabled');
+  expect(within(disabledRow).getByText('已停用')).toBeInTheDocument();
+  fireEvent.click(disabledRow);
+  expect(mocks.command).not.toHaveBeenCalledWith('default_selection_save',expect.anything());
+  // 档位滑块存在，当前档位为最高档
+  expect(screen.getByLabelText('推理档位')).toHaveAttribute('aria-valuetext','enabled');
+ });
+ it('搜索过滤模型；选模型保持卡片展开并持久化，档位回落最高档；会话流出现临时切换标记',async()=>{
+  mocks.send.mockResolvedValue(undefined);
+  modelApp();render(<App/>);
+  await screen.findByText('内容 a');
+  fireEvent.click(screen.getByLabelText('当前模型'));
+  fireEvent.change(screen.getByLabelText('搜索模型'),{target:{value:'自定义'}});
+  const menu=screen.getByRole('listbox',{name:'选择模型'});
+  expect(within(menu).queryByText('DeepSeek Flash')).not.toBeInTheDocument();
+  fireEvent.click(within(menu).getByText('自定义 GLM'));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('default_selection_save',{selection:{modelId:'custom',effort:'max'}}));
+  // 卡片保持展开，滑块区已切换为新模型档位，可直接继续调档
+  expect(screen.getByRole('listbox',{name:'选择模型'})).toBeInTheDocument();
+  expect(screen.getByLabelText('推理档位')).toHaveAttribute('aria-valuetext','max');
+  fireEvent.change(screen.getByLabelText('推理档位'),{target:{value:'1'}});
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('default_selection_save',{selection:{modelId:'custom',effort:'high'}}));
+  // 会话流插入临时切换标记（不落库）
+  expect(screen.getByText(/模型已切换：DeepSeek Flash → 自定义 GLM · 档位 max/)).toBeInTheDocument();
   fireEvent.change(screen.getByLabelText('消息'),{target:{value:'你好'}});
   fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','你好','custom',expect.any(Function),undefined,'low'));
+  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','你好','custom',expect.any(Function),undefined,'high'));
  });
- it('启动时恢复上次选择的模型与档位，失效选择回退到首个可用模型',async()=>{
+ it('点击当前模型行关闭卡片，Esc 亦可关闭',async()=>{
+  modelApp();render(<App/>);
+  fireEvent.click(await screen.findByLabelText('当前模型'));
+  fireEvent.click(within(screen.getByRole('listbox',{name:'选择模型'})).getByText('DeepSeek Flash'));
+  expect(screen.queryByRole('listbox',{name:'选择模型'})).not.toBeInTheDocument();
+  fireEvent.click(screen.getByLabelText('当前模型'));
+  fireEvent.keyDown(screen.getByLabelText('搜索模型'),{key:'Escape'});
+  expect(screen.queryByRole('listbox',{name:'选择模型'})).not.toBeInTheDocument();
+ });
+ it('启动恢复上次选择；失效选择回退首个可用模型并将档位归到最高档',async()=>{
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name:string,args:any)=>{
    if(name==='model_list')return structuredClone(models);
@@ -385,12 +414,11 @@ describe('模型选择',()=>{
    return original(name,args);
   });
   render(<App/>);
-  const modelSelect=await screen.findByLabelText('当前模型');
-  expect(modelSelect).toHaveValue('builtin:deepseek:deepseek-flash');
-  // 回退模型的默认档位为空（跟随供应商默认），effort 下拉存在且选中“默认”。
-  expect(screen.getByLabelText('推理档位')).toHaveValue('');
+  const trigger=await screen.findByLabelText('当前模型');
+  expect(trigger).toHaveTextContent('DeepSeek Flash');
+  expect(within(trigger).getByText('enabled')).toBeInTheDocument();
  });
- it('无档位模型隐藏 effort 下拉',async()=>{
+ it('无档位模型隐藏档位徽标与滑块区',async()=>{
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name:string,args:any)=>{
    if(name==='model_list')return [{...structuredClone(models[0]),efforts:[],effort:null}];
@@ -399,8 +427,17 @@ describe('模型选择',()=>{
    return original(name,args);
   });
   render(<App/>);
-  await screen.findByLabelText('当前模型');
+  const trigger=await screen.findByLabelText('当前模型');
+  expect(trigger.querySelector('.model-trigger-effort')).toBeNull();
+  fireEvent.click(trigger);
   expect(screen.queryByLabelText('推理档位')).not.toBeInTheDocument();
+ });
+ it('/model 斜杠命令打开浮层卡片',async()=>{
+  modelApp();render(<App/>);await screen.findByText('内容 a');
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'/model'}});
+  fireEvent.keyDown(input,{key:'Enter'});
+  expect(screen.getByRole('listbox',{name:'选择模型'})).toBeInTheDocument();
  });
 });
 describe('斜杠命令补全',()=>{
@@ -448,7 +485,7 @@ describe('斜杠命令补全',()=>{
   fireEvent.change(input,{target:{value:'/clear 帮我重开'}});
   expect(screen.queryByRole('listbox',{name:'斜杠命令补全'})).not.toBeInTheDocument();
   fireEvent.keyDown(input,{key:'Enter'});
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','/clear 帮我重开','m',expect.any(Function),undefined,null));
+  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','/clear 帮我重开','m',expect.any(Function),undefined,'high'));
  });
 });
 
@@ -485,7 +522,7 @@ describe('加号添加菜单',()=>{
   const input=screen.getByLabelText('消息');
   fireEvent.change(input,{target:{value:'/plan 为导出制定计划'}});
   fireEvent.keyDown(input,{key:'Enter'});
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a',`${PLAN_PROMPT}\n\n任务：为导出制定计划`,'m',expect.any(Function),undefined,null));
+  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a',`${PLAN_PROMPT}\n\n任务：为导出制定计划`,'m',expect.any(Function),undefined,'high'));
   fireEvent.change(input,{target:{value:'/plan'}});
   fireEvent.keyDown(input,{key:'Enter'});
   await screen.findByText('用法：/plan <任务描述>，发送后模型制定实施计划并经 plan_write 记录。');
@@ -497,7 +534,7 @@ describe('加号添加菜单',()=>{
   const input=screen.getByLabelText('消息');
   fireEvent.change(input,{target:{value:'/goal 完成导出功能'}});
   fireEvent.keyDown(input,{key:'Enter'});
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a',`${GOAL_PROMPT}\n\n目标：完成导出功能`,'m',expect.any(Function),undefined,null));
+  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a',`${GOAL_PROMPT}\n\n目标：完成导出功能`,'m',expect.any(Function),undefined,'high'));
  });
 });
 describe('能力预设',()=>{
@@ -514,9 +551,12 @@ describe('能力预设',()=>{
   expect(staleOption.disabled).toBe(true);
   fireEvent.change(presetSelect,{target:{value:'p1'}});
   await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('default_selection_save',{selection:{modelId:'m',effort:'high'}}));
-  expect((screen.getByLabelText('推理档位') as HTMLSelectElement).value).toBe('high');
+  // 打开浮层卡片查看档位滑块（默认档位即最高档）
+  fireEvent.click(screen.getByLabelText('当前模型'));
+  expect(screen.getByLabelText('推理档位')).toHaveAttribute('aria-valuetext','high');
   // 手改档位即放弃预设
-  fireEvent.change(screen.getByLabelText('推理档位'),{target:{value:'low'}});
+  fireEvent.change(screen.getByLabelText('推理档位'),{target:{value:'0'}});
   expect((screen.getByLabelText('能力预设') as HTMLSelectElement).value).toBe('');
+  expect(mocks.command).toHaveBeenCalledWith('default_selection_save',{selection:{modelId:'m',effort:'low'}});
  });
 });
