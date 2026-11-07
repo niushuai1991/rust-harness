@@ -10,13 +10,13 @@ Rust / Tauri 2 宿主，React 19 界面，SQLite 事件存储。所有模型改�
 
 ## ✨ 功能特性
 
-- **隔离协作**：原项目与执行副本分离，模型产物经差异审阅、人工确认后同步；冲突预览、ignore 规则与基线管理齐备。
+- **隔离协作**：原项目与执行副本分离，模型产物经差异审阅、人工确认后同步；右侧面板提供行级差异审阅与文件预览，冲突预览、ignore 规则与基线管理齐备。
 - **多供应商多协议**：内置 DeepSeek 与智谱 Coding Plan，各支持 Chat Completions、Responses、Anthropic 三种协议；协议间共享 API Key 与代理配置。
 - **完整 Agent 工具链**：文件编辑、后台 Shell、PTY 沙箱终端（自研 ConPTY + 受限 token）、内置浏览器（Edge/Chrome CDP）、LSP 只读工具（诊断/悬停/定义/引用/符号）、子代理 spawn/fork。
 - **多种接入形态**：桌面端、`harness` CLI（run/chat/diff/apply/models/sessions）、ACP v1 agent 端（供编辑器客户端接入）、JSON-RPC over stdio、Python / TypeScript SDK。
 - **插件与扩展**：WASM(WIT) 组件权限沙箱、MCP（HTTP/stdio）、命名配置预设（模型/effort/审批策略组合）。
 - **安全模型**：Windows 受限 token 与 Job Object 沙箱、API Key 仅写入凭据管理器、工作区策略与审批策略分层管控。
-- **协作可视化**：Todo/Plan/Goal 卡片、后台任务面板、子代理运行状态、跨会话计划与目标总览、托盘常驻。
+- **协作可视化**：Todo/Plan/Goal 卡片、后台任务面板、右侧文件面板（更改审阅与预览）、子代理运行状态、跨会话计划与目标总览、托盘常驻。
 
 ## 🚀 快速开始
 

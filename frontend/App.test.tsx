@@ -1,15 +1,17 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {act,cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
-import App,{DiffPanel} from './App';
+import App from './App';
+import {ChangesView} from './ChangesView';
 import {GOAL_PROMPT,PLAN_PROMPT} from './slashCommands';
 import {useChat} from './store';
+import {useSidePanel} from './sidePanelStore';
 import {open,save} from '@tauri-apps/plugin-dialog';
 import type {LiveEvent,SessionEvent} from './types';
 const mocks=vi.hoisted(()=>({command:vi.fn(),send:vi.fn()}));
 vi.mock('./api',()=>({desktop:()=>true,command:mocks.command,send:mocks.send,errorText:(e:unknown)=>e instanceof Error?e.message:String(e)}));
 vi.mock('@tauri-apps/plugin-dialog',()=>({open:vi.fn(),save:vi.fn()}));
 const event=(id:string,sessionId:string,seq:string,content:string):SessionEvent=>({id,sessionId,seq,kind:'assistant.message',data:{content},createdAt:''});
-beforeEach(()=>{useChat.setState({events:{},streams:{},statuses:{}});mocks.command.mockReset();mocks.send.mockReset();mocks.command.mockImplementation(async(name:string,args:any)=>{
+beforeEach(()=>{useChat.setState({events:{},streams:{},statuses:{}});useSidePanel.getState().reset();mocks.command.mockReset();mocks.send.mockReset();mocks.command.mockImplementation(async(name:string,args:any)=>{
  if(name==='workspace_list')return [{id:'w',sourcePath:'D:/project',replicaPath:'D:/copy',createdAt:''}];
  if(name==='model_list')return [{id:'m',name:'测试模型',compatibility:'standard',providerId:'custom',apiMode:'chatCompletions',maxOutputTokens:null,baseUrl:'https://example.test',model:'m',credentialRef:'',proxy:null,efforts:['low','high'],effort:null,enabled:true,builtin:false}];
  if(name==='provider_list')return [{id:'custom',name:'自定义供应商',builtin:false,compatibility:'standard',endpoints:[{apiMode:'chatCompletions',baseUrl:'https://example.test'}],defaultModel:'m',credentialRef:'',proxy:null,enabled:true,builtinModels:[],disabledModels:[]}];
@@ -58,31 +60,103 @@ describe('聊天交互',()=>{
  it('发送错误可见且不插入假成功消息',async()=>{mocks.send.mockRejectedValue(new Error('连接失败'));render(<App/>);await screen.findByText('内容 a');fireEvent.change(screen.getByLabelText('消息'),{target:{value:'请求'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));await screen.findByText('连接失败');expect(screen.getByRole('button',{name:'发送消息'})).toBeInTheDocument()});
  it('审批通过传递真实请求id',async()=>{const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name,args)=>name==='approval_list'?[{id:'approval-1',sessionId:'a',tool:'shell',arguments:{command:'cargo test'},reason:'执行测试'}]:original(name,args));render(<App/>);await screen.findByRole('dialog',{name:'操作需要你的批准'});fireEvent.click(screen.getByRole('button',{name:'批准此次操作'}));await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('approval_resolve',{id:'approval-1',allow:true}))});
 });
-describe('同步审阅',()=>{
+describe('同步审阅（右侧面板）',()=>{
+ const reviewed={path:'a.rs',kind:'modified',conflict:false,beforeHash:'before-a',afterHash:'reviewed-a',sourceHash:'source-a',beforeText:'old',afterText:'new'};
+ const UNIFIED='--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n+new text\n';
+ function reviewBackend(list:unknown[],applyError?:string,diff:unknown={path:'a.rs',unified:UNIFIED}){
+  mocks.command.mockImplementation(async(name:string)=>{
+   if(name==='workspace_diff')return list;
+   if(name==='workspace_file_diff')return diff;
+   if(name==='workspace_apply'){if(applyError)throw new Error(applyError);return []}
+   return [];
+  });
+ }
  it('只应用选中文件，传递完整审阅快照且需要二次确认',async()=>{
-  const reviewed={path:'a.rs',kind:'modified',conflict:false,beforeHash:'before-a',afterHash:'reviewed-a',sourceHash:'source-a',beforeText:'old',afterText:'new'};
-  mocks.command.mockResolvedValue([reviewed,{...reviewed,path:'b.rs'},{...reviewed,path:'conflict.rs',conflict:true}]);
-  render(<DiffPanel workspaceId="w" onClose={()=>{}}/>);await screen.findByText('a.rs');fireEvent.click(screen.getByLabelText('b.rs'));expect(screen.getByLabelText('conflict.rs')).toBeDisabled();fireEvent.click(screen.getByRole('button',{name:'同步选中文件'}));expect(mocks.command).not.toHaveBeenCalledWith('workspace_apply',expect.anything());fireEvent.click(screen.getByRole('button',{name:'确认应用更改'}));await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_apply',{workspaceId:'w',paths:['a.rs'],reviewed:[reviewed]}));
+  reviewBackend([reviewed,{...reviewed,path:'b.rs'},{...reviewed,path:'conflict.rs',conflict:true}]);
+  render(<ChangesView workspaceId="w"/>);
+  await screen.findByText('a.rs');
+  fireEvent.click(screen.getByLabelText('选择 b.rs'));
+  expect(screen.getByLabelText('选择 conflict.rs')).toBeDisabled();
+  fireEvent.click(screen.getByRole('button',{name:'同步选中文件'}));
+  expect(mocks.command).not.toHaveBeenCalledWith('workspace_apply',expect.anything());
+  fireEvent.click(screen.getByRole('button',{name:'确认应用更改'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_apply',{workspaceId:'w',paths:['a.rs'],reviewed:[reviewed]}));
  });
  it('宿主拒绝过期审阅时保留错误且不声称已同步',async()=>{
-  const reviewed={path:'a.rs',kind:'modified',conflict:false,beforeHash:'before',afterHash:'reviewed',sourceHash:'before',beforeText:'old',afterText:'reviewed text'};
-  mocks.command.mockImplementation(async name=>{if(name==='workspace_apply')throw new Error('审阅后副本已改变，请重新审阅');return [reviewed]});
-  render(<DiffPanel workspaceId="w" onClose={()=>{}}/>);
-  await screen.findByText('a.rs');fireEvent.click(screen.getByRole('button',{name:'同步选中文件'}));fireEvent.click(screen.getByRole('button',{name:'确认应用更改'}));
+  reviewBackend([reviewed],'审阅后副本已改变，请重新审阅');
+  render(<ChangesView workspaceId="w"/>);
+  await screen.findByText('a.rs');
+  fireEvent.click(screen.getByRole('button',{name:/a\.rs$/}));
+  await screen.findByText('+new text');
+  fireEvent.click(screen.getByRole('button',{name:'同步选中文件'}));
+  fireEvent.click(screen.getByRole('button',{name:'确认应用更改'}));
   await screen.findByText('审阅后副本已改变，请重新审阅');
   expect(screen.queryByText('已将选中更改同步到原项目。')).not.toBeInTheDocument();
-  expect(screen.getByText('reviewed text')).toBeInTheDocument();
+  expect(screen.getByText('+new text')).toBeInTheDocument();
  });
- it('刷新差异后需要重新确认，不能沿用旧审阅确认状态',async()=>{
-  const reviewed={path:'a.rs',kind:'modified',conflict:false,beforeHash:'before',afterHash:'reviewed',sourceHash:'before',beforeText:'old',afterText:'reviewed text'};
-  mocks.command.mockResolvedValue([reviewed]);render(<DiffPanel workspaceId="w" onClose={()=>{}}/>);
-  await screen.findByText('a.rs');fireEvent.click(screen.getByRole('button',{name:'同步选中文件'}));
+ it('刷新差异后需要重新确认，保持展开的文件自动重算差异',async()=>{
+  reviewBackend([reviewed]);
+  render(<ChangesView workspaceId="w"/>);
+  await screen.findByText('a.rs');
+  fireEvent.click(screen.getByRole('button',{name:/a\.rs$/}));
+  await screen.findByText('+new text');
+  fireEvent.click(screen.getByRole('button',{name:'同步选中文件'}));
   expect(screen.getByRole('button',{name:'确认应用更改'})).toBeInTheDocument();
-  mocks.command.mockResolvedValue([{...reviewed,afterHash:'updated',afterText:'updated text'}]);
-  fireEvent.click(screen.getByRole('button',{name:'刷新'}));await screen.findByText('updated text');
-  expect(screen.queryByRole('button',{name:'确认应用更改'})).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button',{name:'同步选中文件'}));fireEvent.click(screen.getByRole('button',{name:'确认应用更改'}));
+  reviewBackend([{...reviewed,afterHash:'updated',afterText:'updated text'}],undefined,{path:'a.rs',unified:'--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n+updated text\n'});
+  fireEvent.click(screen.getByRole('button',{name:'刷新'}));
+  await waitFor(()=>expect(screen.queryByRole('button',{name:'确认应用更改'})).not.toBeInTheDocument());
+  await screen.findByText('+updated text');
+  expect(screen.queryByText('+new text')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button',{name:'同步选中文件'}));
+  fireEvent.click(screen.getByRole('button',{name:'确认应用更改'}));
   await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_apply',{workspaceId:'w',paths:['a.rs'],reviewed:[{...reviewed,afterHash:'updated',afterText:'updated text'}]}));
+ });
+});
+describe('右侧面板',()=>{
+ it('顶栏“查看更改”开关面板：默认勾选非冲突文件，展开懒加载行级差异，Escape 关闭',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name:string,args:any)=>{
+   if(name==='workspace_diff')return [{path:'a.rs',kind:'modified',conflict:false,beforeHash:'b',afterHash:'a',sourceHash:null,beforeText:'old',afterText:'new'},{path:'conf.rs',kind:'modified',conflict:true,beforeHash:null,afterHash:null,sourceHash:null,beforeText:null,afterText:null}];
+   if(name==='workspace_file_diff')return {path:'a.rs',unified:'--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n-new\n+new text\n'};
+   return original(name,args);
+  });
+  render(<App/>);
+  await screen.findByText('内容 a');
+  expect(screen.queryByRole('complementary',{name:'文件面板'})).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button',{name:'查看更改'}));
+  const panel=screen.getByRole('complementary',{name:'文件面板'});
+  await within(panel).findByText('a.rs');
+  expect(within(panel).getByLabelText('选择 conf.rs')).toBeDisabled();
+  fireEvent.click(within(panel).getByRole('button',{name:/a\.rs$/}));
+  await within(panel).findByText('+new text');
+  fireEvent.keyDown(document,{key:'Escape'});
+  expect(screen.queryByRole('complementary',{name:'文件面板'})).not.toBeInTheDocument();
+  expect(screen.getByRole('button',{name:'查看更改'})).toHaveAttribute('aria-expanded','false');
+ });
+ it('write 工具卡的文件按钮切到预览 tab 显示内容',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name:string,args:any)=>{
+   if(name==='session_events')return [{id:'w1',sessionId:'a',seq:'1',kind:'tool.result',data:{name:'write',arguments:{path:'src/main.rs'},content:'已写入副本 src/main.rs'},createdAt:'2026-11-07T00:00:00Z'}];
+   if(name==='workspace_file_preview')return {path:'src/main.rs',content:'fn main(){}',truncated:false,binary:false,sizeBytes:11};
+   return original(name,args);
+  });
+  render(<App/>);
+  await screen.findByRole('button',{name:'main.rs'});
+  fireEvent.click(screen.getByRole('button',{name:'main.rs'}));
+  await screen.findByText('fn main(){}');
+  expect(screen.getByText('src/main.rs')).toBeInTheDocument();
+  expect(screen.getByRole('tab',{name:'预览'})).toHaveAttribute('aria-selected','true');
+ });
+ it('/diff 斜杠命令打开更改视图',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name:string,args:any)=>name==='workspace_diff'?[]:original(name,args));
+  render(<App/>);
+  await screen.findByText('内容 a');
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'/diff'}});
+  fireEvent.keyDown(input,{key:'Enter'});
+  await screen.findByText('工作副本没有待同步更改');
+  expect(screen.getByRole('complementary',{name:'文件面板'})).toBeInTheDocument();
  });
 });
 describe('事件状态',()=>{

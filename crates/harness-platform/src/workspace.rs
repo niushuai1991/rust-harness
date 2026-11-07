@@ -1,5 +1,7 @@
-use crate::{io, paths};
-use harness_contracts::{AppError, AppResult, FileChange, WorkspaceInfo, new_id, now};
+use crate::{diffview, io, paths};
+use harness_contracts::{
+    AppError, AppResult, FileChange, WorkspaceFileDiff, WorkspaceInfo, new_id, now,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -271,6 +273,21 @@ impl WorkspaceManager {
     pub fn diff(&self, id: &str) -> AppResult<Vec<FileChange>> {
         let _lock = self.lock(id, false)?;
         Ok(self.changes(&self.load(id)?)?.0)
+    }
+    /// 单文件 unified diff 视图（桌面端右侧面板懒加载）；未变更的文件返回 NOT_FOUND。
+    pub fn diff_view(&self, id: &str, path: &str) -> AppResult<WorkspaceFileDiff> {
+        let _lock = self.lock(id, false)?;
+        let record = self.load(id)?;
+        let change = self
+            .changes(&record)?
+            .0
+            .into_iter()
+            .find(|c| c.path == path)
+            .ok_or_else(|| AppError::new("NOT_FOUND", path))?;
+        Ok(WorkspaceFileDiff {
+            path: change.path.clone(),
+            unified: diffview::render(&change, false),
+        })
     }
     pub fn apply(&self, id: &str, paths: &[String]) -> AppResult<Vec<FileChange>> {
         self.apply_inner(id, paths, None)
