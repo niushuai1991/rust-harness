@@ -2,10 +2,10 @@ import {useEffect,useRef,useState,type FormEvent} from 'react';
 import {Pencil,Plus,RefreshCw,Trash2} from 'lucide-react';
 import {command,desktop,errorText} from './api';
 import {Modal} from './App';
-import {KNOWN_EFFORTS,type ApiMode,type ModelConfig,type ProviderInfo,type ProviderUsageSnapshot,type UsageCardKind} from './types';
+import {KNOWN_EFFORTS,type ApiMode,type ChatGptAccountInfo,type ChatGptLoginState,type ModelConfig,type ProviderInfo,type ProviderUsageSnapshot,type UsageCardKind} from './types';
 const modes:{id:ApiMode;name:string}[]=[{id:'chatCompletions',name:'Chat Completions'},{id:'responses',name:'Responses'},{id:'anthropic',name:'Anthropic'}];
-const blankProvider=():ProviderInfo=>({id:crypto.randomUUID(),name:'自定义供应商',builtin:false,compatibility:'standard',endpoints:modes.map(m=>({apiMode:m.id,baseUrl:''})),defaultModel:'',credentialRef:'',proxy:null,enabled:true,builtinModels:[],disabledModels:[]});
-const blankModel=(p:ProviderInfo):ModelConfig=>({id:crypto.randomUUID(),name:'',providerId:p.id,compatibility:p.compatibility,apiMode:p.endpoints[0]?.apiMode??'chatCompletions',baseUrl:p.endpoints[0]?.baseUrl??'',model:p.defaultModel,credentialRef:p.credentialRef,proxy:p.proxy,maxOutputTokens:null,efforts:[],effort:null,enabled:true,builtin:false});
+const blankProvider=():ProviderInfo=>({id:crypto.randomUUID(),name:'自定义供应商',builtin:false,compatibility:'standard',auth:'apiKey',endpoints:modes.map(m=>({apiMode:m.id,baseUrl:''})),defaultModel:'',credentialRef:'',proxy:null,enabled:true,builtinModels:[],disabledModels:[]});
+const blankModel=(p:ProviderInfo):ModelConfig=>({id:crypto.randomUUID(),name:'',providerId:p.id,compatibility:p.compatibility,auth:p.auth,apiMode:p.endpoints[0]?.apiMode??'chatCompletions',baseUrl:p.endpoints[0]?.baseUrl??'',model:p.defaultModel,credentialRef:p.credentialRef,proxy:p.proxy,maxOutputTokens:null,efforts:[],effort:null,enabled:true,builtin:false});
 const snapshot=(p:ProviderInfo)=>JSON.stringify(p);
 const snapshotModel=(m:ModelConfig)=>JSON.stringify(m);
 const USAGE_CARD_LABELS:Record<UsageCardKind,string>={fiveHour:'5 小时剩余',weekly:'每周剩余',tools:'工具调用'};
@@ -23,6 +23,7 @@ export function ModelPanel({models,onClose,onSaved}:{models:ModelConfig[];onClos
  const [fetched,setFetched]=useState<string[]>([]);
  const [savedProvider,setSavedProvider]=useState(''),[savedModel,setSavedModel]=useState('');
  const [usage,setUsage]=useState<ProviderUsageSnapshot|null>(null),[usageError,setUsageError]=useState(''),[usageBusy,setUsageBusy]=useState(false);
+ const [account,setAccount]=useState<ChatGptAccountInfo|null>(null),[loginState,setLoginState]=useState<ChatGptLoginState|null>(null),[authUrl,setAuthUrl]=useState('');
  const originals=useRef<ProviderInfo[]>([]),revision=useRef(0),alive=useRef(true),locked=useRef(false);
  const usageRevision=useRef(0),usageLoadedAt=useRef(0),usageInflight=useRef(false);
  useEffect(()=>{alive.current=true;void command<ProviderInfo[]>('provider_list').then(list=>{if(!alive.current)return;originals.current=list;setProviders(list);if(list[0])choose(list[0])}).catch(e=>{if(alive.current)setError(errorText(e))});return()=>{alive.current=false;revision.current++}},[]);
@@ -32,6 +33,29 @@ export function ModelPanel({models,onClose,onSaved}:{models:ModelConfig[];onClos
   void loadUsage();
   // eslint-disable-next-line react-hooks/exhaustive-deps -- 按供应商与凭据引用变化触发；loadUsage 读取最新 provider。
  },[codingPlan,provider?.id,provider?.credentialRef]);
+ // ChatGPT OAuth 供应商：加载登录状态并轮询进行中的登录流程。
+ const chatgptOAuth=!!provider&&provider.builtin&&provider.auth==='chatGptOAuth';
+ const loginRevision=useRef(0);
+ useEffect(()=>{
+  if(!chatgptOAuth){setAccount(null);setLoginState(null);setAuthUrl('');loginRevision.current++;return}
+  void command<ChatGptAccountInfo>('chatgpt_account_status').then(info=>{if(alive.current)setAccount(info)}).catch(()=>{if(alive.current)setAccount(null)});
+  const token=++loginRevision.current;
+  const timer=setInterval(async()=>{
+   const state=await command<ChatGptLoginState>('chatgpt_login_status').catch(()=>null);
+   if(!alive.current||token!==loginRevision.current||!state)return;
+   setLoginState(state);
+   if(state.status==='completed'){const info=await command<ChatGptAccountInfo>('chatgpt_account_status').catch(()=>null);if(alive.current&&token===loginRevision.current)setAccount(info)}
+  },1500);
+  return()=>clearInterval(timer);
+ },[chatgptOAuth]);
+ async function startChatgptLogin(){await action(async token=>{
+  const url=await command<string>('chatgpt_login_start');
+  if(!current(token))return;
+  setAuthUrl(url);
+  setLoginState({status:'pending',email:null,planType:null,error:null});
+ })}
+ async function cancelChatgptLogin(){await action(async()=>{await command('chatgpt_login_cancel');if(alive.current)setLoginState(null)})}
+ async function chatgptLogout(){await action(async token=>{await command('chatgpt_logout');if(!current(token))return;setAccount(null);setLoginState(null);if(current(token))setStatus('已登出并清除 ChatGPT 凭据。')})}
  function changed(){revision.current++;setStatus('');setError('')}
  function choose(p:ProviderInfo){changed();const fresh=structuredClone(p);setProvider(fresh);setDraft(null);setViewBuiltin(null);setFetched([]);setSecret('');setUsage(null);setUsageError('');usageLoadedAt.current=0;setSavedProvider(snapshot(originals.current.find(x=>x.id===p.id)??p));setSavedModel('')}
  function editProvider(next:ProviderInfo){changed();setProvider(next)}
@@ -109,10 +133,24 @@ export function ModelPanel({models,onClose,onSaved}:{models:ModelConfig[];onClos
   {usageSection}
   <form onSubmit={persistProvider} className="settings-form"><h4>连接设置</h4>
   <label>供应商名称<input required readOnly={provider.builtin} value={provider.name} onChange={e=>editProvider({...provider,name:e.target.value})}/></label>
-  <label>API 密钥<input type="password" autoComplete="new-password" value={secret} placeholder={provider.credentialRef?'留空保留已保存密钥':'输入此供应商的密钥'} onChange={e=>{changed();setSecret(e.target.value)}}/></label>
+  {chatgptOAuth?<section className="chatgpt-auth" aria-label="ChatGPT 账号登录">
+   {loginState?.status==='pending'?<p role="status">正在等待浏览器完成登录…<button type="button" disabled={busy} onClick={cancelChatgptLogin}>取消登录</button></p>
+    :account?.loggedIn?<>
+     <p role="status">已登录：<strong>{account.email??account.planType??'ChatGPT 账号'}</strong>{account.planType&&<em className="chip">{account.planType}</em>}</p>
+     <div className="provider-actions"><button type="button" disabled={busy} onClick={chatgptLogout}>登出</button></div>
+    </>
+    :<>
+     <p className="muted">使用 ChatGPT 账号（Plus/Pro）授权登录；登录后凭据仅存系统凭据管理器，token 自动刷新。</p>
+     <div className="provider-actions"><button type="button" className="primary" disabled={busy||!desktop()||!provider.enabled} onClick={startChatgptLogin}>{loginState?.status==='failed'?'重试登录':'使用 ChatGPT 账号登录'}</button></div>
+    </>}
+   {loginState?.status==='failed'&&<p role="alert" className="inline-error">{loginState.error??'登录失败'}</p>}
+   {loginState?.status==='cancelled'&&<p className="muted">登录已取消，可重新发起。</p>}
+   {loginState?.status==='pending'&&authUrl&&<p className="muted">若浏览器未自动打开，请手动访问：<code style={{wordBreak:'break-all'}}>{authUrl}</code></p>}
+  </section>
+  :<label>API 密钥<input type="password" autoComplete="new-password" value={secret} placeholder={provider.credentialRef?'留空保留已保存密钥':'输入此供应商的密钥'} onChange={e=>{changed();setSecret(e.target.value)}}/></label>}
   <label>HTTP 代理（可选）<input value={provider.proxy??''} placeholder="http://127.0.0.1:7890" onChange={e=>editProvider({...provider,proxy:e.target.value||null})}/></label>
-  {provider.builtin&&<small>内置供应商名称与端点固定，可启用/停用或复制后修改。</small>}
-  <div className="provider-actions"><button type="button" disabled={busy||!originals.current.some(p=>p.id===provider.id)} onClick={copyProvider}>复制供应商</button>{!provider.builtin&&<button type="button" className="danger" disabled={busy||models.some(m=>m.providerId===provider.id)} onClick={removeProvider}>删除供应商</button>}</div>
+  {provider.builtin&&<small>{chatgptOAuth?'ChatGPT 账号供应商通过浏览器登录，无 API 密钥；名称与端点固定。':'内置供应商名称与端点固定，可启用/停用或复制后修改。'}</small>}
+  <div className="provider-actions">{!chatgptOAuth&&<button type="button" disabled={busy||!originals.current.some(p=>p.id===provider.id)} onClick={copyProvider}>复制供应商</button>}{!provider.builtin&&<button type="button" className="danger" disabled={busy||models.some(m=>m.providerId===provider.id)} onClick={removeProvider}>删除供应商</button>}</div>
   {!provider.builtin&&models.some(m=>m.providerId===provider.id)&&<small>删除供应商前，请先逐一删除关联的模型。</small>}
   {!provider.builtin&&<label>默认模型<input value={provider.defaultModel} onChange={e=>editProvider({...provider,defaultModel:e.target.value})}/></label>}
   <div className="actions"><button className="primary" disabled={busy||!desktop()||(!providerDirty&&!secret)}>{busy?'处理中…':'保存供应商'}</button></div>
@@ -132,7 +170,7 @@ export function ModelPanel({models,onClose,onSaved}:{models:ModelConfig[];onClos
   {!provider.builtin&&<label>API 地址<input required type="url" value={provider.endpoints.find(x=>x.apiMode===draft.apiMode)?.baseUrl??''} onChange={e=>editProvider({...provider,endpoints:provider.endpoints.map(x=>x.apiMode===draft.apiMode?{...x,baseUrl:e.target.value}:x)})}/></label>}
   <label>模型标识<input required list="fetched-model-ids" value={draft.model} onChange={e=>editModel({...draft,model:e.target.value})}/></label>
   <datalist id="fetched-model-ids">{fetched.map(id=><option key={id} value={id}/>)}</datalist>
-  <button type="button" className="soft" disabled={busy||!desktop()} onClick={()=>void fetchAvailable()}>{fetched.length?'重新获取模型列表':'从 API 获取模型列表'}</button>
+  {!chatgptOAuth&&<button type="button" className="soft" disabled={busy||!desktop()} onClick={()=>void fetchAvailable()}>{fetched.length?'重新获取模型列表':'从 API 获取模型列表'}</button>}
   {fetched.length>0&&<label>从检测结果选择<select value="" onChange={e=>{if(e.target.value)editModel({...draft,model:e.target.value})}}><option value="" disabled>{fetched.length} 个候选模型</option>{fetched.map(id=><option key={id} value={id}>{id}</option>)}</select></label>}
   <fieldset className="effort-fieldset"><legend>支持的推理档位（可多选）</legend>{KNOWN_EFFORTS.map(level=><label key={level} className="effort-option"><input type="checkbox" aria-label={`档位 ${level}`} checked={draft.efforts.includes(level)} onChange={e=>{const efforts=e.target.checked?[...draft.efforts,level]:draft.efforts.filter(x=>x!==level);editModel({...draft,efforts,effort:efforts.includes(draft.effort??'')?draft.effort:null})}}/>{level}</label>)}</fieldset>
   {!!draft.efforts.length&&<label>默认推理档位<select value={draft.effort??''} onChange={e=>editModel({...draft,effort:e.target.value||null})}><option value="">跟随供应商默认</option>{draft.efforts.map(level=><option key={level} value={level}>{level}</option>)}</select></label>}
@@ -140,6 +178,6 @@ export function ModelPanel({models,onClose,onSaved}:{models:ModelConfig[];onClos
   <p className="muted">连接测试会向已保存模型发送少量请求并消耗额度。修改配置后需先保存。</p>
   <div className="actions model-actions"><button type="button" disabled={busy||!savedDraft||!modelClean} onClick={()=>action(async token=>{await command<string>('model_test',{modelId:draft.id});if(current(token))setStatus('模型连接成功。')})}>测试已保存配置</button><button className="primary" disabled={busy||!desktop()}>{busy?'处理中…':'保存模型'}</button></div>
  </form></Modal>}
- {builtinView&&<Modal title={`内置模型：${builtinView.name}`} onClose={()=>setViewBuiltin(null)}><section aria-label="内置模型信息" className="settings-form"><p>模型标识 <code>{builtinView.id}</code>（内置目录成员，不可修改或删除，可启用/停用）。</p><p>支持档位：{builtinView.efforts.length?builtinView.efforts.join(' / '):'无'}；协议固定为 Anthropic 端点。</p><p className="muted">启用后即可在发送框的模型列表中选择。</p></section></Modal>}
+ {builtinView&&<Modal title={`内置模型：${builtinView.name}`} onClose={()=>setViewBuiltin(null)}><section aria-label="内置模型信息" className="settings-form"><p>模型标识 <code>{builtinView.id}</code>（内置目录成员，不可修改或删除，可启用/停用）。</p><p>支持档位：{builtinView.efforts.length?builtinView.efforts.join(' / '):'无'}；协议固定为 {provider?.endpoints[0]?.apiMode==='responses'?'Responses（ChatGPT 后端）':'Anthropic'} 端点。</p><p className="muted">启用后即可在发送框的模型列表中选择。</p></section></Modal>}
  </Modal>
 }

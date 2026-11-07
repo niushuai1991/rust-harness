@@ -394,9 +394,7 @@ impl Editor {
             self.selected = (self.selected + 1) % self.candidates.len();
             return None;
         }
-        let Some(index) = self.history_index else {
-            return None;
-        };
+        let index = self.history_index?;
         if index + 1 < self.history.len() {
             self.history_index = Some(index + 1);
             self.buffer = self.history[index + 1].clone();

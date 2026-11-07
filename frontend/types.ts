@@ -8,14 +8,19 @@ export interface SessionEvent {id:string;sessionId:string;seq:string;kind:string
 export type LiveEvent = {type:'durable';event:SessionEvent}|{type:'delta';sessionId:string;requestId:string;index:number;text:string;reasoning:boolean}|{type:'status';sessionId:string;status:string};
 export type ApiMode='chatCompletions'|'responses'|'anthropic';
 export type ProviderCompatibility='standard'|'deepSeek'|'bigModel';
+export type ProviderAuth='apiKey'|'chatGptOAuth';
 export interface ProtocolEndpoint {apiMode:ApiMode;baseUrl:string}
 export interface BuiltinModel {id:string;name:string;efforts:string[]}
-export interface ProviderInfo {id:string;name:string;builtin:boolean;compatibility:ProviderCompatibility;endpoints:ProtocolEndpoint[];defaultModel:string;credentialRef:string;proxy:string|null;enabled:boolean;builtinModels:BuiltinModel[];disabledModels:string[]}
-export interface ModelConfig {id:string;name:string;baseUrl:string;model:string;credentialRef:string;proxy:string|null;providerId:string;compatibility:ProviderCompatibility;apiMode:ApiMode;maxOutputTokens:number|null;efforts:string[];effort:string|null;enabled:boolean;builtin:boolean}
+export interface ProviderInfo {id:string;name:string;builtin:boolean;compatibility:ProviderCompatibility;auth:ProviderAuth;endpoints:ProtocolEndpoint[];defaultModel:string;credentialRef:string;proxy:string|null;enabled:boolean;builtinModels:BuiltinModel[];disabledModels:string[]}
+export interface ModelConfig {id:string;name:string;baseUrl:string;model:string;credentialRef:string;proxy:string|null;providerId:string;compatibility:ProviderCompatibility;auth:ProviderAuth;apiMode:ApiMode;maxOutputTokens:number|null;efforts:string[];effort:string|null;enabled:boolean;builtin:boolean}
 export interface DefaultSelection {modelId:string;effort:string|null}
 export type UsageCardKind='fiveHour'|'weekly'|'tools';
 export interface ProviderUsageCard {kind:UsageCardKind;remainingPercent:number|null;resetAt:number|null}
 export interface ProviderUsageSnapshot {planName:string|null;cards:ProviderUsageCard[]}
+// ChatGPT 账号 OAuth（harness-contracts ChatGptLoginState/ChatGptAccountInfo）。
+export type ChatGptLoginStatus='idle'|'pending'|'completed'|'failed'|'cancelled';
+export interface ChatGptLoginState {status:ChatGptLoginStatus;email:string|null;planType:string|null;error:string|null}
+export interface ChatGptAccountInfo {loggedIn:boolean;email:string|null;planType:string|null;expiresAt:number|null}
 export interface ApprovalRequest {id:string;sessionId:string;tool:string;arguments:unknown;reason:string}
 export interface PluginInfo {id:string;name:string;version:string;kind:string;enabled:boolean;permissions:string[];status:string;description:string}
 export interface FileChange {path:string;kind:string;beforeHash:string|null;afterHash:string|null;sourceHash:string|null;conflict:boolean;beforeText:string|null;afterText:string|null}

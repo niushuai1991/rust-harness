@@ -40,6 +40,16 @@ export const commands = {
 	effort: string | null,
 } | null, AppError>(__TAURI_INVOKE("default_selection_get")),
 	defaultSelectionSave: (selection: DefaultSelection) => typedError<null, AppError>(__TAURI_INVOKE("default_selection_save", { selection })),
+	/**  发起浏览器 OAuth 登录：绑定回调端口、打开系统浏览器并返回授权 URL 兜底。 */
+	chatgptLoginStart: () => typedError<string, AppError>(__TAURI_INVOKE("chatgpt_login_start")),
+	/**  轮询登录流程状态。 */
+	chatgptLoginStatus: () => typedError<ChatGptLoginState, AppError>(__TAURI_INVOKE("chatgpt_login_status")),
+	/**  取消进行中的登录流程。 */
+	chatgptLoginCancel: () => typedError<null, AppError>(__TAURI_INVOKE("chatgpt_login_cancel")),
+	/**  查询 ChatGPT 账号登录信息（不含 token）。 */
+	chatgptAccountStatus: () => typedError<ChatGptAccountInfo, AppError>(__TAURI_INVOKE("chatgpt_account_status")),
+	/**  登出：吊销 refresh_token 并清除本地凭据。 */
+	chatgptLogout: () => typedError<null, AppError>(__TAURI_INVOKE("chatgpt_logout")),
 	presetList: () => typedError<PresetInfo[], AppError>(__TAURI_INVOKE("preset_list")),
 	presetSave: (preset: PresetConfig) => typedError<PresetConfig, AppError>(__TAURI_INVOKE("preset_save", { preset })),
 	presetRemove: (id: string) => typedError<null, AppError>(__TAURI_INVOKE("preset_remove", { id })),
@@ -130,6 +140,35 @@ export type BuiltinModel = {
 	efforts: string[],
 };
 
+/**  ChatGPT 账号登录信息查询；不含任何 token。 */
+export type ChatGptAccountInfo = {
+	loggedIn: boolean,
+	email: string | null,
+	planType: string | null,
+	/**  access token 到期时间（Unix 秒，远小于 2^53）。 */
+	expiresAt: number | null,
+};
+
+export type ChatGptLoginState = {
+	status: ChatGptLoginStatus,
+	email: string | null,
+	planType: string | null,
+	error: string | null,
+};
+
+/**  ChatGPT 登录流程状态机（桌面端轮询）。 */
+export type ChatGptLoginStatus = 
+/**  本窗口未发起过登录。 */
+"idle" | 
+/**  等待浏览器回调。 */
+"pending" | 
+/**  登录成功且凭据已保存。 */
+"completed" | 
+/**  登录失败（error 携带原因）。 */
+"failed" | 
+/**  用户取消。 */
+"cancelled";
+
 /**  桌面端跨重启保留的上次模型选择；effort 为 None 表示跟随模型默认。 */
 export type DefaultSelection = {
 	modelId: string,
@@ -165,6 +204,7 @@ export type LspStatusEntry = {
 
 export type ModelConfig = {
 	compatibility?: ProviderCompatibility,
+	auth?: ProviderAuth,
 	providerId?: string,
 	apiMode?: ApiMode,
 	maxOutputTokens?: number | null,
@@ -228,10 +268,14 @@ export type ProtocolEndpoint = {
 	baseUrl: string,
 };
 
+/**  供应商认证方式：静态 API key 或 ChatGPT 账号 OAuth（token 由登录流程动态维护）。 */
+export type ProviderAuth = "apiKey" | "chatGptOAuth";
+
 export type ProviderCompatibility = "standard" | "deepSeek" | "bigModel";
 
 export type ProviderInfo = {
 	compatibility?: ProviderCompatibility,
+	auth?: ProviderAuth,
 	id: string,
 	name: string,
 	builtin: boolean,

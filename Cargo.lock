@@ -2228,6 +2228,7 @@ name = "harness-cli"
 version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
+ "chrono",
  "clap",
  "crossterm",
  "dirs 6.0.0",
@@ -2246,6 +2247,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "unicode-width",
+ "webbrowser",
 ]
 
 [[package]]
@@ -2333,9 +2335,11 @@ dependencies = [
  "harness-platform",
  "harness-storage",
  "jsonschema",
+ "rand 0.10.3",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -7102,6 +7106,22 @@ dependencies = [
  "phf_codegen",
  "string_cache",
  "string_cache_codegen",
+]
+
+[[package]]
+name = "webbrowser"
+version = "1.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe8d20d0214027baf11b8b0cc307c1da7657d8f4db9aa956f7de27a6fb1acbd5"
+dependencies = [
+ "jni 0.22.4",
+ "log",
+ "ndk-context",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "url",
+ "web-sys",
 ]
 
 [[package]]

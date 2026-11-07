@@ -25,6 +25,7 @@
 | [右侧面板（文件预览与改动审阅）计划](specs/side-panel-plan.md) | 2026-11-07（计划拟制） | 已实施，Rust 与前端 116 项测试通过（2026-11-07）；桌面 UI 抽查待用户 | 桌面右侧面板承载更改审阅（行级 unified diff + 同步）与工作副本文件预览（32KiB 截断/二进制占位）；unified 渲染迁移 harness-platform 与 CLI 共享；write/edit 工具卡文件按钮联动；参考 zcode 交互取舍。 |
 | [自动化任务（周期调度）计划](specs/automation-plan.md) | 2026-11-07（计划拟制） | 已实施，Rust 5 项与前端 16 项新增测试通过（2026-11-07）；桌面 UI 抽查待用户 | 桌面端用户可管理的周期自动化任务：单次/每天/每周/每月/每年五类周期（24 小时制、单次含秒）、可选绑定会话或自动新建会话投递回合；缺日跳过、错过不补跑；独立管理面板（列表/启停/编辑/删除/立即执行/运行历史）；参考 zcode 自动化取舍。 |
 | [Skills（技能）支持计划](specs/skills-plan.md) | 2026-11-07（计划批准） | 已实施，Rust 与前端测试通过（2026-11-07）；真实模型端到端与桌面 UI 抽查待用户 | 技能目录（项目级 `.agents/skills/` + 用户级 `~/.agents/skills/` + 兜底扫描）、frontmatter 解析、catalog 注入系统提示、`$name` 显式提及全文注入、禁用名单落库；CLI 管理子命令/`/skills`/`$` 补全与桌面面板/composer 补全；参考 codex skills 体系。 |
+| [ChatGPT 账号 OAuth 登录计划](specs/chatgpt-oauth-plan.md) | 2026-11-07（计划批准） | 实施中 | 模型设置新增"ChatGPT 账号"内置供应商：PKCE 授权码 + 本地回环回调登录、token 刷新与吊销、ChatGPT 后端 Responses 变体调用；桌面登录 UI 与 CLI login/logout，复用 codex client_id（originator=codex_cli_rs）。 |
 
 ## 关系说明
 

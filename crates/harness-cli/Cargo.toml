@@ -27,6 +27,8 @@ clap.workspace = true
 agent-client-protocol.workspace = true
 crossterm.workspace = true
 unicode-width.workspace = true
+webbrowser = "1"
+chrono.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

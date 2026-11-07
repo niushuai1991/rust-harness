@@ -620,7 +620,7 @@ async fn terminal_limit_approval_and_recovery() {
 
 // ---------- 自动化任务 ----------
 
-use chrono::{Datelike, FixedOffset, TimeZone};
+use chrono::{FixedOffset, TimeZone};
 
 fn automation_tz() -> FixedOffset {
     FixedOffset::east_opt(8 * 3600).unwrap()

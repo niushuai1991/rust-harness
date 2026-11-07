@@ -119,6 +119,8 @@ pub trait ModelProvider: Send + Sync {
 pub struct HttpModel {
     pub config: ModelConfig,
     pub secret: String,
+    /// 逐请求附加的额外 header（ChatGPT OAuth 的 account-id / originator / session-id）。
+    pub extra_headers: Vec<(String, String)>,
 }
 #[async_trait]
 impl ModelProvider for HttpModel {
@@ -149,12 +151,29 @@ impl ModelProvider for HttpModel {
                     .map_err(|_| AppError::new("MODEL_PROXY", "代理地址无效"))?,
             );
         }
+        if self.config.auth == ProviderAuth::ChatGptOAuth {
+            // ChatGPT 后端按客户端身份识别请求；与 codex CLI 的 User-Agent 形态保持一致。
+            builder = builder.user_agent(format!(
+                "{}/{} ({}; {})",
+                crate::chatgpt::ORIGINATOR,
+                env!("CARGO_PKG_VERSION"),
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            ));
+        }
         let client = builder.build().map_err(transport_error)?;
         let (url, body) = encode_request(&self.config, &messages, &tools)?;
         let mut request = client
             .post(url)
             .json(&body)
             .timeout(Duration::from_secs(180));
+        if self.config.auth == ProviderAuth::ChatGptOAuth {
+            // 后端为纯流式协议，必须显式声明 SSE 接受类型。
+            request = request.header("accept", "text/event-stream");
+        }
+        for (name, value) in &self.extra_headers {
+            request = request.header(name.as_str(), value.as_str());
+        }
         match self.config.api_mode {
             ApiMode::Anthropic => {
                 request = request.header("anthropic-version", "2023-06-01");

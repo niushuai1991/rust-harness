@@ -293,7 +293,9 @@ fn purge_roots(local: &Path, roaming: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(all(test, windows))]
+/// uninstall 集成测试的清理入口；生产代码无调用者（cfg(test) 挡不住集成测试的 lib 视角）。
+#[cfg(windows)]
+#[allow(dead_code)]
 pub(crate) fn purge_test_roots(local: &Path, roaming: &Path) -> Result<(), String> {
     purge_roots(local, roaming)
 }

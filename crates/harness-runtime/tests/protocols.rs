@@ -182,7 +182,7 @@ fn six_builtin_routes_use_the_exact_fixed_prefixes() {
         ),
     ];
     let providers = harness_runtime::providers::builtin_providers();
-    assert_eq!(providers.len(), 2);
+    assert_eq!(providers.len(), 3);
     for (id, mode, url) in expected {
         let p = providers.iter().find(|p| p.id == id).unwrap();
         let mut c = config(mode);
@@ -203,6 +203,23 @@ fn six_builtin_routes_use_the_exact_fixed_prefixes() {
             assert!(body.get("stream_options").is_none());
         }
     }
+    // chatgpt 内置目录：Responses 端点直指 ChatGPT 后端，编码走 developer/include 变体。
+    let chatgpt = providers.iter().find(|p| p.id == "chatgpt").unwrap();
+    assert_eq!(chatgpt.auth, ProviderAuth::ChatGptOAuth);
+    let mut c = config(ApiMode::Responses);
+    c.provider_id = "chatgpt".into();
+    c.auth = ProviderAuth::ChatGptOAuth;
+    c.base_url = chatgpt.endpoints[0].base_url.clone();
+    let (actual, body) = encode_request(
+        &c,
+        &[ModelMessage::system("sys"), ModelMessage::user("hi")],
+        &[],
+    )
+    .unwrap();
+    assert_eq!(actual, "https://chatgpt.com/backend-api/codex/responses");
+    assert_eq!(body["store"], json!(false));
+    assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+    assert_eq!(body["input"][0]["role"], json!("developer"));
 }
 
 #[test]

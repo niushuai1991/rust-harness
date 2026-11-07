@@ -1,6 +1,7 @@
 //! Typed desktop adapters. Agent tools never call these human-only synchronization endpoints.
 use harness_contracts::*;
 use harness_runtime::Runtime;
+use harness_runtime::chatgpt::LoginHandle;
 use serde::Deserialize;
 use std::{path::PathBuf, sync::Arc};
 use tauri::{State, ipc::Channel};
@@ -297,6 +298,133 @@ pub async fn default_selection_save(
     let value = serde_json::to_value(&selection)
         .map_err(|e| AppError::new("MODEL_CONFIG", e.to_string()))?;
     state.store.set(DEFAULT_SELECTION_KEY, &value).await
+}
+
+// ---------------------------------------------------------------------------
+// ChatGPT 账号 OAuth 登录（浏览器授权 + 本地回环回调）；token 永不回传前端。
+// ---------------------------------------------------------------------------
+
+/// 进程内共享的登录会话；同一时刻至多一个进行中的登录流程。
+static CHATGPT_LOGIN: std::sync::OnceLock<tokio::sync::Mutex<Option<LoginHandle>>> =
+    std::sync::OnceLock::new();
+fn login_slot() -> &'static tokio::sync::Mutex<Option<LoginHandle>> {
+    CHATGPT_LOGIN.get_or_init(|| tokio::sync::Mutex::new(None))
+}
+
+/// chatgpt 供应商个人覆盖层配置的代理；OAuth 请求与模型请求同源。
+async fn chatgpt_proxy(state: &Backend<'_>) -> AppResult<Option<String>> {
+    Ok(state
+        .models
+        .list_providers()
+        .await?
+        .into_iter()
+        .find(|p| p.id == "chatgpt")
+        .and_then(|p| p.proxy)
+        .filter(|p| !p.is_empty()))
+}
+
+/// 发起浏览器 OAuth 登录：绑定回调端口、打开系统浏览器并返回授权 URL 兜底。
+#[tauri::command]
+#[specta::specta]
+pub async fn chatgpt_login_start(state: Backend<'_>, app: tauri::AppHandle) -> AppResult<String> {
+    use harness_runtime::chatgpt::{LoginOptions, PlatformTokenStore};
+    let proxy = chatgpt_proxy(&state).await?;
+    let options = LoginOptions {
+        proxy,
+        ..LoginOptions::new(Arc::new(PlatformTokenStore))
+    };
+    let handle = harness_runtime::chatgpt::start_login(options)
+        .await
+        .map_err(error)?;
+    let auth_url = handle.auth_url.clone();
+    {
+        let mut slot = login_slot().lock().await;
+        if let Some(previous) = slot.take() {
+            previous.cancel();
+        }
+        *slot = Some(handle);
+    }
+    // 打开系统默认浏览器；失败不阻塞（前端展示 auth_url 供手动访问）。
+    if let Err(e) = tauri_plugin_opener::OpenerExt::opener(&app).open_url(&auth_url, None::<&str>) {
+        eprintln!("打开浏览器失败：{e}");
+    }
+    Ok(auth_url)
+}
+
+/// 轮询登录流程状态。
+#[tauri::command]
+#[specta::specta]
+pub async fn chatgpt_login_status() -> AppResult<ChatGptLoginState> {
+    use harness_runtime::chatgpt::LoginPhase;
+    let slot = login_slot().lock().await;
+    let state = match slot
+        .as_ref()
+        .map(harness_runtime::chatgpt::LoginHandle::phase)
+    {
+        None | Some(LoginPhase::Pending) => ChatGptLoginState {
+            status: match slot.is_some() {
+                true => ChatGptLoginStatus::Pending,
+                false => ChatGptLoginStatus::Idle,
+            },
+            ..Default::default()
+        },
+        Some(LoginPhase::Completed { email, plan_type }) => ChatGptLoginState {
+            status: ChatGptLoginStatus::Completed,
+            email,
+            plan_type,
+            ..Default::default()
+        },
+        Some(LoginPhase::Failed(message)) => ChatGptLoginState {
+            status: ChatGptLoginStatus::Failed,
+            error: Some(message),
+            ..Default::default()
+        },
+        Some(LoginPhase::Cancelled) => ChatGptLoginState {
+            status: ChatGptLoginStatus::Cancelled,
+            ..Default::default()
+        },
+    };
+    Ok(state)
+}
+
+/// 取消进行中的登录流程。
+#[tauri::command]
+#[specta::specta]
+pub async fn chatgpt_login_cancel() -> AppResult<()> {
+    if let Some(handle) = login_slot().lock().await.take() {
+        handle.cancel();
+    }
+    Ok(())
+}
+
+/// 查询 ChatGPT 账号登录信息（不含 token）。
+#[tauri::command]
+#[specta::specta]
+pub async fn chatgpt_account_status() -> AppResult<ChatGptAccountInfo> {
+    use harness_runtime::chatgpt::{PlatformTokenStore, load_bundle};
+    Ok(match load_bundle(&PlatformTokenStore)? {
+        Some(bundle) => ChatGptAccountInfo {
+            logged_in: true,
+            email: bundle.email,
+            plan_type: bundle.plan_type,
+            expires_at: Some(bundle.expires_at),
+        },
+        None => ChatGptAccountInfo::default(),
+    })
+}
+
+/// 登出：吊销 refresh_token 并清除本地凭据。
+#[tauri::command]
+#[specta::specta]
+pub async fn chatgpt_logout(state: Backend<'_>) -> AppResult<()> {
+    use harness_runtime::chatgpt::{ISSUER, PlatformTokenStore};
+    if let Some(handle) = login_slot().lock().await.take() {
+        handle.cancel();
+    }
+    let proxy = chatgpt_proxy(&state).await?;
+    harness_runtime::chatgpt::logout(&PlatformTokenStore, ISSUER, proxy.as_deref())
+        .await
+        .map_err(error)
 }
 #[tauri::command]
 #[specta::specta]
@@ -631,6 +759,11 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         model_fetch_available,
         default_selection_get,
         default_selection_save,
+        chatgpt_login_start,
+        chatgpt_login_status,
+        chatgpt_login_cancel,
+        chatgpt_account_status,
+        chatgpt_logout,
         preset_list,
         preset_save,
         preset_remove,

@@ -71,7 +71,15 @@ pub fn encode_request(
                 } else if m.role == MessageRole::Tool {
                     input.push(json!({"type":"function_call_output","call_id":m.tool_call_id,"output":m.content}));
                 } else {
-                    input.push(json!({"role":m.role,"content":m.content}));
+                    // ChatGPT 后端要求基础指令以 developer 消息进入 input，而非 system。
+                    let role = match m.role {
+                        MessageRole::System if config.auth == ProviderAuth::ChatGptOAuth => {
+                            "developer"
+                        }
+                        MessageRole::System => "system",
+                        _ => "user",
+                    };
+                    input.push(json!({"role":role,"content":m.content}));
                 }
             }
             body["input"] = json!(input);
@@ -81,7 +89,11 @@ pub fn encode_request(
             if config.compatibility == ProviderCompatibility::Standard {
                 body["include"] = json!(["reasoning.encrypted_content"]);
             }
-            if let Some(limit) = config.max_output_tokens {
+            // ChatGPT 后端不消费 max_output_tokens（codex 亦不发送）。
+            if let Some(limit) = config
+                .max_output_tokens
+                .filter(|_| config.auth != ProviderAuth::ChatGptOAuth)
+            {
                 body["max_output_tokens"] = json!(limit);
             }
             if !tools.is_empty() {

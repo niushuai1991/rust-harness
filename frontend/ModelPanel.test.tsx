@@ -5,18 +5,20 @@ const mocks=vi.hoisted(()=>({command:vi.fn()}));
 vi.mock('./api',()=>({desktop:()=>true,command:mocks.command,send:vi.fn(),errorText:(e:unknown)=>e instanceof Error?e.message:String(e)}));
 vi.mock('@tauri-apps/plugin-dialog',()=>({open:vi.fn(),save:vi.fn()}));
 const baseProvider={enabled:true,builtinModels:[],disabledModels:[]};
-const deepseek={...baseProvider,id:'deepseek',name:'DeepSeek',builtin:true,compatibility:'deepSeek',endpoints:[{apiMode:'chatCompletions',baseUrl:'https://api.deepseek.com'},{apiMode:'responses',baseUrl:'https://api.deepseek.com'},{apiMode:'anthropic',baseUrl:'https://api.deepseek.com/anthropic'}],defaultModel:'deepseek-flash',credentialRef:'deep-key',proxy:null,
+const deepseek={...baseProvider,auth:'apiKey',id:'deepseek',name:'DeepSeek',builtin:true,compatibility:'deepSeek',endpoints:[{apiMode:'chatCompletions',baseUrl:'https://api.deepseek.com'},{apiMode:'responses',baseUrl:'https://api.deepseek.com'},{apiMode:'anthropic',baseUrl:'https://api.deepseek.com/anthropic'}],defaultModel:'deepseek-flash',credentialRef:'deep-key',proxy:null,
  builtinModels:[{id:'deepseek-flash',name:'DeepSeek Flash',efforts:['disabled','enabled']},{id:'deepseek-v4-pro',name:'DeepSeek V4 Pro',efforts:['disabled','enabled']}]};
 const zhipu={...deepseek,id:'zhipu',name:'智谱 Coding Plan',compatibility:'bigModel',endpoints:[{apiMode:'chatCompletions',baseUrl:'https://open.bigmodel.cn/api/coding/paas/v4'},{apiMode:'responses',baseUrl:'https://open.bigmodel.cn/api/coding/paas/v4'},{apiMode:'anthropic',baseUrl:'https://open.bigmodel.cn/api/anthropic'}],defaultModel:'glm-5.3',credentialRef:'glm-key',
  builtinModels:[{id:'glm-5.3',name:'GLM-5.3',efforts:['low','high','max']}]};
-let catalog:any[]=[],savedModels:any[]=[],usageResult:unknown;
+const chatgpt={...baseProvider,auth:'chatGptOAuth',id:'chatgpt',name:'ChatGPT 账号',builtin:true,compatibility:'standard',endpoints:[{apiMode:'responses',baseUrl:'https://chatgpt.com/backend-api/codex'}],defaultModel:'gpt-6.1-sol',credentialRef:'provider/chatgpt',proxy:null,
+ builtinModels:[{id:'gpt-6.1-sol',name:'GPT-6.1-Sol',efforts:['low','medium','high','xhigh','max']},{id:'gpt-5.5',name:'GPT-5.5',efforts:['low','medium','high','xhigh']}]};
+let catalog:any[]=[],savedModels:any[]=[],usageResult:unknown,accountResult:any,loginStatusQueue:any[];
 // 用本地时区构造重置时间，断言在不同时区的 CI 上都稳定。
 const weeklyReset=new Date(2026,10,8,10,22).getTime(),toolsReset=new Date(2026,11,1).getTime();
 const usageOk={planName:'GLM Coding Pro',cards:[
  {kind:'fiveHour',remainingPercent:70,resetAt:null},
  {kind:'weekly',remainingPercent:14,resetAt:weeklyReset},
  {kind:'tools',remainingPercent:99,resetAt:toolsReset}]};
-function reset(){catalog=[structuredClone(deepseek),structuredClone(zhipu)];savedModels=[];usageResult=structuredClone(usageOk)}
+function reset(){catalog=[structuredClone(deepseek),structuredClone(zhipu),structuredClone(chatgpt)];savedModels=[];usageResult=structuredClone(usageOk);accountResult={loggedIn:false,email:null,planType:null,expiresAt:null};loginStatusQueue=[]}
 beforeEach(()=>{reset();mocks.command.mockReset();mocks.command.mockImplementation(async(name:string,args:any)=>{
  if(name==='provider_list')return structuredClone(catalog);
  if(name==='model_list')return structuredClone(savedModels);
@@ -29,6 +31,10 @@ beforeEach(()=>{reset();mocks.command.mockReset();mocks.command.mockImplementati
  if(name==='provider_remove'){catalog=catalog.filter(p=>p.id!==args.id);return null}
  if(name==='model_fetch_available')return ['glm-5.3','glm-5.3-flash','glm-4.6'];
  if(name==='provider_usage'){if(usageResult instanceof Error)throw usageResult;return structuredClone(usageResult)}
+ if(name==='chatgpt_account_status')return structuredClone(accountResult);
+ if(name==='chatgpt_login_start')return 'http://127.0.0.1:1455/auth/callback?state=s';
+ if(name==='chatgpt_login_status')return loginStatusQueue.length?loginStatusQueue.shift():{status:'idle',email:null,planType:null,error:null};
+ if(name==='chatgpt_logout'){accountResult={loggedIn:false,email:null,planType:null,expiresAt:null};return null}
  return [];
 })});
 afterEach(cleanup);
@@ -197,4 +203,55 @@ it('关联模型阻止删除供应商，行内删除模型后才允许移除',as
  fireEvent.click(screen.getByRole('button',{name:'删除供应商'}));
  await waitFor(()=>expect(screen.queryByRole('button',{name:/DeepSeek 副本/})).not.toBeInTheDocument());
  expect(mocks.command).toHaveBeenCalledWith('provider_remove',{id:'copy'});
+});
+
+it('ChatGPT 供应商无 API 密钥输入，展示登录入口与内置模型',async()=>{
+ await openPanel();
+ fireEvent.click(screen.getByRole('button',{name:/ChatGPT 账号/}));
+ await screen.findByRole('button',{name:'使用 ChatGPT 账号登录'});
+ expect(mocks.command).toHaveBeenCalledWith('chatgpt_account_status');
+ expect(screen.queryByLabelText('API 密钥')).not.toBeInTheDocument();
+ expect(screen.queryByRole('button',{name:'复制供应商'})).not.toBeInTheDocument();
+ expect(screen.getAllByRole('button',{name:/GPT-6.1-Sol/}).length).toBeGreaterThan(0);
+});
+
+it('ChatGPT 登录发起后进入等待态并展示兜底链接，可取消',async()=>{
+ await openPanel();
+ fireEvent.click(screen.getByRole('button',{name:/ChatGPT 账号/}));
+ fireEvent.click(await screen.findByRole('button',{name:'使用 ChatGPT 账号登录'}));
+ expect(mocks.command).toHaveBeenCalledWith('chatgpt_login_start');
+ await screen.findByText(/正在等待浏览器完成登录/);
+ expect(screen.getByText(/127\.0\.0\.1:1455/)).toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'取消登录'}));
+ await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('chatgpt_login_cancel'));
+});
+
+it('ChatGPT 登录完成后展示账号信息并可登出',async()=>{
+ loginStatusQueue.push({status:'completed',email:'dev@example.com',planType:'plus',error:null});
+ accountResult={loggedIn:true,email:'dev@example.com',planType:'plus',expiresAt:1900000000};
+ await openPanel();
+ fireEvent.click(screen.getByRole('button',{name:/ChatGPT 账号/}));
+ await screen.findByText('dev@example.com',{},{timeout:4000});
+ expect(screen.getByText('plus')).toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'登出'}));
+ await screen.findByRole('button',{name:'使用 ChatGPT 账号登录'});
+ expect(mocks.command).toHaveBeenCalledWith('chatgpt_logout');
+});
+
+it('ChatGPT 登录失败展示原因并可重试',async()=>{
+ loginStatusQueue.push({status:'failed',email:null,planType:null,error:'回调 state 校验失败，请重新发起登录'});
+ await openPanel();
+ fireEvent.click(screen.getByRole('button',{name:/ChatGPT 账号/}));
+ fireEvent.click(await screen.findByRole('button',{name:'使用 ChatGPT 账号登录'}));
+ // 登录状态轮询间隔 1.5s，等待窗口需覆盖首个轮询周期。
+ await screen.findByText('回调 state 校验失败，请重新发起登录',{},{timeout:4000});
+ expect(screen.getByRole('button',{name:'重试登录'})).toBeEnabled();
+});
+
+it('ChatGPT 模型弹窗不提供 API 模型列表抓取',async()=>{
+ await openPanel();
+ fireEvent.click(screen.getByRole('button',{name:/ChatGPT 账号/}));
+ await screen.findByRole('button',{name:'使用 ChatGPT 账号登录'});
+ fireEvent.click(screen.getByRole('button',{name:'添加模型'}));
+ expect(screen.queryByRole('button',{name:'从 API 获取模型列表'})).not.toBeInTheDocument();
 });
