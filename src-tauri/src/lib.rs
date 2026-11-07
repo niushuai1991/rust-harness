@@ -57,10 +57,45 @@ pub fn run() {
         app.manage(browser);
         app.manage(runtime);
         desktop::setup(app)?;
+        #[cfg(windows)]
+        disable_webview2_browser_chrome(app.handle());
         Ok(())
     })
     .run(context)
     .expect("无法启动 Rust Harness");
+}
+
+/// 去掉 WebView2 自带的浏览器外壳行为：默认右键菜单（刷新、打印等）和
+/// F5/Ctrl+R/Ctrl+P 等浏览器快捷键。tauri 未暴露对应开关，参照 wry
+/// `webview2/mod.rs` 中 set_webview_settings 的做法直接调 COM 设置；
+/// 不影响 Ctrl+C/V/X 等文本编辑快捷键。
+#[cfg(windows)]
+fn disable_webview2_browser_chrome(app: &tauri::AppHandle) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+    use windows::core::Interface;
+
+    let Some(window) = app.get_webview_window("main") else {
+        tracing::warn!("未找到主窗口，跳过关闭 WebView2 浏览器默认行为");
+        return;
+    };
+    if let Err(error) = window.with_webview(move |webview| {
+        let apply = || -> windows::core::Result<()> {
+            unsafe {
+                let core = webview.controller().CoreWebView2()?;
+                let settings = core.Settings()?;
+                settings.SetAreDefaultContextMenusEnabled(false)?;
+                if let Ok(settings3) = settings.cast::<ICoreWebView2Settings3>() {
+                    settings3.SetAreBrowserAcceleratorKeysEnabled(false)?;
+                }
+            }
+            Ok(())
+        };
+        if let Err(error) = apply() {
+            tracing::warn!("关闭 WebView2 默认右键菜单/浏览器快捷键失败：{error}");
+        }
+    }) {
+        tracing::warn!("无法访问 WebView2 平台句柄：{error}");
+    }
 }
 
 fn p1_guest_browser_args() -> Option<String> {
