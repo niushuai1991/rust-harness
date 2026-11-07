@@ -12,6 +12,8 @@ use std::{
 };
 
 const SCHEMA_VERSION: i64 = 2;
+/// 会话列表「项目」视图置顶工作区集合的 settings KV 键。
+pub const PINNED_WORKSPACES_KEY: &str = "workspace.pinned.v1";
 fn db_error(e: impl std::fmt::Display) -> AppError {
     AppError::new("STORAGE", e.to_string())
 }
@@ -320,6 +322,25 @@ impl Store {
     pub async fn set(&self, key: &str, value: &Value) -> AppResult<()> {
         sqlx::query("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(key).bind(value.to_string()).execute(&self.pool).await.map_err(db_error)?;
         Ok(())
+    }
+    /// 会话列表「项目」视图的置顶工作区集合（settings KV，跨重启保留）。
+    pub async fn pinned_workspaces(&self) -> AppResult<Vec<String>> {
+        Ok(self
+            .get(PINNED_WORKSPACES_KEY)
+            .await?
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default())
+    }
+    pub async fn set_workspace_pinned(&self, workspace: &str, pinned: bool) -> AppResult<()> {
+        let mut ids = self.pinned_workspaces().await?;
+        if pinned {
+            if !ids.iter().any(|id| id == workspace) {
+                ids.push(workspace.to_string());
+            }
+        } else {
+            ids.retain(|id| id != workspace);
+        }
+        self.set(PINNED_WORKSPACES_KEY, &json!(ids)).await
     }
     pub async fn export(&self, id: &str) -> AppResult<String> {
         let mut lines = vec![

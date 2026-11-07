@@ -25,6 +25,7 @@
 | [右侧面板（文件预览与改动审阅）](specs/side-panel.md) | 2026-11-07（计划拟制） | 桌面右侧面板承载更改审阅（行级 unified diff + 同步）与工作副本文件预览（32KiB 截断/二进制占位）；unified 渲染迁移 harness-platform 与 CLI 共享；write/edit 工具卡文件按钮联动；参考 zcode 交互取舍。 |
 | [自动化任务（周期调度）](specs/automation.md) | 2026-11-07（计划拟制） | 桌面端用户可管理的周期自动化任务：单次/每天/每周/每月/每年五类周期（24 小时制、单次含秒）、可选绑定会话或自动新建会话投递回合；缺日跳过、错过不补跑；独立管理面板（列表/启停/编辑/删除/立即执行/运行历史）；参考 zcode 自动化取舍。 |
 | [Skills（技能）支持](specs/skills.md) | 2026-11-07（计划批准） | 技能目录（项目级 `.agents/skills/` + 用户级 `~/.agents/skills/` + 兜底扫描）、frontmatter 解析、catalog 注入系统提示、`$name` 显式提及全文注入、禁用名单落库；CLI 管理子命令/`/skills`/`$` 补全与桌面面板/composer 补全；参考 codex skills 体系。 |
+| [会话列表「最近 / 项目」视图](specs/session-list.md) | 2026-11-08（计划拟制） | 桌面侧栏任务列表按最近（时间分组跨工作区）/ 按项目（分组折叠）两种视图、圆角方块 switch 切换、项目置顶 KV 持久化（`workspace_set_pinned`）、标题搜索过滤与跨工作区会话跳转；参考 zcode 会话历史取舍。 |
 
 ## 关系说明
 
@@ -45,6 +46,7 @@
 - 右侧面板规范为桌面可视化专项规范，unified diff 渲染语义与 CLI diff 契约共享自 harness-platform；预览与审阅均为只读展示，写入仍走既有 `workspace_apply` 审阅快照校验，agent 写文件不自动弹面板。
 - 自动化任务规范与 P2 后台任务规范同属 orchestration 调度域：复用 `run_owned` 回合通道、250ms ticker 与 `schedules_lock`，KV 键独立（`orchestration.automations.v1`）；面向用户桌面管理而非模型工具，错过不补跑语义与既有单次调度基线一致。
 - Skills 支持规范闭环配置预设规范列为「另行立项」的 skills 启停项，并落地斜杠快捷指令规范当时列为非目标的 codex `$` skill 体系；catalog 注入不改变 `context.snapshot` 事件结构，技能读取走现有免审批 `read` 工具，不新增模型工具。
+- 会话列表视图规范为桌面可视化专项规范：置顶集合与视图偏好属桌面用户偏好，不进入 CLI / JSON-RPC 契约；`session_list` 的 `all_workspaces` 仅扩展桌面查询参数，缺省过滤语义不变。
 - 当前完成情况以 [能力状态矩阵](capability-matrix.md) 为准，具体执行与验证证据见 [交付记录](delivery.md)。
 - 后续发布仅构建使用系统已有 WebView2 的单一 NSIS 包（历史双安装包仅对应 0.1.2 当次交付）。
 

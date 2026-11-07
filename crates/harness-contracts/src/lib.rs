@@ -53,6 +53,9 @@ pub struct WorkspaceInfo {
     pub source_path: String,
     pub replica_path: String,
     pub created_at: String,
+    /// 会话列表「项目」视图置顶标记；工作区记录本身不落库，由桌面端从 settings KV 派生注入。
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

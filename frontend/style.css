@@ -199,3 +199,48 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .pair-row{display:flex;gap:9px}
 .pair-row label{flex:1}
 .form-label-inline{font-size:11px;color:#718064;margin-bottom:5px}
+
+/* ---- 会话列表「最近 / 项目」视图：搜索框、任务列表标题行、圆角方块 switch ---- */
+.session-search{display:flex;align-items:center;gap:7px;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:0 10px;height:33px;margin-top:12px;color:var(--muted);flex-shrink:0}
+.session-search input{flex:1;min-width:0;border:0;outline:0;background:transparent;padding:0;font-size:12.5px;color:var(--text)}
+.session-search input::placeholder{color:#a6aea0}
+.section-label .label-spacer{flex:1}
+.seg-label{font-size:11px;letter-spacing:0;color:var(--muted)}
+.seg-label.on{color:var(--text);font-weight:550}
+.view-switch{position:relative;width:72px;height:22px;flex:0 0 72px;border:0;border-radius:6px;background:var(--accent);padding:0;overflow:hidden}
+.view-switch .knob{position:absolute;top:2px;left:2px;width:34px;height:18px;border-radius:4px;background:var(--panel);box-shadow:0 1px 2px rgba(36,51,44,.25);transition:transform .15s}
+.view-switch .sw-label{position:absolute;top:0;height:100%;width:34px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500;pointer-events:none;transition:color .15s}
+.view-switch .sw-label.a{left:2px;color:var(--accent)}
+.view-switch .sw-label.b{right:2px;color:#fff}
+.view-switch[aria-checked="true"] .knob{transform:translateX(34px)}
+.view-switch[aria-checked="true"] .sw-label.a{color:#fff}
+.view-switch[aria-checked="true"] .sw-label.b{color:var(--accent)}
+@media(prefers-reduced-motion:reduce){.view-switch .knob,.view-switch .sw-label{transition:none}}
+
+/* 「最近」视图：时间分组头 + 双行条目（标题/子任务 + 项目/置顶/运行中） */
+.sessions .group-head{position:sticky;top:0;z-index:2;background:#eef1eb;font-size:10.5px;color:#8b9788;padding:9px 4px 5px}
+.sessions .session-row{align-items:flex-start;gap:8px}
+.session-lines{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.session-l1{display:flex;align-items:baseline;gap:6px;min-width:0}
+.session-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.session-row .subagent-badge{margin-left:0}
+.session-time{flex-shrink:0;font-size:10px;color:#8b9788;font-variant-numeric:tabular-nums}
+.session-l2{display:flex;align-items:center;gap:5px;font-size:10px;color:#8b9788;min-width:0}
+.session-l2>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.session-l2 svg{flex-shrink:0;color:var(--accent)}
+
+/* 「项目」视图：工作区分组（折叠 + 置顶），组内单行条目 */
+.ws-group{margin:3px 0}
+.ws-head{display:flex;align-items:center;gap:2px;border-radius:7px;padding:1px}
+.ws-head:hover{background:#edf1e9}
+.ws-toggle{flex:1;display:flex;align-items:center;gap:6px;border:0;background:transparent;padding:7px 7px;border-radius:7px;font-size:12px;font-weight:550;color:var(--text);justify-content:flex-start;min-width:0}
+.ws-toggle .chev{color:#9aa795;transition:transform .15s;flex-shrink:0}
+.ws-toggle[aria-expanded="true"] .chev{transform:rotate(90deg)}
+.ws-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ws-count{font-size:10px;color:#7b8b74;background:#e1e7dc;border-radius:4px;padding:1px 6px;flex-shrink:0}
+.ws-pin{border:0;background:transparent;color:#8b9788;width:26px;height:26px;padding:0;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;opacity:0;flex-shrink:0}
+.ws-head:hover .ws-pin,.ws-pin.on,.ws-pin:focus-visible{opacity:1}
+.ws-pin.on{color:var(--accent)}
+.ws-pin:hover{background:#e4eddb;color:var(--accent)}
+.sessions .session-row.one{align-items:center}
+.sessions .session-row.one .session-title{flex:1}
