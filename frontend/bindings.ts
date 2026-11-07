@@ -140,6 +140,8 @@ export type BuiltinModel = {
 	id: string,
 	name: string,
 	efforts: string[],
+	/**  上下文窗口（tokens）；旧存储缺省为 None，未知窗口时前端隐藏用量指示器。 */
+	contextWindow?: number | null,
 };
 
 /**  ChatGPT 账号登录信息查询；不含任何 token。 */
@@ -210,6 +212,8 @@ export type ModelConfig = {
 	providerId?: string,
 	apiMode?: ApiMode,
 	maxOutputTokens?: number | null,
+	/**  上下文窗口（tokens）；旧存储缺省为 None，未知窗口时前端隐藏用量指示器。 */
+	contextWindow?: number | null,
 	id: string,
 	name: string,
 	baseUrl: string,

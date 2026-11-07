@@ -244,3 +244,29 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .ws-pin:hover{background:#e4eddb;color:var(--accent)}
 .sessions .session-row.one{align-items:center}
 .sessions .session-row.one .session-title{flex:1}
+/* 用量环形（会话输入区，模型选择器右侧） */
+.usage-ring-wrap{position:relative;display:flex;flex-shrink:0}
+.usage-ring-btn{border:0;background:transparent;padding:5px;border-radius:6px;display:inline-flex;align-items:center;justify-content:center}
+.usage-ring-btn:hover{background:#e4eddb}
+.usage-ring-btn svg{display:block}
+.usage-ring-pop{position:absolute;bottom:calc(100% + 8px);left:-6px;width:280px;max-width:82vw;background:var(--panel);border:1px solid var(--border);border-radius:11px;box-shadow:0 8px 24px rgba(36,51,44,.16);padding:11px 13px;z-index:40;transform-origin:bottom left;animation:usage-pop-in .13s ease-out}
+@keyframes usage-pop-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.usage-ring-title{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--muted);letter-spacing:.5px;margin:0}
+.usage-ring-title em{font-style:normal;margin-left:auto;color:#768178}
+.usage-ring-gap{margin-top:9px}
+.usage-ring-line{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-top:5px}
+.usage-ring-line strong{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums}
+.usage-ring-line span{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.usage-ring-bar{margin-top:6px}
+.usage-ring-card{padding:6px 0}
+.usage-ring-card+.usage-ring-card{border-top:1px solid #e9ede4}
+.usage-ring-card-top{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.usage-ring-card-top span{font-size:11px;color:var(--muted)}
+.usage-ring-card-top strong{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums}
+.usage-ring-card-bar{display:flex;align-items:center;gap:9px;margin-top:5px}
+.usage-ring-track{flex:1;height:5px;border-radius:99px;background:#e7ecdf;overflow:hidden}
+.usage-ring-track i{display:block;height:100%;border-radius:99px;background:var(--accent)}
+.usage-ring-track i.warn{background:#a06a43}
+.usage-ring-reset{font-size:10px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums;font-style:normal}
+.usage-ring-hint{margin:6px 0 2px}
+@media(prefers-reduced-motion:reduce){.usage-ring-pop{animation:none}}
