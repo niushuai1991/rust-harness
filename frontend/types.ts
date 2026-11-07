@@ -2,7 +2,7 @@
 // 已知推理档位，语义强度从低到高（与 harness-contracts KNOWN_EFFORTS 对齐）。
 export const KNOWN_EFFORTS=['disabled','minimal','low','medium','high','max'] as const;
 export type Effort=(typeof KNOWN_EFFORTS)[number];
-export interface WorkspaceInfo {id:string;sourcePath:string;replicaPath:string;createdAt:string}
+export interface WorkspaceInfo {id:string;sourcePath:string;replicaPath:string;createdAt:string;pinned:boolean}
 export interface SessionInfo {id:string;workspaceId:string;title:string;createdAt:string;updatedAt:string;parentId?:string|null}
 export interface SessionEvent {id:string;sessionId:string;seq:string;kind:string;data:Record<string,unknown>;createdAt:string}
 export type LiveEvent = {type:'durable';event:SessionEvent}|{type:'delta';sessionId:string;requestId:string;index:number;text:string;reasoning:boolean}|{type:'status';sessionId:string;status:string};

@@ -6,6 +6,8 @@ import { invoke as __TAURI_INVOKE, Channel } from "@tauri-apps/api/core";
 export const commands = {
 	workspaceList: () => typedError<WorkspaceInfo[], AppError>(__TAURI_INVOKE("workspace_list")),
 	workspaceOpen: (path: string) => typedError<WorkspaceInfo, AppError>(__TAURI_INVOKE("workspace_open", { path })),
+	/**  会话列表「项目」视图的置顶切换；先校验工作区存在，返回更新后的工作区信息。 */
+	workspaceSetPinned: (workspaceId: string, pinned: boolean) => typedError<WorkspaceInfo, AppError>(__TAURI_INVOKE("workspace_set_pinned", { workspaceId, pinned })),
 	workspaceDiff: (workspaceId: string) => typedError<FileChange[], AppError>(__TAURI_INVOKE("workspace_diff", { workspaceId })),
 	/**  右侧面板懒加载的单文件 unified diff（unified 为 None 表示二进制或超限）。 */
 	workspaceFileDiff: (workspaceId: string, path: string) => typedError<WorkspaceFileDiff, AppError>(__TAURI_INVOKE("workspace_file_diff", { workspaceId, path })),
@@ -13,7 +15,7 @@ export const commands = {
 	workspaceFilePreview: (workspaceId: string, path: string) => typedError<WorkspaceFilePreview, AppError>(__TAURI_INVOKE("workspace_file_preview", { workspaceId, path })),
 	workspaceApply: (workspaceId: string, paths: string[], reviewed: FileChange[]) => typedError<FileChange[], AppError>(__TAURI_INVOKE("workspace_apply", { workspaceId, paths, reviewed })),
 	workspaceRefresh: (workspaceId: string) => typedError<WorkspaceInfo, AppError>(__TAURI_INVOKE("workspace_refresh", { workspaceId })),
-	sessionList: (workspaceId: string) => typedError<SessionInfo[], AppError>(__TAURI_INVOKE("session_list", { workspaceId })),
+	sessionList: (workspaceId: string, allWorkspaces: boolean | null) => typedError<SessionInfo[], AppError>(__TAURI_INVOKE("session_list", { workspaceId, allWorkspaces })),
 	sessionActiveList: () => typedError<string[], AppError>(__TAURI_INVOKE("session_active_list")),
 	sessionCreate: (workspaceId: string, title: string) => typedError<SessionInfo, AppError>(__TAURI_INVOKE("session_create", { workspaceId, title })),
 	sessionEvents: (sessionId: string, after: string | null) => typedError<SessionEvent[], AppError>(__TAURI_INVOKE("session_events", { sessionId, after })),
@@ -365,6 +367,8 @@ export type WorkspaceInfo = {
 	sourcePath: string,
 	replicaPath: string,
 	createdAt: string,
+	/**  会话列表「项目」视图置顶标记；工作区记录本身不落库，由桌面端从 settings KV 派生注入。 */
+	pinned?: boolean,
 };
 
 /* Tauri Specta runtime */

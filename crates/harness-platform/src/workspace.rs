@@ -204,6 +204,7 @@ impl WorkspaceManager {
                 source_path: source.to_string_lossy().into_owned(),
                 replica_path: root.to_string_lossy().into_owned(),
                 created_at: now(),
+                pinned: false,
             };
             self.save(&Record {
                 info: info.clone(),

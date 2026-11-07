@@ -16,7 +16,28 @@ fn error(e: impl std::fmt::Display) -> AppError {
 #[tauri::command]
 #[specta::specta]
 pub async fn workspace_list(state: Backend<'_>) -> AppResult<Vec<WorkspaceInfo>> {
-    state.workspaces.list()
+    let mut list = state.workspaces.list()?;
+    let pinned = state.store.pinned_workspaces().await?;
+    for info in &mut list {
+        info.pinned = pinned.iter().any(|id| id == &info.id);
+    }
+    Ok(list)
+}
+/// 会话列表「项目」视图的置顶切换；先校验工作区存在，返回更新后的工作区信息。
+#[tauri::command]
+#[specta::specta]
+pub async fn workspace_set_pinned(
+    state: Backend<'_>,
+    workspace_id: String,
+    pinned: bool,
+) -> AppResult<WorkspaceInfo> {
+    let mut info = state.workspaces.get(&workspace_id)?;
+    state
+        .store
+        .set_workspace_pinned(&workspace_id, pinned)
+        .await?;
+    info.pinned = pinned;
+    Ok(info)
 }
 #[tauri::command]
 #[specta::specta]
@@ -90,7 +111,14 @@ pub async fn workspace_refresh(
 }
 #[tauri::command]
 #[specta::specta]
-pub async fn session_list(state: Backend<'_>, workspace_id: String) -> AppResult<Vec<SessionInfo>> {
+pub async fn session_list(
+    state: Backend<'_>,
+    workspace_id: String,
+    all_workspaces: Option<bool>,
+) -> AppResult<Vec<SessionInfo>> {
+    if all_workspaces.unwrap_or(false) {
+        return state.list_sessions(None).await;
+    }
     state.list_sessions(Some(&workspace_id)).await
 }
 #[tauri::command]
@@ -731,6 +759,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
     tauri_specta::Builder::new().commands(tauri_specta::collect_commands![
         workspace_list,
         workspace_open,
+        workspace_set_pinned,
         workspace_diff,
         workspace_file_diff,
         workspace_file_preview,

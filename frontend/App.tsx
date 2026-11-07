@@ -1,11 +1,12 @@
 import {Fragment,useEffect,useMemo,useRef,useState,type FormEvent,type ReactNode} from 'react';
 import {open,save} from '@tauri-apps/plugin-dialog';
-import {ArrowUp,Bot,Bookmark,CalendarClock,Check,ChevronDown,FileCode,Folder,FolderOpen,GitCompareArrows,ListTodo,MessageSquare,Paperclip,Plus,Send,Settings2,ShieldCheck,Square,Sparkles,Target,Terminal,Timer,Unplug,X,Download} from 'lucide-react';
+import {ArrowUp,Bot,Bookmark,CalendarClock,Check,ChevronDown,ChevronRight,FileCode,Folder,FolderOpen,GitCompareArrows,ListTodo,MessageSquare,Paperclip,Pin,Plus,Search,Send,Settings2,ShieldCheck,Square,Sparkles,Target,Terminal,Timer,Unplug,X,Download} from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {command,desktop,errorText,send} from './api';
 import {INIT_PROMPT,SLASH_COMMANDS,commandTokenUnderCursor,expandSlashPrompt,filterSlashCommands,type SlashSpec} from './slashCommands';
 import {filterSkillRows,skillRowsFrom,skillTokenUnderCursor,type SkillRow,type SkillToken} from './skills';
+import {GROUP_LABELS,filterByTitle,groupByProject,groupByTime,relativeLabel,type ViewMode} from './sessionList';
 import {useChat} from './store';
 import {ModelPanel} from './ModelPanel';
 import ModelSelect from './ModelSelect';
@@ -30,6 +31,8 @@ const printable=(value:unknown)=>typeof value==='string'?value:JSON.stringify(va
 export default function App(){
  const [workspaces,setWorkspaces]=useState<WorkspaceInfo[]>([]),[workspaceId,setWorkspaceId]=useState('');
  const [sessions,setSessions]=useState<SessionInfo[]>([]),[sessionId,setSessionId]=useState(''),[sessionBusy,setSessionBusy]=useState(false);
+ // 跨工作区全量会话（侧栏「最近 / 项目」视图数据源）；sessions 始终为当前工作区子集。
+ const [allSessions,setAllSessions]=useState<SessionInfo[]>([]);
  const [models,setModels]=useState<ModelConfig[]>([]),[modelId,setModelId]=useState(''),[providers,setProviders]=useState<ProviderInfo[]>([]),[effort,setEffort]=useState<string|null>(null);
  const [presets,setPresets]=useState<PresetInfo[]>([]),[presetId,setPresetId]=useState('');
  const [approvals,setApprovals]=useState<ApprovalRequest[]>([]),[panel,setPanel]=useState<Panel>(null);
@@ -41,6 +44,10 @@ export default function App(){
  const [cursor,setCursor]=useState(0),[slashIndex,setSlashIndex]=useState(0),[dismissedToken,setDismissedToken]=useState('');
  const textareaRef=useRef<HTMLTextAreaElement>(null);
  const [notice,setNotice]=useState('');
+ // 会话列表「最近 / 项目」视图：视图模式与项目折叠状态存 localStorage，跨重启保留。
+ const [viewMode,setViewMode]=useState<ViewMode>(()=>{try{return localStorage.getItem('sessionView')==='project'?'project':'recent'}catch{return 'recent'}});
+ const [collapsed,setCollapsed]=useState<string[]>(()=>{try{const v=JSON.parse(localStorage.getItem('sessionCollapsed')??'[]');return Array.isArray(v)?v.filter(x=>typeof x==='string'):[]}catch{return []}});
+ const [query,setQuery]=useState('');
  const [pluginRevision,setPluginRevision]=useState(0);
  const [attachments,setAttachments]=useState<ArtifactMetadata[]>([]),[importing,setImporting]=useState(false);
  const [plusOpen,setPlusOpen]=useState(false);
@@ -60,6 +67,8 @@ export default function App(){
  const events=useChat(s=>s.events[sessionId]??EMPTY_EVENTS),stream=useChat(s=>s.streams[sessionId]);
  const skillRows=useMemo(()=>skillRowsFrom(skills),[skills]);
  const workspace=workspaces.find(w=>w.id===workspaceId),session=sessions.find(s=>s.id===sessionId);
+ const visibleSessions=useMemo(()=>filterByTitle(allSessions,query),[allSessions,query]);
+ const projectName=(id:string)=>{const w=workspaces.find(x=>x.id===id);return w?basename(w.sourcePath):''};
  const slashToken=commandTokenUnderCursor(text,cursor);
  const activeSlash=slashToken&&slashToken!==dismissedToken&&sessionId&&!sessionBusy?(()=>{const items=filterSlashCommands(slashToken);return items.length?{token:slashToken,items}:null})():null;
  const skillToken=useMemo(()=>sessionId&&!sessionBusy?skillTokenUnderCursor(text,cursor):null,[text,cursor,sessionId,sessionBusy]);
@@ -87,11 +96,17 @@ export default function App(){
   if(!targetWorkspaceId)return;
   void (async()=>{
    try{
-    let list=await command<SessionInfo[]>('session_list',{workspaceId:targetWorkspaceId});
+    // 侧栏「最近 / 项目」视图需要跨工作区会话；当前工作区列表由全量过滤派生。
+    const full=await command<SessionInfo[]>('session_list',{workspaceId:targetWorkspaceId,allWorkspaces:true});
     if(!current())return;
-    if(!list.length)list=[await createSessionFor(targetWorkspaceId)];
-    if(!current())return;
-    if(list.some(s=>s.workspaceId&&s.workspaceId!==targetWorkspaceId))throw new Error('会话不属于当前工作区，请重新打开工作区。');
+    setAllSessions(full);
+    let list=full.filter(s=>s.workspaceId===targetWorkspaceId);
+    if(!list.length){
+     const created=await createSessionFor(targetWorkspaceId);
+     if(!current())return;
+     setAllSessions(old=>[created,...old.filter(s=>s.id!==created.id)]);
+     list=[created];
+    }
     setSessions(list);
     const jump=pendingJump.current;
     if(jump&&list.some(s=>s.id===jump)){pendingJump.current='';setSessionId(jump)}
@@ -122,7 +137,7 @@ export default function App(){
   const targetWorkspaceId=workspaceId,token=generation.current;
   const current=()=>token===generation.current&&activeWorkspaceId.current===targetWorkspaceId;
   setSessionBusy(true);setError('');
-  try{const s=await createSessionFor(targetWorkspaceId);if(!current())return;setSessions(old=>[s,...old.filter(item=>item.id!==s.id)]);setSessionId(s.id);setText('')}
+  try{const s=await createSessionFor(targetWorkspaceId);if(!current())return;setSessions(old=>[s,...old.filter(item=>item.id!==s.id)]);setAllSessions(old=>[s,...old.filter(item=>item.id!==s.id)]);setSessionId(s.id);setText('')}
   catch(e){if(current())setError(errorText(e))}
   finally{if(current())setSessionBusy(false)}
  }
@@ -181,6 +196,17 @@ export default function App(){
  async function cancel(){await attempt(()=>command('session_cancel',{sessionId}))}
  async function openSession(id:string){if(!workspaceId||id===sessionId)return;await attempt(async()=>{let target=sessions.find(s=>s.id===id);if(!target){target=(await command<SessionInfo[]>('session_list',{workspaceId})).find(s=>s.id===id)}if(!target)return;if(target.workspaceId!==workspaceId)throw new Error('子会话不属于当前工作区。');setSessions(old=>old.some(s=>s.id===target!.id)?old:[target!,...old]);setSessionId(target.id);setText('')})}
  function openFromPanel(id:string,workspace:string){setPanel(null);if(workspace===workspaceId){void openSession(id);return}pendingJump.current=id;setWorkspaceId(workspace)}
+ // 侧栏跨工作区点击：同工作区直接打开，跨工作区先切工作区再经 pendingJump 跳转。
+ function openFromSidebar(s:SessionInfo){if(s.workspaceId===workspaceId){void openSession(s.id);setText('');return}openFromPanel(s.id,s.workspaceId)}
+ // 置顶切换：乐观更新，失败回滚并提示。
+ async function togglePinned(target:WorkspaceInfo){
+  const next=!target.pinned;
+  setWorkspaces(old=>old.map(w=>w.id===target.id?{...w,pinned:next}:w));
+  try{await command<WorkspaceInfo>('workspace_set_pinned',{workspaceId:target.id,pinned:next})}
+  catch(e){setWorkspaces(old=>old.map(w=>w.id===target.id?{...w,pinned:!next}:w));setError(errorText(e))}
+ }
+ function chooseView(mode:ViewMode){setViewMode(mode);try{localStorage.setItem('sessionView',mode)}catch{}}
+ function toggleCollapsed(id:string){setCollapsed(old=>{const next=old.includes(id)?old.filter(x=>x!==id):[...old,id];try{localStorage.setItem('sessionCollapsed',JSON.stringify(next))}catch{}return next})}
  async function resolve(id:string,allow:boolean){await attempt(async()=>{await command('approval_resolve',{id,allow});setApprovals(old=>old.filter(a=>a.id!==id))})}
  async function exportSession(){await attempt(async()=>{const path=await save({defaultPath:'rust-harness-session.json',filters:[{name:'JSON',extensions:['json']}]});if(!path)return;await command('session_export',{sessionId,path});setNotice('会话已导出。')})}
  return <div className="app">
@@ -188,8 +214,24 @@ export default function App(){
    <div className="brand"><span className="brand-mark"><Terminal size={23}/></span><span>Rust Harness<small>你的本地开发搭档</small></span><span className="version">α</span></div>
    <button className="workspace-picker" onClick={openWorkspace} disabled={busy||!desktop()}><FolderOpen size={19}/><span>{workspace?basename(workspace.sourcePath):'打开工作区'}<small>{workspace?'托管工作副本':'从本地项目开始'}</small></span><ChevronDown size={16}/></button>
    {workspaces.length>1&&<select aria-label="工作区" value={workspaceId} onChange={e=>setWorkspaceId(e.target.value)}>{workspaces.map(w=><option key={w.id} value={w.id}>{basename(w.sourcePath)}</option>)}</select>}
-   <div className="section-label">会话 <button aria-label="新建会话" title="新建会话" onClick={newSession} disabled={!workspaceId||sessionBusy}><Plus size={17}/></button></div>
-   <nav className="sessions">{sessions.map(s=><button key={s.id} className={`${sessionId===s.id?'active':''}${s.parentId?' child':''}`} title={s.parentId?'子代理会话':undefined} onClick={()=>{setSessionId(s.id);setText('')}}><MessageSquare size={16}/><span>{s.title}</span>{s.parentId&&<em className="subagent-badge">子任务</em>}{(running[s.id]||activeIds.has(s.id))&&<i className="live-dot"/>}</button>)}{!sessions.length&&<p className="muted empty-small">{workspaceId?'还没有会话，点击 + 开始':'打开工作区后，会话将保存在本机。'}</p>}</nav>
+   <div className="session-search"><Search size={14} aria-hidden="true"/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="搜索会话…" aria-label="搜索会话"/></div>
+   <div className="section-label"><span>任务列表</span><button aria-label="新建会话" title="新建会话" onClick={newSession} disabled={!workspaceId||sessionBusy}><Plus size={17}/></button><span className="label-spacer"/><span className={`seg-label${viewMode==='recent'?' on':''}`}>最近</span><button type="button" role="switch" aria-checked={viewMode==='project'} aria-label="切换视图：最近 / 项目" className="view-switch" onClick={()=>chooseView(viewMode==='recent'?'project':'recent')}><span className="knob" aria-hidden="true"/><span className="sw-label a" aria-hidden="true">最近</span><span className="sw-label b" aria-hidden="true">项目</span></button></div>
+   <nav className="sessions">
+    {viewMode==='recent'?groupByTime(visibleSessions,new Date()).map(group=><Fragment key={group.group}>
+     <div className="group-head">{GROUP_LABELS[group.group]}</div>
+     {group.sessions.map(s=>{const ws=workspaces.find(w=>w.id===s.workspaceId);return <button key={s.id} className={`session-row${sessionId===s.id?' active':''}${s.parentId?' child':''}`} title={s.parentId?'子代理会话':undefined} onClick={()=>openFromSidebar(s)}><MessageSquare size={16}/><span className="session-lines"><span className="session-l1"><span className="session-title">{s.title}</span>{s.parentId&&<em className="subagent-badge">子任务</em>}<span className="session-time">{relativeLabel(s.updatedAt,new Date())}</span></span><span className="session-l2">{ws&&<span>{projectName(s.workspaceId)}</span>}{ws?.pinned&&<Pin size={10} aria-hidden="true"/>}{(running[s.id]||activeIds.has(s.id))&&<i className="live-dot" aria-label="运行中"/>}</span></span></button>})}
+    </Fragment>):groupByProject(visibleSessions,workspaces).map(({workspace:ws,sessions:list})=>{
+     const open=!collapsed.includes(ws.id);
+     return <div key={ws.id} className="ws-group">
+      <div className="ws-head">
+       <button type="button" className="ws-toggle" aria-expanded={open} onClick={()=>toggleCollapsed(ws.id)}><ChevronRight size={13} className="chev" aria-hidden="true"/><span className="ws-name">{basename(ws.sourcePath)}</span><span className="ws-count">{list.length}</span></button>
+       <button type="button" className={`ws-pin${ws.pinned?' on':''}`} aria-label={`${ws.pinned?'取消置顶':'置顶'} ${basename(ws.sourcePath)}`} title={ws.pinned?'取消置顶':'置顶项目'} onClick={()=>void togglePinned(ws)}><Pin size={13}/></button>
+      </div>
+      {open&&list.map(s=><button key={s.id} className={`session-row one${sessionId===s.id?' active':''}${s.parentId?' child':''}`} title={s.parentId?'子代理会话':undefined} onClick={()=>openFromSidebar(s)}><MessageSquare size={16}/><span className="session-title">{s.title}</span>{s.parentId&&<em className="subagent-badge">子任务</em>}{(running[s.id]||activeIds.has(s.id))&&<i className="live-dot" aria-label="运行中"/>}<span className="session-time">{relativeLabel(s.updatedAt,new Date())}</span></button>)}
+     </div>;
+    })}
+    {!visibleSessions.length&&<p className="muted empty-small">{query?'无匹配会话。':workspaceId?'还没有会话，点击 + 开始':'打开工作区后，会话将保存在本机。'}</p>}
+   </nav>
    <div className="sidebar-bottom"><div className="local-badge"><i className="live-dot"/> 本地优先 · 无遥测</div><button onClick={()=>setPanel('plans')}><Target size={17}/>计划与目标</button><button onClick={()=>setPanel('presets')}><Bookmark size={17}/>能力预设</button><button onClick={()=>setPanel('skills')}><Sparkles size={17}/>技能</button><button onClick={()=>setPanel('automations')}><Timer size={17}/>自动化{automationCount!==null&&<span className="count">{automationCount}</span>}</button><button onClick={()=>setPanel('plugins')}><Unplug size={17}/>插件与权限</button><button onClick={()=>setPanel('models')}><Settings2 size={17}/>模型设置 <span className="count">{models.length}</span></button></div>
   </aside>
   <main className="main"><header className="topbar"><div className="breadcrumb"><Folder size={15}/>{workspace?basename(workspace.sourcePath):'工作台'}<span>/</span><strong>{session?.title??'新的可能，从这里开始'}</strong></div><div className="toolbar"><button className="icon-button" title="导出会话" aria-label="导出会话" disabled={!sessionId} onClick={exportSession}><Download size={17}/></button><button className="soft" aria-expanded={panel==='tasks'} aria-controls="task-popover" onClick={()=>setPanel(p=>p==='tasks'?null:'tasks')} disabled={!sessionId}><ListTodo size={16}/>后台任务{taskCount>0&&<span className="count">{taskCount}</span>}</button><button className="soft" aria-expanded={sideOpen} onClick={()=>useSidePanel.getState().toggle()} disabled={!workspaceId}><GitCompareArrows size={16}/>查看更改</button>{panel==='tasks'&&sessionId&&<BackgroundTasksPanel sessionId={sessionId} onClose={()=>setPanel(null)}/>}</div></header>
