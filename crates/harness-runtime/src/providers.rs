@@ -9,42 +9,57 @@ use tokio::sync::Mutex;
 
 /// 内置供应商目录（deepseek、bigmodel）及其只读模型清单，与 zcode 内置目录对齐。
 /// 目录身份在升级间保持稳定；用户只能通过个人覆盖层启用/禁用，不能改写。
+/// 内置模型目录条目：id、显示名、effort 档位、上下文窗口（tokens）、最大输出（tokens）。
+type BuiltinCatalogEntry<'a> = (&'a str, &'a str, &'a [&'a str], u32, Option<u32>);
+
 pub fn builtin_providers() -> Vec<ProviderInfo> {
-    // 模型上下文窗口为公开规格预填值（tokens），集中在此便于校正。
-    let deepseek_models: [(&str, &str, &[&str], u32); 2] = [
+    // 模型上下文窗口与最大输出为公开规格预填值（tokens），集中在此便于校正。
+    // 最大输出按官方模型页规格：deepseek 系 384K，智谱系 128K（思维链与正文共享该上限）。
+    let deepseek_models: [BuiltinCatalogEntry; 2] = [
         (
             "deepseek-flash",
             "DeepSeek Flash",
             &["disabled", "enabled"],
             128_000,
+            Some(393_216),
         ),
         (
             "deepseek-v4-pro",
             "DeepSeek V4 Pro",
             &["disabled", "enabled"],
             128_000,
+            Some(393_216),
         ),
     ];
     // 上下文窗口按官方模型页公开规格：glm-5.2/5.3/5.3-flash 为 1M，5-turbo 沿用 200k。
-    let bigmodel_models: [(&str, &str, &[&str], u32); 4] = [
-        ("glm-5.3", "GLM-5.3", &["low", "high", "max"], 1_000_000),
+    let bigmodel_models: [BuiltinCatalogEntry; 4] = [
+        (
+            "glm-5.3",
+            "GLM-5.3",
+            &["low", "high", "max"],
+            1_000_000,
+            Some(131_072),
+        ),
         (
             "glm-5.3-flash",
             "GLM-5.3 Flash",
             &["low", "high", "max"],
             1_000_000,
+            Some(131_072),
         ),
         (
             "glm-5.2",
             "GLM-5.2",
             &["disabled", "high", "max"],
             1_000_000,
+            Some(131_072),
         ),
         (
             "glm-5-turbo",
             "GLM-5 Turbo",
             &["disabled", "enabled"],
             200_000,
+            Some(131_072),
         ),
     ];
     let mut providers: Vec<ProviderInfo> = [
@@ -100,11 +115,12 @@ pub fn builtin_providers() -> Vec<ProviderInfo> {
         enabled: true,
         builtin_models: models
             .iter()
-            .map(|(id, name, efforts, window)| BuiltinModel {
+            .map(|(id, name, efforts, window, max_output)| BuiltinModel {
                 id: (*id).into(),
                 name: (*name).into(),
                 efforts: efforts.iter().map(|e| (*e).into()).collect(),
                 context_window: Some(*window),
+                max_output_tokens: *max_output,
             })
             .collect(),
         disabled_models: Vec::new(),
@@ -118,60 +134,70 @@ pub fn builtin_providers() -> Vec<ProviderInfo> {
 /// 模型目录与 effort 档位照搬 codex `models-manager/models.json` 的 picker 可见条目。
 fn chatgpt_provider() -> ProviderInfo {
     // codex 后端对未知模型统一按 272k 窗口下发（models-manager fallback），此处沿用。
-    let models: [(&str, &str, &[&str], u32); 9] = [
+    // 输出上限为 None：ChatGPT 后端不消费 max_output_tokens，发送无意义。
+    let models: [BuiltinCatalogEntry; 9] = [
         (
             "gpt-6.1-sol",
             "GPT-6.1-Sol",
             &["low", "medium", "high", "xhigh", "max"],
             272_000,
+            None,
         ),
         (
             "gpt-6-astra",
             "GPT-6-Astra",
             &["low", "medium", "high", "xhigh", "max"],
             272_000,
+            None,
         ),
         (
             "gpt-6-sol",
             "GPT-6-Sol",
             &["low", "medium", "high", "xhigh", "max"],
             272_000,
+            None,
         ),
         (
             "gpt-6-luna",
             "GPT-6-Luna",
             &["low", "medium", "high", "xhigh", "max"],
             272_000,
+            None,
         ),
         (
             "gpt-5.6-sol",
             "GPT-5.6-Sol",
             &["low", "medium", "high", "xhigh", "max"],
             272_000,
+            None,
         ),
         (
             "gpt-6.1-terra",
             "GPT-6.1 Terra",
             &["low", "medium", "high", "xhigh", "max"],
             272_000,
+            None,
         ),
         (
             "gpt-5.6-terra",
             "GPT-5.6-Terra",
             &["low", "medium", "high", "xhigh", "max"],
             272_000,
+            None,
         ),
         (
             "gpt-5.6-luna",
             "GPT-5.6-Luna",
             &["low", "medium", "high", "xhigh", "max"],
             272_000,
+            None,
         ),
         (
             "gpt-5.5",
             "GPT-5.5",
             &["low", "medium", "high", "xhigh"],
             272_000,
+            None,
         ),
     ];
     ProviderInfo {
@@ -190,11 +216,12 @@ fn chatgpt_provider() -> ProviderInfo {
         }],
         builtin_models: models
             .iter()
-            .map(|(id, name, efforts, window)| BuiltinModel {
+            .map(|(id, name, efforts, window, max_output)| BuiltinModel {
                 id: (*id).into(),
                 name: (*name).into(),
                 efforts: efforts.iter().map(|e| (*e).into()).collect(),
                 context_window: Some(*window),
+                max_output_tokens: *max_output,
             })
             .collect(),
         disabled_models: Vec::new(),
@@ -220,7 +247,7 @@ fn builtin_model_config(provider: &ProviderInfo, model: &BuiltinModel) -> Option
         proxy: provider.proxy.clone(),
         compatibility: provider.compatibility,
         api_mode: endpoint.api_mode,
-        max_output_tokens: None,
+        max_output_tokens: model.max_output_tokens,
         context_window: model.context_window,
         efforts: model.efforts.clone(),
         effort: None,
@@ -1590,6 +1617,30 @@ mod tests {
                 Some(200_000)
             ]
         );
+        // 输出上限预填值锁定：智谱系 128K（官方最大输出），deepseek 384K，chatgpt 后端不消费该字段。
+        assert_eq!(
+            bigmodel
+                .builtin_models
+                .iter()
+                .map(|m| m.max_output_tokens)
+                .collect::<Vec<_>>(),
+            [Some(131_072); 4]
+        );
+        assert_eq!(
+            deepseek
+                .builtin_models
+                .iter()
+                .map(|m| m.max_output_tokens)
+                .collect::<Vec<_>>(),
+            [Some(393_216); 2]
+        );
+        let chatgpt = p.iter().find(|p| p.id == "chatgpt").unwrap();
+        assert!(
+            chatgpt
+                .builtin_models
+                .iter()
+                .all(|m| m.max_output_tokens.is_none())
+        );
         // 内置模型走供应商声明的协议端点（既有目录为 Anthropic，chatgpt 为 Responses）。
         for provider in &p {
             let expected_endpoint = provider
@@ -1606,6 +1657,8 @@ mod tests {
                 assert!(config.builtin);
                 assert_eq!(config.model, model.id);
                 assert_eq!(config.provider_id, provider.id);
+                // 合成的可路由配置必须带上目录声明的输出上限。
+                assert_eq!(config.max_output_tokens, model.max_output_tokens);
             }
         }
     }
