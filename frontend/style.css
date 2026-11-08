@@ -248,6 +248,8 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .usage-ring-btn:hover{background:#e4eddb}
 .usage-ring-btn svg{display:block}
 .usage-ring-pop{position:absolute;bottom:calc(100% + 8px);left:-6px;width:280px;max-width:82vw;background:var(--panel);border:1px solid var(--border);border-radius:11px;box-shadow:0 8px 24px rgba(36,51,44,.16);padding:11px 13px;z-index:40;transform-origin:bottom left;animation:usage-pop-in .13s ease-out}
+/* 隐形桥接：填满浮层与按钮之间的 8px 间隙，光标跨越间隙时命中点仍在浮层内，避免误触发关闭。 */
+.usage-ring-pop::before{content:'';position:absolute;top:100%;left:0;right:0;height:8px}
 @keyframes usage-pop-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 .usage-ring-title{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--muted);letter-spacing:.5px;margin:0}
 .usage-ring-title em{font-style:normal;margin-left:auto;color:#768178}

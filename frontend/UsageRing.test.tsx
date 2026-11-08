@@ -118,3 +118,31 @@ it('点击环形按钮可关闭面板',async()=>{
  fireEvent.click(button);
  await waitFor(()=>expect(screen.queryByText('上下文窗口')).not.toBeInTheDocument());
 });
+
+it('光标从按钮移入浮层卡片后浮层保持打开',async()=>{
+ pushEvents([]);
+ mocks.command.mockReset();
+ mocks.command.mockImplementation(async()=>structuredClone(usageOk));
+ renderRing();
+ const button=screen.getByRole('button',{name:/上下文用量/});
+ fireEvent.mouseEnter(button);
+ await waitFor(()=>expect(screen.getByRole('dialog',{name:'用量明细'})).toBeInTheDocument());
+ // 光标离开按钮（启动 120ms 关闭定时器）后移入浮层卡片，浮层不应关闭。
+ fireEvent.mouseLeave(button);
+ fireEvent.mouseEnter(screen.getByRole('dialog',{name:'用量明细'}));
+ await act(async()=>{await new Promise(resolve=>setTimeout(resolve,150))});
+ expect(screen.getByRole('dialog',{name:'用量明细'})).toBeInTheDocument();
+});
+
+it('光标移出浮层卡片后浮层延迟自动关闭',async()=>{
+ pushEvents([]);
+ mocks.command.mockReset();
+ mocks.command.mockImplementation(async()=>structuredClone(usageOk));
+ renderRing();
+ const button=screen.getByRole('button',{name:/上下文用量/});
+ fireEvent.mouseEnter(button);
+ await waitFor(()=>expect(screen.getByRole('dialog',{name:'用量明细'})).toBeInTheDocument());
+ fireEvent.mouseLeave(screen.getByRole('dialog',{name:'用量明细'}));
+ await act(async()=>{await new Promise(resolve=>setTimeout(resolve,150))});
+ expect(screen.queryByRole('dialog',{name:'用量明细'})).not.toBeInTheDocument();
+});
