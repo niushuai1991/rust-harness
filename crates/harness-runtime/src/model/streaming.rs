@@ -14,6 +14,13 @@ fn truncated() -> AppError {
         "模型输出被截断；请提高输出长度或缩短上下文",
     )
 }
+/// 流结束时仍有残留半行帧：连接被提前关闭，属于传输中断而非协议错误。
+fn stream_interrupted() -> AppError {
+    AppError::new(
+        "INCOMPLETE_STREAM",
+        "模型流中断（连接提前关闭，末尾数据不完整）",
+    )
+}
 fn parse_json(text: &str) -> AppResult<Value> {
     serde_json::from_str(text).map_err(|_| protocol_error("模型流不是完整 JSON"))
 }
@@ -73,6 +80,10 @@ impl Frames {
         }
         self.line(b"", &mut output)?;
         Ok(output)
+    }
+    /// EOF 时是否残留未成行的字节（连接在帧中间被关闭）。
+    fn has_residual(&self) -> bool {
+        !self.buffer.is_empty()
     }
 }
 #[derive(Default)]
@@ -330,7 +341,16 @@ impl SseDecoder {
         }
         Ok(())
     }
-    pub fn finish(mut self) -> AppResult<ModelAnswer> {
+    pub fn finish(self) -> AppResult<ModelAnswer> {
+        // EOF 残留半行帧触发的解析失败是连接被提前关闭，归为流中断；
+        // 完整帧仍解析失败的才保留协议错误语义。
+        let residual = self.frames.has_residual();
+        match self.finish_inner() {
+            Err(e) if residual && e.code == "MODEL_PROTOCOL" => Err(stream_interrupted()),
+            result => result,
+        }
+    }
+    fn finish_inner(mut self) -> AppResult<ModelAnswer> {
         let frames = self.frames.finish()?;
         // Final frames may contain a terminal marker without a trailing newline.
         self.events(frames)?;

@@ -121,6 +121,13 @@ pub struct HttpModel {
     pub secret: String,
     /// 逐请求附加的额外 header（ChatGPT OAuth 的 account-id / originator / session-id）。
     pub extra_headers: Vec<(String, String)>,
+    /// 流式空闲超时：等待响应头、以及相邻两个数据块之间的最长静默时长；
+    /// 只在没有数据到达时计时，持续输出的长流不受总时长限制。
+    pub stream_idle_timeout: Duration,
+}
+impl HttpModel {
+    /// 对齐 codex 参考实现的 5 分钟空闲窗口。
+    pub const DEFAULT_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 }
 #[async_trait]
 impl ModelProvider for HttpModel {
@@ -163,10 +170,7 @@ impl ModelProvider for HttpModel {
         }
         let client = builder.build().map_err(transport_error)?;
         let (url, body) = encode_request(&self.config, &messages, &tools)?;
-        let mut request = client
-            .post(url)
-            .json(&body)
-            .timeout(Duration::from_secs(180));
+        let mut request = client.post(url).json(&body);
         if self.config.auth == ProviderAuth::ChatGptOAuth {
             // 后端为纯流式协议，必须显式声明 SSE 接受类型。
             request = request.header("accept", "text/event-stream");
@@ -187,21 +191,30 @@ impl ModelProvider for HttpModel {
                 }
             }
         }
-        let response = tokio::select! {_=cancel.cancelled()=>return Err(cancelled()),r=request.send()=>r.map_err(transport_error)?};
+        let response = tokio::select! {
+            _ = cancel.cancelled() => return Err(cancelled()),
+            r = tokio::time::timeout(self.stream_idle_timeout, request.send()) => match r {
+                Ok(r) => r.map_err(transport_error)?,
+                Err(_) => return Err(stream_idle_timeout(self.stream_idle_timeout)),
+            },
+        };
         let status = response.status();
         if !status.is_success() {
             return Err(http_error(response, cancel.clone()).await?);
         }
         let mut stream = response.bytes_stream();
         let mut decoder = SseDecoder::for_route(ModelRoute::from(&self.config));
-        while let Some(chunk) =
-            tokio::select! {_=cancel.cancelled()=>return Err(cancelled()),next=stream.next()=>next}
-        {
+        while !decoder.is_finished() {
+            let next = tokio::select! {
+                _ = cancel.cancelled() => return Err(cancelled()),
+                n = tokio::time::timeout(self.stream_idle_timeout, stream.next()) => match n {
+                    Ok(next) => next,
+                    Err(_) => return Err(stream_idle_timeout(self.stream_idle_timeout)),
+                },
+            };
+            let Some(chunk) = next else { break };
             for delta in decoder.push(&chunk.map_err(transport_error)?)? {
                 sink(delta);
-            }
-            if decoder.is_finished() {
-                break;
             }
         }
         if cancel.is_cancelled() {
@@ -212,6 +225,12 @@ impl ModelProvider for HttpModel {
 }
 pub fn cancelled() -> AppError {
     AppError::new("CANCELLED", "操作已取消")
+}
+pub(crate) fn stream_idle_timeout(idle: Duration) -> AppError {
+    AppError::new(
+        "MODEL_TIMEOUT",
+        format!("模型流 {} 秒未收到数据，连接已中断", idle.as_secs()),
+    )
 }
 pub(crate) fn transport_error(e: reqwest::Error) -> AppError {
     AppError::new(
