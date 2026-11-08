@@ -25,15 +25,21 @@ pub fn builtin_providers() -> Vec<ProviderInfo> {
             128_000,
         ),
     ];
+    // 上下文窗口按官方模型页公开规格：glm-5.2/5.3/5.3-flash 为 1M，5-turbo 沿用 200k。
     let bigmodel_models: [(&str, &str, &[&str], u32); 4] = [
-        ("glm-5.3", "GLM-5.3", &["low", "high", "max"], 200_000),
+        ("glm-5.3", "GLM-5.3", &["low", "high", "max"], 1_000_000),
         (
             "glm-5.3-flash",
             "GLM-5.3 Flash",
             &["low", "high", "max"],
-            200_000,
+            1_000_000,
         ),
-        ("glm-5.2", "GLM-5.2", &["disabled", "high", "max"], 200_000),
+        (
+            "glm-5.2",
+            "GLM-5.2",
+            &["disabled", "high", "max"],
+            1_000_000,
+        ),
         (
             "glm-5-turbo",
             "GLM-5 Turbo",
@@ -1567,6 +1573,20 @@ mod tests {
         );
         assert_eq!(bigmodel.builtin_models[0].efforts, ["low", "high", "max"]);
         assert_eq!(deepseek.builtin_models[0].efforts, ["disabled", "enabled"]);
+        // 窗口预填值锁定：glm-5.2/5.3/5.3-flash 为 1M，5-turbo 沿用 200k。
+        assert_eq!(
+            bigmodel
+                .builtin_models
+                .iter()
+                .map(|m| m.context_window)
+                .collect::<Vec<_>>(),
+            [
+                Some(1_000_000),
+                Some(1_000_000),
+                Some(1_000_000),
+                Some(200_000)
+            ]
+        );
         // 内置模型走供应商声明的协议端点（既有目录为 Anthropic，chatgpt 为 Responses）。
         for provider in &p {
             let expected_endpoint = provider
