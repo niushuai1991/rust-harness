@@ -221,6 +221,9 @@ pub struct BuiltinModel {
     /// 上下文窗口（tokens）；旧存储缺省为 None，未知窗口时前端隐藏用量指示器。
     #[serde(default)]
     pub context_window: Option<u32>,
+    /// 最大输出（tokens）；旧存储缺省为 None，未配置时请求按协议方言的兜底值发送。
+    #[serde(default)]
+    pub max_output_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -652,6 +655,10 @@ mod model_settings_tests {
         assert_eq!(
             builtin.context_window, None,
             "旧内置模型条目窗口缺省为 None"
+        );
+        assert_eq!(
+            builtin.max_output_tokens, None,
+            "旧内置模型条目输出上限缺省为 None"
         );
 
         let model = ModelConfig {

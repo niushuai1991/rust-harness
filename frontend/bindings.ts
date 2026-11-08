@@ -142,6 +142,8 @@ export type BuiltinModel = {
 	efforts: string[],
 	/**  上下文窗口（tokens）；旧存储缺省为 None，未知窗口时前端隐藏用量指示器。 */
 	contextWindow?: number | null,
+	/**  最大输出（tokens）；旧存储缺省为 None，未配置时请求按协议方言的兜底值发送。 */
+	maxOutputTokens?: number | null,
 };
 
 /**  ChatGPT 账号登录信息查询；不含任何 token。 */
