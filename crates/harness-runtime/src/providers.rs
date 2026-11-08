@@ -844,6 +844,7 @@ impl ModelService {
                 config,
                 secret,
                 extra_headers,
+                stream_idle_timeout: HttpModel::DEFAULT_STREAM_IDLE_TIMEOUT,
             }));
         }
         let secret = harness_platform::get_secret(&config.credential_ref)?.unwrap_or_default();
@@ -852,6 +853,7 @@ impl ModelService {
             config,
             secret,
             extra_headers: Vec::new(),
+            stream_idle_timeout: HttpModel::DEFAULT_STREAM_IDLE_TIMEOUT,
         }))
     }
     /// 内置目录模型的启用/禁用；写个人覆盖层，内置目录本身不变。
@@ -1003,6 +1005,7 @@ impl ModelService {
             config,
             secret,
             extra_headers,
+            stream_idle_timeout: HttpModel::DEFAULT_STREAM_IDLE_TIMEOUT,
         }
         .complete(
             vec![ModelMessage::user("Reply OK.")],

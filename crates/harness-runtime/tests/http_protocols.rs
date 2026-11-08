@@ -159,6 +159,7 @@ async fn all_protocols_execute_approved_tools_and_replay_after_restart() {
             extra_headers: Vec::new(),
             config,
             secret: "fixture-secret".into(),
+            stream_idle_timeout: HttpModel::DEFAULT_STREAM_IDLE_TIMEOUT,
         });
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("source");
@@ -264,6 +265,103 @@ async fn all_protocols_execute_approved_tools_and_replay_after_restart() {
     }
 }
 
+async fn complete_with_idle(idle: std::time::Duration, base: String) -> AppResult<ModelAnswer> {
+    let config: ModelConfig = serde_json::from_value(
+        json!({"id":"t","name":"t","baseUrl":base,"model":"m","credentialRef":"","proxy":null}),
+    )
+    .unwrap();
+    HttpModel {
+        extra_headers: Vec::new(),
+        config,
+        secret: String::new(),
+        stream_idle_timeout: idle,
+    }
+    .complete(
+        vec![ModelMessage::user("hi")],
+        vec![],
+        CancellationToken::new(),
+        Arc::new(|_| {}),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn idle_stream_times_out_when_server_stops_sending() {
+    // 响应头已发出、先给一帧随后永久静默且不关连接：空闲超时应在窗口内触发。
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut s, _) = listener.accept().await.unwrap();
+        let mut b = [0; 8192];
+        assert!(s.read(&mut b).await.unwrap() > 0);
+        let body = sse(json!({"choices":[{"index":0,"delta":{"content":"partial"}}]}));
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len() + 512
+        );
+        s.write_all(head.as_bytes()).await.unwrap();
+        s.write_all(body.as_bytes()).await.unwrap();
+        std::future::pending::<()>().await;
+    });
+    let error = complete_with_idle(std::time::Duration::from_millis(300), base)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "MODEL_TIMEOUT");
+    assert!(error.message.contains("未收到数据"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn missing_response_headers_times_out() {
+    // 收到请求后不回响应头：等待响应阶段也按空闲超时处理。
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut s, _) = listener.accept().await.unwrap();
+        let mut b = [0; 8192];
+        assert!(s.read(&mut b).await.unwrap() > 0);
+        std::future::pending::<()>().await;
+    });
+    let error = complete_with_idle(std::time::Duration::from_millis(300), base)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "MODEL_TIMEOUT");
+    assert!(error.message.contains("未收到数据"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn slow_but_continuous_stream_outlives_idle_window() {
+    // 每 200ms 一帧、总时长约 2.2s 超过 1s 的空闲窗口：
+    // 只要持续有数据就不应超时（旧的按总时长计时会在此误杀）。
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut s, _) = listener.accept().await.unwrap();
+        let mut b = [0; 8192];
+        assert!(s.read(&mut b).await.unwrap() > 0);
+        let mut frames: Vec<String> = (0..10)
+            .map(|i| sse(json!({"choices":[{"index":0,"delta":{"content":format!("c{i}")}}]})))
+            .collect();
+        frames.push("data: [DONE]\n\n".into());
+        let body = frames.concat();
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        s.write_all(head.as_bytes()).await.unwrap();
+        for frame in frames {
+            s.write_all(frame.as_bytes()).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    });
+    let answer = complete_with_idle(std::time::Duration::from_secs(1), base)
+        .await
+        .unwrap();
+    assert_eq!(answer.content, "c0c1c2c3c4c5c6c7c8c9");
+    server.await.unwrap();
+}
+
 #[tokio::test]
 async fn waiting_for_a_stream_can_be_cancelled() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -288,6 +386,7 @@ async fn waiting_for_a_stream_can_be_cancelled() {
             extra_headers: Vec::new(),
             config,
             secret: String::new(),
+            stream_idle_timeout: HttpModel::DEFAULT_STREAM_IDLE_TIMEOUT,
         }
         .complete(
             vec![ModelMessage::user("hi")],
@@ -344,6 +443,7 @@ async fn provider_errors_are_classified_without_exposing_echoed_keys() {
             extra_headers: Vec::new(),
             config,
             secret: "echoed-secret".into(),
+            stream_idle_timeout: HttpModel::DEFAULT_STREAM_IDLE_TIMEOUT,
         }
         .complete(
             vec![ModelMessage::user("hi")],
