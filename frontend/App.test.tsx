@@ -23,22 +23,22 @@ beforeEach(()=>{useChat.setState({events:{},streams:{},statuses:{}});useSidePane
 })});
 afterEach(()=>{cleanup();vi.useRealTimers()});
 describe('聊天交互',()=>{
- it('新建会话的迟到响应不能污染已切换工作区或改变发送目标',async()=>{
+ it('新建聊天的迟到响应不污染当前工作区，会话行仍并入侧栏',async()=>{
   let resolveCreation!:(value:unknown)=>void;
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
    if(name==='workspace_list')return [{id:'w',sourcePath:'D:/project-A'},{id:'other',sourcePath:'D:/project-B'}];
    if(name==='session_create')return new Promise(resolve=>{resolveCreation=resolve});
-   if(name==='session_list'&&args.workspaceId==='other')return [{id:'other-session',workspaceId:'other',title:'B 的会话'}];
+   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A'},{id:'b',workspaceId:'w',title:'会话 B'},{id:'other-session',workspaceId:'other',title:'B 的会话'}];
    return original(name,args);
   });
   render(<App/>);await screen.findByText('内容 a');
-  fireEvent.click(screen.getByRole('button',{name:'新建会话'}));
+  fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
   await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话'}));
-  fireEvent.change(screen.getByLabelText('工作区'),{target:{value:'other'}});
+  fireEvent.click(screen.getByRole('button',{name:/B 的会话/}));
   await screen.findByText('内容 other-session');
   await act(async()=>resolveCreation({id:'late-session',workspaceId:'w',title:'A 迟到的新会话'}));
-  expect(screen.queryByRole('button',{name:'A 迟到的新会话'})).not.toBeInTheDocument();
+  expect(screen.getByText('A 迟到的新会话')).toBeInTheDocument();
   expect(screen.getByText('内容 other-session')).toBeInTheDocument();
   fireEvent.change(screen.getByLabelText('消息'),{target:{value:'仅发送给 B'}});
   fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
@@ -59,6 +59,52 @@ describe('聊天交互',()=>{
  it('发送期间合并增量，结束后读取持久化事件',async()=>{let release!:()=>void;mocks.send.mockImplementation(async(_id:string,_text:string,_model:string,receive:(e:LiveEvent)=>void)=>{receive({type:'delta',sessionId:'a',requestId:'r',index:0,text:'正在输出',reasoning:false});await new Promise<void>(r=>release=r)});render(<App/>);await screen.findByText('内容 a');fireEvent.change(screen.getByLabelText('消息'),{target:{value:'你好'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));await screen.findByText('正在输出');expect(screen.getByRole('button',{name:'取消生成'})).toBeInTheDocument();release();await waitFor(()=>expect(screen.queryByText('正在输出')).not.toBeInTheDocument());expect(mocks.send).toHaveBeenCalledWith('a','你好','m',expect.any(Function),undefined,'high')});
  it('发送错误可见且不插入假成功消息',async()=>{mocks.send.mockRejectedValue(new Error('连接失败'));render(<App/>);await screen.findByText('内容 a');fireEvent.change(screen.getByLabelText('消息'),{target:{value:'请求'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));await screen.findByText('连接失败');expect(screen.getByRole('button',{name:'发送消息'})).toBeInTheDocument()});
  it('审批通过传递真实请求id',async()=>{const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name,args)=>name==='approval_list'?[{id:'approval-1',sessionId:'a',tool:'shell',arguments:{command:'cargo test'},reason:'执行测试'}]:original(name,args));render(<App/>);await screen.findByRole('dialog',{name:'操作需要你的批准'});fireEvent.click(screen.getByRole('button',{name:'批准此次操作'}));await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('approval_resolve',{id:'approval-1',allow:true}))});
+});
+describe('侧栏会话入口',()=>{
+ it('多项目时不再显示工作区切换下拉框，新建聊天按钮可用',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/A'},{id:'other',sourcePath:'D:/B'}];
+   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A'},{id:'other-session',workspaceId:'other',title:'B 的会话'}];
+   return original(name,args);
+  });
+  render(<App/>);await screen.findByText('内容 a');
+  expect(screen.queryByLabelText('工作区')).toBeNull();
+  expect(screen.getByRole('button',{name:'新建聊天'})).toBeEnabled();
+ });
+ it('没有激活项目时新建聊天按钮禁用',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='workspace_list'?[]:original(name,args));
+  render(<App/>);
+  await screen.findByLabelText('当前模型');
+  expect(screen.getByRole('button',{name:'新建聊天'})).toBeDisabled();
+ });
+ it('项目组头的新建按钮为该项目新建会话并自动切换',async()=>{
+  localStorage.clear();
+  let createdSession:{id:string;workspaceId:string;title:string}|null=null;
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/A'},{id:'other',sourcePath:'D:/B'}];
+   if(name==='session_list')return [...(createdSession?[createdSession]:[]),{id:'a',workspaceId:'w',title:'会话 A'},{id:'other-session',workspaceId:'other',title:'B 的会话'}];
+   if(name==='session_create'){createdSession={id:'created-other',workspaceId:'other',title:'B 的新会话'};return createdSession}
+   return original(name,args);
+  });
+  render(<App/>);await screen.findByText('内容 a');
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  fireEvent.click(screen.getByRole('button',{name:'在 B 新建聊天'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'other',title:'新会话'}));
+  await screen.findByText('内容 created-other');
+ });
+ it('当前项目组头的新建按钮直接新建会话',async()=>{
+  localStorage.clear();
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_create'?{id:'new-w',workspaceId:'w',title:'新会话'}:original(name,args));
+  render(<App/>);await screen.findByText('内容 a');
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  fireEvent.click(screen.getByRole('button',{name:'在 project 新建聊天'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话'}));
+  await screen.findByText('内容 new-w');
+ });
 });
 describe('同步审阅（右侧面板）',()=>{
  const reviewed={path:'a.rs',kind:'modified',conflict:false,beforeHash:'before-a',afterHash:'reviewed-a',sourceHash:'source-a',beforeText:'old',afterText:'new'};
@@ -273,7 +319,7 @@ describe('工作区的首次会话',()=>{
   await waitFor(()=>expect(screen.getByLabelText('消息')).toBeEnabled());
   expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话'});
  });
- it('自动创建失败会显示错误，并允许点击新建会话重试',async()=>{
+ it('自动创建失败会显示错误，并允许点击新建聊天重试',async()=>{
   let fail=true;
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
@@ -284,48 +330,48 @@ describe('工作区的首次会话',()=>{
   });
   render(<App/>);await screen.findByText('创建会话失败');
   expect(screen.getByLabelText('消息')).toBeDisabled();
-  expect(screen.getByRole('button',{name:'新建会话'})).toBeEnabled();
-  fail=false;fireEvent.click(screen.getByRole('button',{name:'新建会话'}));
+  expect(screen.getByRole('button',{name:'新建聊天'})).toBeEnabled();
+  fail=false;fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
   await waitFor(()=>expect(screen.getByLabelText('消息')).toBeEnabled());
   expect(screen.queryByText('创建会话失败')).not.toBeInTheDocument();
  });
- it('首次会话的迟到响应不能覆盖已切换到的工作区',async()=>{
+ it('首次会话的迟到响应不能覆盖已切换到的工作区，会话行仍并入侧栏',async()=>{
   let resolveCreation!:(value:unknown)=>void;
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
    if(name==='workspace_list')return [{id:'w',sourcePath:'D:/A'},{id:'other',sourcePath:'D:/B'}];
-   if(name==='session_list')return args.workspaceId==='w'?[]:[{id:'other-session',workspaceId:'other',title:'B 的会话'}];
+   if(name==='session_list')return [{id:'other-session',workspaceId:'other',title:'B 的会话'}];
    if(name==='session_create')return new Promise(resolve=>{resolveCreation=resolve});
    return original(name,args);
   });
   render(<App/>);
   await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话'}));
-  expect(screen.getByRole('button',{name:'新建会话'})).toBeDisabled();
-  fireEvent.change(screen.getByLabelText('工作区'),{target:{value:'other'}});
+  expect(screen.getByRole('button',{name:'新建聊天'})).toBeDisabled();
+  fireEvent.click(screen.getByRole('button',{name:/B 的会话/}));
   await screen.findByText('内容 other-session');
   await act(async()=>resolveCreation({id:'late',workspaceId:'w',title:'A 迟到的会话'}));
-  expect(screen.queryByRole('button',{name:'A 迟到的会话'})).not.toBeInTheDocument();
+  expect(screen.getByText('A 迟到的会话')).toBeInTheDocument();
   expect(screen.getByLabelText('消息')).toBeEnabled();
   fireEvent.change(screen.getByLabelText('消息'),{target:{value:'给 B'}});
   fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
   await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('other-session','给 B','m',expect.any(Function),undefined,'high'));
  });
  it('快速切走再返回时复用正在创建的首个会话',async()=>{
+  let created=false;
   let resolveCreation!:(value:unknown)=>void;
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
    if(name==='workspace_list')return [{id:'w',sourcePath:'D:/A'},{id:'other',sourcePath:'D:/B'}];
-   if(name==='session_list')return args.workspaceId==='w'?[]:[{id:'other-session',workspaceId:'other',title:'B 的会话'}];
-   if(name==='session_create')return new Promise(resolve=>{resolveCreation=resolve});
+   if(name==='session_list')return created?[{id:'first',workspaceId:'w',title:'A 的首个会话'},{id:'other-session',workspaceId:'other',title:'B 的会话'}]:[{id:'other-session',workspaceId:'other',title:'B 的会话'}];
+   if(name==='session_create'){created=true;return new Promise(resolve=>{resolveCreation=resolve})}
    return original(name,args);
   });
   render(<App/>);
   await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话'}));
-  fireEvent.change(screen.getByLabelText('工作区'),{target:{value:'other'}});
+  fireEvent.click(screen.getByRole('button',{name:/B 的会话/}));
   await screen.findByText('内容 other-session');
-  fireEvent.change(screen.getByLabelText('工作区'),{target:{value:'w'}});
-  await waitFor(()=>expect(mocks.command.mock.calls.filter(([name,args])=>name==='session_list'&&args.workspaceId==='w')).toHaveLength(2));
   await act(async()=>resolveCreation({id:'first',workspaceId:'w',title:'A 的首个会话'}));
+  fireEvent.click(screen.getByRole('button',{name:/A 的首个会话/}));
   await screen.findByText('内容 first');
   expect(screen.getByLabelText('消息')).toBeEnabled();
   expect(mocks.command.mock.calls.filter(([name])=>name==='session_create')).toHaveLength(1);
@@ -587,7 +633,7 @@ describe('加号添加菜单',()=>{
   fireEvent.keyDown(screen.getByLabelText('消息'),{key:'Escape'});
   expect(screen.queryByRole('menu',{name:'添加内容'})).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button',{name:'添加内容'}));
-  fireEvent.mouseDown(screen.getByRole('button',{name:'新建会话'}));
+  fireEvent.mouseDown(screen.getByRole('button',{name:'新建聊天'}));
   expect(screen.queryByRole('menu',{name:'添加内容'})).not.toBeInTheDocument();
  });
  it('/plan 带参数发送展开为预置提示词，无参数提示用法且不发送',async()=>{
