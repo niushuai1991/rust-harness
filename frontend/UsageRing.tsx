@@ -78,10 +78,11 @@ export function UsageRing({models,providers,modelId,sessionId}:{models:ModelConf
  const used=tokens??0;
  const percent=usedPercent(used,windowSize);
  const showCards=usageSupported&&!!usage&&usage.cards.length>0;
- return <div className="usage-ring-wrap" ref={wrapRef}>
+ // hover 处理挂在外层容器（覆盖按钮与浮层卡片）：光标移入浮层不会触发关闭定时器。
+ return <div className="usage-ring-wrap" ref={wrapRef}
+  onMouseEnter={()=>{if(timer.current){window.clearTimeout(timer.current);timer.current=null}setOpen(true)}}
+  onMouseLeave={()=>{timer.current=window.setTimeout(()=>{timer.current=null;setOpen(false)},120)}}>
   <button type="button" className="usage-ring-btn" aria-label={`上下文用量 ${Math.round(percent)}%`} aria-haspopup="dialog" aria-expanded={open}
-   onMouseEnter={()=>{if(timer.current){window.clearTimeout(timer.current);timer.current=null}setOpen(true)}}
-   onMouseLeave={()=>{timer.current=window.setTimeout(()=>{timer.current=null;setOpen(false)},120)}}
    onClick={()=>{
     if(timer.current){window.clearTimeout(timer.current);timer.current=null}
     setOpen(old=>!old);
