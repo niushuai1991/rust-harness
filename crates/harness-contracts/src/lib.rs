@@ -208,8 +208,389 @@ pub enum ProviderAuth {
 /// 已知推理档位，语义强度从低到高；efforts 为空表示该模型不提供 effort 选择。
 pub const KNOWN_EFFORTS: [&str; 6] = ["disabled", "minimal", "low", "medium", "high", "max"];
 
-/// 已知审批策略档位，与 CLI/ACP 的三档策略一一对应。
-pub const KNOWN_APPROVALS: [&str; 3] = ["ask", "auto", "never"];
+/// 已知审批策略档位（五档权限模式），与 CLI `--approval`、ACP modes、桌面选择器一一对应。
+pub const KNOWN_APPROVALS: [&str; 5] = ["ask", "edit", "auto", "never", "guarded"];
+
+/// 审批策略档位：一次审批请求由谁裁决。
+///
+/// `decide` 返回 `Some(allow)` 表示按档位直接结算；返回 `None` 表示该档位无法自动裁决，
+/// 交由宿主（终端 y/n、桌面审批卡片、ACP `session/request_permission`）交互决定。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ApprovalPolicy {
+    /// 每次确认：一律交互询问。
+    #[default]
+    Ask,
+    /// 自动编辑：`write`/`edit` 自动放行，其余工具仍询问。
+    Edit,
+    /// 完全访问：全部自动放行（改动仍只落工作副本，进原项目仍需 apply）。
+    Auto,
+    /// 只读：需审批工具一律自动拒绝。
+    Never,
+    /// 自主：全部自动放行，但 `shell` 命中[`dangerous_shell_rule`]时询问。
+    Guarded,
+}
+
+impl ApprovalPolicy {
+    /// 解析档位字符串（[`KNOWN_APPROVALS`] 内的值，大小写不敏感）。
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value.to_ascii_lowercase().as_str() {
+            "ask" => Self::Ask,
+            "edit" => Self::Edit,
+            "auto" => Self::Auto,
+            "never" => Self::Never,
+            "guarded" => Self::Guarded,
+            _ => return None,
+        })
+    }
+
+    /// 档位的规范字符串形式（即 [`KNOWN_APPROVALS`] 中的值）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Edit => "edit",
+            Self::Auto => "auto",
+            Self::Never => "never",
+            Self::Guarded => "guarded",
+        }
+    }
+
+    /// 单次审批裁决：各宿主共用的唯一决策实现。
+    pub fn decide(self, request: &ApprovalRequest) -> Option<bool> {
+        match self {
+            Self::Ask => None,
+            Self::Auto => Some(true),
+            Self::Never => Some(false),
+            Self::Edit => matches!(request.tool.as_str(), "write" | "edit").then_some(true),
+            Self::Guarded => {
+                if request.tool != "shell" {
+                    return Some(true);
+                }
+                let command = request.arguments.get("command").and_then(Value::as_str)?;
+                if command.trim().is_empty() || dangerous_shell_rule(command).is_some() {
+                    None
+                } else {
+                    Some(true)
+                }
+            }
+        }
+    }
+}
+
+/// 自主（guarded）档的危险 shell 命令识别：命中返回规则标识，未命中返回 `None`。
+///
+/// 纯文本启发式，不解析完整 shell 语法：
+/// - 按 `&&`/`||`/`;`/`&`/`|`/换行分段逐段评估，支持一层常见包装命令（`cmd /c`、`powershell -c` 等）；
+/// - 含动态展开（`%VAR%`、`$var`/`$()`、反引号）或超长命令一律保守视为需确认（`unsupported`）；
+/// - 含 `--help`/`-h`/`/?` 的查询命令不拦；
+/// - 覆盖破坏性 git 操作、递归删除与系统级命令（Windows 优先，兼容 POSIX 写法）。
+pub fn dangerous_shell_rule(command: &str) -> Option<&'static str> {
+    if command.len() > 4096 {
+        return Some("unsupported");
+    }
+    split_segments(command)
+        .iter()
+        .find_map(|segment| evaluate_segment(segment, 0))
+}
+
+/// 引号感知的分段：分段符在引号外才生效，连续分段符合并。
+fn split_segments(command: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some(q) => {
+                current.push(c);
+                if c == q {
+                    quote = None;
+                }
+            }
+            None => match c {
+                '\'' | '"' => {
+                    quote = Some(c);
+                    current.push(c);
+                }
+                ';' | '&' | '|' | '\n' => {
+                    while matches!(chars.peek(), Some('&' | '|' | ';')) {
+                        chars.next();
+                    }
+                    segments.push(std::mem::take(&mut current));
+                }
+                _ => current.push(c),
+            },
+        }
+    }
+    segments.push(current);
+    segments
+}
+
+/// 递归深度上限：包装命令最多剥三层。
+const MAX_UNWRAP_DEPTH: u8 = 3;
+
+fn evaluate_segment(segment: &str, depth: u8) -> Option<&'static str> {
+    if depth >= MAX_UNWRAP_DEPTH {
+        return Some("unsupported");
+    }
+    let tokens = tokenize(segment);
+    if tokens.is_empty() {
+        return None;
+    }
+    // 查询命令不拦。
+    if tokens
+        .iter()
+        .any(|t| t == "-h" || t == "--help" || t == "/?")
+    {
+        return None;
+    }
+    // 引号外的动态展开无法静态求值，保守询问。
+    if has_dynamic_expansion(segment) {
+        return Some("unsupported");
+    }
+    // 包装命令（cmd /c …、powershell -command …、bash -c …）剥壳后评估内层。
+    if let Some(inner) = unwrap_wrapper(&tokens) {
+        return evaluate_segment(&inner, depth + 1);
+    }
+    rule_for(&tokens)
+}
+
+/// 引号感知分词：返回去引号后的 token 列表。
+fn tokenize(segment: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut has_token = false;
+    for c in segment.chars() {
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                } else {
+                    current.push(c);
+                }
+            }
+            None => match c {
+                '\'' | '"' => {
+                    quote = Some(c);
+                    has_token = true;
+                }
+                c if c.is_whitespace() => {
+                    if has_token {
+                        tokens.push(std::mem::take(&mut current));
+                        has_token = false;
+                    }
+                }
+                _ => {
+                    current.push(c);
+                    has_token = true;
+                }
+            },
+        }
+    }
+    if has_token {
+        tokens.push(current);
+    }
+    tokens
+}
+
+/// 引号外（单引号内除外）出现变量或子命令展开记为动态片段。
+fn has_dynamic_expansion(segment: &str) -> bool {
+    let mut quote: Option<char> = None;
+    for c in segment.chars() {
+        match quote {
+            Some('\'') => {
+                if c == '\'' {
+                    quote = None;
+                }
+            }
+            Some(_) => {
+                if c == '"' {
+                    quote = None;
+                }
+            }
+            None => match c {
+                '\'' => quote = Some('\''),
+                '"' => quote = Some('"'),
+                '%' | '$' | '`' => return true,
+                _ => {}
+            },
+        }
+    }
+    false
+}
+
+/// 已知包装命令：返回内层命令串（后续 token 重新拼接）。
+fn unwrap_wrapper(tokens: &[String]) -> Option<String> {
+    let program = tokens[0].rsplit(['/', '\\']).next().unwrap_or(&tokens[0]);
+    let program = program.strip_suffix(".exe").unwrap_or(program);
+    let is_wrapper = matches!(
+        program.to_ascii_lowercase().as_str(),
+        "cmd" | "powershell" | "pwsh" | "bash" | "sh" | "wsl" | "start"
+    );
+    if !is_wrapper {
+        return None;
+    }
+    // 跳过包装参数（/c、/k、-c、-command、/d /s 等），内层命令从首个非 flag token 开始。
+    let mut index = 1;
+    while index < tokens.len() && tokens[index].starts_with('-')
+        || (index < tokens.len() && tokens[index].starts_with('/'))
+    {
+        index += 1;
+    }
+    if index >= tokens.len() {
+        return None;
+    }
+    Some(tokens[index..].join(" "))
+}
+
+/// 识别一条命令的规则；`tokens` 为去引号 token。
+fn rule_for(tokens: &[String]) -> Option<&'static str> {
+    let program = tokens[0].rsplit(['/', '\\']).next().unwrap_or(&tokens[0]);
+    let program = program
+        .strip_suffix(".exe")
+        .or_else(|| program.strip_suffix(".cmd"))
+        .or_else(|| program.strip_suffix(".bat"))
+        .or_else(|| program.strip_suffix(".com"))
+        .or_else(|| program.strip_suffix(".ps1"))
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    let args = &tokens[1..];
+    match program.as_str() {
+        "git" => git_rule(args),
+        "rm" => rm_rule(args),
+        "rd" | "rmdir" => rd_rule(args),
+        "del" | "erase" => del_rule(args),
+        "remove-item" | "ri" => remove_item_rule(args),
+        "dd" | "mkfs" | "mkfs.ntfs" | "mkfs.ext2" | "mkfs.ext3" | "mkfs.ext4" | "mkfs.vfat"
+        | "mount" | "umount" | "diskpart" | "shutdown" | "format" => Some("system-storage"),
+        "cipher"
+            if args.iter().any(|t| {
+                t.eq_ignore_ascii_case("/w") || t.to_ascii_lowercase().starts_with("/w:")
+            }) =>
+        {
+            Some("system-storage")
+        }
+        "reg"
+            if args
+                .first()
+                .is_some_and(|t| t.eq_ignore_ascii_case("delete")) =>
+        {
+            Some("system-storage")
+        }
+        "robocopy"
+            if args
+                .iter()
+                .any(|t| t.eq_ignore_ascii_case("/mir") || t.eq_ignore_ascii_case("/purge")) =>
+        {
+            Some("system-storage")
+        }
+        _ => None,
+    }
+}
+
+/// git 子命令规则：跳过全局选项（含取值选项）后按子命令判定。
+fn git_rule(args: &[String]) -> Option<&'static str> {
+    let mut index = 0;
+    while index < args.len() {
+        let token = args[index].as_str();
+        if matches!(
+            token,
+            "-C" | "--git-dir" | "--work-tree" | "--namespace" | "-c"
+        ) {
+            index += 2;
+        } else if token.starts_with('-') {
+            index += 1;
+        } else {
+            break;
+        }
+    }
+    let sub = args.get(index)?;
+    let rest = &args[index + 1..];
+    match sub.as_str() {
+        "reset" if rest.iter().any(|t| t == "--hard") => Some("git-reset-hard"),
+        "clean" if rest.iter().any(|t| clean_force_flag(t)) => Some("git-clean-force"),
+        "push" if !rest.iter().any(|t| t == "--dry-run") => rest
+            .iter()
+            .any(|t| {
+                t == "-f"
+                    || t == "--force"
+                    || t == "--force-with-lease"
+                    || t == "--mirror"
+                    || t.starts_with('+')
+            })
+            .then_some("git-push-force"),
+        "stash" if rest.first().is_some_and(|t| t == "drop" || t == "clear") => {
+            Some("git-stash-clear")
+        }
+        "worktree" if rest.first().is_some_and(|t| t == "remove") => rest
+            .iter()
+            .any(|t| t == "--force" || t == "-f")
+            .then_some("git-worktree-force-remove"),
+        "checkout" if rest.iter().any(|t| t == "--" || t == "." || t == "..") => {
+            Some("git-discard-tree")
+        }
+        "restore" => Some("git-discard-tree"),
+        _ => None,
+    }
+}
+
+/// `git clean` 的删除性旗标：`-f`/`--force` 及含 `f` 的短旗标组合（`-fd` 等）。
+fn clean_force_flag(token: &str) -> bool {
+    token == "--force"
+        || (token.starts_with('-') && !token.starts_with("--") && token[1..].contains('f'))
+}
+
+/// POSIX `rm`：递归删除且（多操作数或含 glob）判危险；根路径/主目录缩写无论操作数个数一律判危险。
+fn rm_rule(args: &[String]) -> Option<&'static str> {
+    let recursive = args.iter().any(|t| {
+        t == "--recursive"
+            || (t.starts_with('-') && !t.starts_with("--") && t[1..].contains(['r', 'R']))
+    });
+    if !recursive {
+        return None;
+    }
+    let operands: Vec<&String> = args.iter().filter(|t| !t.starts_with('-')).collect();
+    if operands.iter().any(|t| is_root_like(t)) {
+        return Some("remove-critical-path");
+    }
+    let glob = operands.iter().any(|t| t.contains(['*', '?', '[']));
+    (operands.len() >= 2 || glob).then_some("remove-critical-path")
+}
+
+/// 根路径、盘符根或 `~` 主目录缩写。
+fn is_root_like(token: &str) -> bool {
+    let t = token.trim();
+    t == "/"
+        || t == "\\"
+        || t == "~"
+        || t.starts_with("~/")
+        || t.starts_with("~\\")
+        || t.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+            && matches!(t.as_bytes().get(1), Some(b':'))
+            && t[2..].chars().all(|c| c == '\\' || c == '/')
+}
+
+/// cmd `rd`/`rmdir`：`/s` 递归删除。
+fn rd_rule(args: &[String]) -> Option<&'static str> {
+    args.iter()
+        .any(|t| t.eq_ignore_ascii_case("/s"))
+        .then_some("remove-critical-path")
+}
+
+/// cmd `del`/`erase`：`/s` 递归子目录删除。
+fn del_rule(args: &[String]) -> Option<&'static str> {
+    args.iter()
+        .any(|t| t.eq_ignore_ascii_case("/s"))
+        .then_some("remove-critical-path")
+}
+
+/// PowerShell `Remove-Item`：`-Recurse`/`-r` 递归删除。
+fn remove_item_rule(args: &[String]) -> Option<&'static str> {
+    args.iter()
+        .any(|t| t.eq_ignore_ascii_case("-recurse") || t.eq_ignore_ascii_case("-r"))
+        .then_some("remove-critical-path")
+}
 
 /// 内置供应商随程序分发的只读模型条目；启用状态由个人层的 `disabled_models` 覆盖。
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -579,10 +960,280 @@ mod preset_tests {
         assert_eq!(preset.approval, None);
     }
 
-    /// 审批档位集合与 CLI/ACP 的三档策略一一对应。
+    /// 审批档位集合与五档权限模式一一对应。
     #[test]
     fn known_approvals_cover_policy_set() {
-        assert_eq!(KNOWN_APPROVALS, ["ask", "auto", "never"]);
+        assert_eq!(KNOWN_APPROVALS, ["ask", "edit", "auto", "never", "guarded"]);
+    }
+}
+
+#[cfg(test)]
+mod approval_policy_tests {
+    use super::*;
+
+    fn request(tool: &str, arguments: Value) -> ApprovalRequest {
+        ApprovalRequest {
+            id: "a1".into(),
+            session_id: "s1".into(),
+            tool: tool.into(),
+            arguments,
+            reason: "测试".into(),
+        }
+    }
+
+    fn shell(command: &str) -> ApprovalRequest {
+        request("shell", serde_json::json!({"command": command}))
+    }
+
+    #[test]
+    fn parse_and_serde_roundtrip_all_policies() {
+        for value in KNOWN_APPROVALS {
+            let policy = ApprovalPolicy::parse(value).unwrap();
+            assert_eq!(policy.as_str(), value);
+            let json = serde_json::to_string(&policy).unwrap();
+            assert_eq!(json, format!("\"{value}\""));
+            let back: ApprovalPolicy = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, policy);
+        }
+        assert_eq!(ApprovalPolicy::parse("yolo"), None);
+        assert_eq!(ApprovalPolicy::parse("ASK"), Some(ApprovalPolicy::Ask));
+    }
+
+    #[test]
+    fn ask_auto_never_decide_uniformly() {
+        let shell_req = shell("ls");
+        let write_req = request("write", serde_json::json!({"path": "a.txt"}));
+        let mcp_req = request("mcp__srv__tool", serde_json::json!({}));
+        for req in [&shell_req, &write_req, &mcp_req] {
+            assert_eq!(ApprovalPolicy::Ask.decide(req), None, "ask 恒交互");
+            assert_eq!(ApprovalPolicy::Auto.decide(req), Some(true), "auto 恒放行");
+            assert_eq!(
+                ApprovalPolicy::Never.decide(req),
+                Some(false),
+                "never 恒拒绝"
+            );
+        }
+    }
+
+    #[test]
+    fn edit_allows_file_tools_only() {
+        let write_req = request("write", serde_json::json!({"path": "a.txt"}));
+        let edit_req = request("edit", serde_json::json!({"path": "a.txt"}));
+        let shell_req = shell("npm test");
+        let mcp_req = request("mcp__srv__tool", serde_json::json!({}));
+        assert_eq!(ApprovalPolicy::Edit.decide(&write_req), Some(true));
+        assert_eq!(ApprovalPolicy::Edit.decide(&edit_req), Some(true));
+        assert_eq!(ApprovalPolicy::Edit.decide(&shell_req), None);
+        assert_eq!(ApprovalPolicy::Edit.decide(&mcp_req), None);
+    }
+
+    #[test]
+    fn guarded_allows_safe_tools_and_asks_on_danger() {
+        assert_eq!(
+            ApprovalPolicy::Guarded.decide(&request("write", serde_json::json!({}))),
+            Some(true)
+        );
+        assert_eq!(
+            ApprovalPolicy::Guarded.decide(&shell("cargo test")),
+            Some(true)
+        );
+        assert_eq!(
+            ApprovalPolicy::Guarded.decide(&shell("git push --force")),
+            None
+        );
+        // 命令缺失或为空时保守询问。
+        assert_eq!(
+            ApprovalPolicy::Guarded.decide(&request("shell", serde_json::json!({}))),
+            None
+        );
+        assert_eq!(ApprovalPolicy::Guarded.decide(&shell("   ")), None);
+    }
+
+    #[test]
+    fn dangerous_git_operations_match_rules() {
+        assert_eq!(
+            dangerous_shell_rule("git reset --hard"),
+            Some("git-reset-hard")
+        );
+        assert_eq!(
+            dangerous_shell_rule("git clean -fd"),
+            Some("git-clean-force")
+        );
+        assert_eq!(dangerous_shell_rule("git clean -n"), None);
+        assert_eq!(
+            dangerous_shell_rule("git push --force origin main"),
+            Some("git-push-force")
+        );
+        assert_eq!(
+            dangerous_shell_rule("git push --force-with-lease"),
+            Some("git-push-force")
+        );
+        assert_eq!(
+            dangerous_shell_rule("git push origin +main"),
+            Some("git-push-force")
+        );
+        assert_eq!(dangerous_shell_rule("git push --dry-run origin main"), None);
+        assert_eq!(dangerous_shell_rule("git push -h"), None);
+        assert_eq!(
+            dangerous_shell_rule("git stash clear"),
+            Some("git-stash-clear")
+        );
+        assert_eq!(
+            dangerous_shell_rule("git stash drop"),
+            Some("git-stash-clear")
+        );
+        assert_eq!(dangerous_shell_rule("git stash"), None);
+        assert_eq!(
+            dangerous_shell_rule("git worktree remove --force"),
+            Some("git-worktree-force-remove")
+        );
+        assert_eq!(
+            dangerous_shell_rule("git checkout -- ."),
+            Some("git-discard-tree")
+        );
+        assert_eq!(dangerous_shell_rule("git checkout main"), None);
+        assert_eq!(
+            dangerous_shell_rule("git restore src/lib.rs"),
+            Some("git-discard-tree")
+        );
+        // 全局选项不干扰子命令识别。
+        assert_eq!(
+            dangerous_shell_rule("git -C repo reset --hard"),
+            Some("git-reset-hard")
+        );
+        assert_eq!(
+            dangerous_shell_rule("git -c a=b push -f"),
+            Some("git-push-force")
+        );
+        // 引号内文本不误判。
+        assert_eq!(
+            dangerous_shell_rule("git commit -m \"fix --hard bug\""),
+            None
+        );
+    }
+
+    #[test]
+    fn dangerous_deletion_commands_match_rules() {
+        assert_eq!(
+            dangerous_shell_rule("rm -rf build dist"),
+            Some("remove-critical-path")
+        );
+        assert_eq!(
+            dangerous_shell_rule("rm -r *.tmp"),
+            Some("remove-critical-path")
+        );
+        assert_eq!(
+            dangerous_shell_rule("rm -rf /"),
+            Some("remove-critical-path")
+        );
+        assert_eq!(
+            dangerous_shell_rule("rm -rf ~"),
+            Some("remove-critical-path")
+        );
+        assert_eq!(
+            dangerous_shell_rule("rm -rf C:\\"),
+            Some("remove-critical-path")
+        );
+        assert_eq!(dangerous_shell_rule("rm file.txt"), None);
+        assert_eq!(
+            dangerous_shell_rule("rm -rf build"),
+            None,
+            "单字面操作数不拦（zcode 语义）"
+        );
+        assert_eq!(
+            dangerous_shell_rule("rd /s /q temp"),
+            Some("remove-critical-path")
+        );
+        assert_eq!(
+            dangerous_shell_rule("RD /S /Q temp"),
+            Some("remove-critical-path")
+        );
+        assert_eq!(dangerous_shell_rule("rmdir temp"), None);
+        assert_eq!(
+            dangerous_shell_rule("del /f /s *.log"),
+            Some("remove-critical-path")
+        );
+        assert_eq!(dangerous_shell_rule("del temp.txt"), None);
+        assert_eq!(
+            dangerous_shell_rule("Remove-Item -Recurse -Force dist"),
+            Some("remove-critical-path")
+        );
+        assert_eq!(dangerous_shell_rule("Remove-Item dist"), None);
+    }
+
+    #[test]
+    fn dangerous_system_commands_match_rules() {
+        assert_eq!(
+            dangerous_shell_rule("dd if=/dev/zero of=disk"),
+            Some("system-storage")
+        );
+        assert_eq!(dangerous_shell_rule("shutdown /r"), Some("system-storage"));
+        assert_eq!(dangerous_shell_rule("format D:"), Some("system-storage"));
+        assert_eq!(
+            dangerous_shell_rule("robocopy a b /mir"),
+            Some("system-storage")
+        );
+        assert_eq!(dangerous_shell_rule("robocopy a b"), None);
+        assert_eq!(
+            dangerous_shell_rule("reg delete HKLM\\\\X"),
+            Some("system-storage")
+        );
+        assert_eq!(dangerous_shell_rule("reg query HKLM\\\\X"), None);
+        assert_eq!(dangerous_shell_rule("cipher /w:C"), Some("system-storage"));
+        // 路径形式不干扰识别；`-h` 豁免覆盖 `shutdown -h`（zcode 同语义，已知局限）。
+        assert_eq!(
+            dangerous_shell_rule("/sbin/shutdown /r"),
+            Some("system-storage")
+        );
+    }
+
+    #[test]
+    fn segments_chains_and_wrappers_are_evaluated() {
+        assert_eq!(
+            dangerous_shell_rule("git add . && git reset --hard"),
+            Some("git-reset-hard")
+        );
+        assert_eq!(
+            dangerous_shell_rule("git add .; git push --force"),
+            Some("git-push-force")
+        );
+        assert_eq!(
+            dangerous_shell_rule("echo hi | git reset --hard"),
+            Some("git-reset-hard")
+        );
+        assert_eq!(
+            dangerous_shell_rule("cmd /c \"git reset --hard\""),
+            Some("git-reset-hard")
+        );
+        assert_eq!(
+            dangerous_shell_rule("cmd /c git reset --hard"),
+            Some("git-reset-hard")
+        );
+        assert_eq!(
+            dangerous_shell_rule("powershell -Command \"git push --force\""),
+            Some("git-push-force")
+        );
+        assert_eq!(dangerous_shell_rule("cmd /c \"cargo test\""), None);
+    }
+
+    #[test]
+    fn dynamic_fragments_and_help_queries_are_conservative() {
+        assert_eq!(
+            dangerous_shell_rule("git push $BRANCH"),
+            Some("unsupported")
+        );
+        assert_eq!(
+            dangerous_shell_rule("git push origin %BRANCH%"),
+            Some("unsupported")
+        );
+        assert_eq!(dangerous_shell_rule("del `ls`"), Some("unsupported"));
+        // 单引号内的文本不视为动态展开。
+        assert_eq!(dangerous_shell_rule("grep '$foo' file"), None);
+        assert_eq!(dangerous_shell_rule("rm --help"), None);
+        assert_eq!(dangerous_shell_rule("git reset --hard --help"), None);
+        assert_eq!(dangerous_shell_rule("shutdown /?"), None);
+        let long = format!("git push --force {}", "a".repeat(5000));
+        assert_eq!(dangerous_shell_rule(&long), Some("unsupported"));
     }
 }
 

@@ -106,7 +106,7 @@ pub static SLASH_COMMANDS: &[SlashSpec] = &[
         name: "approval",
         aliases: &[],
         description: "查看或切换审批策略",
-        arg_hint: Some("[auto|ask|never]"),
+        arg_hint: Some("[ask|edit|auto|never|guarded]"),
     },
     SlashSpec {
         name: "skills",

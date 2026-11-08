@@ -48,6 +48,8 @@ pub struct Runtime {
     pub workspaces: WorkspaceManager,
     pub plugins: Arc<PluginManager>,
     pub approvals: Approvals,
+    approval_policies: Mutex<HashMap<String, ApprovalPolicy>>,
+    default_approval_policy: Mutex<Option<ApprovalPolicy>>,
     pub mcp: harness_extensions::mcp::McpManager,
     pub lsp: Arc<harness_extensions::lsp::LspManager>,
     mcp_scopes: Mutex<HashMap<String, String>>,
@@ -122,6 +124,8 @@ impl Runtime {
             workspaces,
             plugins,
             approvals: Approvals::default(),
+            approval_policies: Mutex::new(HashMap::new()),
+            default_approval_policy: Mutex::new(None),
             mcp: harness_extensions::mcp::McpManager::new(),
             lsp: Arc::new(harness_extensions::lsp::LspManager::new()),
             mcp_scopes: Mutex::new(HashMap::new()),
@@ -143,6 +147,35 @@ impl Runtime {
     }
     pub fn is_active(&self, id: &str) -> bool {
         self.active.lock().unwrap().contains_key(id)
+    }
+    /// 设置会话审批策略（权限模式）；`None` 清除，回落运行时默认或宿主交互裁决。
+    pub fn set_approval_policy(&self, session: &str, policy: Option<ApprovalPolicy>) {
+        let mut policies = self.approval_policies.lock().unwrap();
+        match policy {
+            Some(policy) => {
+                policies.insert(session.to_owned(), policy);
+            }
+            None => {
+                policies.remove(session);
+            }
+        }
+    }
+    /// 设置运行时默认审批策略：未显式设置会话策略时生效（含子代理继承与定时任务会话）。
+    pub fn set_default_approval_policy(&self, policy: Option<ApprovalPolicy>) {
+        *self.default_approval_policy.lock().unwrap() = policy;
+    }
+    /// 运行时默认审批策略。
+    pub fn default_approval_policy(&self) -> Option<ApprovalPolicy> {
+        *self.default_approval_policy.lock().unwrap()
+    }
+    /// 会话生效的审批策略：会话显式设置优先，其次运行时默认；两者皆无返回 `None`（宿主交互裁决）。
+    pub fn approval_policy(&self, session: &str) -> Option<ApprovalPolicy> {
+        self.approval_policies
+            .lock()
+            .unwrap()
+            .get(session)
+            .copied()
+            .or_else(|| *self.default_approval_policy.lock().unwrap())
     }
     pub fn children_of(&self, session: &str) -> Vec<String> {
         self.children
@@ -896,13 +929,48 @@ impl Runtime {
         call: &ToolCall,
         cancel: &CancellationToken,
     ) -> AppResult<()> {
+        let policy = self.approval_policy(session);
+        // 自主档下 shell 危险命令在审批理由中点名规则，便于用户判断。
+        let dangerous = (policy == Some(ApprovalPolicy::Guarded) && call.name == "shell")
+            .then(|| {
+                call.arguments
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+            })
+            .and_then(dangerous_shell_rule);
         let request = ApprovalRequest {
             id: new_id(),
             session_id: session.into(),
             tool: call.name.clone(),
             arguments: call.arguments.clone(),
-            reason: "允许此工具在隔离工作副本中执行？原项目仍需单独确认同步。".into(),
+            reason: match dangerous {
+                Some(rule) => format!("自主模式检测到危险命令（{rule}），需要确认本次执行。"),
+                None => "允许此工具在隔离工作副本中执行？原项目仍需单独确认同步。".into(),
+            },
         };
+        // 会话级策略（桌面端设置）可自动裁决的档位不经 pending 等待；事件流仍完整记录请求与结算。
+        if let Some(allowed) = policy.and_then(|p| p.decide(&request)) {
+            self.append(
+                session,
+                "approval.request",
+                serde_json::to_value(&request).map_err(internal)?,
+            )
+            .await?;
+            self.append(
+                session,
+                "approval.resolved",
+                json!({"id":request.id,"allow":allowed}),
+            )
+            .await?;
+            if allowed {
+                return Ok(());
+            }
+            return Err(AppError::new(
+                "APPROVAL_DENIED",
+                "会话审批策略拒绝此工具调用",
+            ));
+        }
         let (tx, rx) = oneshot::channel();
         self.approvals
             .pending
@@ -1097,6 +1165,10 @@ impl Runtime {
                     .lock()
                     .unwrap()
                     .insert(child.id.clone(), session.to_owned());
+                // 子代理继承发起会话的审批策略，避免策略在子代理处失效。
+                if let Some(policy) = self.approval_policy(session) {
+                    self.set_approval_policy(&child.id, Some(policy));
+                }
                 let mut created = json!({"sessionId":child.id});
                 if let Some(id) = model_id {
                     created["modelId"] = json!(id);

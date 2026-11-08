@@ -328,6 +328,61 @@ pub async fn default_selection_save(
     state.store.set(DEFAULT_SELECTION_KEY, &value).await
 }
 
+/// 跨重启保留的桌面默认权限模式（settings KV 键）；与预设 approval 字段无关，桌面保持独立。
+pub const DEFAULT_APPROVAL_MODE_KEY: &str = "app.default_approval_mode";
+
+fn parse_approval_mode(value: &str) -> AppResult<ApprovalPolicy> {
+    ApprovalPolicy::parse(value)
+        .ok_or_else(|| AppError::new("APPROVAL_MODE", format!("权限模式 {value} 不受支持")))
+}
+
+/// 读取桌面默认权限模式；未设置时为 ask（每次确认）。
+#[tauri::command]
+#[specta::specta]
+pub async fn approval_mode_get(state: Backend<'_>) -> AppResult<String> {
+    let stored = state
+        .store
+        .get(DEFAULT_APPROVAL_MODE_KEY)
+        .await?
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "ask".into());
+    Ok(parse_approval_mode(&stored)?.as_str().to_owned())
+}
+
+/// 保存桌面默认权限模式：立即更新运行时默认档（新会话与定时任务生效）；给出
+/// `session_id` 时对当前会话即时生效，并按档位结算现存 pending（auto 放行、never 拒绝）。
+#[tauri::command]
+#[specta::specta]
+pub async fn approval_mode_save(
+    state: Backend<'_>,
+    mode: String,
+    session_id: Option<String>,
+) -> AppResult<()> {
+    let policy = parse_approval_mode(&mode)?;
+    state
+        .store
+        .set(
+            DEFAULT_APPROVAL_MODE_KEY,
+            &serde_json::to_value(mode).map_err(error)?,
+        )
+        .await?;
+    state.set_default_approval_policy(Some(policy));
+    if let Some(session) = session_id.as_deref() {
+        state.set_approval_policy(session, Some(policy));
+        if matches!(policy, ApprovalPolicy::Auto | ApprovalPolicy::Never) {
+            let allow = policy == ApprovalPolicy::Auto;
+            let mut targets = vec![session.to_owned()];
+            targets.extend(state.children_of(session));
+            for request in state.approvals.list() {
+                if targets.contains(&request.session_id) {
+                    let _ = state.approvals.resolve(&request.id, allow);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // ChatGPT 账号 OAuth 登录（浏览器授权 + 本地回环回调）；token 永不回传前端。
 // ---------------------------------------------------------------------------
@@ -788,6 +843,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         model_fetch_available,
         default_selection_get,
         default_selection_save,
+        approval_mode_get,
+        approval_mode_save,
         chatgpt_login_start,
         chatgpt_login_status,
         chatgpt_login_cancel,

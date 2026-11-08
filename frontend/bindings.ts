@@ -42,6 +42,13 @@ export const commands = {
 	effort: string | null,
 } | null, AppError>(__TAURI_INVOKE("default_selection_get")),
 	defaultSelectionSave: (selection: DefaultSelection) => typedError<null, AppError>(__TAURI_INVOKE("default_selection_save", { selection })),
+	/**  读取桌面默认权限模式；未设置时为 ask（每次确认）。 */
+	approvalModeGet: () => typedError<string, AppError>(__TAURI_INVOKE("approval_mode_get")),
+	/**
+	 *  保存桌面默认权限模式：立即更新运行时默认档（新会话与定时任务生效）；给出
+	 *  `session_id` 时对当前会话即时生效，并按档位结算现存 pending（auto 放行、never 拒绝）。
+	 */
+	approvalModeSave: (mode: string, sessionId: string | null) => typedError<null, AppError>(__TAURI_INVOKE("approval_mode_save", { mode, sessionId })),
 	/**  发起浏览器 OAuth 登录：绑定回调端口、打开系统浏览器并返回授权 URL 兜底。 */
 	chatgptLoginStart: () => typedError<string, AppError>(__TAURI_INVOKE("chatgpt_login_start")),
 	/**  轮询登录流程状态。 */

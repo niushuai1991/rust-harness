@@ -246,17 +246,22 @@ fn replay_updates_covers_conversation_kinds() {
 
 #[test]
 fn policy_roundtrip_and_modes_state() {
-    assert_eq!(Policy::parse("ask"), Some(Policy::Ask));
-    assert_eq!(Policy::parse("auto"), Some(Policy::Auto));
-    assert_eq!(Policy::parse("never"), Some(Policy::Never));
-    assert_eq!(Policy::parse("other"), None);
-    assert_eq!(Policy::Ask.allow(), None);
-    assert_eq!(Policy::Auto.allow(), Some(true));
-    assert_eq!(Policy::Never.allow(), Some(false));
+    assert_eq!(ApprovalPolicy::parse("ask"), Some(ApprovalPolicy::Ask));
+    assert_eq!(
+        ApprovalPolicy::parse("guarded"),
+        Some(ApprovalPolicy::Guarded)
+    );
+    assert_eq!(ApprovalPolicy::parse("other"), None);
 
-    let modes = modes_state(Policy::Ask);
+    let modes = modes_state(ApprovalPolicy::Ask);
     assert_eq!(serde_json::to_value(&modes.current_mode_id).unwrap(), "ask");
-    assert_eq!(modes.available_modes.len(), 3);
+    assert_eq!(modes.available_modes.len(), 5);
+    let ids: Vec<_> = modes
+        .available_modes
+        .iter()
+        .map(|mode| mode.id.0.as_ref())
+        .collect();
+    assert_eq!(ids, ["ask", "edit", "auto", "never", "guarded"]);
 }
 
 #[test]

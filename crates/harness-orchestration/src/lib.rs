@@ -766,6 +766,10 @@ impl ExternalTool for Tool {
                 }
                 let fork = r.fork(source).await?;
                 r.adopt_child(&context.session_id, &fork.id)?;
+                // 子代理继承发起会话的审批策略，避免策略在子代理处失效。
+                if let Some(policy) = r.approval_policy(&context.session_id) {
+                    r.set_approval_policy(&fork.id, Some(policy));
+                }
                 r.append(
                     &context.session_id,
                     "subagent.created",
