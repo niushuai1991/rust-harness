@@ -205,8 +205,6 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .session-search input{flex:1;min-width:0;border:0;outline:0;background:transparent;padding:0;font-size:12.5px;color:var(--text)}
 .session-search input::placeholder{color:#a6aea0}
 .section-label .label-spacer{flex:1}
-.seg-label{font-size:11px;letter-spacing:0;color:var(--muted)}
-.seg-label.on{color:var(--text);font-weight:550}
 .view-switch{position:relative;width:72px;height:22px;flex:0 0 72px;border:0;border-radius:6px;background:var(--accent);padding:0;overflow:hidden}
 .view-switch .knob{position:absolute;top:2px;left:2px;width:34px;height:18px;border-radius:4px;background:var(--panel);box-shadow:0 1px 2px rgba(36,51,44,.25);transition:transform .15s}
 .view-switch .sw-label{position:absolute;top:0;height:100%;width:34px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500;pointer-events:none;transition:color .15s}
