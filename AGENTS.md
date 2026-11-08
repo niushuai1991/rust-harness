@@ -24,9 +24,23 @@
 
   ```powershell
   cargo fmt --check
-  cargo clippy --all-targets --all-features -- -D warnings
-  cargo test --all-features
-  cargo build --all-features
+  cargo clippy --quiet --all-targets --all-features -- -D warnings
+  cargo test --quiet --all-features
+  cargo build --quiet --all-features
   ```
 
 - 额外运行受影响 crate、桌面端或前端的专用检查，并在 PR 中记录结果。
+
+## 命令输出瘦身
+
+编译、测试等长输出命令不得把全量日志送入对话上下文——编译进度等噪声会随每次请求重复消耗 token 并挤占上下文。
+
+- cargo / npm / vitest 等长输出命令默认加 `--quiet` 或等效参数；失败时错误与测试失败详情仍会完整输出，不影响定位问题。
+- 需要进一步截断输出时，先 `set -o pipefail` 再接 `tail`，避免管道吞掉退出码：
+
+  ```bash
+  set -o pipefail
+  cargo test --all-features --quiet 2>&1 | tail -n 40
+  ```
+
+- 截断后只看到失败摘要时，按需定向重跑（如 `cargo test <名称> -- --nocapture`）查看全量，不要反复粘贴完整日志。
