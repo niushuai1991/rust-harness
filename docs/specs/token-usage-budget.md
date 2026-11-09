@@ -9,14 +9,15 @@
 - 每条顶层用户消息创建独立预算，默认上限为 1,000,000 token；同一消息创建的所有子代理继承并共用该预算。下一条用户消息重新从 0 开始。
 - 上限保存于 settings KV 的 `app.token_budget_limit`，缺省读取 1,000,000；有效范围为 1 至 `Number.MAX_SAFE_INTEGER`。UsageRing 可编辑，上限修改从下一条用户消息起生效。
 - 桌面命令 `token_budget_limit_get` / `token_budget_limit_set` 读写上限；桌面、CLI、JSON-RPC 与 ACP 的会话运行均由同一个 Runtime 预算执行逻辑保护。
+- 桌面自动标题 `session_title_generate` 是独立的一次性元数据请求，不计入用户回合预算；它不提供工具，且有 30 秒超时，不会启动工具调用循环。
 
 ## 用量口径
 
-- 每次成功模型响应都累计一次完整的输入与输出用量；累计值为输出 token 加未缓存输入 token，各项权重均为 1。
-- Chat Completions：`max(prompt_tokens - prompt_tokens_details.cached_tokens, 0) + completion_tokens`。
-- Responses：`max(input_tokens - input_tokens_details.cached_tokens, 0) + output_tokens`。
+- 预算范围内每次成功模型响应都累计一次完整的输入与输出用量；累计值为输出 token 加未缓存输入 token，各项权重均为 1。
+- Chat Completions：`prompt_tokens - prompt_tokens_details.cached_tokens + completion_tokens`；缓存 token 大于 `prompt_tokens` 时用量无效。
+- Responses：`input_tokens - input_tokens_details.cached_tokens + output_tokens`；缓存 token 大于 `input_tokens` 时用量无效。
 - Anthropic：`input_tokens + cache_creation_input_tokens + output_tokens`；`cache_read_input_tokens` 是缓存命中，不计入。
-- 用量解析发生在模型响应成功后，即使模型返回的工具调用无效也不能绕过累计。HTTP 流在工具参数解析失败前已收到 usage 时，仍先记账再返回协议错误；若只有不完整用量，则以 `TOKEN_USAGE_UNAVAILABLE` 停止当前回合。缓存 token 大于报告的输入总量也视为无效用量。
+- 用量解析发生在模型响应成功后，即使模型返回的工具调用无效也不能绕过累计。HTTP 流在工具参数解析失败前已收到 usage 时，仍先记账再返回协议错误；若只有不完整用量，则以 `TOKEN_USAGE_UNAVAILABLE` 停止当前回合。
 
 ## 上限行为
 
