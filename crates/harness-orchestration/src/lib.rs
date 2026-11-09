@@ -981,6 +981,7 @@ impl ExternalTool for Tool {
         Ok(ToolResult {
             content: value.to_string(),
             is_error: false,
+            escalated: false,
         })
     }
 }

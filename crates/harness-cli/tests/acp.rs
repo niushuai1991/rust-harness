@@ -288,9 +288,11 @@ fn chat_answer(content: &str, calls: Vec<Value>) -> String {
             })
         })
         .collect::<Vec<_>>();
+    // PR #60 起回合要求可识别的 token 用量，SSE 流补一帧 usage 终帧。
     format!(
-        "data: {}\n\ndata: [DONE]\n\n",
-        json!({"choices":[{"index":0,"delta":{"content":if calls.is_empty(){content}else{""},"tool_calls":calls},"finish_reason":if calls.is_empty(){"stop"}else{"tool_calls"}}]})
+        "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+        json!({"choices":[{"index":0,"delta":{"content":if calls.is_empty(){content}else{""},"tool_calls":calls},"finish_reason":if calls.is_empty(){"stop"}else{"tool_calls"}}]}),
+        json!({"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}})
     )
 }
 

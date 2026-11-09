@@ -15,7 +15,10 @@ async fn setup() -> (tempfile::TempDir, std::sync::Arc<Runtime>, String, String)
     let source = temp.path().join("source");
     std::fs::create_dir(&source).unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let w = runtime.workspaces.create(&source, None).unwrap();
+    let w = runtime
+        .workspaces
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
     let s = runtime
         .store
         .create_session(&w.id, "plugins")

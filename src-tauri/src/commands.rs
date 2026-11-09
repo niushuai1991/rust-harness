@@ -48,9 +48,11 @@ pub async fn workspace_open(
     state: Backend<'_>,
     path: String,
     name: Option<String>,
+    execution_mode: Option<ExecutionMode>,
 ) -> AppResult<WorkspaceInfo> {
     let manager = state.workspaces.clone();
-    tokio::task::spawn_blocking(move || manager.create(&PathBuf::from(path), name))
+    let mode = execution_mode.unwrap_or(ExecutionMode::Replica);
+    tokio::task::spawn_blocking(move || manager.create(&PathBuf::from(path), name, mode))
         .await
         .map_err(error)?
 }

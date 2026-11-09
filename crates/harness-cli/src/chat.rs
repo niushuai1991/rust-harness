@@ -35,6 +35,9 @@ pub struct Args {
     /// 能力预设（模型/档位/审批策略的命名组合；显式参数优先于预设字段）
     #[arg(long)]
     pub preset: Option<String>,
+    /// 执行模式：副本（默认）或 worktree（改动直落原项目的会话 worktree 分支，需 git 仓库）
+    #[arg(long = "exec-mode", value_enum)]
+    pub exec_mode: Option<crate::run::ExecModeArg>,
     /// 颜色输出
     #[arg(long, default_value = "auto")]
     pub color: ColorChoice,
@@ -93,6 +96,9 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<()> {
         args.workspace.as_deref(),
         args.session.as_deref(),
         "chat 会话",
+        args.exec_mode
+            .map(crate::run::ExecModeArg::mode)
+            .unwrap_or_default(),
     )
     .await?;
     let mut model_id = manage::resolve_model_id(

@@ -53,9 +53,28 @@ pub struct Args {
     /// 能力预设（模型/档位/审批策略的命名组合；显式参数优先于预设字段）
     #[arg(long)]
     pub preset: Option<String>,
+    /// 执行模式：副本（默认）或 worktree（改动直落原项目的会话 worktree 分支，需 git 仓库）
+    #[arg(long = "exec-mode", value_enum)]
+    pub exec_mode: Option<ExecModeArg>,
     /// 颜色输出
     #[arg(long, default_value = "auto")]
     pub color: ColorChoice,
+}
+
+/// CLI 的执行模式取值（映射 harness_contracts::ExecutionMode）。
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum ExecModeArg {
+    Replica,
+    Worktree,
+}
+
+impl ExecModeArg {
+    pub fn mode(self) -> harness_contracts::ExecutionMode {
+        match self {
+            Self::Replica => harness_contracts::ExecutionMode::Replica,
+            Self::Worktree => harness_contracts::ExecutionMode::Worktree,
+        }
+    }
 }
 
 /// 事件泵信号。
@@ -115,6 +134,7 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<i32> {
         args.workspace.as_deref(),
         args.session.as_deref(),
         &prompt,
+        args.exec_mode.map(ExecModeArg::mode).unwrap_or_default(),
     )
     .await?;
     if let Some(warning) = &reuse_warning {
@@ -395,6 +415,7 @@ pub(crate) async fn resolve_session_target(
     workspace: Option<&str>,
     session: Option<&str>,
     title_prompt: &str,
+    exec_mode: harness_contracts::ExecutionMode,
 ) -> AppResult<(String, String, Option<String>)> {
     if let Some(session_id) = session {
         let info = runtime.store.session(session_id).await?;
@@ -441,7 +462,12 @@ pub(crate) async fn resolve_session_target(
             }
             (workspace, None)
         }
-        (None, None) => (runtime.workspaces.create(Path::new(&cwd), None)?, None),
+        (None, None) => (
+            runtime
+                .workspaces
+                .create(Path::new(&cwd), None, exec_mode)?,
+            None,
+        ),
     };
     let title: String = title_prompt.trim().chars().take(24).collect();
     let session = runtime

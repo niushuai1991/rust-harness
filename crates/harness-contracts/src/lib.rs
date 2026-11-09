@@ -46,6 +46,24 @@ impl std::fmt::Display for AppError {
 impl std::error::Error for AppError {}
 pub type AppResult<T> = Result<T, AppError>;
 
+/// 工作区执行模式：隔离副本（默认，改动经审阅同步）或宿主代建会话 worktree（改动直落真实分支工作区）。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ExecutionMode {
+    #[default]
+    Replica,
+    Worktree,
+}
+
+/// 宿主为会话代建的 worktree 登记（见[执行模式规范](../../../docs/specs/worktree-execution.md)）。
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionWorktree {
+    pub path: String,
+    pub branch: String,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceInfo {
@@ -59,6 +77,12 @@ pub struct WorkspaceInfo {
     /// 会话列表「项目」视图置顶标记；工作区记录本身不落库，由桌面端从 settings KV 派生注入。
     #[serde(default)]
     pub pinned: bool,
+    /// 执行模式；旧记录缺省为隔离副本。
+    #[serde(default)]
+    pub execution_mode: ExecutionMode,
+    /// 宿主代建的会话 worktree 登记，键为会话 id；replica 模式恒为空。
+    #[serde(default)]
+    pub worktrees: std::collections::BTreeMap<String, SessionWorktree>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -164,6 +188,9 @@ pub struct ToolCall {
 pub struct ToolResult {
     pub content: String,
     pub is_error: bool,
+    /// 本结果由提权重跑产生（用户审批后无沙箱重跑一次）。
+    #[serde(default)]
+    pub escalated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -175,6 +202,9 @@ pub struct ApprovalRequest {
     #[specta(type = JsonValue)]
     pub arguments: Value,
     pub reason: String,
+    /// 提权重跑标记：shell 命令被沙箱拦截且用户审批通过后，无沙箱重跑一次的裁决。
+    #[serde(default)]
+    pub escalated: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -259,12 +289,16 @@ impl ApprovalPolicy {
     }
 
     /// 单次审批裁决：各宿主共用的唯一决策实现。
+    ///
+    /// `request.escalated` 表示无沙箱重跑：绕过沙箱边界的操作不适用「自动编辑」档的
+    /// 文件放行语义，仍交交互裁决；`never` 一律拒绝，`auto` 放行，`guarded` 走危险规则。
     pub fn decide(self, request: &ApprovalRequest) -> Option<bool> {
         match self {
             Self::Ask => None,
+            Self::Edit if request.escalated => None,
+            Self::Edit => matches!(request.tool.as_str(), "write" | "edit").then_some(true),
             Self::Auto => Some(true),
             Self::Never => Some(false),
-            Self::Edit => matches!(request.tool.as_str(), "write" | "edit").then_some(true),
             Self::Guarded => {
                 if request.tool != "shell" {
                     return Some(true);
@@ -981,11 +1015,70 @@ mod approval_policy_tests {
             tool: tool.into(),
             arguments,
             reason: "测试".into(),
+            escalated: false,
         }
     }
 
     fn shell(command: &str) -> ApprovalRequest {
         request("shell", serde_json::json!({"command": command}))
+    }
+
+    #[test]
+    fn escalated_decisions_follow_policy_matrix() {
+        let mut normal = shell("git push origin feat/session-abc");
+        normal.escalated = true;
+        assert_eq!(ApprovalPolicy::Never.decide(&normal), Some(false));
+        assert_eq!(ApprovalPolicy::Ask.decide(&normal), None);
+        // 提权重跑绕过沙箱，自动编辑档不放行，仍交交互裁决。
+        assert_eq!(ApprovalPolicy::Edit.decide(&normal), None);
+        assert_eq!(ApprovalPolicy::Auto.decide(&normal), Some(true));
+        assert_eq!(ApprovalPolicy::Guarded.decide(&normal), Some(true));
+
+        let mut danger = shell("git push --force origin main");
+        danger.escalated = true;
+        assert_eq!(ApprovalPolicy::Guarded.decide(&danger), None);
+
+        let mut write_escalated = request("write", serde_json::json!({}));
+        write_escalated.escalated = true;
+        assert_eq!(ApprovalPolicy::Edit.decide(&write_escalated), None);
+
+        // 未标记提权的请求沿用原矩阵。
+        assert_eq!(
+            ApprovalPolicy::Edit.decide(&request("write", serde_json::json!({}))),
+            Some(true)
+        );
+        assert_eq!(ApprovalPolicy::Never.decide(&shell("ls")), Some(false));
+    }
+
+    #[test]
+    fn workspace_info_defaults_to_replica_mode() {
+        let info: WorkspaceInfo = serde_json::from_value(serde_json::json!({
+            "id": "w1",
+            "sourcePath": "D:/p",
+            "replicaPath": "C:/r",
+            "createdAt": "t"
+        }))
+        .unwrap();
+        assert_eq!(info.execution_mode, ExecutionMode::Replica);
+        assert!(info.worktrees.is_empty());
+
+        let with_worktree = serde_json::json!({
+            "id": "w1",
+            "sourcePath": "D:/p",
+            "replicaPath": "C:/r",
+            "createdAt": "t",
+            "executionMode": "worktree",
+            "worktrees": {
+                "s1": {
+                    "path": "D:/p/.worktrees/harness-abc12345",
+                    "branch": "feat/session-abc12345",
+                    "createdAt": "t"
+                }
+            }
+        });
+        let roundtrip: WorkspaceInfo = serde_json::from_value(with_worktree).unwrap();
+        assert_eq!(roundtrip.execution_mode, ExecutionMode::Worktree);
+        assert_eq!(roundtrip.worktrees["s1"].branch, "feat/session-abc12345");
     }
 
     #[test]

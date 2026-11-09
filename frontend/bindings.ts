@@ -6,7 +6,7 @@ import { invoke as __TAURI_INVOKE, Channel } from "@tauri-apps/api/core";
 export const commands = {
 	workspaceList: () => typedError<WorkspaceInfo[], AppError>(__TAURI_INVOKE("workspace_list")),
 	/**  打开（创建）工作区；name 为空或未填时由后端归一化为源目录名。 */
-	workspaceOpen: (path: string, name: string | null) => typedError<WorkspaceInfo, AppError>(__TAURI_INVOKE("workspace_open", { path, name })),
+	workspaceOpen: (path: string, name: string | null, executionMode: "replica" | "worktree" | null) => typedError<WorkspaceInfo, AppError>(__TAURI_INVOKE("workspace_open", { path, name, executionMode })),
 	/**  项目重命名；空白名称由平台层拒绝（INVALID_NAME），返回更新后的工作区信息。 */
 	workspaceRename: (workspaceId: string, name: string) => typedError<WorkspaceInfo, AppError>(__TAURI_INVOKE("workspace_rename", { workspaceId, name })),
 	/**  会话列表「项目」视图的置顶切换；先校验工作区存在，返回更新后的工作区信息。 */
@@ -120,6 +120,8 @@ export type ApprovalRequest = {
 	tool: string,
 	arguments: JsonValue,
 	reason: string,
+	/**  提权重跑标记：shell 命令被沙箱拦截且用户审批通过后，无沙箱重跑一次的裁决。 */
+	escalated?: boolean,
 };
 
 export type ArtifactChunk = {
@@ -196,6 +198,9 @@ export type DefaultSelection = {
 	modelId: string,
 	effort: string | null,
 };
+
+/**  工作区执行模式：隔离副本（默认，改动经审阅同步）或宿主代建会话 worktree（改动直落真实分支工作区）。 */
+export type ExecutionMode = "replica" | "worktree";
 
 export type FileChange = {
 	path: string,
@@ -346,6 +351,13 @@ export type SessionInfo = {
 	parentId: string | null,
 };
 
+/**  宿主为会话代建的 worktree 登记（见[执行模式规范](../../../docs/specs/worktree-execution.md)）。 */
+export type SessionWorktree = {
+	path: string,
+	branch: string,
+	createdAt: string,
+};
+
 /**  技能目录行：SKILL.md 扫描结果附禁用标记（docs/specs/skills.md）。 */
 export type SkillInfo = {
 	name: string,
@@ -364,6 +376,8 @@ export type SkillScope = "project" | "user";
 export type ToolResult = {
 	content: string,
 	isError: boolean,
+	/**  本结果由提权重跑产生（用户审批后无沙箱重跑一次）。 */
+	escalated?: boolean,
 };
 
 /**  供应商剩余额度的卡片类别；与智谱 quota/limit 接口的 type/unit 匹配规则对应。 */
@@ -393,6 +407,10 @@ export type WorkspaceInfo = {
 	name?: string,
 	/**  会话列表「项目」视图置顶标记；工作区记录本身不落库，由桌面端从 settings KV 派生注入。 */
 	pinned?: boolean,
+	/**  执行模式；旧记录缺省为隔离副本。 */
+	executionMode?: ExecutionMode,
+	/**  宿主代建的会话 worktree 登记，键为会话 id；replica 模式恒为空。 */
+	worktrees?: { [key in string]: SessionWorktree },
 };
 
 /* Tauri Specta runtime */
