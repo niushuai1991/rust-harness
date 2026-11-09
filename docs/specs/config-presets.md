@@ -20,14 +20,16 @@ P2 阶段验收项中的「预设」。此前会话能力全部由调用方逐�
 
 **目录来源两层**（与[模型设置规范](model-settings.md)的内置目录/个人覆盖同构）：合成内置预设 `builtin:default`（无任何覆盖、选中即现状行为、只读不落库、save/remove 拒绝），用户自定义预设存 SQLite `settings` 表 `presets` 键（JSON 数组，`Store::get/set` 复用，无 schema 迁移）。
 
-不在范围：附加工作区指令注入与 skills 启停（需动 `context.snapshot` 事件结构，另行立项）；`agent_spawn`/`schedule_write` 接受 presetId；桌面端审批策略接管（桌面保持交互式审批）；SDK 封装（SDK 尚未包装 session.send）；会话绑定预设落库（sessions 表不加列，预设每次调用显式解析，与会话进行中可换模型语义一致）。
+不在范围：附加工作区指令注入与 skills 启停（需动 `context.snapshot` 事件结构，另行立项）；`agent_spawn`/`schedule_write` 接受 presetId；SDK 封装（SDK 尚未包装 session.send）；会话绑定预设落库（sessions 表不加列，预设每次调用显式解析，与会话进行中可换模型语义一致）。
+
+> 2026-11-09 修订：原文「桌面端审批策略接管（桌面保持交互式审批）」列于非目标；[权限模式规范](permission-modes.md) 落地桌面端权限模式选择器后，桌面端已有独立于预设的审批策略控制，但预设 approval 字段仍不在桌面生效（两套选择互相独立）。
 
 ## 设计
 
 ### 契约（harness-contracts）
 
 - `PresetConfig { id, name, description: Option<String>, model_id: Option<String>, effort: Option<String>, approval: Option<String> }`，serde camelCase，仿 `ModelConfig`。
-- `KNOWN_APPROVALS = ["ask","auto","never"]`，仿 `KNOWN_EFFORTS`。
+- `KNOWN_APPROVALS = ["ask","edit","auto","never","guarded"]`（2026-11-09 随权限模式规范由三档扩为五档），仿 `KNOWN_EFFORTS`。
 - `PresetInfo` 列表行：`PresetConfig` 全字段 + 计算字段 `broken: Option<String>`（不落库）——modelId 不在目录、模型/供应商已停用、effort 不在该模型 efforts 内时给出原因，列表可读但不可直接用（仿 deepseek-harness agent-preset roster 的 broken 语义）。
 - 校验只查模型目录（`ModelService::list_models`/`list_providers`），不做真实凭据读取与网络。
 
@@ -52,15 +54,15 @@ chat 初始解析同 run；`/approval`、`/model` 斜杠命令仍可运行中覆
 
 **JSON-RPC（harness-cli/src/lib.rs dispatch）**：新增 `preset.list` / `preset.save` / `preset.remove`；`session.send` 增可选 `presetId`、`modelId` 改为可选，解析 `modelId > preset.model_id > cli.default_model`，均缺报 `MODEL_NOT_FOUND` 列出可用模型（SDK 未包装 session.send，无破坏面）。
 
-**ACP（harness-cli/src/acp.rs）**：`AcpOptions` 增 `preset`（`harness acp --preset`）。`run_turn` 模型解析 `--model > preset.model_id > cli.default_model`，effort 取 preset.effort；`session/new` 初始 Policy = preset.approval（映射三档）或现状 Ask；`session/set_mode` 仍可切换。
+**ACP（harness-cli/src/acp.rs）**：`AcpOptions` 增 `preset`（`harness acp --preset`）。`run_turn` 模型解析 `--model > preset.model_id > cli.default_model`，effort 取 preset.effort；`session/new` 初始 Policy = preset.approval（映射审批档位，现为五档）或现状 Ask；`session/set_mode` 仍可切换。
 
 **CLI 管理（harness-cli/src/manage.rs）**：`harness presets list|save|remove|default`（仿 ModelsCmd 模式）；`default <id|--clear>` 写 settings 键 `cli.default_preset`。run/chat/ACP 未显式 `--preset` 时读取该键作为第三层回落（与 `cli.default_model` 同层，使默认预设真实生效）；JSON-RPC `session.send` 为编程接口，预设仅随显式 `presetId` 参数生效，不读取该键。
 
 **桌面（src-tauri + frontend/）**：
 
 - 命令 `preset_list/preset_save/preset_remove`（specta 模式同 `default_selection_get/save`），重新导出 bindings。
-- `PresetsPanel`（Panel 联合类型加 `'presets'`，仿 ModelPanel）：列表（builtin 只读行、broken 标记）、新建/编辑表单（名称/描述/模型/effort/审批策略）、删除；审批字段标注「仅 CLI/JSON-RPC/ACP 生效」。
-- 发送框增预设下拉（「不使用预设」+ 各预设）：选中即以预设 modelId/effort 填充既有三级联（级联持久化沿用 `app.default_selection`，不新增桌面默认键）；手改级联即视为放弃预设。桌面审批保持交互式（安全模型不变）。
+- `PresetsPanel`（Panel 联合类型加 `'presets'`，仿 ModelPanel）：列表（builtin 只读行、broken 标记）、新建/编辑表单（名称/描述/模型/effort/审批策略）、删除；审批字段标注「仅 CLI/JSON-RPC/ACP 生效；桌面端权限模式独立于预设」（2026-11-09 措辞随权限模式规范更新，独立性语义不变）。
+- 发送框增预设下拉（「不使用预设」+ 各预设）：选中即以预设 modelId/effort 填充既有三级联（级联持久化沿用 `app.default_selection`，不新增桌面默认键）；手改级联即视为放弃预设。桌面审批策略由发送框独立的「权限模式」选择器控制（见[权限模式规范](permission-modes.md)），预设选择不改变权限模式。
 
 ## 边界与风险
 

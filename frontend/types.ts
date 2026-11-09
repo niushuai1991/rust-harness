@@ -42,7 +42,7 @@ export interface PlanStateOverview {sessionId:string;sessionTitle:string;workspa
 
 // 能力预设（harness-contracts PresetConfig/PresetInfo）：命名的会话能力配置包。
 export const BUILTIN_PRESET_ID='builtin:default';
-export const KNOWN_APPROVALS=['ask','auto','never'] as const;
+export const KNOWN_APPROVALS=['ask','edit','auto','never','guarded'] as const;
 export type ApprovalPolicy=(typeof KNOWN_APPROVALS)[number];
 export interface PresetConfig {id:string;name:string;description:string|null;modelId:string|null;effort:string|null;approval:string|null}
 export type PresetInfo=PresetConfig&{broken:string|null};

@@ -26,7 +26,7 @@ headless 此前只有自研 `harness rpc`（ndjson JSON-RPC，`harness-cli/src/l
 ### 会话与状态
 
 - 连接级共享状态（`Arc` 捕获进各 handler）：`initialized` 标志（未 initialize 前的 session 方法回 `-32600`）、`model_id`（`--model` 参数）、`sessions: BTreeMap<sessionId, {workspaceId, 审批策略}>`。
-- 审批策略即 ACP modes：`ask`（默认）/`auto`/`never`；`session/new`、`session/load` 响应携带 `modes`（`SessionModeState`）；`session/set_mode` 更新策略并回发 `current_mode_update`。
+- 审批策略即 ACP modes，即[权限模式规范](permission-modes.md)的五档（`ask` 默认/`edit`/`auto`/`never`/`guarded`，2026-11-09 由三档扩展）；`session/new`、`session/load` 响应携带 `modes`（`SessionModeState`）；`session/set_mode` 更新策略并回发 `current_mode_update`。
 - 模型选择：`harness acp --model <id>` > settings `cli.default_model`（复用 `manage.rs::resolve_model_id`）；ACP v1 无 per-prompt 模型概念。`harness acp --preset` 启动解析一次预设（见[配置预设分层规范](config-presets.md)）。
 - 退出（EOF/进程结束）时 `runtime.cancel_all()`，与 `serve()` 口径一致。
 
@@ -48,9 +48,9 @@ headless 此前只有自研 `harness rpc`（ndjson JSON-RPC，`harness-cli/src/l
 
 ### 审批 → request_permission
 
-`approval.request`（含 id/sessionId/tool/arguments）→ 按该会话策略：
-- `ask`：发 `session/request_permission`（options：`allow`/AllowOnce、`reject`/RejectOnce；`toolCall` 用该会话最近一次 pending `tool_call` 的 id——工具串行执行，`tool.call` 事件必然紧邻先行）；selected(optionId)→`approvals.resolve(id, allow_bool)`；cancelled→拒绝（与运行时取消即拒一致）。权限结果 wire 形态为内部标签嵌套 `{"outcome":{"outcome":...}}`（SDK 5.0.0 serde 形态）。
-- `auto`：直接 resolve(true)；`never`：resolve(false)。600 秒运行时超时兜底不变。
+`approval.request`（含 id/sessionId/tool/arguments）→ 按该会话策略（决策统一走 `ApprovalPolicy::decide`）：
+- `decide` 返回 `None`（`ask`，及 `edit` 非 write/edit、`guarded` 危险命令）：发 `session/request_permission`（options：`allow`/AllowOnce、`reject`/RejectOnce；`toolCall` 用该会话最近一次 pending `tool_call` 的 id——工具串行执行，`tool.call` 事件必然紧邻先行）；selected(optionId)→`approvals.resolve(id, allow_bool)`；cancelled→拒绝（与运行时取消即拒一致）。权限结果 wire 形态为内部标签嵌套 `{"outcome":{"outcome":...}}`（SDK 5.0.0 serde 形态）。
+- `Some(true)`（`auto`，及 `edit` 的 write/edit、`guarded` 安全命令）：直接 resolve(true)；`Some(false)`（`never`）：resolve(false)。600 秒运行时超时兜底不变。
 
 ### session/load 回放
 

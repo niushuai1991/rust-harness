@@ -1,6 +1,6 @@
 //! `harness run`：一次性执行 Agent 任务（docs/specs/cli.md）。
 use crate::{
-    approval::{self, Approval, Decision},
+    approval::{self, Approval},
     console::{Console, RunResult},
     diffview::ColorChoice,
     scope::{Phase, RunScope, Verdict},
@@ -360,10 +360,10 @@ fn resolve_approval(
     policy: Approval,
     request: &ApprovalRequest,
 ) -> AppResult<()> {
-    let allow = match Decision::from(policy) {
-        Decision::Allow => true,
-        Decision::Deny => false,
-        Decision::Ask => {
+    // 决策矩阵统一在 contracts::ApprovalPolicy::decide；None 才交终端 y/n。
+    let allow = match harness_contracts::ApprovalPolicy::from(policy).decide(request) {
+        Some(allow) => allow,
+        None => {
             console.approval(request).map_err(io_err)?;
             read_confirmation()
         }

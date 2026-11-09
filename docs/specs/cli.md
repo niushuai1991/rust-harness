@@ -58,19 +58,15 @@ CLI 的作用域隔离无法纯客户端实现：runtime 在写入 `inbox.queued
 
 ## 审批策略
 
-平台报告明确当前沙箱边界："WRITE_RESTRICTED+Low IL 提供真实系统写入边界，**不隔离读取和网络**"。隔离工作副本与 apply 人工审阅是"改动不进原项目"的边界，不是工具执行副作用的边界：`shell` 可读取系统文件并访问网络，`auto` 还会放行后台任务、定时任务与子代理。据此审批策略如下：
+平台报告明确当前沙箱边界："WRITE_RESTRICTED+Low IL 提供真实系统写入边界，**不隔离读取和网络**"。隔离工作副本与 apply 人工审阅是"改动不进原项目"的边界，不是工具执行副作用的边界：`shell` 可读取系统文件并访问网络，`auto` 还会放行后台任务、定时任务与子代理。
 
-| 模式 | 行为 | 副作用边界 |
-|---|---|---|
-| `ask`（默认，stdin 为 TTY） | 终端展示会话标识（子代理显式标注）、工具名与参数，等待 y/n；600 秒无响应视为拒绝 | 与桌面端审批同边界 |
-| `auto`（须显式选择） | 自动允许**作用域集合内所有会话**的审批请求（含子代理会话） | `shell` 可读系统文件、访问网络；可拉起后台任务、定时任务、子代理；改动仍只落副本，进原项目需 `apply` |
-| `never` | 一律拒绝作用域内需审批工具 | 仍可执行免审批白名单：`read`/`read_artifact`/`list_files`/`search`/`agent_status` 只读；`todo_write`/`plan_write`/`goal_write` 会持久写入会话事件库（非文件系统、不触碰副本与原项目） |
+审批策略已扩展为五档权限模式（档位定义、决策矩阵与 guarded 危险命令规则以[权限模式规范](permission-modes.md)为准）：`ask`（每次确认，默认）/ `edit`（自动编辑，shell 等仍确认）/ `auto`（完全访问，自动允许**作用域集合内所有会话**的审批请求含子代理）/ `never`（只读，一律拒绝需审批工具，免审批白名单仍可用）/ `guarded`（自主，自动放行但危险 shell 命令 y/n 确认一次）。所有档位下改动仍只落副本，进原项目需 `apply`。
 
-默认规则：`--approval` 缺省时，stdin 为 TTY 取 `ask`；stdin 非 TTY 时启动报错，要求显式传 `auto|ask|never`。`ask` 在 stdin 非 TTY 时一律启动报错。
+默认规则：`--approval` 缺省时，stdin 为 TTY 取 `ask`；stdin 非 TTY 时启动报错，要求显式传 `ask|edit|auto|never|guarded`。交互档（`ask`/`edit`/`guarded`）在 stdin 非 TTY 时一律启动报错；600 秒无响应视为拒绝的交互兜底不变。
 
 ## stdin 与审批行为矩阵
 
-| 提示词来源 | stdin 类型 | `ask` | `auto`/`never` |
+| 提示词来源 | stdin 类型 | `ask`/`edit`/`guarded` | `auto`/`never` |
 |---|---|---|---|
 | 命令行 PROMPT | TTY | 正常执行；审批从 stdin 读 y/n | 正常执行 |
 | 命令行 PROMPT | 管道/重定向 | 启动报错（stdin 非交互，无法确认） | 正常执行 |

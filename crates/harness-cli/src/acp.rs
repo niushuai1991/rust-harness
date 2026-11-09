@@ -15,7 +15,7 @@ use agent_client_protocol::v1::schema::{
     ToolCallUpdate, ToolCallUpdateFields, ToolKind,
 };
 use agent_client_protocol::{ConnectTo, on_receive_notification, on_receive_request};
-use harness_contracts::{AppError, AppResult, LiveEvent, SessionEvent};
+use harness_contracts::{AppError, AppResult, ApprovalPolicy, LiveEvent, SessionEvent};
 use harness_runtime::Runtime;
 use serde_json::Value;
 use std::{
@@ -35,48 +35,19 @@ pub struct AcpOptions {
     pub preset: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Policy {
-    Ask,
-    Auto,
-    Never,
-}
-
-impl Policy {
-    fn id(self) -> &'static str {
-        match self {
-            Policy::Ask => "ask",
-            Policy::Auto => "auto",
-            Policy::Never => "never",
-        }
-    }
-    fn parse(id: &str) -> Option<Self> {
-        match id {
-            "ask" => Some(Policy::Ask),
-            "auto" => Some(Policy::Auto),
-            "never" => Some(Policy::Never),
-            _ => None,
-        }
-    }
-    fn allow(self) -> Option<bool> {
-        match self {
-            Policy::Ask => None,
-            Policy::Auto => Some(true),
-            Policy::Never => Some(false),
-        }
-    }
-}
-
-fn modes_state(current: Policy) -> SessionModeState {
+/// ACP 审批策略即 contracts 五档权限模式；`session/set_mode` 的 mode id 为其字符串形式。
+fn modes_state(current: ApprovalPolicy) -> SessionModeState {
     SessionModeState::new(
-        current.id(),
+        current.as_str(),
         [
-            (Policy::Ask, "询问"),
-            (Policy::Auto, "自动允许"),
-            (Policy::Never, "自动拒绝"),
+            (ApprovalPolicy::Ask, "每次确认"),
+            (ApprovalPolicy::Edit, "自动编辑"),
+            (ApprovalPolicy::Auto, "完全访问"),
+            (ApprovalPolicy::Never, "只读"),
+            (ApprovalPolicy::Guarded, "自主"),
         ]
         .into_iter()
-        .map(|(policy, name)| SessionMode::new(policy.id(), name))
+        .map(|(policy, name)| SessionMode::new(policy.as_str(), name))
         .collect(),
     )
 }
@@ -234,7 +205,7 @@ struct AcpState {
     preset: Option<harness_runtime::presets::ResolvedPreset>,
     initialized: AtomicBool,
     /// ACP 会话（id = 内部会话 UUID）→ 工作区与审批策略。
-    sessions: Mutex<BTreeMap<String, (String, Policy)>>,
+    sessions: Mutex<BTreeMap<String, (String, ApprovalPolicy)>>,
     /// 每会话最近一次 pending 的工具调用 id（审批请求关联用）。
     pending_calls: Mutex<BTreeMap<String, String>>,
     /// 每会话已转发的最大持久事件 seq（Lagged 补拉游标）。
@@ -243,24 +214,24 @@ struct AcpState {
 
 impl AcpState {
     /// 新会话的初始审批策略：预设档位优先，缺省 ask；`session/set_mode` 仍可切换。
-    fn initial_policy(&self) -> Policy {
+    fn initial_policy(&self) -> ApprovalPolicy {
         self.preset
             .as_ref()
             .and_then(|resolved| resolved.approval.as_deref())
-            .and_then(Policy::parse)
-            .unwrap_or(Policy::Ask)
+            .and_then(ApprovalPolicy::parse)
+            .unwrap_or(ApprovalPolicy::Ask)
     }
 
     fn known(&self, session: &str) -> bool {
         self.sessions.lock().unwrap().contains_key(session)
     }
-    fn policy(&self, session: &str) -> Policy {
+    fn policy(&self, session: &str) -> ApprovalPolicy {
         self.sessions
             .lock()
             .unwrap()
             .get(session)
             .map(|(_, policy)| *policy)
-            .unwrap_or(Policy::Ask)
+            .unwrap_or(ApprovalPolicy::Ask)
     }
     fn touch(&self, event: &SessionEvent) {
         if let Ok(seq) = event.seq.parse::<u64>() {
@@ -385,7 +356,7 @@ async fn run_connection(
                 load.sessions
                     .lock()
                     .unwrap()
-                    .insert(session_id.clone(), (info.workspace_id, Policy::Ask));
+                    .insert(session_id.clone(), (info.workspace_id, ApprovalPolicy::Ask));
                 let events = match load.runtime.store.events(&session_id, 0).await {
                     Ok(events) => events,
                     Err(e) => return responder.respond_with_error(internal_error(e)),
@@ -399,7 +370,8 @@ async fn run_connection(
                         ))?;
                     }
                 }
-                responder.respond(LoadSessionResponse::new().modes(modes_state(Policy::Ask)))
+                responder
+                    .respond(LoadSessionResponse::new().modes(modes_state(ApprovalPolicy::Ask)))
             },
             on_receive_request!(),
         )
@@ -452,7 +424,7 @@ async fn run_connection(
         .on_receive_request(
             async move |request: SetSessionModeRequest, responder, cx| {
                 let session_id = request.session_id.0.to_string();
-                let Some(policy) = Policy::parse(&request.mode_id.0) else {
+                let Some(policy) = ApprovalPolicy::parse(&request.mode_id.0) else {
                     return responder.respond_with_error(
                         agent_client_protocol::Error::invalid_params().data("未知模式"),
                     );
@@ -470,7 +442,7 @@ async fn run_connection(
                 cx.send_notification(SessionNotification::new(
                     SessionId::new(session_id.as_str()),
                     SessionUpdate::CurrentModeUpdate(CurrentModeUpdate::new(SessionModeId::new(
-                        policy.id(),
+                        policy.as_str(),
                     ))),
                 ))?;
                 responder.respond(SetSessionModeResponse::new())
@@ -604,7 +576,8 @@ async fn handle_approval(
     let request: harness_contracts::ApprovalRequest =
         serde_json::from_value(event.data.clone()).map_err(internal_error)?;
     let session_id = request.session_id.clone();
-    match state.policy(&session_id).allow() {
+    // 决策矩阵统一在 contracts::ApprovalPolicy::decide；None 才发 request_permission。
+    match state.policy(&session_id).decide(&request) {
         Some(allow) => {
             let _ = state.runtime.approvals.resolve(&request.id, allow);
             Ok(())

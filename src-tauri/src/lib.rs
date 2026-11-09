@@ -48,6 +48,21 @@ pub fn run() {
                     .join("RustHarness"),
             );
         let runtime = tauri::async_runtime::block_on(harness_runtime::Runtime::open(root))?;
+        // 桌面默认权限模式（KV 持久化）→ 运行时默认档：覆盖新会话与定时任务；会话内切档即时生效。
+        tauri::async_runtime::block_on(async {
+            let stored = runtime
+                .store
+                .get(commands::DEFAULT_APPROVAL_MODE_KEY)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|v| {
+                    v.as_str()
+                        .and_then(harness_contracts::ApprovalPolicy::parse)
+                })
+                .unwrap_or(harness_contracts::ApprovalPolicy::Ask);
+            runtime.set_default_approval_policy(Some(stored));
+        });
         let orchestration = tauri::async_runtime::block_on(async {
             harness_orchestration::install(runtime.clone())
         })?;

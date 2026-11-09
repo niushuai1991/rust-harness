@@ -2,7 +2,7 @@ import {useEffect,useRef,useState,type FormEvent} from 'react';
 import {command,desktop,errorText} from './api';
 import {Modal} from './App';
 import {BUILTIN_PRESET_ID,KNOWN_APPROVALS,type ModelConfig,type PresetConfig,type PresetInfo,type ProviderInfo} from './types';
-const APPROVAL_LABELS:Record<string,string>={ask:'询问（逐次确认）',auto:'自动允许',never:'自动拒绝'};
+const APPROVAL_LABELS:Record<string,string>={ask:'每次确认',edit:'自动编辑',auto:'完全访问',never:'只读',guarded:'自主'};
 const blankPreset=():PresetConfig=>({id:crypto.randomUUID(),name:'',description:null,modelId:null,effort:null,approval:null});
 export function PresetsPanel({models,providers,onClose,onChanged}:{models:ModelConfig[];providers:ProviderInfo[];onClose:()=>void;onChanged:()=>Promise<void>}) {
  const [presets,setPresets]=useState<PresetInfo[]>([]),[draft,setDraft]=useState<PresetConfig|null>(null);
@@ -37,7 +37,7 @@ export function PresetsPanel({models,providers,onClose,onChanged}:{models:ModelC
    <label>模型<select value={draft.modelId??''} onChange={e=>setDraft({...draft,modelId:e.target.value||null,effort:null})}><option value="">不指定（沿用发送框当前选择）</option>{usableModels.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
    <label>预设档位<select value={draft.effort??''} disabled={!draft.modelId} onChange={e=>setDraft({...draft,effort:e.target.value||null})}><option value="">跟随模型默认</option>{(models.find(m=>m.id===draft.modelId)?.efforts??[]).map(level=><option key={level} value={level}>{level}</option>)}</select></label>
    <label>审批策略<select value={draft.approval??''} onChange={e=>setDraft({...draft,approval:e.target.value||null})}><option value="">不指定</option>{KNOWN_APPROVALS.map(a=><option key={a} value={a}>{APPROVAL_LABELS[a]}</option>)}</select></label>
-   <small>审批策略仅在 CLI / JSON-RPC / ACP 生效；桌面端始终保持交互式审批。</small>
+   <small>审批策略仅在 CLI / JSON-RPC / ACP 生效；桌面端权限模式独立于预设，见发送框的「权限模式」选择器。</small>
    <div className="actions model-actions">{editing&&<button type="button" className="danger" disabled={busy} onClick={remove}>删除预设</button>}<button className="primary" disabled={busy||!desktop()}>{busy?'处理中…':'保存预设'}</button></div>
   </form>:<p className="muted">选择左侧预设进行编辑，或点击“新建预设”。</p>}</div>
  </div></Modal>

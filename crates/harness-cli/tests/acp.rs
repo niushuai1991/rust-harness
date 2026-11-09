@@ -329,7 +329,7 @@ async fn initialize_negotiates_and_gates_sessions() {
             .as_array()
             .unwrap()
             .len(),
-        3
+        5
     );
 }
 
