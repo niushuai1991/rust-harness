@@ -806,4 +806,17 @@ describe('项目命名',()=>{
   await screen.findByText('名称不能为空');
   expect(screen.getByRole('button',{name:/^alpha \d+$/})).toBeInTheDocument();
  });
+ it('中文与空格路径预填目录名并随创建提交',async()=>{
+  localStorage.clear();namingBackend({empty:true});
+  vi.mocked(open).mockResolvedValueOnce('D:/我的 项目');
+  render(<App/>);await screen.findByLabelText('当前模型');
+  fireEvent.click(screen.getByRole('button',{name:/打开工作区/}));
+  await screen.findByRole('dialog',{name:'打开工作区'});
+  // 预填保留空格与中文；确认后原样携带名称提交
+  expect(screen.getByLabelText('项目名称')).toHaveValue('我的 项目');
+  fireEvent.click(screen.getByRole('button',{name:'创建'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_open',{path:'D:/我的 项目',name:'我的 项目'}));
+  // 后端返回的中文名称显示在工作区按钮与面包屑上
+  await waitFor(()=>expect(screen.getAllByText('我的 项目').length).toBeGreaterThanOrEqual(2));
+ });
 });

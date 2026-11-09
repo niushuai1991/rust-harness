@@ -22,6 +22,6 @@
 
 ## 验证
 
-- `harness-platform`（`tests/workspaces.rs`）：create 显式命名去空白、未填/空白回退目录名、rename 生效与空名拒绝（INVALID_NAME）、无 name 字段的旧 record.json 加载后归一化（get 与 list 双路径）且补齐落盘（record.json 中 name 为目录名）。
-- `frontend/App.test.tsx`：打开工作区弹窗预填目录名并携带名称提交、留空提交传 null（回退目录名并显示）、组头改名立即显示新名、空名提交显示后端错误且名称不变。
+- `harness-platform`（`tests/workspaces.rs`）：create 显式命名去空白、未填/空白回退目录名、rename 生效与空名拒绝（INVALID_NAME）、无 name 字段或空白字符串的旧 record.json 加载后归一化且补齐落盘（record.json 中 name 为目录名）、盘符根等无文件名源路径回退全路径（`file_name()`=None 分支）、带空格/中文/含点目录名回退并完成完整创建流程（副本文件可读）、显式名称含中间空格与中文落盘往返一致。
+- `frontend/App.test.tsx`：打开工作区弹窗预填目录名并携带名称提交、留空提交传 null（回退目录名并显示）、中文与空格路径预填与提交、组头改名立即显示新名、空名提交显示后端错误且名称不变。
 - 提交前运行 `cargo fmt --check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test --all-features`、`cargo build --all-features` 与 `npm test`。

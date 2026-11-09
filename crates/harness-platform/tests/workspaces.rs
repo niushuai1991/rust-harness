@@ -321,6 +321,73 @@ fn legacy_records_without_name_fall_back_to_directory_name() {
 }
 
 #[test]
+fn create_falls_back_to_directory_name_for_special_paths() {
+    let (temp, _source, manager) = fixture();
+    // 目录名回退需保留空格、中文与点号；同时验证特殊路径下完整创建流程（副本文件可读）
+    for name in ["my dir", "我的项目", "我的 项目", "v1.2"] {
+        let source = temp.path().join(name);
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("a.txt"), "content").unwrap();
+        let info = manager.create(&source, None).unwrap();
+        assert_eq!(info.name, name, "目录名 {name} 应原样回退为显示名");
+        assert_eq!(
+            fs::read_to_string(std::path::Path::new(&info.replica_path).join("a.txt")).unwrap(),
+            "content"
+        );
+        assert_eq!(manager.get(&info.id).unwrap().name, name);
+    }
+}
+
+#[test]
+fn blank_stored_name_is_normalized_on_load() {
+    let (_temp, source, manager) = fixture();
+    let info = manager.create(&source, None).unwrap();
+    let record_path = std::path::Path::new(&info.replica_path)
+        .parent()
+        .unwrap()
+        .join("record.json");
+    // 与字段缺失不同的触发路径：name 键存在但为空白字符串
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&fs::read(&record_path).unwrap()).unwrap();
+    value["info"]["name"] = serde_json::Value::String("   ".into());
+    fs::write(&record_path, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert_eq!(manager.get(&info.id).unwrap().name, "source");
+    let persisted: serde_json::Value =
+        serde_json::from_slice(&fs::read(&record_path).unwrap()).unwrap();
+    assert_eq!(persisted["info"]["name"], "source");
+}
+
+#[test]
+fn root_source_path_falls_back_to_full_path() {
+    let (_temp, source, manager) = fixture();
+    let info = manager.create(&source, None).unwrap();
+    let record_path = std::path::Path::new(&info.replica_path)
+        .parent()
+        .unwrap()
+        .join("record.json");
+    // 纯字符串构造 file_name()=None 的源路径（盘符根），覆盖全路径回退分支；不触碰真实根目录
+    // 注意 record.json 的键是 camelCase（serde rename_all），蛇形键会被 serde 静默忽略
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&fs::read(&record_path).unwrap()).unwrap();
+    value["info"]["sourcePath"] = serde_json::Value::String("D:/".into());
+    value["info"].as_object_mut().unwrap().remove("name");
+    fs::write(&record_path, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert_eq!(manager.get(&info.id).unwrap().name, "D:/");
+}
+
+#[test]
+fn explicit_name_with_spaces_and_unicode_roundtrips() {
+    let (_temp, source, manager) = fixture();
+    // trim 只去首尾空白，中间空格与中文保留；创建与重命名都需落盘往返一致
+    let info = manager.create(&source, Some("My 项目 α".into())).unwrap();
+    assert_eq!(info.name, "My 项目 α");
+    assert_eq!(manager.get(&info.id).unwrap().name, "My 项目 α");
+    let renamed = manager.rename(&info.id, "我的 项目".into()).unwrap();
+    assert_eq!(renamed.name, "我的 项目");
+    assert_eq!(manager.get(&info.id).unwrap().name, "我的 项目");
+}
+
+#[test]
 fn diff_view_still_renders_when_source_side_conflicts() {
     let (_temp, source, manager) = fixture();
     let info = manager.create(&source, None).unwrap();
