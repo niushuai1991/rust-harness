@@ -302,7 +302,7 @@ async fn run_connection(
                 if !request.mcp_servers.is_empty() {
                     tracing::warn!("ACP 客户端请求的 mcpServers 暂不支持，已忽略");
                 }
-                let workspace = match new_session.runtime.workspaces.create(&request.cwd) {
+                let workspace = match new_session.runtime.workspaces.create(&request.cwd, None) {
                     Ok(workspace) => workspace,
                     Err(e) => {
                         return responder.respond_with_error(

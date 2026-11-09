@@ -77,7 +77,7 @@ async fn real_rust_analyzer_diagnostics_and_hover_inside_sandbox() {
     )
     .unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source).unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "smoke")

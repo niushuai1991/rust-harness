@@ -15,7 +15,7 @@ async fn workspace() -> (tempfile::TempDir, WorkspaceManager, WorkspaceInfo) {
     let source = tmp.path().join("source");
     fs::create_dir(&source).unwrap();
     let manager = WorkspaceManager::new(tmp.path().join("host")).unwrap();
-    let info = manager.create(&source).unwrap();
+    let info = manager.create(&source, None).unwrap();
     (tmp, manager, info)
 }
 /// ConPTY 客户端连接预检：部分 Windows 预览版上新建伪控制台的客户端会立即

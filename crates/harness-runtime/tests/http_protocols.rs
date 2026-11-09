@@ -167,7 +167,7 @@ async fn all_protocols_execute_approved_tools_and_replay_after_restart() {
         std::fs::write(source.join("a.txt"), "old").unwrap();
         let data = dir.path().join("host");
         let runtime = Runtime::open(data.clone()).await.unwrap();
-        let workspace = runtime.workspaces.create(&source).unwrap();
+        let workspace = runtime.workspaces.create(&source, None).unwrap();
         let session = runtime
             .store
             .create_session(&workspace.id, "protocol")

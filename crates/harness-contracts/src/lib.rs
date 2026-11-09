@@ -53,6 +53,9 @@ pub struct WorkspaceInfo {
     pub source_path: String,
     pub replica_path: String,
     pub created_at: String,
+    /// 项目显示名；创建未填时归一化为源目录名，加载旧记录（无此字段）时空值同样归一化，永不为空。
+    #[serde(default)]
+    pub name: String,
     /// 会话列表「项目」视图置顶标记；工作区记录本身不落库，由桌面端从 settings KV 派生注入。
     #[serde(default)]
     pub pinned: bool,

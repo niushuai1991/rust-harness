@@ -238,6 +238,9 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .ws-count{font-size:10px;color:#7b8b74;background:#e1e7dc;border-radius:4px;padding:1px 6px;flex-shrink:0}
 .ws-add{border:0;background:transparent;color:#8b9788;width:26px;height:26px;padding:0;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
 .ws-add:hover{background:#e4eddb;color:var(--accent)}
+.ws-rename{border:0;background:transparent;color:#8b9788;width:26px;height:26px;padding:0;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;opacity:0;flex-shrink:0}
+.ws-head:hover .ws-rename,.ws-rename:focus-visible{opacity:1}
+.ws-rename:hover{background:#e4eddb;color:var(--accent)}
 .ws-pin{border:0;background:transparent;color:#8b9788;width:26px;height:26px;padding:0;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;opacity:0;flex-shrink:0}
 .ws-head:hover .ws-pin,.ws-pin.on,.ws-pin:focus-visible{opacity:1}
 .ws-pin.on{color:var(--accent)}

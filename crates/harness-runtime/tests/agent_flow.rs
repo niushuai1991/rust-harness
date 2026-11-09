@@ -50,7 +50,7 @@ async fn approved_edit_stays_in_replica_until_explicit_sync() {
     std::fs::create_dir(&source).unwrap();
     std::fs::write(source.join("a.txt"), "old").unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source).unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "test")
@@ -119,7 +119,7 @@ async fn denied_write_is_logged_without_mutating_the_replica() {
     let source = temp.path().join("source");
     std::fs::create_dir(&source).unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source).unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "deny")
@@ -171,7 +171,7 @@ async fn duplicate_tool_ids_are_rejected_before_settling_assistant_history() {
     let source = temp.path().join("source");
     std::fs::create_dir(&source).unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let w = runtime.workspaces.create(&source).unwrap();
+    let w = runtime.workspaces.create(&source, None).unwrap();
     let s = runtime
         .store
         .create_session(&w.id, "duplicate")
@@ -232,7 +232,7 @@ async fn cancelling_after_side_effect_records_unknown_outcome_and_releases_lease
     let source = temp.path().join("source");
     std::fs::create_dir(&source).unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let w = runtime.workspaces.create(&source).unwrap();
+    let w = runtime.workspaces.create(&source, None).unwrap();
     let s = runtime.store.create_session(&w.id, "cancel").await.unwrap();
     let _guard = runtime.register_tool(Arc::new(WritesThenWaits)).unwrap();
     let model = Arc::new(Recorded {
@@ -274,7 +274,7 @@ async fn attachments_enter_model_history_and_spilled_output_is_readable_after_re
     std::fs::write(source.join("large.txt"), &huge).unwrap();
     let data = dir.path().join("host");
     let runtime = Runtime::open(data.clone()).await.unwrap();
-    let w = runtime.workspaces.create(&source).unwrap();
+    let w = runtime.workspaces.create(&source, None).unwrap();
     let s = runtime
         .store
         .create_session(&w.id, "artifacts")
@@ -403,7 +403,7 @@ async fn skills_catalog_enters_system_prompt_and_mention_injects_body() {
     )
     .unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source).unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "skills")
@@ -470,7 +470,7 @@ async fn disabled_skill_is_absent_from_catalog_and_mention() {
     )
     .unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source).unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
     runtime
         .skills
         .set_enabled(".agents/skills/zskills-fixture/SKILL.md", false)

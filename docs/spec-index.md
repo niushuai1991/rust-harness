@@ -28,6 +28,7 @@
 | [会话列表「最近 / 项目」视图](specs/session-list.md) | 2026-11-08（计划拟制）；2026-11-09 修订 | 桌面侧栏任务列表按最近（时间分组跨工作区）/ 按项目（分组折叠）两种视图、圆角方块 switch 切换、项目置顶 KV 持久化（`workspace_set_pinned`）、标题搜索过滤与跨工作区会话跳转；2026-11-09 修订：移除工作区切换下拉框，标题行 + 改为搜索框上方常显「新建聊天」按钮，项目组头内置新建按钮，迟到创建会话并入侧栏全量列表；参考 zcode 会话历史取舍。 |
 | [会话用量环形指示器与上下文窗口](specs/context-usage-indicator.md) | 2026-11-08（计划批准） | 会话输入区用量环形（本体显示当前上下文占用）+ 双段悬停明细卡（上下文窗口/套餐额度）；模型目录 `context_window` 元数据；ChatGPT `/wham/usage` 订阅用量接入；参考 zcode/codex 用量设计。 |
 | [权限模式（五档审批策略）](specs/permission-modes.md) | 2026-11-09（计划批准） | 五档权限模式统一定义（ask/edit/auto/never/guarded）与四端接入：CLI `--approval`、预设 approval 字段、ACP modes、桌面发送框权限模式选择器（KV 默认档）；guarded 档危险 shell 命令识别规则；参考 codex approval presets 与 zcode permissionMode。 |
+| [工作区（项目）命名](specs/workspace-naming.md) | 2026-11-09（计划批准） | 工作区显示名落 `record.json`（非可选 String，创建未填/空白归一化为源目录名，旧记录加载归一化）；桌面创建命名弹窗与「按项目」组头重命名按钮；各显示点统一消费名称字段；CLI 不提供命名参数。 |
 
 ## 关系说明
 
@@ -51,6 +52,7 @@
 - 会话列表视图规范为桌面可视化专项规范：置顶集合与视图偏好属桌面用户偏好，不进入 CLI / JSON-RPC 契约；`session_list` 的 `all_workspaces` 仅扩展桌面查询参数，缺省过滤语义不变。
 - 会话用量环形指示器规范依附模型设置规范的两级目录（窗口值来自模型条目）与智谱额度规范的快照语义；上下文占用为前端派生值（事件流最近 usage），不落库不进契约；ChatGPT 用量复用智谱额度规范的 `fetch_usage` 分发与 `ProviderUsageSnapshot` 结构。
 - 权限模式规范统一 CLI/ACP/预设/桌面四端的审批档位（决策矩阵唯一实现在 harness-contracts），修订 CLI 规范的三档审批策略表与配置预设规范的「桌面端审批策略接管」非目标；所有档位不改变副本+apply 边界、Windows 沙箱与免审批只读白名单，桌面权限模式与预设 approval 互相独立。
+- 工作区命名规范为工作区实体属性扩展：名称随 `record.json` 持久化（CLI 与桌面单一事实源），与置顶的「桌面偏好 KV 派生注入」方案不同源；不改工作副本隔离、同步与审批语义，桌面显示点统一消费该字段。
 - 当前完成情况以 [能力状态矩阵](capability-matrix.md) 为准，具体执行与验证证据见 [交付记录](delivery.md)。
 - 后续发布仅构建使用系统已有 WebView2 的单一 NSIS 包（历史双安装包仅对应 0.1.2 当次交付）。
 

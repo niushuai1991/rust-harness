@@ -1,6 +1,6 @@
 import {Fragment,useEffect,useMemo,useRef,useState,type FormEvent,type ReactNode} from 'react';
 import {open,save} from '@tauri-apps/plugin-dialog';
-import {ArrowUp,Bot,Bookmark,CalendarClock,Check,ChevronDown,ChevronRight,FileCode,Folder,FolderOpen,GitCompareArrows,ListTodo,MessageSquare,Paperclip,Pin,Plus,Search,Send,Settings2,ShieldCheck,Square,Sparkles,Target,Terminal,Timer,Unplug,X,Download} from 'lucide-react';
+import {ArrowUp,Bot,Bookmark,CalendarClock,Check,ChevronDown,ChevronRight,FileCode,Folder,FolderOpen,GitCompareArrows,ListTodo,MessageSquare,Paperclip,Pencil,Pin,Plus,Search,Send,Settings2,ShieldCheck,Square,Sparkles,Target,Terminal,Timer,Unplug,X,Download} from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {command,desktop,errorText,send} from './api';
@@ -63,6 +63,8 @@ export default function App(){
  const [pluginRevision,setPluginRevision]=useState(0);
  const [attachments,setAttachments]=useState<ArtifactMetadata[]>([]),[importing,setImporting]=useState(false);
  const [plusOpen,setPlusOpen]=useState(false);
+ // 工作区命名弹窗：create=打开工作区时命名（留空用目录名），rename=项目重命名。
+ const [wsDialog,setWsDialog]=useState<{mode:'create';path:string;name:string}|{mode:'rename';id:string;name:string}|null>(null);
  // 模型浮层卡片与切换标记（仅内存：切换模型在会话流里的临时提示，不落库）。
  const [modelMenuOpen,setModelMenuOpen]=useState(false);
  const [modelNotes,setModelNotes]=useState<{sessionId:string;text:string}[]>([]);
@@ -80,7 +82,7 @@ export default function App(){
  const skillRows=useMemo(()=>skillRowsFrom(skills),[skills]);
  const workspace=workspaces.find(w=>w.id===workspaceId),session=sessions.find(s=>s.id===sessionId);
  const visibleSessions=useMemo(()=>filterByTitle(allSessions,query),[allSessions,query]);
- const projectName=(id:string)=>{const w=workspaces.find(x=>x.id===id);return w?basename(w.sourcePath):''};
+ const projectName=(id:string)=>workspaces.find(x=>x.id===id)?.name??'';
  const slashToken=commandTokenUnderCursor(text,cursor);
  const activeSlash=slashToken&&slashToken!==dismissedToken&&sessionId&&!sessionBusy?(()=>{const items=filterSlashCommands(slashToken);return items.length?{token:slashToken,items}:null})():null;
  const skillToken=useMemo(()=>sessionId&&!sessionBusy?skillTokenUnderCursor(text,cursor):null,[text,cursor,sessionId,sessionBusy]);
@@ -131,7 +133,29 @@ export default function App(){
  useEffect(()=>{if(!sessionId)return;const id=sessionId;void attempt(async()=>{const list=await command<SessionEvent[]>('session_events',{sessionId:id});useChat.getState().replace(id,list)})},[sessionId]);
  useEffect(()=>{if(!desktop())return;let alive=true;const refresh=()=>{command<ApprovalRequest[]>('approval_list').then(list=>{if(alive)setApprovals(list)}).catch(e=>{if(alive)setError(errorText(e))});command<string[]>('session_active_list').then(ids=>{if(alive)setActiveIds(new Set(ids))}).catch(()=>{})};void refresh();const timer=setInterval(refresh,2000);return()=>{alive=false;clearInterval(timer)}},[]);
  useEffect(()=>{end.current?.scrollIntoView?.({behavior:'smooth'})},[events,stream]);
- async function openWorkspace(){setBusy(true);await attempt(async()=>{const path=await open({directory:true,multiple:false,title:'选择原项目目录'});if(!path)return;const ws=await command<WorkspaceInfo>('workspace_open',{path});setWorkspaces(old=>[...old.filter(w=>w.id!==ws.id),ws]);setWorkspaceId(ws.id);setNotice('已创建托管工作副本。原项目仅在确认同步后写入。')});setBusy(false)}
+ // 打开工作区两步走：先选目录，再在命名弹窗确认（名称预填目录名，留空则后端回退目录名）。
+ async function openWorkspace(){setBusy(true);await attempt(async()=>{const path=await open({directory:true,multiple:false,title:'选择原项目目录'});if(path)setWsDialog({mode:'create',path,name:basename(path)})});setBusy(false)}
+ async function createWorkspace(){
+  if(!wsDialog||wsDialog.mode!=='create')return;
+  const {path,name}=wsDialog;
+  setWsDialog(null);
+  await attempt(async()=>{
+   const ws=await command<WorkspaceInfo>('workspace_open',{path,name:name.trim()||null});
+   setWorkspaces(old=>[...old.filter(w=>w.id!==ws.id),ws]);
+   setWorkspaceId(ws.id);
+   setNotice(`已创建托管工作副本「${ws.name}」。原项目仅在确认同步后写入。`);
+  });
+ }
+ async function renameWorkspace(){
+  if(!wsDialog||wsDialog.mode!=='rename')return;
+  const {id,name}=wsDialog;
+  setWsDialog(null);
+  await attempt(async()=>{
+   const ws=await command<WorkspaceInfo>('workspace_rename',{workspaceId:id,name});
+   setWorkspaces(old=>old.map(w=>w.id===ws.id?ws:w));
+   setNotice(`项目已重命名为「${ws.name}」。`);
+  });
+ }
  function createSessionFor(targetWorkspaceId:string):Promise<SessionInfo>{
   const pending=creatingSessions.current.get(targetWorkspaceId);
   if(pending)return pending;
@@ -241,7 +265,7 @@ export default function App(){
  return <div className="app">
   <aside className="sidebar">
    <div className="brand"><span className="brand-mark"><Terminal size={23}/></span><span>Rust Harness<small>你的本地开发搭档</small></span><span className="version">α</span></div>
-   <button className="workspace-picker" onClick={openWorkspace} disabled={busy||!desktop()}><FolderOpen size={19}/><span>{workspace?basename(workspace.sourcePath):'打开工作区'}<small>{workspace?'托管工作副本':'从本地项目开始'}</small></span><ChevronDown size={16}/></button>
+   <button className="workspace-picker" onClick={openWorkspace} disabled={busy||!desktop()}><FolderOpen size={19}/><span>{workspace?workspace.name:'打开工作区'}<small>{workspace?'托管工作副本':'从本地项目开始'}</small></span><ChevronDown size={16}/></button>
    <button className="new-chat" title="新建聊天" onClick={newSession} disabled={!workspaceId||sessionBusy}><Plus size={16}/><span>新建聊天</span></button>
    <div className="session-search"><Search size={14} aria-hidden="true"/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="搜索会话…" aria-label="搜索会话"/></div>
    <div className="section-label"><span>任务列表</span><span className="label-spacer"/><button type="button" role="switch" aria-checked={viewMode==='project'} aria-label="切换视图：最近 / 项目" className="view-switch" onClick={()=>chooseView(viewMode==='recent'?'project':'recent')}><span className="knob" aria-hidden="true"/><span className="sw-label a" aria-hidden="true">最近</span><span className="sw-label b" aria-hidden="true">项目</span></button></div>
@@ -253,9 +277,10 @@ export default function App(){
      const open=!collapsed.includes(ws.id);
      return <div key={ws.id} className="ws-group">
       <div className="ws-head">
-       <button type="button" className="ws-toggle" aria-expanded={open} onClick={()=>toggleCollapsed(ws.id)}><ChevronRight size={13} className="chev" aria-hidden="true"/><span className="ws-name">{basename(ws.sourcePath)}</span><span className="ws-count">{list.length}</span></button>
-       <button type="button" className="ws-add" aria-label={`在 ${basename(ws.sourcePath)} 新建聊天`} title="新建聊天" disabled={sessionBusy} onClick={()=>void newSessionIn(ws.id)}><Plus size={13}/></button>
-       <button type="button" className={`ws-pin${ws.pinned?' on':''}`} aria-label={`${ws.pinned?'取消置顶':'置顶'} ${basename(ws.sourcePath)}`} title={ws.pinned?'取消置顶':'置顶项目'} onClick={()=>void togglePinned(ws)}><Pin size={13}/></button>
+       <button type="button" className="ws-toggle" aria-expanded={open} onClick={()=>toggleCollapsed(ws.id)}><ChevronRight size={13} className="chev" aria-hidden="true"/><span className="ws-name">{ws.name}</span><span className="ws-count">{list.length}</span></button>
+       <button type="button" className="ws-add" aria-label={`在 ${ws.name} 新建聊天`} title="新建聊天" disabled={sessionBusy} onClick={()=>void newSessionIn(ws.id)}><Plus size={13}/></button>
+       <button type="button" className="ws-rename" aria-label={`重命名 ${ws.name}`} title="重命名项目" onClick={()=>setWsDialog({mode:'rename',id:ws.id,name:ws.name})}><Pencil size={13}/></button>
+       <button type="button" className={`ws-pin${ws.pinned?' on':''}`} aria-label={`${ws.pinned?'取消置顶':'置顶'} ${ws.name}`} title={ws.pinned?'取消置顶':'置顶项目'} onClick={()=>void togglePinned(ws)}><Pin size={13}/></button>
       </div>
       {open&&list.map(s=><button key={s.id} className={`session-row one${sessionId===s.id?' active':''}${s.parentId?' child':''}`} title={s.parentId?'子代理会话':undefined} onClick={()=>openFromSidebar(s)}><MessageSquare size={16}/><span className="session-title">{s.title}</span>{s.parentId&&<em className="subagent-badge">子任务</em>}{(running[s.id]||activeIds.has(s.id))&&<i className="live-dot" aria-label="运行中"/>}<span className="session-time">{relativeLabel(s.updatedAt,new Date())}</span></button>)}
      </div>;
@@ -264,7 +289,7 @@ export default function App(){
    </nav>
    <div className="sidebar-bottom"><div className="local-badge"><i className="live-dot"/> 本地优先 · 无遥测</div><button onClick={()=>setPanel('plans')}><Target size={17}/>计划与目标</button><button onClick={()=>setPanel('presets')}><Bookmark size={17}/>能力预设</button><button onClick={()=>setPanel('skills')}><Sparkles size={17}/>技能</button><button onClick={()=>setPanel('automations')}><Timer size={17}/>自动化{automationCount!==null&&<span className="count">{automationCount}</span>}</button><button onClick={()=>setPanel('plugins')}><Unplug size={17}/>插件与权限</button><button onClick={()=>setPanel('models')}><Settings2 size={17}/>模型设置 <span className="count">{models.length}</span></button></div>
   </aside>
-  <main className="main"><header className="topbar"><div className="breadcrumb"><Folder size={15}/>{workspace?basename(workspace.sourcePath):'工作台'}<span>/</span><strong>{session?.title??'新的可能，从这里开始'}</strong></div><div className="toolbar"><button className="icon-button" title="导出会话" aria-label="导出会话" disabled={!sessionId} onClick={exportSession}><Download size={17}/></button><button className="soft" aria-expanded={panel==='tasks'} aria-controls="task-popover" onClick={()=>setPanel(p=>p==='tasks'?null:'tasks')} disabled={!sessionId}><ListTodo size={16}/>后台任务{taskCount>0&&<span className="count">{taskCount}</span>}</button><button className="soft" aria-expanded={sideOpen} onClick={()=>useSidePanel.getState().toggle()} disabled={!workspaceId}><GitCompareArrows size={16}/>查看更改</button>{panel==='tasks'&&sessionId&&<BackgroundTasksPanel sessionId={sessionId} onClose={()=>setPanel(null)}/>}</div></header>
+  <main className="main"><header className="topbar"><div className="breadcrumb"><Folder size={15}/>{workspace?workspace.name:'工作台'}<span>/</span><strong>{session?.title??'新的可能，从这里开始'}</strong></div><div className="toolbar"><button className="icon-button" title="导出会话" aria-label="导出会话" disabled={!sessionId} onClick={exportSession}><Download size={17}/></button><button className="soft" aria-expanded={panel==='tasks'} aria-controls="task-popover" onClick={()=>setPanel(p=>p==='tasks'?null:'tasks')} disabled={!sessionId}><ListTodo size={16}/>后台任务{taskCount>0&&<span className="count">{taskCount}</span>}</button><button className="soft" aria-expanded={sideOpen} onClick={()=>useSidePanel.getState().toggle()} disabled={!workspaceId}><GitCompareArrows size={16}/>查看更改</button>{panel==='tasks'&&sessionId&&<BackgroundTasksPanel sessionId={sessionId} onClose={()=>setPanel(null)}/>}</div></header>
    {!desktop()&&<div className="host-banner"><Terminal size={16}/>当前为界面预览，需要桌面宿主才能访问工作区和模型。</div>}
    {error&&<div role="alert" className="alert"><span>{error}</span><button aria-label="关闭错误" onClick={()=>setError('')}><X size={16}/></button></div>}
    {notice&&<div role="status" className="notice"><Check size={15}/>{notice}<button aria-label="关闭提示" onClick={()=>setNotice('')}><X size={15}/></button></div>}
@@ -282,6 +307,12 @@ export default function App(){
   {panel==='plugins'&&<PluginPanel workspaceId={workspaceId} sessionId={sessionId} revision={pluginRevision} onChanged={()=>setPluginRevision(v=>v+1)} onClose={()=>setPanel(null)}/>}
   {panel==='plans'&&<PlansPanel currentSessionId={sessionId} onOpenSession={openFromPanel} onClose={()=>setPanel(null)}/>}
   {panel==='automations'&&<Modal title="自动化任务" onClose={()=>setPanel(null)}><AutomationsPanel workspaceId={workspaceId} sessions={sessions} onChanged={()=>{if(workspaceId)command<unknown[]>('automation_list',{workspaceId}).then(list=>setAutomationCount(list.length)).catch(()=>{})}}/></Modal>}
+  {wsDialog&&<Modal title={wsDialog.mode==='create'?'打开工作区':'重命名项目'} onClose={()=>setWsDialog(null)}><form className="settings-form" onSubmit={e=>{e.preventDefault();void (wsDialog.mode==='create'?createWorkspace():renameWorkspace())}}>
+   {wsDialog.mode==='create'&&<p className="muted">{wsDialog.path}</p>}
+   <label>项目名称<input value={wsDialog.name} onChange={e=>setWsDialog(old=>old&&{...old,name:e.target.value})} placeholder="默认使用目录名"/></label>
+   {wsDialog.mode==='create'&&<p className="muted">留空则使用目录名「{basename(wsDialog.path)}」。</p>}
+   <div className="actions"><button type="button" onClick={()=>setWsDialog(null)}>取消</button><button className="primary" type="submit">{wsDialog.mode==='create'?'创建':'保存'}</button></div>
+  </form></Modal>}
   {approvals[0]&&<Modal title="操作需要你的批准" onClose={()=>void resolve(approvals[0].id,false)}><div className="approval-heading"><ShieldCheck size={24}/><strong>{approvals[0].tool}</strong></div><p>{approvals[0].reason}</p><pre className="code-block">{printable(approvals[0].arguments)}</pre><p className="muted">会话：{sessions.find(s=>s.id===approvals[0].sessionId)?.title??approvals[0].sessionId}</p><div className="actions"><button onClick={()=>resolve(approvals[0].id,false)}>拒绝</button><button className="primary" onClick={()=>resolve(approvals[0].id,true)}>批准此次操作</button></div></Modal>}
  </div>
 }

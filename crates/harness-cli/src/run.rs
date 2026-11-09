@@ -441,7 +441,7 @@ pub(crate) async fn resolve_session_target(
             }
             (workspace, None)
         }
-        (None, None) => (runtime.workspaces.create(Path::new(&cwd))?, None),
+        (None, None) => (runtime.workspaces.create(Path::new(&cwd), None)?, None),
     };
     let title: String = title_prompt.trim().chars().take(24).collect();
     let session = runtime

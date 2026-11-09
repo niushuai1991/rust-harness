@@ -39,11 +39,29 @@ pub async fn workspace_set_pinned(
     info.pinned = pinned;
     Ok(info)
 }
+/// 打开（创建）工作区；name 为空或未填时由后端归一化为源目录名。
 #[tauri::command]
 #[specta::specta]
-pub async fn workspace_open(state: Backend<'_>, path: String) -> AppResult<WorkspaceInfo> {
+pub async fn workspace_open(
+    state: Backend<'_>,
+    path: String,
+    name: Option<String>,
+) -> AppResult<WorkspaceInfo> {
     let manager = state.workspaces.clone();
-    tokio::task::spawn_blocking(move || manager.create(&PathBuf::from(path)))
+    tokio::task::spawn_blocking(move || manager.create(&PathBuf::from(path), name))
+        .await
+        .map_err(error)?
+}
+/// 项目重命名；空白名称由平台层拒绝（INVALID_NAME），返回更新后的工作区信息。
+#[tauri::command]
+#[specta::specta]
+pub async fn workspace_rename(
+    state: Backend<'_>,
+    workspace_id: String,
+    name: String,
+) -> AppResult<WorkspaceInfo> {
+    let manager = state.workspaces.clone();
+    tokio::task::spawn_blocking(move || manager.rename(&workspace_id, name))
         .await
         .map_err(error)?
 }
@@ -814,6 +832,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
     tauri_specta::Builder::new().commands(tauri_specta::collect_commands![
         workspace_list,
         workspace_open,
+        workspace_rename,
         workspace_set_pinned,
         workspace_diff,
         workspace_file_diff,

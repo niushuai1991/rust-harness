@@ -143,7 +143,7 @@ async fn lsp_hover_is_routed_and_exempt_from_approval() {
     std::fs::create_dir(&source).unwrap();
     std::fs::write(source.join("a.rs"), "fn main() {}").unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source).unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "test")
@@ -194,7 +194,7 @@ async fn lsp_diagnostics_waits_and_aggregates_workspace_cache() {
     std::fs::create_dir(&source).unwrap();
     std::fs::write(source.join("a.rs"), "fn main() {}").unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source).unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "test")
@@ -237,7 +237,7 @@ async fn lsp_symbols_support_document_and_workspace_modes() {
     std::fs::create_dir(&source).unwrap();
     std::fs::write(source.join("a.rs"), "fn main() {}").unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source).unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "test")
@@ -268,7 +268,7 @@ async fn lsp_unknown_extension_reports_missing_server() {
     std::fs::create_dir(&source).unwrap();
     std::fs::write(source.join("a.py"), "print(1)").unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source).unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "test")
@@ -304,7 +304,7 @@ async fn lsp_spawn_failure_reports_configuration_hint() {
     std::fs::create_dir(&source).unwrap();
     std::fs::write(source.join("a.rs"), "fn main() {}").unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source).unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "test")

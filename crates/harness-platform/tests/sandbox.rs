@@ -11,7 +11,7 @@ async fn restricted_process_writes_inside_and_cannot_write_outside() {
     fs::create_dir(&source).unwrap();
     fs::write(source.join("outside.txt"), "safe").unwrap();
     let manager = WorkspaceManager::new(tmp.path().join("host")).unwrap();
-    let info = manager.create(&source).unwrap();
+    let info = manager.create(&source, None).unwrap();
     let command = format!(
         "[IO.File]::WriteAllText('inside.txt','ok'); try {{ [IO.File]::WriteAllText('{}','escape'); exit 9 }} catch {{ exit 0 }}",
         source.join("outside.txt").display()
@@ -41,7 +41,7 @@ async fn cancellation_returns_and_releases_runtime_lease() {
     let source = tmp.path().join("source");
     fs::create_dir(&source).unwrap();
     let manager = WorkspaceManager::new(tmp.path().join("host")).unwrap();
-    let info = manager.create(&source).unwrap();
+    let info = manager.create(&source, None).unwrap();
     let cancel = CancellationToken::new();
     let ps = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
         .join("System32/WindowsPowerShell/v1.0/powershell.exe");
@@ -100,7 +100,7 @@ async fn sandboxed_stdio_roundtrip_and_drop_releases_lease() {
     let source = tmp.path().join("source");
     fs::create_dir(&source).unwrap();
     let manager = WorkspaceManager::new(tmp.path().join("host")).unwrap();
-    let info = manager.create(&source).unwrap();
+    let info = manager.create(&source, None).unwrap();
     let ps = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
         .join("System32/WindowsPowerShell/v1.0/powershell.exe");
     let args = [
