@@ -1,5 +1,9 @@
 //! Scoped agent ownership, durable tool settlements, and human approvals.
 use crate::model::{MessageRole, ModelMessage, ModelProvider, StreamDelta, cancelled};
+use crate::token_budget::{
+    BudgetSnapshot, BudgetStop, DEFAULT_LIMIT_TOKENS, LIMIT_SETTING_KEY, TurnBudget,
+    consumed_tokens, validate_limit,
+};
 use harness_contracts::*;
 use harness_extensions::{HostPolicy, PluginManager};
 use harness_platform::{ShellService, WorkspaceManager};
@@ -69,6 +73,7 @@ struct ToolExecution<'a> {
     call: &'a ToolCall,
     reads: &'a mut HashMap<String, String>,
     provider: Arc<dyn ModelProvider>,
+    token_budget: Arc<TurnBudget>,
     cancel: CancellationToken,
 }
 impl Runtime {
@@ -518,6 +523,80 @@ impl Runtime {
             self.execute_message(session_id, message_id, provider).await
         })
     }
+    pub(crate) fn run_session_with_budget(
+        self: Arc<Self>,
+        session_id: String,
+        text: String,
+        provider: Arc<dyn ModelProvider>,
+        token_budget: Arc<TurnBudget>,
+    ) -> futures::future::BoxFuture<'static, AppResult<()>> {
+        Box::pin(async move {
+            let message_id = self.enqueue_message(&session_id, text, vec![]).await?;
+            self.execute_message_with_budget(session_id, message_id, provider, Some(token_budget))
+                .await
+        })
+    }
+    pub async fn token_budget_limit(&self) -> AppResult<u64> {
+        let stored = self.store.get(LIMIT_SETTING_KEY).await?;
+        match stored {
+            None => Ok(DEFAULT_LIMIT_TOKENS),
+            Some(value) => {
+                let limit = value.as_u64().ok_or_else(|| {
+                    AppError::new("TOKEN_BUDGET_LIMIT", "已保存的 Token 预算无效，请重新设置")
+                })?;
+                validate_limit(limit)
+            }
+        }
+    }
+    pub async fn set_token_budget_limit(&self, limit: u64) -> AppResult<()> {
+        let limit = validate_limit(limit)?;
+        self.store.set(LIMIT_SETTING_KEY, &json!(limit)).await
+    }
+    async fn publish_token_budget(
+        &self,
+        session: &str,
+        token_budget: &TurnBudget,
+        snapshot: BudgetSnapshot,
+    ) -> AppResult<()> {
+        let status = match snapshot.stopped {
+            None => "active",
+            Some(BudgetStop::LimitReached) => "exhausted",
+            Some(BudgetStop::UsageUnavailable) => "usageUnavailable",
+        };
+        let data = json!({
+            "turnId": token_budget.turn_id(),
+            "usedTokens": snapshot.used_tokens,
+            "limitTokens": snapshot.limit_tokens,
+            "status": status,
+        });
+        self.append(token_budget.root_session_id(), "token.budget", data.clone())
+            .await?;
+        if session != token_budget.root_session_id() {
+            self.append(session, "token.budget", data).await?;
+        }
+        Ok(())
+    }
+    async fn record_token_usage(
+        &self,
+        session: &str,
+        token_budget: &TurnBudget,
+        usage: &Value,
+    ) -> AppResult<BudgetSnapshot> {
+        let _updates = token_budget.serialize_updates().await;
+        let (snapshot, usage_error) = match consumed_tokens(usage) {
+            Ok(tokens) => (token_budget.add_usage(tokens), None),
+            Err(error) => (token_budget.mark_usage_unavailable(), Some(error)),
+        };
+        self.publish_token_budget(session, token_budget, snapshot)
+            .await?;
+        if snapshot.stopped.is_some() {
+            token_budget.cancel_others(session);
+        }
+        if let Some(error) = usage_error {
+            return Err(token_budget.error().unwrap_or(error));
+        }
+        Ok(snapshot)
+    }
     /// 校验输入并落 `inbox.queued`，立即返回消息标识；回合执行经 [`Self::execute_message`]。
     pub async fn enqueue_message(
         self: &Arc<Self>,
@@ -563,6 +642,16 @@ impl Runtime {
         message_id: String,
         provider: Arc<dyn ModelProvider>,
     ) -> AppResult<()> {
+        self.execute_message_with_budget(session_id, message_id, provider, None)
+            .await
+    }
+    async fn execute_message_with_budget(
+        self: Arc<Self>,
+        session_id: String,
+        message_id: String,
+        provider: Arc<dyn ModelProvider>,
+        inherited_budget: Option<Arc<TurnBudget>>,
+    ) -> AppResult<()> {
         let session = self.store.session(&session_id).await?;
         let queued = self
             .store
@@ -592,7 +681,16 @@ impl Runtime {
             return Err(AppError::new("CANCELLED", "消息已在排队时取消"));
         }
         let lease = self.workspaces.acquire(&session.workspace_id)?;
+        let token_budget = match inherited_budget {
+            Some(budget) => budget,
+            None => Arc::new(TurnBudget::new(
+                session_id.clone(),
+                message_id.clone(),
+                self.token_budget_limit().await?,
+            )),
+        };
         let cancel = CancellationToken::new();
+        token_budget.register_session(session_id.clone(), cancel.clone());
         self.active
             .lock()
             .unwrap()
@@ -619,6 +717,11 @@ impl Runtime {
                 json!({"content":text,"attachments":attached}),
             )
             .await?;
+            {
+                let _updates = token_budget.serialize_updates().await;
+                self.publish_token_budget(&session_id, &token_budget, token_budget.snapshot())
+                    .await?;
+            }
             self.load_skill_mentions(&session_id, &text, Path::new(&lease.info.replica_path))
                 .await?;
             self.steps(
@@ -627,11 +730,17 @@ impl Runtime {
                 Path::new(&lease.info.replica_path),
                 provider,
                 cancel.clone(),
+                token_budget.clone(),
             )
             .await
         }
         .await;
         self.active.lock().unwrap().remove(&session_id);
+        token_budget.unregister_session(&session_id);
+        let result = match (result, token_budget.error()) {
+            (Err(_), Some(budget_error)) => Err(budget_error),
+            (result, _) => result,
+        };
         let status = match &result {
             Ok(()) => "completed",
             Err(e) if e.code == "CANCELLED" => "cancelled",
@@ -687,6 +796,7 @@ impl Runtime {
         root: &Path,
         provider: Arc<dyn ModelProvider>,
         cancel: CancellationToken,
+        token_budget: Arc<TurnBudget>,
     ) -> AppResult<()> {
         self.plugins.set_workspace_policy(
             workspace,
@@ -705,10 +815,12 @@ impl Runtime {
         self.append(session, "context.snapshot", json!({"content":context}))
             .await?;
         let mut reads = HashMap::new();
-        for step in 0..30 {
+        let mut step = 0usize;
+        loop {
             if cancel.is_cancelled() {
-                return Err(cancelled());
+                return Err(token_budget.error().unwrap_or_else(cancelled));
             }
+            token_budget.check_available()?;
             let mut tools = builtin_tools();
             tools.extend(self.plugins.tool_definitions(workspace)?);
             tools.extend(self.custom.lock().unwrap().values().map(|t| t.definition()));
@@ -789,7 +901,22 @@ impl Runtime {
                         json!({"requestId":request_id,"content":p.0,"reasoning":p.1,"error":e}),
                     )
                     .await?;
-                    return Err(e);
+                    return Err(token_budget.error().unwrap_or(e));
+                }
+            };
+            let budget_snapshot = match self
+                .record_token_usage(session, &token_budget, &answer.usage)
+                .await
+            {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    self.append(
+                        session,
+                        "assistant.attempt",
+                        json!({"requestId":request_id,"content":answer.content,"reasoning":answer.reasoning,"error":error}),
+                    )
+                    .await?;
+                    return Err(error);
                 }
             };
             let mut ids: BTreeSet<String> = history
@@ -827,6 +954,27 @@ impl Runtime {
             if answer.calls.is_empty() {
                 return Ok(());
             }
+            if budget_snapshot.stopped.is_some() {
+                let error = token_budget.error().unwrap_or_else(|| {
+                    AppError::new("TOKEN_BUDGET_EXCEEDED", "本轮 Token 预算已耗尽")
+                });
+                for call in answer.calls {
+                    self.append(
+                        session,
+                        "tool.result",
+                        json!({
+                            "callId": call.id,
+                            "name": call.name,
+                            "content": format!("{error}；工具未执行。"),
+                            "isError": true,
+                            "status": "denied",
+                            "artifact": null,
+                        }),
+                    )
+                    .await?;
+                }
+                return Err(error);
+            }
             for mut call in answer.calls {
                 let result=async{
                     let definition=tools.iter().find(|t|t.name==call.name).ok_or_else(||AppError::new("TOOL_UNAVAILABLE",&call.name))?;
@@ -850,6 +998,7 @@ impl Runtime {
                         call: &call,
                         reads: &mut reads,
                         provider: provider.clone(),
+                        token_budget: token_budget.clone(),
                         cancel: tool_cancel.clone(),
                     });
                     tokio::pin!(work);
@@ -920,8 +1069,8 @@ impl Runtime {
                 }
                 self.append(session,"tool.result",json!({"callId":call.id,"name":call.name,"content":content,"isError":result.is_error,"status":status,"artifact":artifact})).await?;
             }
+            step = step.saturating_add(1);
         }
-        Err(AppError::new("STEP_LIMIT", "回合达到30次模型调用上限"))
     }
     pub(crate) async fn approve(
         &self,
@@ -1013,6 +1162,7 @@ impl Runtime {
             call,
             reads,
             provider,
+            token_budget,
             cancel,
         } = input;
         let a = &call.arguments;
@@ -1178,7 +1328,10 @@ impl Runtime {
                 let id = child.id.clone();
                 let task = arg(a, "task")?.to_owned();
                 tokio::spawn(async move {
-                    if let Err(e) = runtime.run_session(id, task, provider).await {
+                    if let Err(e) = runtime
+                        .run_session_with_budget(id, task, provider, token_budget)
+                        .await
+                    {
                         tracing::warn!(error=%e,"child agent ended");
                     }
                 });

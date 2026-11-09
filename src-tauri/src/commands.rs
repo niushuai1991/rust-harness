@@ -481,6 +481,26 @@ pub async fn approval_mode_save(
     Ok(())
 }
 
+/// 读取每条用户消息的默认 Token 预算上限。
+#[tauri::command]
+#[specta::specta]
+pub async fn token_budget_limit_get(state: Backend<'_>) -> AppResult<f64> {
+    Ok(state.token_budget_limit().await? as f64)
+}
+
+/// 保存每条用户消息的 Token 预算上限；新设置从下一条用户消息起生效。
+#[tauri::command]
+#[specta::specta]
+pub async fn token_budget_limit_set(state: Backend<'_>, limit_tokens: f64) -> AppResult<()> {
+    if !limit_tokens.is_finite() || limit_tokens.fract() != 0.0 {
+        return Err(AppError::new(
+            "TOKEN_BUDGET_LIMIT",
+            "Token 预算必须是正整数",
+        ));
+    }
+    state.set_token_budget_limit(limit_tokens as u64).await
+}
+
 // ---------------------------------------------------------------------------
 // ChatGPT 账号 OAuth 登录（浏览器授权 + 本地回环回调）；token 永不回传前端。
 // ---------------------------------------------------------------------------
@@ -946,6 +966,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         default_selection_save,
         approval_mode_get,
         approval_mode_save,
+        token_budget_limit_get,
+        token_budget_limit_set,
         chatgpt_login_start,
         chatgpt_login_status,
         chatgpt_login_cancel,

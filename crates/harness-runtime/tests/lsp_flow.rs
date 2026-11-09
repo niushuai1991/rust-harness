@@ -29,11 +29,16 @@ impl ModelProvider for Recorded {
         _: DeltaSink,
     ) -> AppResult<ModelAnswer> {
         let _ = messages;
-        self.answers
+        let mut answer = self
+            .answers
             .lock()
             .unwrap()
             .pop_front()
-            .ok_or_else(|| AppError::new("FIXTURE", "unexpected extra request"))
+            .ok_or_else(|| AppError::new("FIXTURE", "unexpected extra request"))?;
+        if answer.usage.is_null() {
+            answer.usage = serde_json::json!({"prompt_tokens":0,"completion_tokens":0});
+        }
+        Ok(answer)
     }
 }
 fn call(id: &str, name: &str, args: Value) -> ModelAnswer {

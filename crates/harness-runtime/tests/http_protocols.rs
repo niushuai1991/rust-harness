@@ -31,7 +31,8 @@ fn answer(mode: ApiMode, step: usize) -> String {
         ApiMode::ChatCompletions => {
             sse(
                 json!({"choices":[{"index":0,"delta":{"content":if calls.is_empty(){"finished"}else{""},"tool_calls":calls.iter().enumerate().map(|(i,c)|json!({"index":i,"id":c["id"],"type":"function","function":{"name":c["name"],"arguments":c["arguments"].to_string()}})).collect::<Vec<_>>()},"finish_reason":if calls.is_empty(){"stop"}else{"tool_calls"}}]}),
-            ) + "data: [DONE]\n\n"
+            ) + &sse(json!({"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2}}))
+                + "data: [DONE]\n\n"
         }
         ApiMode::Responses => {
             let mut output = vec![

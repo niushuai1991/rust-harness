@@ -54,6 +54,10 @@ export const commands = {
 	 *  `session_id` 时对当前会话即时生效，并按档位结算现存 pending（auto 放行、never 拒绝）。
 	 */
 	approvalModeSave: (mode: string, sessionId: string | null) => typedError<null, AppError>(__TAURI_INVOKE("approval_mode_save", { mode, sessionId })),
+	/**  读取每条用户消息的默认 Token 预算上限。 */
+	tokenBudgetLimitGet: () => typedError<number | null, AppError>(__TAURI_INVOKE("token_budget_limit_get")),
+	/**  保存每条用户消息的 Token 预算上限；新设置从下一条用户消息起生效。 */
+	tokenBudgetLimitSet: (limitTokens: number | null) => typedError<null, AppError>(__TAURI_INVOKE("token_budget_limit_set", { limitTokens })),
 	/**  发起浏览器 OAuth 登录：绑定回调端口、打开系统浏览器并返回授权 URL 兜底。 */
 	chatgptLoginStart: () => typedError<string, AppError>(__TAURI_INVOKE("chatgpt_login_start")),
 	/**  轮询登录流程状态。 */

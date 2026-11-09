@@ -44,7 +44,7 @@ headless 此前只有自研 `harness rpc`（ndjson JSON-RPC，`harness-cli/src/l
 | `user.message`/`assistant.message`/`compaction.summary` | 仅 `session/load` 回放时使用 |
 
 - broadcast `Lagged`：按 per-session seq 游标从 `store.events(after)` 补拉（参照 `run.rs::resync`）。
-- prompt 的 stopReason：回合结束后从订阅缓冲中取该会话 `turn.end`/`Status`：completed→`end_turn`、cancelled→`cancelled`（规范要求捕获取消异常）；`run_session` 返回错误时，`STEP_LIMIT`→`max_turn_requests`，其余回 JSON-RPC `-32603`（`AppError.message`）。
+- prompt 的 stopReason：回合结束后从订阅缓冲中取该会话 `turn.end`/`Status`：completed→`end_turn`、cancelled→`cancelled`（规范要求捕获取消异常）；`run_session` 返回错误时回 JSON-RPC `-32603`（`AppError.message`，包括 Token 预算耗尽或用量不可用）。
 
 ### 审批 → request_permission
 

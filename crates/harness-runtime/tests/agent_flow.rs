@@ -25,11 +25,16 @@ impl ModelProvider for Recorded {
         _: DeltaSink,
     ) -> AppResult<ModelAnswer> {
         self.requests.lock().unwrap().push(messages);
-        self.answers
+        let mut answer = self
+            .answers
             .lock()
             .unwrap()
             .pop_front()
-            .ok_or_else(|| AppError::new("FIXTURE", "unexpected extra request"))
+            .ok_or_else(|| AppError::new("FIXTURE", "unexpected extra request"))?;
+        if answer.usage.is_null() {
+            answer.usage = serde_json::json!({"prompt_tokens":0,"completion_tokens":0});
+        }
+        Ok(answer)
     }
 }
 fn call(id: &str, name: &str, args: Value) -> ModelAnswer {
@@ -111,6 +116,103 @@ async fn approved_edit_stays_in_replica_until_explicit_sync() {
         std::fs::read_to_string(source.join("a.txt")).unwrap(),
         "new"
     );
+}
+
+#[tokio::test]
+async fn token_budget_stops_the_turn_and_skips_the_returned_tool_batch() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "budget")
+        .await
+        .unwrap();
+    runtime.set_token_budget_limit(5).await.unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            calls: vec![ToolCall {
+                id: "todo-1".into(),
+                name: "todo_write".into(),
+                arguments: json!({"items":[]}),
+            }],
+            usage: json!({"prompt_tokens":4,"completion_tokens":1}),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+
+    let error = runtime
+        .clone()
+        .run_session(session.id.clone(), "循环测试".into(), provider.clone())
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, "TOKEN_BUDGET_EXCEEDED");
+    assert_eq!(provider.requests.lock().unwrap().len(), 1);
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    assert!(!events.iter().any(|event| event.kind == "todo.state"));
+    assert!(events.iter().any(|event| {
+        event.kind == "tool.result"
+            && event.data["status"] == "denied"
+            && event.data["isError"] == true
+            && event.data["content"].as_str().unwrap().contains("未执行")
+    }));
+    let end = events
+        .iter()
+        .find(|event| event.kind == "turn.end")
+        .unwrap();
+    assert_eq!(end.data["error"]["code"], "TOKEN_BUDGET_EXCEEDED");
+}
+
+#[tokio::test]
+async fn unknown_usage_stops_before_a_follow_up_model_call() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "missing usage")
+        .await
+        .unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            content: "usage missing".into(),
+            usage: json!({"unknown_tokens":10}),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+
+    let error = runtime
+        .clone()
+        .run_session(session.id.clone(), "测试".into(), provider.clone())
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, "TOKEN_USAGE_UNAVAILABLE");
+    assert_eq!(provider.requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn token_budget_limit_defaults_persists_and_rejects_zero() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path().join("host");
+    let runtime = Runtime::open(data_dir.clone()).await.unwrap();
+    assert_eq!(runtime.token_budget_limit().await.unwrap(), 1_000_000);
+    runtime.set_token_budget_limit(42).await.unwrap();
+    assert_eq!(
+        runtime.set_token_budget_limit(0).await.unwrap_err().code,
+        "TOKEN_BUDGET_LIMIT"
+    );
+    drop(runtime);
+
+    let reopened = Runtime::open(data_dir).await.unwrap();
+    assert_eq!(reopened.token_budget_limit().await.unwrap(), 42);
 }
 
 #[tokio::test]

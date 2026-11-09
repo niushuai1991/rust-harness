@@ -408,9 +408,6 @@ async fn run_connection(
                         Err(e) if e.code == "CANCELLED" => {
                             responder.respond(PromptResponse::new(StopReason::Cancelled))
                         }
-                        Err(e) if e.code == "STEP_LIMIT" => {
-                            responder.respond(PromptResponse::new(StopReason::MaxTurnRequests))
-                        }
                         Err(e) => responder.respond_with_error(agent_client_protocol::Error::new(
                             agent_client_protocol::ErrorCode::INTERNAL_ERROR,
                             e.message,
