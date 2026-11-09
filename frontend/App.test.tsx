@@ -983,3 +983,128 @@ describe('项目命名',()=>{
   await waitFor(()=>expect(screen.getAllByText('我的 项目').length).toBeGreaterThanOrEqual(1));
  });
 });
+
+describe('会话命名',()=>{
+ beforeEach(()=>localStorage.clear());
+ it.each(['最近','项目'])('在%s视图右键会话可重命名并更新列表和面包屑',async view=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_rename'?{id:args.sessionId,workspaceId:'w',title:args.title,createdAt:'',updatedAt:''}:original(name,args));
+  render(<App/>);await screen.findByText('内容 a');
+  if(view==='项目')fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  fireEvent.contextMenu(screen.getByRole('button',{name:/会话 A/}));
+  fireEvent.click(await screen.findByRole('menuitem',{name:'重命名'}));
+  const dialog=await screen.findByRole('dialog',{name:'重命名会话'});
+  expect(screen.getByLabelText('会话名称')).toHaveValue('会话 A');
+  fireEvent.change(screen.getByLabelText('会话名称'),{target:{value:'重命名后的会话'}});
+  fireEvent.click(within(dialog).getByRole('button',{name:'保存'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_rename',{sessionId:'a',title:'重命名后的会话'}));
+  expect(await screen.findAllByText('重命名后的会话')).toHaveLength(2);
+  expect(screen.queryByRole('menu',{name:'会话操作'})).not.toBeInTheDocument();
+ });
+ it('首问创建草稿会话时并行生成标题和发送消息',async()=>{
+  let resolveTitle!:(value:unknown)=>void;
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_list')return [];
+   if(name==='session_create')return {id:'first',workspaceId:'w',title:'新会话',createdAt:'',updatedAt:''};
+   if(name==='session_title_generate')return new Promise(resolve=>{resolveTitle=resolve});
+   if(name==='session_events')return [];
+   return original(name,args);
+  });
+  render(<App/>);await screen.findByRole('button',{name:'选择项目'});
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'修复登录状态刷新后丢失'}});
+  await waitFor(()=>expect(screen.getByRole('button',{name:'发送消息'})).toBeEnabled());
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_title_generate',{sessionId:'first',text:'修复登录状态刷新后丢失',modelId:'m',effort:'high',attachmentNames:[]}));
+  expect(mocks.send).toHaveBeenCalledWith('first','修复登录状态刷新后丢失','m',expect.any(Function),undefined,'high');
+  await act(async()=>resolveTitle({id:'first',workspaceId:'w',title:'修复登录状态丢失',createdAt:'',updatedAt:''}));
+  expect(await screen.findAllByText('修复登录状态丢失')).toHaveLength(2);
+ });
+ it('标题命令失败不会阻止用户首问发送',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_list')return [];
+   if(name==='session_create')return {id:'first',workspaceId:'w',title:'新会话',createdAt:'',updatedAt:''};
+   if(name==='session_title_generate')throw new Error('标题服务不可用');
+   if(name==='session_events')return [];
+   return original(name,args);
+  });
+  render(<App/>);await screen.findByRole('button',{name:'选择项目'});
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'检查构建错误'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('first','检查构建错误','m',expect.any(Function),undefined,'high'));
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+ });
+ it('已有空会话的首问也触发标题生成',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_list')return [{id:'blank',workspaceId:'w',title:'新会话',createdAt:'',updatedAt:''}];
+   if(name==='session_events'&&args.sessionId==='blank')return [];
+   if(name==='session_title_generate')return {id:'blank',workspaceId:'w',title:'空会话首问',createdAt:'',updatedAt:''};
+   return original(name,args);
+  });
+  render(<App/>);await screen.findByRole('button',{name:/新会话/});
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_events',{sessionId:'blank'}));
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'梳理项目入口'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_title_generate',{sessionId:'blank',text:'梳理项目入口',modelId:'m',effort:'high',attachmentNames:[]}));
+  expect(await screen.findAllByText('空会话首问')).toHaveLength(2);
+ });
+ it('有历史用户消息的会话不再生成首次标题',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_list')return [{id:'used',workspaceId:'w',title:'新会话',createdAt:'',updatedAt:''}];
+   if(name==='session_events'&&args.sessionId==='used')return [{id:'old-user',sessionId:'used',seq:'1',kind:'user.message',data:{content:'之前的问题'},createdAt:''}];
+   return original(name,args);
+  });
+  render(<App/>);await screen.findByText('之前的问题');
+  await waitFor(()=>expect(useChat.getState().events.used?.[0]?.kind).toBe('user.message'));
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'后续问题'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('used','后续问题','m',expect.any(Function),undefined,'high'));
+  expect(mocks.command).not.toHaveBeenCalledWith('session_title_generate',expect.anything());
+ });
+ it('会话右键菜单可用 Escape 和点击外部关闭',async()=>{
+  render(<App/>);await screen.findByText('内容 a');
+  fireEvent.contextMenu(screen.getByRole('button',{name:/会话 A/}));
+  expect(await screen.findByRole('menu',{name:'会话操作'})).toBeInTheDocument();
+  fireEvent.keyDown(document,{key:'Escape'});
+  await waitFor(()=>expect(screen.queryByRole('menu',{name:'会话操作'})).not.toBeInTheDocument());
+  fireEvent.contextMenu(screen.getByRole('button',{name:/会话 A/}));
+  expect(await screen.findByRole('menu',{name:'会话操作'})).toBeInTheDocument();
+  fireEvent.mouseDown(document.body);
+  await waitFor(()=>expect(screen.queryByRole('menu',{name:'会话操作'})).not.toBeInTheDocument());
+ });
+ it('会话重命名拒绝空白标题',async()=>{
+  render(<App/>);await screen.findByText('内容 a');
+  fireEvent.contextMenu(screen.getByRole('button',{name:/会话 A/}));
+  fireEvent.click(await screen.findByRole('menuitem',{name:'重命名'}));
+  const dialog=await screen.findByRole('dialog',{name:'重命名会话'});
+  fireEvent.change(screen.getByLabelText('会话名称'),{target:{value:'  '}});
+  fireEvent.click(within(dialog).getByRole('button',{name:'保存'}));
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent('不能为空');
+  expect(mocks.command).not.toHaveBeenCalledWith('session_rename',expect.anything());
+ });
+ it('取消重命名不提交且保留原标题',async()=>{
+  render(<App/>);await screen.findByText('内容 a');
+  fireEvent.contextMenu(screen.getByRole('button',{name:/会话 A/}));
+  fireEvent.click(await screen.findByRole('menuitem',{name:'重命名'}));
+  const dialog=await screen.findByRole('dialog',{name:'重命名会话'});
+  fireEvent.change(screen.getByLabelText('会话名称'),{target:{value:'临时标题'}});
+  fireEvent.click(within(dialog).getByRole('button',{name:'取消'}));
+  expect(mocks.command).not.toHaveBeenCalledWith('session_rename',expect.anything());
+  expect(screen.getByRole('button',{name:/会话 A/})).toBeInTheDocument();
+ });
+ it('重命名保存失败时保留对话框和列表标题',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_rename'?Promise.reject(new Error('存储失败')):original(name,args));
+  render(<App/>);await screen.findByText('内容 a');
+  fireEvent.contextMenu(screen.getByRole('button',{name:/会话 A/}));
+  fireEvent.click(await screen.findByRole('menuitem',{name:'重命名'}));
+  const dialog=await screen.findByRole('dialog',{name:'重命名会话'});
+  fireEvent.change(screen.getByLabelText('会话名称'),{target:{value:'新标题'}});
+  fireEvent.click(within(dialog).getByRole('button',{name:'保存'}));
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent('存储失败');
+  expect(screen.getByRole('button',{name:/会话 A/})).toBeInTheDocument();
+ });
+});
