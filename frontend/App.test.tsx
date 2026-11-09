@@ -60,7 +60,61 @@ describe('聊天交互',()=>{
   expect(screen.getByText('正在检查。')).not.toBeVisible();
  });
  it('发送期间合并增量，结束后读取持久化事件',async()=>{let release!:()=>void;mocks.send.mockImplementation(async(_id:string,_text:string,_model:string,receive:(e:LiveEvent)=>void)=>{receive({type:'delta',sessionId:'a',requestId:'r',index:0,text:'正在输出',reasoning:false});await new Promise<void>(r=>release=r)});render(<App/>);await screen.findByText('内容 a');fireEvent.change(screen.getByLabelText('消息'),{target:{value:'你好'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));await screen.findByText('正在输出');expect(screen.getByRole('button',{name:'取消生成'})).toBeInTheDocument();release();await waitFor(()=>expect(screen.queryByText('正在输出')).not.toBeInTheDocument());expect(mocks.send).toHaveBeenCalledWith('a','你好','m',expect.any(Function),undefined,'high')});
- it('发送错误可见且不插入假成功消息',async()=>{mocks.send.mockRejectedValue(new Error('连接失败'));render(<App/>);await screen.findByText('内容 a');fireEvent.change(screen.getByLabelText('消息'),{target:{value:'请求'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));await screen.findByText('连接失败');expect(screen.getByRole('button',{name:'发送消息'})).toBeInTheDocument()});
+ it('首段输出前显示思考状态，流式内容到达后由其接替',async()=>{
+  let release!:()=>void,receive!:(event:LiveEvent)=>void;
+  mocks.send.mockImplementation(async(_id:string,_text:string,_model:string,onEvent:(event:LiveEvent)=>void)=>{receive=onEvent;await new Promise<void>(resolve=>release=resolve)});
+  render(<App/>);await screen.findByText('内容 a');fireEvent.change(screen.getByLabelText('消息'),{target:{value:'你好'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  expect(await screen.findByRole('status',{name:'正在思考'})).toBeVisible();
+  act(()=>receive({type:'delta',sessionId:'a',requestId:'r',index:0,text:'正在输出',reasoning:false}));
+  expect(screen.getByText('正在输出')).toBeVisible();expect(screen.queryByRole('status',{name:'正在思考'})).not.toBeInTheDocument();
+  await act(async()=>release());await waitFor(()=>expect(screen.queryByRole('status',{name:'正在思考'})).not.toBeInTheDocument());
+ });
+ it('当前会话等待审批时隐藏思考状态',async()=>{
+  const original=mocks.command.getMockImplementation()!;let approvalPending=false,release!:()=>void;
+  mocks.command.mockImplementation(async(name,args)=>name==='approval_list'&&approvalPending?[{id:'approval-1',sessionId:'a',tool:'shell',arguments:{command:'cargo test'},reason:'执行测试'}]:original(name,args));
+  mocks.send.mockImplementation(async()=>new Promise<void>(resolve=>release=resolve));
+  render(<App/>);await screen.findByText('内容 a');fireEvent.change(screen.getByLabelText('消息'),{target:{value:'请求'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  expect(await screen.findByRole('status',{name:'正在思考'})).toBeVisible();approvalPending=true;
+  await screen.findByRole('dialog',{name:'操作需要你的批准'},{timeout:3500});
+  expect(screen.queryByRole('status',{name:'正在思考'})).not.toBeInTheDocument();
+  await act(async()=>release());
+ });
+ it('取消生成后清除思考状态',async()=>{
+  let release!:()=>void;mocks.send.mockImplementation(async()=>new Promise<void>(resolve=>release=resolve));
+  render(<App/>);await screen.findByText('内容 a');fireEvent.change(screen.getByLabelText('消息'),{target:{value:'请求'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  expect(await screen.findByRole('status',{name:'正在思考'})).toBeVisible();fireEvent.click(screen.getByRole('button',{name:'取消生成'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_cancel',{sessionId:'a'}));await act(async()=>release());
+  await waitFor(()=>expect(screen.queryByRole('status',{name:'正在思考'})).not.toBeInTheDocument());
+ });
+ it('send 结束后不在历史事件回读期间重新显示思考状态',async()=>{
+  let releaseSend!:()=>void,releaseRefresh!:(events:SessionEvent[])=>void,eventReads=0;
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_events'&&args.sessionId==='a'&&++eventReads===2)return new Promise(resolve=>releaseRefresh=resolve);
+   return original(name,args);
+  });
+  mocks.send.mockImplementation(async()=>new Promise<void>(resolve=>releaseSend=resolve));
+  render(<App/>);await screen.findByText('内容 a');fireEvent.change(screen.getByLabelText('消息'),{target:{value:'请求'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  expect(await screen.findByRole('status',{name:'正在思考'})).toBeVisible();await act(async()=>releaseSend());await waitFor(()=>expect(releaseRefresh).toBeTypeOf('function'));
+  const visibleWhileHistoryIsLoading=screen.queryByRole('status',{name:'正在思考'})!==null;
+  await act(async()=>releaseRefresh([{id:'end',sessionId:'a',seq:'2',kind:'turn.end',data:{runId:'r',status:'completed'},createdAt:''}]));
+  expect(visibleWhileHistoryIsLoading).toBe(false);expect(screen.queryByRole('status',{name:'正在思考'})).not.toBeInTheDocument();
+ });
+ it('发送错误可见且不插入假成功消息，也不在历史回读期间显示思考状态',async()=>{
+  let rejectSend!:(reason:unknown)=>void,releaseRefresh!:(events:SessionEvent[])=>void,eventReads=0;
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_events'&&args.sessionId==='a'&&++eventReads===2)return new Promise(resolve=>releaseRefresh=resolve);
+   return original(name,args);
+  });
+  mocks.send.mockImplementation(()=>new Promise<void>((_resolve,reject)=>rejectSend=reject));
+  render(<App/>);await screen.findByText('内容 a');fireEvent.change(screen.getByLabelText('消息'),{target:{value:'请求'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  expect(await screen.findByRole('status',{name:'正在思考'})).toBeVisible();await act(async()=>rejectSend(new Error('连接失败')));await screen.findByText('连接失败');
+  await waitFor(()=>expect(releaseRefresh).toBeTypeOf('function'));
+  const visibleWhileHistoryIsLoading=screen.queryByRole('status',{name:'正在思考'})!==null;
+  await act(async()=>releaseRefresh([{id:'end',sessionId:'a',seq:'2',kind:'turn.end',data:{runId:'r',status:'error'},createdAt:''}]));
+  expect(visibleWhileHistoryIsLoading).toBe(false);expect(screen.queryByRole('status',{name:'正在思考'})).not.toBeInTheDocument();expect(screen.getByRole('button',{name:'发送消息'})).toBeInTheDocument();
+ });
  it('审批通过传递真实请求id',async()=>{const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name,args)=>name==='approval_list'?[{id:'approval-1',sessionId:'a',tool:'shell',arguments:{command:'cargo test'},reason:'执行测试'}]:original(name,args));render(<App/>);await screen.findByRole('dialog',{name:'操作需要你的批准'});fireEvent.click(screen.getByRole('button',{name:'批准此次操作'}));await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('approval_resolve',{id:'approval-1',allow:true}))});
  it('权限模式选择器加载默认档并对当前会话保存切换',async()=>{render(<App/>);await screen.findByText('内容 a');const selector=screen.getByLabelText('权限模式');expect(selector).toHaveValue('ask');fireEvent.change(selector,{target:{value:'auto'}});await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('approval_mode_save',{mode:'auto',sessionId:'a'}));expect(screen.getByLabelText('权限模式')).toHaveValue('auto')});
  it('权限模式提供五档选项',async()=>{render(<App/>);await screen.findByText('内容 a');const selector=screen.getByLabelText('权限模式');const values=Array.from(selector.querySelectorAll('option')).map(o=>o.value);expect(values).toEqual(['ask','edit','guarded','auto','never'])});
