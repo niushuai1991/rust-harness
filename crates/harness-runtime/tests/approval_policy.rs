@@ -205,6 +205,10 @@ async fn agent_spawn_inherits_parent_policy() {
         answers: Mutex::new(VecDeque::from([
             call("c1", "agent_spawn", json!({"task":"子任务"})),
             ModelAnswer::default(),
+            // 不传 modelId 时子代理复用父 provider：父会话第 2 轮与子代理第 1 轮
+            // 共产生 3 次 complete，两者竞争最后一个应答，CI 慢机时序下父会话
+            // 可能从空队列 pop 而报 FIXTURE 错。
+            ModelAnswer::default(),
         ])),
     });
     tokio::time::timeout(
