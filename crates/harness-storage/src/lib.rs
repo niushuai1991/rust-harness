@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 /// 会话列表「项目」视图置顶工作区集合的 settings KV 键。
 pub const PINNED_WORKSPACES_KEY: &str = "workspace.pinned.v1";
 fn db_error(e: impl std::fmt::Display) -> AppError {
@@ -129,6 +129,37 @@ impl Store {
                 .map_err(db_error)?;
             tx.commit().await.map_err(db_error)?;
         }
+        if version <= 2 {
+            let mut tx = pool.begin().await.map_err(db_error)?;
+            for sql in [
+                "CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,workspace_id TEXT NOT NULL,title TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS events(session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,seq INTEGER NOT NULL,id TEXT NOT NULL UNIQUE,kind TEXT NOT NULL,data TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(session_id,seq))",
+                "CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL)",
+                "CREATE VIRTUAL TABLE IF NOT EXISTS message_search USING fts5(session_id UNINDEXED,content,tokenize='unicode61')",
+            ] {
+                sqlx::query(sql).execute(&mut *tx).await.map_err(db_error)?;
+            }
+            sqlx::query(
+                "ALTER TABLE sessions ADD COLUMN title_state TEXT NOT NULL DEFAULT 'manual'",
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
+            sqlx::query(
+                "UPDATE sessions SET title_state='default' \
+                 WHERE title='新会话' AND NOT EXISTS (\
+                    SELECT 1 FROM events WHERE events.session_id=sessions.id AND kind='user.message'\
+                 )",
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
+            sqlx::query("PRAGMA user_version = 3")
+                .execute(&mut *tx)
+                .await
+                .map_err(db_error)?;
+            tx.commit().await.map_err(db_error)?;
+        }
         let artifact_dir = path.parent().unwrap_or(Path::new(".")).join("artifacts");
         std::fs::create_dir_all(&artifact_dir).map_err(db_error)?;
         Ok(Self { pool, artifact_dir })
@@ -141,6 +172,11 @@ impl Store {
                 "工作区不能为空，标题不得超过512字节",
             ));
         }
+        let title_state = if title == "新会话" {
+            "default"
+        } else {
+            "manual"
+        };
         let s = SessionInfo {
             id: new_id(),
             workspace_id: workspace.into(),
@@ -149,19 +185,20 @@ impl Store {
             updated_at: now(),
             parent_id: None,
         };
-        sqlx::query("INSERT INTO sessions VALUES(?,?,?,?,?)")
+        sqlx::query("INSERT INTO sessions(id,workspace_id,title,created_at,updated_at,title_state) VALUES(?,?,?,?,?,?)")
             .bind(&s.id)
             .bind(&s.workspace_id)
             .bind(&s.title)
             .bind(&s.created_at)
             .bind(&s.updated_at)
+            .bind(title_state)
             .execute(&self.pool)
             .await
             .map_err(db_error)?;
         Ok(s)
     }
     pub async fn session(&self, id: &str) -> AppResult<SessionInfo> {
-        sqlx::query("SELECT * FROM sessions WHERE id=?")
+        sqlx::query("SELECT id,workspace_id,title,created_at,updated_at FROM sessions WHERE id=?")
             .bind(id)
             .fetch_optional(&self.pool)
             .await
@@ -169,9 +206,61 @@ impl Store {
             .map(|r| session_row(&r))
             .ok_or_else(|| AppError::new("NOT_FOUND", "会话不存在"))
     }
+    pub async fn session_title_auto_pending(&self, id: &str) -> AppResult<bool> {
+        let state: Option<String> =
+            sqlx::query_scalar("SELECT title_state FROM sessions WHERE id=?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(db_error)?;
+        state
+            .map(|state| state == "default")
+            .ok_or_else(|| AppError::new("NOT_FOUND", "会话不存在"))
+    }
+    pub async fn rename_session(&self, id: &str, title: &str) -> AppResult<SessionInfo> {
+        let title = title.trim();
+        if title.is_empty() || title.len() > 512 {
+            return Err(AppError::new(
+                "INVALID_INPUT",
+                "会话标题不能为空，且不得超过512字节",
+            ));
+        }
+        let result = sqlx::query("UPDATE sessions SET title=?,title_state='manual' WHERE id=?")
+            .bind(title)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(db_error)?;
+        if result.rows_affected() == 0 {
+            return Err(AppError::new("NOT_FOUND", "会话不存在"));
+        }
+        self.session(id).await
+    }
+    pub async fn set_generated_title(&self, id: &str, title: &str) -> AppResult<SessionInfo> {
+        let title = title.trim();
+        if title.is_empty() || title.len() > 512 {
+            return Err(AppError::new(
+                "INVALID_INPUT",
+                "会话标题不能为空，且不得超过512字节",
+            ));
+        }
+        let result = sqlx::query(
+            "UPDATE sessions SET title=?,title_state='generated' WHERE id=? AND title_state='default'",
+        )
+        .bind(title)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        if result.rows_affected() == 0 {
+            return self.session(id).await;
+        }
+        self.session(id).await
+    }
     pub async fn sessions(&self, workspace: Option<&str>) -> AppResult<Vec<SessionInfo>> {
         let rows = sqlx::query(
-            "SELECT * FROM sessions WHERE (? IS NULL OR workspace_id=?) ORDER BY updated_at DESC",
+            "SELECT id,workspace_id,title,created_at,updated_at FROM sessions \
+             WHERE (? IS NULL OR workspace_id=?) ORDER BY updated_at DESC",
         )
         .bind(workspace)
         .bind(workspace)
@@ -383,7 +472,7 @@ impl Store {
             parent_id: None,
         };
         let mut tx = self.pool.begin().await.map_err(db_error)?;
-        sqlx::query("INSERT INTO sessions VALUES(?,?,?,?,?)")
+        sqlx::query("INSERT INTO sessions(id,workspace_id,title,created_at,updated_at,title_state) VALUES(?,?,?,?,?,'manual')")
             .bind(&session.id)
             .bind(&session.workspace_id)
             .bind(&session.title)

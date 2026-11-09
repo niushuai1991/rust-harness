@@ -1,8 +1,8 @@
 # 会话列表「最近 / 项目」视图规范（参考 zcode）
 
-- 日期：2026-11-08（计划拟制）；2026-11-09 修订（侧栏会话入口重整）
+- 日期：2026-11-08（计划拟制）；2026-11-09 修订（侧栏会话入口重整、标题生成与重命名）
 - 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
-- 范围：桌面侧栏任务列表的两种显示模式（按最近 / 按项目）、项目置顶持久化、标题搜索过滤与跨工作区会话跳转；不改变会话数据模型与同步语义。
+- 范围：桌面侧栏任务列表的两种显示模式（按最近 / 按项目）、项目置顶持久化、标题搜索过滤、跨工作区会话跳转、首问标题生成与会话重命名；不改变公开会话字段与跨端同步语义。
 
 ## 背景与痛点
 
@@ -42,15 +42,24 @@
 
 - 侧栏搜索框对会话标题做本地大小写不敏感过滤，两种视图共用；无匹配时显示空态文案。
 
+### 标题生成与重命名
+
+- 桌面端首条用户消息发送时，使用当前模型与推理档位异步生成简短标题，并与首轮回复并行；独立标题请求不写入会话事件或上下文。标题生成不可用、超时或返回空内容时，用首条消息的首个非空行作标题；纯附件消息用首个附件文件名作标题。
+- 新建占位标题的状态存 SQLite `sessions.title_state`：`default` 可自动生成，`generated` 已自动命名，`manual` 已手动命名。自动写入仅在状态仍为 `default` 时成功；重命名立即设为 `manual`，因此用户标题优先于并发中的生成任务。
+- SQLite schema v3 从 v2 迁移：仅将标题仍为「新会话」且没有 `user.message` 事件的旧记录标记为 `default`，其他旧记录设为 `manual`；公开 `SessionInfo` 结构保持不变。
+- 最近与项目两种视图中的会话行均支持右键菜单「重命名」；对话框预填现标题。`session_rename { sessionId, title }` 去除首尾空白，空白标题无效，标题沿用 512 字节上限，成功后返回更新的 `SessionInfo`。
+- `session_title_generate { sessionId, text, modelId, effort, attachmentNames }` 返回最终 `SessionInfo`；标题命令失败不影响消息发送。标题生成与重命名只影响桌面端界面，不扩展 CLI / JSON-RPC / ACP 标题行为。
+
 ## 非目标
 
-- 不做会话移动 / 重命名等写操作；不改变会话存储结构与同步语义。
+- 不做会话移动；不改变公开会话字段与跨端同步语义。
 - 不接入 FTS 全文检索（`session_search` 留待后续叠加）。
 - CLI / JSON-RPC / ACP 不暴露视图与置顶概念（置顶是桌面端用户偏好，不进入工作区记录）。
 
 ## 验证
 
 - `harness-storage`：置顶集合读写、重开持久化与去重（`tests/workspace_pins.rs`）。
+- `harness-storage`：v2→v3 标题状态迁移、占位标题识别、手动重命名校验与自动标题条件更新（`tests/session_titles.rs`）。
 - `sessionList` 纯函数：时间分组、相对时间标签、标题过滤、项目分组与置顶排序（`frontend/sessionList.test.ts`）。
-- `App`：最近 / 项目切换、置顶命令调用与组间排序、置顶失败回滚、搜索过滤与空态、侧栏会话入口（新建聊天按钮、项目组头新建、无工作区下拉框、迟到创建并入侧栏）（`frontend/App.test.tsx`）。
+- `App`：最近 / 项目切换、置顶命令调用与组间排序、置顶失败回滚、搜索过滤与空态、侧栏会话入口、首问标题并行生成、右键重命名与菜单关闭、手动标题优先（`frontend/App.test.tsx`）。
 - 提交前运行 `cargo fmt --check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test --all-features`、`cargo build --all-features` 与 `npm test`。
