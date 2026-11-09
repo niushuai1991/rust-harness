@@ -191,6 +191,7 @@ impl McpManager {
         Ok(ToolResult {
             content: serde_json::to_string(&result.content).map_err(fail)?,
             is_error: result.is_error.unwrap_or(false),
+            diff: None,
         })
     }
     pub async fn list_resources(&self, id: &str) -> AppResult<Value> {

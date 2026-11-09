@@ -37,16 +37,17 @@ pub fn sides(change: &FileChange) -> Result<(String, String), Binary> {
     }
 }
 
-/// 渲染单文件 unified diff；文本缺失或超过字节阈值返回 None（调用方显示哈希提示）。
-pub fn render(change: &FileChange, color: bool) -> Option<String> {
-    let (before, after) = sides(change).ok()?;
+/// 渲染两段文本的 unified diff（edit/write 工具结果展示用）；before 为 None 表示新建文件。
+/// 超过字节阈值返回 None；输出与 render 同样受 MAX_DIFF_LINES 截断。
+pub fn from_texts(path: &str, before: Option<&str>, after: &str) -> Option<String> {
+    let before = before.unwrap_or("");
     if before.len() > MAX_DIFF_BYTES || after.len() > MAX_DIFF_BYTES {
         return None;
     }
-    let text_diff = TextDiff::from_lines(&before, &after);
+    let text_diff = TextDiff::from_lines(before, after);
     let mut diff = text_diff.unified_diff();
     diff.context_radius(3);
-    diff.header(&change.path, &change.path);
+    diff.header(path, path);
     let text = diff.to_string();
     let truncated_at_end = text.lines().count() > MAX_DIFF_LINES;
     let truncated: Vec<&str> = text.lines().take(MAX_DIFF_LINES).collect();
@@ -55,10 +56,14 @@ pub fn render(change: &FileChange, color: bool) -> Option<String> {
     if truncated_at_end {
         out.push_str(&format!("…（diff 超过 {MAX_DIFF_LINES} 行，已截断显示）\n"));
     }
-    if color {
-        out = colorize(&out);
-    }
     Some(out)
+}
+
+/// 渲染单文件 unified diff；文本缺失或超过字节阈值返回 None（调用方显示哈希提示）。
+pub fn render(change: &FileChange, color: bool) -> Option<String> {
+    let (before, after) = sides(change).ok()?;
+    let out = from_texts(&change.path, Some(&before), &after)?;
+    Some(if color { colorize(&out) } else { out })
 }
 
 fn colorize(diff: &str) -> String {
@@ -168,5 +173,29 @@ mod tests {
         let colored = render(&change("added", None, Some("x"), false), true).unwrap();
         assert!(!plain.contains('\x1b'));
         assert!(colored.contains("\x1b[32m+x\x1b[0m"));
+    }
+
+    #[test]
+    fn from_texts_renders_modified_and_added() {
+        let modified = from_texts("a.txt", Some("old\n"), "new\n").unwrap();
+        assert!(modified.contains("--- a.txt"));
+        assert!(modified.contains("-old"));
+        assert!(modified.contains("+new"));
+        assert!(modified.contains("@@"));
+        let added = from_texts("b.txt", None, "fresh\n").unwrap();
+        assert!(added.contains("--- b.txt"));
+        assert!(added.lines().any(|line| line.starts_with("+fresh")));
+        assert!(
+            !added
+                .lines()
+                .any(|line| line.starts_with('-') && !line.starts_with("---")),
+            "新增文件不应有删除行"
+        );
+    }
+
+    #[test]
+    fn from_texts_skips_oversize_input() {
+        let huge = "x".repeat(MAX_DIFF_BYTES + 1);
+        assert!(from_texts("a.txt", Some("x"), &huge).is_none());
     }
 }

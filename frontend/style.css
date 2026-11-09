@@ -288,3 +288,25 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 @media(prefers-reduced-motion:reduce){.usage-ring-pop{animation:none}}
 
 .thinking-line{display:flex;align-items:center;gap:6px;color:#8b987f;font-size:12px;line-height:1.7}.thinking-dots{display:inline-flex;align-items:center;gap:4px;height:14px}.thinking-dots i{width:5px;height:5px;border-radius:50%;background:#8fa477;animation:thinking-bounce 1.2s ease-in-out infinite}.thinking-dots i:nth-child(2){animation-delay:.15s}.thinking-dots i:nth-child(3){animation-delay:.3s}@keyframes thinking-bounce{0%,60%,100%{opacity:.38;transform:translateY(0)}30%{opacity:1;transform:translateY(-3px)}}
+
+/* edit/write 文件工具行（对齐 zcode）：调用一行；结果卡展开行级差异 */
+.tool-row{display:flex;align-items:center;gap:9px;margin:12px 0 12px 46px;padding:8px 14px;border:1px solid #e0e6d8;border-radius:8px;background:#fafbf7;color:#6f8064;font-size:11px;overflow:hidden}
+.tool-row svg{flex-shrink:0;color:#8a9687}
+.turn-details .tool-row{margin-left:0}
+.ft-label{font-weight:600;color:#5c6b55;flex-shrink:0}
+.ft-dir{color:#8b9788;font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tool-row .file-chip{flex-shrink:0}
+.file-tool summary{align-items:center}
+.file-tool summary span{margin-left:0}
+.file-tool summary .tool-stats{margin-left:auto;flex-shrink:0}
+.file-tool summary .ft-status{flex-shrink:0;font-size:10px}
+.ft-status.is-error{color:#a53e3a;text-decoration:underline dotted #cf9d92;text-underline-offset:3px}
+.file-tool summary .chev{color:#8a9687;flex-shrink:0;opacity:0;transform:rotate(0deg);transition:opacity .15s,transform .18s}
+.file-tool summary:hover .chev,.file-tool[open] summary .chev{opacity:1}
+.file-tool[open] summary .chev{transform:rotate(90deg)}
+@media(hover:none){.file-tool summary .chev{opacity:.55}}
+.tool-stats{display:inline-flex;gap:7px;font-family:"Cascadia Code",Consolas,monospace;font-size:11.5px;font-variant-numeric:tabular-nums}
+.st-add{color:#2e7d3c;font-weight:500}
+.st-del{color:#b0452f;font-weight:500}
+.tool-diff{margin:0 14px 12px;border:1px solid #eef1ea;border-radius:7px;background:#fcfdfa;max-height:260px;overflow:auto}
+.tool-diff .diff-body{border-top:0}

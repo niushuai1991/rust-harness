@@ -285,6 +285,7 @@ impl ExternalTool for Tool {
             content: serde_json::to_string(&outcome)
                 .map_err(|e| AppError::new("INTERNAL", e.to_string()))?,
             is_error: false,
+            diff: None,
         })
     }
 }
