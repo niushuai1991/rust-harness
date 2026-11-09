@@ -65,12 +65,16 @@ export default function App(){
  const [pluginRevision,setPluginRevision]=useState(0);
  const [attachments,setAttachments]=useState<ArtifactMetadata[]>([]),[importing,setImporting]=useState(false);
  const [plusOpen,setPlusOpen]=useState(false);
+ // 新会话草稿态：点「新建聊天」不立即创建会话，composer 上方项目 chip 选定落点，发送首条消息时才真正 session_create。
+ const [drafting,setDrafting]=useState(false),[draftWorkspaceId,setDraftWorkspaceId]=useState<string|null>(null);
+ const [pjMenuOpen,setPjMenuOpen]=useState(false),[pjQuery,setPjQuery]=useState('');
  // 工作区命名弹窗：create=打开工作区时命名（留空用目录名），rename=项目重命名。
  const [wsDialog,setWsDialog]=useState<{mode:'create';path:string;name:string}|{mode:'rename';id:string;name:string}|null>(null);
  // 模型浮层卡片与切换标记（仅内存：切换模型在会话流里的临时提示，不落库）。
  const [modelMenuOpen,setModelMenuOpen]=useState(false);
  const [modelNotes,setModelNotes]=useState<{sessionId:string;text:string}[]>([]);
  useEffect(()=>{if(!plusOpen)return;const close=(e:MouseEvent)=>{if(!(e.target as Element|null)?.closest?.('.composer-plus-wrap'))setPlusOpen(false)};const esc=(e:KeyboardEvent)=>{if(e.key==='Escape')setPlusOpen(false)};document.addEventListener('mousedown',close);document.addEventListener('keydown',esc);return()=>{document.removeEventListener('mousedown',close);document.removeEventListener('keydown',esc)}},[plusOpen]);
+ useEffect(()=>{if(!pjMenuOpen)return;const close=(e:MouseEvent)=>{if(!(e.target as Element|null)?.closest?.('.chip-row'))setPjMenuOpen(false)};const esc=(e:KeyboardEvent)=>{if(e.key==='Escape')setPjMenuOpen(false)};document.addEventListener('mousedown',close);document.addEventListener('keydown',esc);return()=>{document.removeEventListener('mousedown',close);document.removeEventListener('keydown',esc)}},[pjMenuOpen]);
  const attachmentEpoch=useRef(0),activeSessionId=useRef(sessionId);activeSessionId.current=sessionId;
  const pendingJump=useRef('');
  useEffect(()=>{attachmentEpoch.current++;setAttachments([]);setImporting(false)},[sessionId,workspaceId]);
@@ -85,6 +89,8 @@ export default function App(){
  const workspace=workspaces.find(w=>w.id===workspaceId),session=sessions.find(s=>s.id===sessionId);
  const visibleSessions=useMemo(()=>filterByTitle(allSessions,query),[allSessions,query]);
  const projectName=(id:string)=>workspaces.find(x=>x.id===id)?.name??'';
+ // 项目 chip 菜单候选：按搜索词过滤，置顶项目排前，其余按名称排序。
+ const pjCandidates=useMemo(()=>[...workspaces].filter(ws=>{const q=pjQuery.trim().toLowerCase();return !q||ws.name.toLowerCase().includes(q)}).sort((a,b)=>(b.pinned?1:0)-(a.pinned?1:0)||a.name.localeCompare(b.name)),[workspaces,pjQuery]);
  const slashToken=commandTokenUnderCursor(text,cursor);
  const activeSlash=slashToken&&slashToken!==dismissedToken&&sessionId&&!sessionBusy?(()=>{const items=filterSlashCommands(slashToken);return items.length?{token:slashToken,items}:null})():null;
  const skillToken=useMemo(()=>sessionId&&!sessionBusy?skillTokenUnderCursor(text,cursor):null,[text,cursor,sessionId,sessionBusy]);
@@ -110,27 +116,26 @@ export default function App(){
   const token=++generation.current,targetWorkspaceId=workspaceId;
   let disposed=false;
   const current=()=>!disposed&&token===generation.current&&activeWorkspaceId.current===targetWorkspaceId;
-  setSessions([]);setSessionId('');setText('');setSessionBusy(!!targetWorkspaceId);setError('');
-  if(!targetWorkspaceId)return;
+  setSessions([]);setSessionId('');setText('');setSessionBusy(false);setError('');
+  if(!targetWorkspaceId){setDrafting(false);setDraftWorkspaceId(null);return}
   void (async()=>{
    try{
     // 侧栏「最近 / 项目」视图需要跨工作区会话；当前工作区列表由全量过滤派生。
     const full=await command<SessionInfo[]>('session_list',{workspaceId:targetWorkspaceId,allWorkspaces:true});
     if(!current())return;
     setAllSessions(full);
-    let list=full.filter(s=>s.workspaceId===targetWorkspaceId);
+    const list=full.filter(s=>s.workspaceId===targetWorkspaceId);
     if(!list.length){
-     const created=await createSessionFor(targetWorkspaceId);
-     setAllSessions(old=>[created,...old.filter(s=>s.id!==created.id)]);
-     if(!current())return;
-     list=[created];
+     // 无会话的工作区进入草稿态：不自动创建，发送首条消息时才落库。
+     setDrafting(true);setDraftWorkspaceId(targetWorkspaceId);
+     return;
     }
+    setDrafting(false);setDraftWorkspaceId(null);
     setSessions(list);
     const jump=pendingJump.current;
     if(jump&&list.some(s=>s.id===jump)){pendingJump.current='';setSessionId(jump)}
     else setSessionId(list[0]?.id??'');
    }catch(e){if(current())setError(errorText(e))}
-   finally{if(current())setSessionBusy(false)}
   })();
   return()=>{disposed=true};
  },[workspaceId]);
@@ -172,19 +177,25 @@ export default function App(){
   void request.then(cleanup,cleanup);
   return request;
  }
- async function newSession(){
-  if(!workspaceId||sessionBusy)return;
-  const targetWorkspaceId=workspaceId,token=generation.current;
-  const current=()=>token===generation.current&&activeWorkspaceId.current===targetWorkspaceId;
-  setSessionBusy(true);setError('');
-  try{const s=await createSessionFor(targetWorkspaceId);setAllSessions(old=>[s,...old.filter(item=>item.id!==s.id)]);if(!current())return;setSessions(old=>[s,...old.filter(item=>item.id!==s.id)]);setSessionId(s.id);setText('')}
-  catch(e){if(current())setError(errorText(e))}
-  finally{if(current())setSessionBusy(false)}
+ // 新建聊天：进入草稿态（不立即创建会话），落点默认当前项目，自动弹出项目菜单供切换或新建项目。
+ function newSession(){
+  if(sessionBusy)return;
+  setDrafting(true);setDraftWorkspaceId(workspaceId||null);
+  setSessionId('');setText('');
+  setPjQuery('');setPjMenuOpen(true);
  }
- // 项目组头新建聊天：非当前项目先为该项目创建会话，再经 pendingJump 切换工作区并定位到新会话。
+ // 项目组头新建聊天：始终直接创建（组头已显式指定落点项目）；非当前项目创建后经 pendingJump 切换定位。
  async function newSessionIn(targetWorkspaceId:string){
   if(!targetWorkspaceId||sessionBusy)return;
-  if(targetWorkspaceId===workspaceId){await newSession();return}
+  const token=generation.current;
+  const current=()=>token===generation.current&&activeWorkspaceId.current===targetWorkspaceId;
+  if(targetWorkspaceId===workspaceId){
+   setSessionBusy(true);setError('');setDrafting(false);setDraftWorkspaceId(null);
+   try{const s=await createSessionFor(targetWorkspaceId);setAllSessions(old=>[s,...old.filter(item=>item.id!==s.id)]);if(!current())return;setSessions(old=>[s,...old.filter(item=>item.id!==s.id)]);setSessionId(s.id);setText('')}
+   catch(e){if(current())setError(errorText(e))}
+   finally{if(current())setSessionBusy(false)}
+   return;
+  }
   await attempt(async()=>{
    const s=await createSessionFor(targetWorkspaceId);
    pendingJump.current=s.id;
@@ -231,8 +242,33 @@ export default function App(){
   if(sessionId)setApprovalOverrides(old=>({...old,[sessionId]:mode}));
   void attempt(async()=>{await command('approval_mode_save',{mode,sessionId:sessionId||null})});
  }
- async function dispatchText(input:string,hashes:string[]){const id=sessionId;setRunning(old=>({...old,[id]:true}));await attempt(async()=>{if(hashes.length)await send(id,input,modelId,useChat.getState().receive,hashes,effort);else await send(id,input,modelId,useChat.getState().receive,undefined,effort)});useChat.getState().clearStream(id);try{useChat.getState().replace(id,await command<SessionEvent[]>('session_events',{sessionId:id}))}catch(e){setError(errorText(e))}setRunning(old=>({...old,[id]:false}))}
- async function submit(e:FormEvent){e.preventDefault();if(sessionBusy||importing||!sessionId||(!text.trim()&&!attachments.length)||running[sessionId]||!modelId)return;const expanded=expandSlashPrompt(text);if(expanded?.kind==='usage'){setNotice(expanded.name==='plan'?PLAN_USAGE:GOAL_USAGE);return}const hashes=attachments.map(a=>a.hash);setText('');setAttachments([]);await dispatchText(expanded?expanded.text:text,hashes)}
+ async function dispatchText(id:string,input:string,hashes:string[]){setRunning(old=>({...old,[id]:true}));await attempt(async()=>{if(hashes.length)await send(id,input,modelId,useChat.getState().receive,hashes,effort);else await send(id,input,modelId,useChat.getState().receive,undefined,effort)});useChat.getState().clearStream(id);try{useChat.getState().replace(id,await command<SessionEvent[]>('session_events',{sessionId:id}))}catch(e){setError(errorText(e))}setRunning(old=>({...old,[id]:false}))}
+ async function submit(e:FormEvent){
+  e.preventDefault();
+  if(sessionBusy||importing||(!text.trim()&&!attachments.length)||running[sessionId]||!modelId)return;
+  const expanded=expandSlashPrompt(text);
+  if(expanded?.kind==='usage'){setNotice(expanded.name==='plan'?PLAN_USAGE:GOAL_USAGE);return}
+  const input=expanded?expanded.text:text,hashes=attachments.map(a=>a.hash);
+  if(sessionId){setText('');setAttachments([]);await dispatchText(sessionId,input,hashes);return}
+  // 草稿态：发送首条消息时才创建会话；落点项目非当前工作区时经 pendingJump 切换定位。
+  if(!drafting||draftWorkspaceId===null)return;
+  const target=draftWorkspaceId,fromWorkspace=workspaceId,fromSession=sessionId;
+  setSessionBusy(true);setError('');
+  try{
+   const s=await createSessionFor(target);
+   setAllSessions(old=>[s,...old.filter(item=>item.id!==s.id)]);
+   setDrafting(false);setDraftWorkspaceId(null);
+   setText('');setAttachments([]);
+   // 迟到守卫：发送期间用户已切走（换会话/换工作区）则不再抢占 UI，消息仍归档到新会话。
+   // 经 ref 读实时值（闭包快照恒等于 from*，守不住 await 期间的切换）。
+   if(activeWorkspaceId.current===fromWorkspace&&activeSessionId.current===fromSession){
+    if(target!==fromWorkspace){pendingJump.current=s.id;setWorkspaceId(target)}
+    else{setSessions(old=>[s,...old.filter(item=>item.id!==s.id)]);setSessionId(s.id)}
+   }
+   await dispatchText(s.id,input,hashes);
+  }catch(err){setError(errorText(err))}
+  finally{setSessionBusy(false)}
+ }
  // 加号菜单中的计划/目标项：只插入斜杠命令，参数由用户补齐后经 submit 展开为预置提示词。
  function insertPlusCommand(name:'plan'|'goal'){setPlusOpen(false);const next=`/${name} `;setText(next);setCursor(next.length);setDismissedToken('');textareaRef.current?.focus();requestAnimationFrame(()=>{textareaRef.current?.setSelectionRange(next.length,next.length)})}
  function applyCompletion(spec:SlashSpec,token:string){const rest=text.slice(token.length);const next=`/${spec.name}${rest||' '}`;setText(next);setCursor(next.length);setDismissedToken('');requestAnimationFrame(()=>{textareaRef.current?.setSelectionRange(next.length,next.length)})}
@@ -241,17 +277,17 @@ export default function App(){
  async function executeSlash(spec:SlashSpec){
   setText('');setCursor(0);setDismissedToken('');
   if(spec.name==='help'){setNotice(`可用命令：${SLASH_COMMANDS.map(item=>`/${item.name}（${item.description}）`).join('、')}。输入 / 唤出补全。`);return}
-  if(spec.name==='status'){setNotice(`会话 ${sessionId} · 模型 ${models.find(item=>item.id===modelId)?.name??modelId} · 工作副本已隔离，改动需审阅后同步。`);return}
+  if(spec.name==='status'){setNotice(`会话 ${sessionId||'（新会话草稿）'} · 模型 ${models.find(item=>item.id===modelId)?.name??modelId} · 工作副本已隔离，改动需审阅后同步。`);return}
   if(spec.name==='model'){setModelMenuOpen(true);return}
   if(spec.name==='diff'){useSidePanel.getState().openChanges();return}
   if(spec.name==='plan'||spec.name==='goal'){setNotice(spec.name==='plan'?PLAN_USAGE:GOAL_USAGE);return}
   if(spec.name==='clear'){await newSession();return}
   if(!sessionId||sessionBusy||running[sessionId]||!modelId)return;
-  if(spec.name==='init'){await dispatchText(INIT_PROMPT,[]);setNotice('已发起 AGENTS.md 生成；完成后用“查看更改”审阅并同步到原项目。');return}
+  if(spec.name==='init'){await dispatchText(sessionId,INIT_PROMPT,[]);setNotice('已发起 AGENTS.md 生成；完成后用“查看更改”审阅并同步到原项目。');return}
   if(spec.name==='compact'){setNotice('正在压缩会话历史……');await attempt(async()=>{await command('session_compact',{sessionId,modelId,effort});useChat.getState().replace(sessionId,await command<SessionEvent[]>('session_events',{sessionId}));setNotice('历史已压缩为摘要，后续回合将基于摘要继续。')});return}
  }
  async function cancel(){await attempt(()=>command('session_cancel',{sessionId}))}
- async function openSession(id:string){if(!workspaceId||id===sessionId)return;await attempt(async()=>{let target=sessions.find(s=>s.id===id);if(!target){target=(await command<SessionInfo[]>('session_list',{workspaceId})).find(s=>s.id===id)}if(!target)return;if(target.workspaceId!==workspaceId)throw new Error('子会话不属于当前工作区。');setSessions(old=>old.some(s=>s.id===target!.id)?old:[target!,...old]);setSessionId(target.id);setText('')})}
+ async function openSession(id:string){if(!workspaceId||id===sessionId)return;await attempt(async()=>{let target=sessions.find(s=>s.id===id);if(!target){target=(await command<SessionInfo[]>('session_list',{workspaceId})).find(s=>s.id===id)}if(!target)return;if(target.workspaceId!==workspaceId)throw new Error('子会话不属于当前工作区。');setSessions(old=>old.some(s=>s.id===target!.id)?old:[target!,...old]);setSessionId(target.id);setDrafting(false);setDraftWorkspaceId(null);setText('')})}
  function openFromPanel(id:string,workspace:string){setPanel(null);if(workspace===workspaceId){void openSession(id);return}pendingJump.current=id;setWorkspaceId(workspace)}
  // 侧栏跨工作区点击：同工作区直接打开，跨工作区先切工作区再经 pendingJump 跳转。
  function openFromSidebar(s:SessionInfo){if(s.workspaceId===workspaceId){void openSession(s.id);setText('');return}openFromPanel(s.id,s.workspaceId)}
@@ -269,7 +305,7 @@ export default function App(){
  return <div className="app">
   <aside className="sidebar">
    <div className="brand"><span className="brand-mark"><Terminal size={23}/></span><span>Rust Harness<small>你的本地开发搭档</small></span><span className="version">α</span></div>
-   <button className="new-chat" title="新建聊天" onClick={newSession} disabled={!workspaceId||sessionBusy}><Plus size={16}/><span>新建聊天</span></button>
+   <button className="new-chat" title="新建聊天" onClick={newSession} disabled={sessionBusy}><Plus size={16}/><span>新建聊天</span></button>
    <div className="session-search"><Search size={14} aria-hidden="true"/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="搜索会话…" aria-label="搜索会话"/></div>
    <div className="section-label"><span>任务列表</span><span className="label-spacer"/><button type="button" role="switch" aria-checked={viewMode==='project'} aria-label="切换视图：最近 / 项目" className="view-switch" onClick={()=>chooseView(viewMode==='recent'?'project':'recent')}><span className="knob" aria-hidden="true"/><span className="sw-label a" aria-hidden="true">最近</span><span className="sw-label b" aria-hidden="true">项目</span></button></div>
    <nav className="sessions">
@@ -293,15 +329,15 @@ export default function App(){
    </nav>
    <div className="sidebar-bottom"><div className="local-badge"><i className="live-dot"/> 本地优先 · 无遥测</div><button onClick={()=>setPanel('plans')}><Target size={17}/>计划与目标</button><button onClick={()=>setPanel('presets')}><Bookmark size={17}/>能力预设</button><button onClick={()=>setPanel('skills')}><Sparkles size={17}/>技能</button><button onClick={()=>setPanel('automations')}><Timer size={17}/>自动化{automationCount!==null&&<span className="count">{automationCount}</span>}</button><button onClick={()=>setPanel('plugins')}><Unplug size={17}/>插件与权限</button><button onClick={()=>setPanel('models')}><Settings2 size={17}/>模型设置 <span className="count">{models.length}</span></button></div>
   </aside>
-  <main className="main"><header className="topbar"><div className="breadcrumb"><Folder size={15}/>{workspace?workspace.name:'工作台'}<span>/</span><strong>{session?.title??'新的可能，从这里开始'}</strong></div><div className="toolbar"><button className="icon-button" title="导出会话" aria-label="导出会话" disabled={!sessionId} onClick={exportSession}><Download size={17}/></button><button className="soft" aria-expanded={panel==='tasks'} aria-controls="task-popover" onClick={()=>setPanel(p=>p==='tasks'?null:'tasks')} disabled={!sessionId}><ListTodo size={16}/>后台任务{taskCount>0&&<span className="count">{taskCount}</span>}</button><button className="soft" aria-expanded={sideOpen} onClick={()=>useSidePanel.getState().toggle()} disabled={!workspaceId}><GitCompareArrows size={16}/>查看更改</button>{panel==='tasks'&&sessionId&&<BackgroundTasksPanel sessionId={sessionId} onClose={()=>setPanel(null)}/>}</div></header>
+  <main className="main"><header className="topbar"><div className="breadcrumb"><Folder size={15}/>{workspace?workspace.name:'工作台'}<span>/</span><strong>{session?.title??(drafting?'新会话':'新的可能，从这里开始')}</strong></div><div className="toolbar"><button className="icon-button" title="导出会话" aria-label="导出会话" disabled={!sessionId} onClick={exportSession}><Download size={17}/></button><button className="soft" aria-expanded={panel==='tasks'} aria-controls="task-popover" onClick={()=>setPanel(p=>p==='tasks'?null:'tasks')} disabled={!sessionId}><ListTodo size={16}/>后台任务{taskCount>0&&<span className="count">{taskCount}</span>}</button><button className="soft" aria-expanded={sideOpen} onClick={()=>useSidePanel.getState().toggle()} disabled={!workspaceId}><GitCompareArrows size={16}/>查看更改</button>{panel==='tasks'&&sessionId&&<BackgroundTasksPanel sessionId={sessionId} onClose={()=>setPanel(null)}/>}</div></header>
    {!desktop()&&<div className="host-banner"><Terminal size={16}/>当前为界面预览，需要桌面宿主才能访问工作区和模型。</div>}
    {error&&<div role="alert" className="alert"><span>{error}</span><button aria-label="关闭错误" onClick={()=>setError('')}><X size={16}/></button></div>}
    {notice&&<div role="status" className="notice"><Check size={15}/>{notice}<button aria-label="关闭提示" onClick={()=>setNotice('')}><X size={15}/></button></div>}
    <section className="conversation" aria-label="聊天消息">
-    {!events.length&&!stream&&<div className="welcome"><span className="welcome-icon"><Terminal size={35}/></span><div className="eyebrow">BUILD WITH CONFIDENCE</div><h1>想把什么变成现实？</h1><p>理解代码、探索想法，或完成下一次改进。<br/>在独立的工作副本中协作，每一处更改都由你掌控。</p>{!workspaceId&&<button className="primary welcome-open" onClick={openWorkspace} disabled={busy||!desktop()}><FolderOpen size={15}/>打开工作区</button>}<div className="suggestions">{['梳理项目结构和关键模块','检查代码，找出值得改进的地方','帮我规划并实现一个新功能'].map((s,i)=><button key={s} onClick={()=>setText(s)} disabled={!sessionId}><span>0{i+1}</span>{s}<ArrowUp size={14}/></button>)}</div><div className="welcome-foot"><ShieldCheck size={15}/>工作副本隔离 · 操作可审批 · 更改可预览</div></div>}
+    {!events.length&&!stream&&<div className="welcome"><span className="welcome-icon"><Terminal size={35}/></span><div className="eyebrow">BUILD WITH CONFIDENCE</div><h1>{drafting&&draftWorkspaceId?<>你想在 <em className="pj-name">{projectName(draftWorkspaceId)}</em> 中构建什么？</>:'想把什么变成现实？'}</h1><p>理解代码、探索想法，或完成下一次改进。<br/>在独立的工作副本中协作，每一处更改都由你掌控。</p>{!workspaceId&&!drafting&&<button className="primary welcome-open" onClick={openWorkspace} disabled={busy||!desktop()}><FolderOpen size={15}/>打开工作区</button>}<div className="suggestions">{['梳理项目结构和关键模块','检查代码，找出值得改进的地方','帮我规划并实现一个新功能'].map((s,i)=><button key={s} onClick={()=>setText(s)} disabled={!sessionId&&!drafting}><span>0{i+1}</span>{s}<ArrowUp size={14}/></button>)}</div><div className="welcome-foot"><ShieldCheck size={15}/>工作副本隔离 · 操作可审批 · 更改可预览</div></div>}
     <div className="messages"><ConversationEvents events={events} workspaceId={workspaceId} onOpenSession={openSession} activeIds={activeIds}/>{modelNotes.filter(n=>n.sessionId===sessionId).map((note,index)=><div key={`${note.sessionId}-${index}`} className="model-note" role="status">{note.text}</div>)}{stream&&<article className="message assistant"><div className="avatar">R</div><div className="message-body"><div className="message-label">Rust Harness <span className="stream-label">正在思考与执行</span></div>{stream.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{stream.reasoning}</pre></details>}<div className="prose"><Markdown content={stream.text||'正在处理…'}/><span className="cursor"/></div></div></article>}<div ref={end}/></div>
    </section>
-   <footer className="composer-area"><form className="composer" onSubmit={submit}>{activeSkill&&<div className="slash-menu" role="listbox" aria-label="技能补全">{activeSkill.items.map((row,index)=>{const selected=index===Math.min(slashIndex,activeSkill.items.length-1);return <button type="button" key={row.name} role="option" aria-selected={selected} ref={selected?selectedOptionRef:undefined} className={selected?'selected':undefined} onMouseDown={e=>{e.preventDefault();applySkillCompletion(row,activeSkill.tok)}}><strong>${row.name}</strong><span>{row.description||'（无描述）'}</span></button>})}</div>}{activeSlash&&<div className="slash-menu" role="listbox" aria-label="斜杠命令补全">{activeSlash.items.map((spec,index)=>{const selected=index===Math.min(slashIndex,activeSlash.items.length-1);return <button type="button" key={spec.name} role="option" aria-selected={selected} ref={selected?selectedOptionRef:undefined} className={selected?'selected':undefined} onMouseDown={e=>{e.preventDefault();void executeSlash(spec)}}><strong>/{spec.name}</strong><span>{spec.description}</span></button>})}</div>}<textarea aria-label="消息" ref={textareaRef} placeholder={sessionBusy?'正在准备会话…':sessionId?'描述任务，或继续你的想法…（输入 / 唤出命令）':workspaceId?'点击“新建聊天”重试，开始协作':'打开工作区，开始协作'} value={text} onChange={e=>{setText(e.target.value);setCursor(e.currentTarget.selectionStart??0)}} onSelect={e=>setCursor(e.currentTarget.selectionStart??0)} disabled={!sessionId||sessionBusy} onKeyDown={e=>{const menu=activeSlash,menuSkill=activeSkill;if(menu){if(e.key==='ArrowDown'){e.preventDefault();setSlashIndex(menu.items.length?(slashIndex+1)%menu.items.length:0);return}if(e.key==='ArrowUp'){e.preventDefault();setSlashIndex(menu.items.length?(slashIndex-1+menu.items.length)%menu.items.length:0);return}if(e.key==='Tab'){e.preventDefault();applyCompletion(menu.items[Math.min(slashIndex,menu.items.length-1)],menu.token);return}if(e.key==='Escape'){e.preventDefault();setDismissedToken(menu.token);return}if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();const spec=menu.items[Math.min(slashIndex,menu.items.length-1)];if(spec)void executeSlash(spec);return}}if(menuSkill){if(e.key==='ArrowDown'){e.preventDefault();setSlashIndex(menuSkill.items.length?(slashIndex+1)%menuSkill.items.length:0);return}if(e.key==='ArrowUp'){e.preventDefault();setSlashIndex(menuSkill.items.length?(slashIndex-1+menuSkill.items.length)%menuSkill.items.length:0);return}if(e.key==='Tab'||e.key==='Enter'){e.preventDefault();const row=menuSkill.items[Math.min(slashIndex,menuSkill.items.length-1)];if(row)applySkillCompletion(row,menuSkill.tok);return}if(e.key==='Escape'){e.preventDefault();setDismissedToken(menuSkill.tok.token);return}}if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit()}}}/>{attachments.length>0&&<div className="permission-tags">{attachments.map(a=><span key={a.hash}>{a.name} <button type="button" aria-label={`移除附件 ${a.name}`} onClick={()=>setAttachments(old=>old.filter(item=>item.hash!==a.hash))}><X size={12}/></button></span>)}</div>}<div className="composer-bottom"><div className="composer-plus-wrap"><button type="button" className="composer-plus" aria-label="添加内容" aria-haspopup="menu" aria-expanded={plusOpen} disabled={!sessionId||sessionBusy||!!running[sessionId]} onClick={()=>setPlusOpen(v=>!v)}><Plus size={17}/></button>{plusOpen&&<div className="plus-menu" role="menu" aria-label="添加内容"><button type="button" role="menuitem" disabled={importing||attachments.length>=20} onClick={()=>{setPlusOpen(false);void addAttachment()}}><Paperclip size={15}/><span><strong>附件</strong><small>选择本地文件，随消息发送（最多 20 MiB）</small></span></button><button type="button" role="menuitem" onClick={()=>insertPlusCommand('plan')}><ListTodo size={15}/><span><strong>计划</strong><small>插入 /plan，让模型先制定实施计划</small></span></button><button type="button" role="menuitem" onClick={()=>insertPlusCommand('goal')}><Target size={15}/><span><strong>目标</strong><small>插入 /goal，为本会话设定一个目标</small></span></button></div>}</div><div className="model-select"><div className="mode-select"><select aria-label="权限模式" value={sessionId?approvalModeForSession(sessionId):approvalMode} onChange={e=>chooseApprovalMode(e.target.value as ApprovalPolicy)}>{APPROVAL_MODES.map(m=><option key={m.value} value={m.value} title={m.description}>{m.label}</option>)}</select></div><select aria-label="能力预设" value={presetId} onChange={e=>choosePreset(e.target.value)}><option value="">不使用预设</option>{presets.filter(p=>p.id!=='builtin:default').map(p=><option key={p.id} value={p.id} disabled={!!p.broken}>{p.name}{p.broken?'（不可用）':''}</option>)}</select><ModelSelect models={models} providers={providers} modelId={modelId} effort={effort} open={modelMenuOpen} onOpenChange={setModelMenuOpen} onPickModel={chooseModel} onPickEffort={chooseEffort} onOpenManage={()=>setPanel('models')}/></div><UsageRing models={models} providers={providers} modelId={modelId} sessionId={sessionId}/><div className="send-controls"><span>Enter 发送 · Shift + Enter 换行</span>{running[sessionId]?<button type="button" className="send" aria-label="取消生成" onClick={cancel}><Square size={16}/></button>:<button className="send" type="submit" aria-label="发送消息" disabled={sessionBusy||importing||(!text.trim()&&!attachments.length)||!sessionId||!modelId}><ArrowUp size={19}/></button>}</div></div></form><div className="footer-note">原项目保持安全。模型生成的更改需要你确认后才会同步。</div></footer>
+   <footer className="composer-area">{drafting&&<div className="chip-row"><button type="button" className="chip" aria-haspopup="menu" aria-expanded={pjMenuOpen} aria-label="选择项目" onClick={()=>setPjMenuOpen(v=>!v)}><Folder size={13} aria-hidden="true"/><span className="nm">{draftWorkspaceId?projectName(draftWorkspaceId):'选择项目'}</span><ChevronDown size={13} aria-hidden="true"/></button>{pjMenuOpen&&<div className="pj-menu" role="menu" aria-label="选择项目"><div className="pj-search"><Search size={13} aria-hidden="true"/><input value={pjQuery} onChange={e=>setPjQuery(e.target.value)} placeholder="搜索项目" aria-label="搜索项目"/></div><div className="pj-list">{pjCandidates.map(ws=><button type="button" key={ws.id} role="menuitem" className={ws.id===draftWorkspaceId?'current':''} onClick={()=>{setDraftWorkspaceId(ws.id);setPjMenuOpen(false)}}><Folder size={13} aria-hidden="true"/><span className="nm">{ws.name}</span>{ws.pinned&&<Pin size={11} aria-hidden="true"/>}{ws.id===draftWorkspaceId&&<Check size={14} aria-hidden="true"/>}</button>)}{!pjCandidates.length&&<p className="pj-empty">没有匹配的项目</p>}</div><div className="pj-sep"/><button type="button" role="menuitem" onClick={()=>{setPjMenuOpen(false);void openWorkspace()}}><Plus size={13} aria-hidden="true"/><span className="nm">新建项目</span><span className="pj-sub">打开文件夹</span></button></div>}</div>}<form className="composer" onSubmit={submit}>{activeSkill&&<div className="slash-menu" role="listbox" aria-label="技能补全">{activeSkill.items.map((row,index)=>{const selected=index===Math.min(slashIndex,activeSkill.items.length-1);return <button type="button" key={row.name} role="option" aria-selected={selected} ref={selected?selectedOptionRef:undefined} className={selected?'selected':undefined} onMouseDown={e=>{e.preventDefault();applySkillCompletion(row,activeSkill.tok)}}><strong>${row.name}</strong><span>{row.description||'（无描述）'}</span></button>})}</div>}{activeSlash&&<div className="slash-menu" role="listbox" aria-label="斜杠命令补全">{activeSlash.items.map((spec,index)=>{const selected=index===Math.min(slashIndex,activeSlash.items.length-1);return <button type="button" key={spec.name} role="option" aria-selected={selected} ref={selected?selectedOptionRef:undefined} className={selected?'selected':undefined} onMouseDown={e=>{e.preventDefault();void executeSlash(spec)}}><strong>/{spec.name}</strong><span>{spec.description}</span></button>})}</div>}<textarea aria-label="消息" ref={textareaRef} placeholder={sessionBusy?'正在准备会话…':sessionId?'描述任务，或继续你的想法…（输入 / 唤出命令）':drafting&&draftWorkspaceId?`描述任务，发送后将在 ${projectName(draftWorkspaceId)} 创建会话（输入 / 唤出命令）`:'选择项目后开始协作'} value={text} onChange={e=>{setText(e.target.value);setCursor(e.currentTarget.selectionStart??0)}} onSelect={e=>setCursor(e.currentTarget.selectionStart??0)} disabled={sessionBusy||(!sessionId&&!drafting)} onKeyDown={e=>{const menu=activeSlash,menuSkill=activeSkill;if(menu){if(e.key==='ArrowDown'){e.preventDefault();setSlashIndex(menu.items.length?(slashIndex+1)%menu.items.length:0);return}if(e.key==='ArrowUp'){e.preventDefault();setSlashIndex(menu.items.length?(slashIndex-1+menu.items.length)%menu.items.length:0);return}if(e.key==='Tab'){e.preventDefault();applyCompletion(menu.items[Math.min(slashIndex,menu.items.length-1)],menu.token);return}if(e.key==='Escape'){e.preventDefault();setDismissedToken(menu.token);return}if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();const spec=menu.items[Math.min(slashIndex,menu.items.length-1)];if(spec)void executeSlash(spec);return}}if(menuSkill){if(e.key==='ArrowDown'){e.preventDefault();setSlashIndex(menuSkill.items.length?(slashIndex+1)%menuSkill.items.length:0);return}if(e.key==='ArrowUp'){e.preventDefault();setSlashIndex(menuSkill.items.length?(slashIndex-1+menuSkill.items.length)%menuSkill.items.length:0);return}if(e.key==='Tab'||e.key==='Enter'){e.preventDefault();const row=menuSkill.items[Math.min(slashIndex,menuSkill.items.length-1)];if(row)applySkillCompletion(row,menuSkill.tok);return}if(e.key==='Escape'){e.preventDefault();setDismissedToken(menuSkill.tok.token);return}}if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit()}}}/>{attachments.length>0&&<div className="permission-tags">{attachments.map(a=><span key={a.hash}>{a.name} <button type="button" aria-label={`移除附件 ${a.name}`} onClick={()=>setAttachments(old=>old.filter(item=>item.hash!==a.hash))}><X size={12}/></button></span>)}</div>}<div className="composer-bottom"><div className="composer-plus-wrap"><button type="button" className="composer-plus" aria-label="添加内容" aria-haspopup="menu" aria-expanded={plusOpen} disabled={!sessionId||sessionBusy||!!running[sessionId]} onClick={()=>setPlusOpen(v=>!v)}><Plus size={17}/></button>{plusOpen&&<div className="plus-menu" role="menu" aria-label="添加内容"><button type="button" role="menuitem" disabled={importing||attachments.length>=20} onClick={()=>{setPlusOpen(false);void addAttachment()}}><Paperclip size={15}/><span><strong>附件</strong><small>选择本地文件，随消息发送（最多 20 MiB）</small></span></button><button type="button" role="menuitem" onClick={()=>insertPlusCommand('plan')}><ListTodo size={15}/><span><strong>计划</strong><small>插入 /plan，让模型先制定实施计划</small></span></button><button type="button" role="menuitem" onClick={()=>insertPlusCommand('goal')}><Target size={15}/><span><strong>目标</strong><small>插入 /goal，为本会话设定一个目标</small></span></button></div>}</div><div className="model-select"><div className="mode-select"><select aria-label="权限模式" value={sessionId?approvalModeForSession(sessionId):approvalMode} onChange={e=>chooseApprovalMode(e.target.value as ApprovalPolicy)}>{APPROVAL_MODES.map(m=><option key={m.value} value={m.value} title={m.description}>{m.label}</option>)}</select></div><select aria-label="能力预设" value={presetId} onChange={e=>choosePreset(e.target.value)}><option value="">不使用预设</option>{presets.filter(p=>p.id!=='builtin:default').map(p=><option key={p.id} value={p.id} disabled={!!p.broken}>{p.name}{p.broken?'（不可用）':''}</option>)}</select><ModelSelect models={models} providers={providers} modelId={modelId} effort={effort} open={modelMenuOpen} onOpenChange={setModelMenuOpen} onPickModel={chooseModel} onPickEffort={chooseEffort} onOpenManage={()=>setPanel('models')}/></div><UsageRing models={models} providers={providers} modelId={modelId} sessionId={sessionId}/><div className="send-controls"><span>Enter 发送 · Shift + Enter 换行</span>{running[sessionId]?<button type="button" className="send" aria-label="取消生成" onClick={cancel}><Square size={16}/></button>:<button className="send" type="submit" aria-label="发送消息" disabled={sessionBusy||importing||(!text.trim()&&!attachments.length)||(!sessionId&&(!drafting||draftWorkspaceId===null))||!modelId}><ArrowUp size={19}/></button>}</div></div></form><div className="footer-note">原项目保持安全。模型生成的更改需要你确认后才会同步。</div></footer>
   </main>
   <SidePanel workspaceId={workspaceId}/>
   {panel==='models'&&<ModelPanel models={models} onClose={()=>setPanel(null)} onSaved={async()=>{const [ms,ps]=await Promise.all([command<ModelConfig[]>('model_list'),command<ProviderInfo[]>('provider_list')]);setModels(ms);setProviders(ps);if(!ms.some(m=>m.id===modelId)||!ms.find(m=>m.id===modelId)?.enabled){const usable=ms.filter(m=>m.enabled&&ps.some(p=>p.id===m.providerId&&p.enabled));setModelId(usable[0]?.id??'');setEffort(usable[0]?.efforts.at(-1)??null)}}}/>}
