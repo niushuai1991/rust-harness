@@ -63,6 +63,39 @@ impl ModelProvider for PartialUsageFailure {
         Err(AppError::new("MODEL_PROTOCOL", "工具参数 JSON 无效"))
     }
 }
+
+struct CancelledWithPartialUsage {
+    started: tokio::sync::Notify,
+    usage: Value,
+}
+#[async_trait]
+impl ModelProvider for CancelledWithPartialUsage {
+    async fn complete(
+        &self,
+        _: Vec<ModelMessage>,
+        _: Vec<ToolDefinition>,
+        cancel: CancellationToken,
+        _: DeltaSink,
+    ) -> AppResult<ModelAnswer> {
+        self.started.notify_one();
+        cancel.cancelled().await;
+        Err(AppError::new("CANCELLED", "用户取消"))
+    }
+
+    async fn complete_with_partial_usage(
+        &self,
+        _: Vec<ModelMessage>,
+        _: Vec<ToolDefinition>,
+        cancel: CancellationToken,
+        _: DeltaSink,
+        partial_usage: PartialUsageSink,
+    ) -> AppResult<ModelAnswer> {
+        self.started.notify_one();
+        cancel.cancelled().await;
+        partial_usage(self.usage.clone());
+        Err(AppError::new("CANCELLED", "用户取消"))
+    }
+}
 fn call(id: &str, name: &str, args: Value) -> ModelAnswer {
     ModelAnswer {
         calls: vec![ToolCall {
@@ -265,6 +298,91 @@ async fn usage_is_charged_even_when_protocol_tool_decoding_fails() {
             && event.data["usedTokens"] == 5
             && event.data["status"] == "exhausted"
     }));
+}
+
+#[tokio::test]
+async fn cancellation_with_incomplete_partial_usage_keeps_cancelled_status() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "cancel during stream")
+        .await
+        .unwrap();
+    let provider = Arc::new(CancelledWithPartialUsage {
+        started: tokio::sync::Notify::new(),
+        usage: Value::Null,
+    });
+    let task = tokio::spawn(runtime.clone().run_session(
+        session.id.clone(),
+        "开始后取消".into(),
+        provider.clone(),
+    ));
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        provider.started.notified(),
+    )
+    .await
+    .unwrap();
+    runtime.cancel(&session.id);
+
+    assert_eq!(task.await.unwrap().unwrap_err().code, "CANCELLED");
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    let end = events
+        .iter()
+        .find(|event| event.kind == "turn.end")
+        .unwrap();
+    assert_eq!(end.data["status"], "cancelled");
+    assert!(!events.iter().any(|event| {
+        event.kind == "token.budget" && event.data["status"] == "usageUnavailable"
+    }));
+}
+
+#[tokio::test]
+async fn cancellation_with_complete_partial_usage_charges_before_stopping() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "cancel after usage")
+        .await
+        .unwrap();
+    runtime.set_token_budget_limit(10).await.unwrap();
+    let provider = Arc::new(CancelledWithPartialUsage {
+        started: tokio::sync::Notify::new(),
+        usage: json!({"prompt_tokens":3,"completion_tokens":2}),
+    });
+    let task = tokio::spawn(runtime.clone().run_session(
+        session.id.clone(),
+        "先取得 usage 再取消".into(),
+        provider.clone(),
+    ));
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        provider.started.notified(),
+    )
+    .await
+    .unwrap();
+    runtime.cancel(&session.id);
+
+    assert_eq!(task.await.unwrap().unwrap_err().code, "CANCELLED");
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "token.budget"
+            && event.data["usedTokens"] == 5
+            && event.data["status"] == "active"
+    }));
+    let end = events
+        .iter()
+        .find(|event| event.kind == "turn.end")
+        .unwrap();
+    assert_eq!(end.data["status"], "cancelled");
 }
 
 #[tokio::test]

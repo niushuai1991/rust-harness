@@ -908,7 +908,10 @@ impl Runtime {
             {
                 Ok(answer) => answer,
                 Err(e) => {
-                    let partial_usage = partial_usage.lock().unwrap().take();
+                    let partial_usage =
+                        partial_usage.lock().unwrap().take().filter(|usage| {
+                            e.code != "CANCELLED" || consumed_tokens(usage).is_ok()
+                        });
                     let error = if let Some(usage) = partial_usage {
                         match self
                             .record_token_usage(session, &token_budget, &usage)
