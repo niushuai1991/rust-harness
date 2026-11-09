@@ -79,9 +79,11 @@ impl WorkspaceManager {
         if record.info.id != id || Path::new(&record.info.replica_path) != dir.join("root") {
             return Err(AppError::new("INVALID_WORKSPACE", id));
         }
-        // 旧记录（无 name 字段）加载时归一化为目录名，无需迁移即显示正确；下次 save 自然落盘。
+        // 旧记录（无 name 字段）加载时归一化为目录名并立即回写补齐；回写为原子替换，
+        // 失败不阻塞读取（内存归一化已生效），下次加载会再尝试。
         if record.info.name.trim().is_empty() {
             record.info.name = display_name(Path::new(&record.info.source_path), None);
+            let _ = self.save(&record);
         }
         Ok(record)
     }

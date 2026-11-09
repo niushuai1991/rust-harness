@@ -314,6 +314,10 @@ fn legacy_records_without_name_fall_back_to_directory_name() {
     fs::write(&record_path, value).unwrap();
     assert_eq!(manager.get(&info.id).unwrap().name, "source");
     assert_eq!(manager.list().unwrap()[0].name, "source");
+    // 补齐即落盘：record.json 已写入目录名，后续无需依赖加载期归一化
+    let persisted: serde_json::Value =
+        serde_json::from_slice(&fs::read(&record_path).unwrap()).unwrap();
+    assert_eq!(persisted["info"]["name"], "source");
 }
 
 #[test]

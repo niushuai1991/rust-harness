@@ -11,7 +11,7 @@
 ## 设计
 
 1. **存储**：`WorkspaceInfo` 新增非可选字段 `name: String`（serde default），随每工作区 `record.json` 持久化——名称是工作区实体属性而非桌面偏好（与置顶的 settings KV 派生方案不同源），CLI 与桌面共享同一事实源。serde default 保证旧记录可反序列化。
-2. **归一化**：创建（`WorkspaceManager::create(source, name)`）时去除首尾空白，未填或空白回退为源目录名（`file_name()`，孤立路径回退全路径）；旧记录（无 name 字段）在 `load()` 时同样归一化为目录名，字段永不为空，无需数据迁移（不回写，下次 save 自然落盘）。
+2. **归一化**：创建（`WorkspaceManager::create(source, name)`）时去除首尾空白，未填或空白回退为源目录名（`file_name()`，孤立路径回退全路径）；旧记录（无 name 字段）在 `load()` 时同样归一化为目录名，字段永不为空，无需显式数据迁移——加载补齐时立即回写 `record.json`（`paths::replace` 原子替换；回写失败不阻塞读取，下次加载再试）。
 3. **重命名**：`WorkspaceManager::rename(id, name)` 在独占锁下改名并落盘，空白名称拒绝（`INVALID_NAME`）。桌面命令：`workspace_open { path, name? }` 与新增 `workspace_rename { workspaceId, name }`。
 4. **桌面入口**：「打开工作区」改为两步——选目录后弹命名弹窗（名称预填目录名，留空即用目录名，弹窗内只读展示完整路径）；「按项目」组头新增改名按钮（hover 浮现，与置顶按钮一致），改名后立即更新。所有显示点（工作区按钮、任务列表「按最近」第二行、「按项目」组头与相关 aria-label、面包屑）统一改用 `name` 字段，前端不再做目录名派生回退。
 
@@ -22,6 +22,6 @@
 
 ## 验证
 
-- `harness-platform`（`tests/workspaces.rs`）：create 显式命名去空白、未填/空白回退目录名、rename 生效与空名拒绝（INVALID_NAME）、无 name 字段的旧 record.json 加载后归一化（get 与 list 双路径）。
+- `harness-platform`（`tests/workspaces.rs`）：create 显式命名去空白、未填/空白回退目录名、rename 生效与空名拒绝（INVALID_NAME）、无 name 字段的旧 record.json 加载后归一化（get 与 list 双路径）且补齐落盘（record.json 中 name 为目录名）。
 - `frontend/App.test.tsx`：打开工作区弹窗预填目录名并携带名称提交、留空提交传 null（回退目录名并显示）、组头改名立即显示新名、空名提交显示后端错误且名称不变。
 - 提交前运行 `cargo fmt --check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test --all-features`、`cargo build --all-features` 与 `npm test`。
