@@ -144,12 +144,21 @@ async fn child_usage_consumes_the_parent_turn_budget() {
     assert_eq!(error.code, "TOKEN_BUDGET_EXCEEDED");
     assert_eq!(provider.child_calls.load(Ordering::SeqCst), 1);
     assert!(provider.parent_calls.load(Ordering::SeqCst) <= 2);
-    let parent_events = runtime.store.events(&session, 0).await.unwrap();
-    assert!(parent_events.iter().any(|event| {
-        event.kind == "token.budget"
-            && event.data["usedTokens"] == 5
-            && event.data["status"] == "exhausted"
-    }));
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let parent_events = runtime.store.events(&session, 0).await.unwrap();
+            if parent_events.iter().any(|event| {
+                event.kind == "token.budget"
+                    && event.data["usedTokens"] == 5
+                    && event.data["status"] == "exhausted"
+            }) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     let child = runtime.children_of(&session).pop().unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
         loop {

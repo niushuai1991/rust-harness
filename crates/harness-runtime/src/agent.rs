@@ -587,13 +587,11 @@ impl Runtime {
             Ok(tokens) => (token_budget.add_usage(tokens), None),
             Err(error) => (token_budget.mark_usage_unavailable(), Some(error)),
         };
-        let publish_result = self
-            .publish_token_budget(session, token_budget, snapshot)
-            .await;
         if snapshot.stopped.is_some() {
             token_budget.cancel_others(session);
         }
-        publish_result?;
+        self.publish_token_budget(session, token_budget, snapshot)
+            .await?;
         if let Some(error) = usage_error {
             return Err(token_budget.error().unwrap_or(error));
         }

@@ -33,8 +33,9 @@ pub(crate) fn consumed_tokens(usage: &Value) -> AppResult<u64> {
     };
     let nested_count = |object: Option<&Value>, key: &str| -> AppResult<Option<u64>> {
         match object {
-            Some(value) => count(value.as_object().and_then(|object| object.get(key))),
-            None => Ok(None),
+            Some(Value::Object(object)) => count(object.get(key)),
+            None | Some(Value::Null) => Ok(None),
+            Some(_) => Err(unavailable()),
         }
     };
 
@@ -273,6 +274,14 @@ mod tests {
         assert!(consumed_tokens(&json!(null)).is_err());
         assert!(consumed_tokens(&json!({"input_tokens": "100", "output_tokens": 10})).is_err());
         assert!(consumed_tokens(&json!({"unknown": 100})).is_err());
+        assert!(
+            consumed_tokens(&json!({
+                "prompt_tokens": 100,
+                "completion_tokens": 10,
+                "prompt_tokens_details": "invalid"
+            }))
+            .is_err()
+        );
     }
 
     #[test]

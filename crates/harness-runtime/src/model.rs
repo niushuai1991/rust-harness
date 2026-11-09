@@ -205,14 +205,32 @@ impl HttpModel {
         let mut decoder = SseDecoder::for_route(ModelRoute::from(&self.config));
         while !decoder.is_finished() {
             let next = tokio::select! {
-                _ = cancel.cancelled() => return Err(cancelled()),
+                _ = cancel.cancelled() => Err(cancelled()),
                 n = tokio::time::timeout(self.stream_idle_timeout, stream.next()) => match n {
-                    Ok(next) => next,
-                    Err(_) => return Err(stream_idle_timeout(self.stream_idle_timeout)),
+                    Ok(next) => Ok(next),
+                    Err(_) => Err(stream_idle_timeout(self.stream_idle_timeout)),
                 },
             };
+            let next = match next {
+                Ok(next) => next,
+                Err(error) => {
+                    if let Some(observer) = &partial_usage {
+                        observer(decoder.usage());
+                    }
+                    return Err(error);
+                }
+            };
             let Some(chunk) = next else { break };
-            let deltas = match decoder.push(&chunk.map_err(transport_error)?) {
+            let chunk = match chunk {
+                Ok(chunk) => chunk,
+                Err(error) => {
+                    if let Some(observer) = &partial_usage {
+                        observer(decoder.usage());
+                    }
+                    return Err(transport_error(error));
+                }
+            };
+            let deltas = match decoder.push(&chunk) {
                 Ok(deltas) => deltas,
                 Err(error) => {
                     if let Some(observer) = &partial_usage {
@@ -226,6 +244,9 @@ impl HttpModel {
             }
         }
         if cancel.is_cancelled() {
+            if let Some(observer) = &partial_usage {
+                observer(decoder.usage());
+            }
             return Err(cancelled());
         }
         match decoder.finish_with_usage() {

@@ -112,10 +112,6 @@ impl SseDecoder {
     pub(crate) fn usage(&self) -> Value {
         self.answer.usage.clone()
     }
-    pub(crate) fn finish_with_usage(self) -> Result<ModelAnswer, (AppError, Value)> {
-        let usage = self.answer.usage.clone();
-        self.finish().map_err(|error| (error, usage))
-    }
     fn mode(&self) -> ApiMode {
         self.route.as_ref().map(|r| r.api_mode).unwrap_or_default()
     }
@@ -349,15 +345,25 @@ impl SseDecoder {
         Ok(())
     }
     pub fn finish(self) -> AppResult<ModelAnswer> {
+        self.finish_with_usage().map_err(|(error, _)| error)
+    }
+    pub(crate) fn finish_with_usage(mut self) -> Result<ModelAnswer, (AppError, Value)> {
         // EOF 残留半行帧触发的解析失败是连接被提前关闭，归为流中断；
         // 完整帧仍解析失败的才保留协议错误语义。
         let residual = self.frames.has_residual();
         match self.finish_inner() {
-            Err(e) if residual && e.code == "MODEL_PROTOCOL" => Err(stream_interrupted()),
-            result => result,
+            Ok(()) => Ok(self.answer),
+            Err(error) => {
+                let error = if residual && error.code == "MODEL_PROTOCOL" {
+                    stream_interrupted()
+                } else {
+                    error
+                };
+                Err((error, self.answer.usage.clone()))
+            }
         }
     }
-    fn finish_inner(mut self) -> AppResult<ModelAnswer> {
+    fn finish_inner(&mut self) -> AppResult<()> {
         let frames = self.frames.finish()?;
         // Final frames may contain a terminal marker without a trailing newline.
         self.events(frames)?;
@@ -370,7 +376,7 @@ impl SseDecoder {
         let mut replay = Vec::new();
         match self.mode() {
             ApiMode::ChatCompletions => {
-                for (_, (id, name, args)) in self.calls {
+                for (_, (id, name, args)) in std::mem::take(&mut self.calls) {
                     if id.is_empty() || name.is_empty() {
                         return Err(protocol_error("工具调用缺少标识或名称"));
                     }
@@ -384,7 +390,7 @@ impl SseDecoder {
             ApiMode::Responses => {
                 let mut content = String::new();
                 let mut reasoning = String::new();
-                for item in self.blocks.into_values() {
+                for item in std::mem::take(&mut self.blocks).into_values() {
                     match item["type"].as_str().unwrap_or("") {
                         "function_call" => self.answer.calls.push(ToolCall {
                             id: required(&item, "call_id")?,
@@ -429,7 +435,7 @@ impl SseDecoder {
                 }
             }
             ApiMode::Anthropic => {
-                for block in self.blocks.into_values() {
+                for block in std::mem::take(&mut self.blocks).into_values() {
                     match block["type"].as_str().unwrap_or("") {
                         "tool_use" => self.answer.calls.push(ToolCall {
                             id: required(&block, "id")?,
@@ -443,13 +449,13 @@ impl SseDecoder {
                 }
             }
         }
-        if let Some(route) = self.route {
+        if let Some(route) = self.route.take() {
             self.answer.replay = Some(ProtocolReplay {
                 route,
                 items: replay,
             });
         }
-        Ok(self.answer)
+        Ok(())
     }
 }
 fn required(v: &Value, key: &str) -> AppResult<String> {

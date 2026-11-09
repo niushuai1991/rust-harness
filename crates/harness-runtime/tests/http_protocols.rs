@@ -194,6 +194,47 @@ async fn malformed_tool_arguments_still_report_completed_usage() {
 }
 
 #[tokio::test]
+async fn responses_eof_frame_usage_survives_tool_argument_decode_error() {
+    let terminal = json!({
+        "type":"response.completed",
+        "response":{
+            "status":"completed",
+            "output":[{"type":"function_call","call_id":"bad","name":"todo_write","arguments":"{"}],
+            "usage":{"input_tokens":4,"output_tokens":1}
+        }
+    });
+    // Leave the terminal event in the decoder's EOF buffer to exercise finish-time usage capture.
+    let (base, mut requests, server) = fixture_bodies(vec![format!("data: {terminal}")]).await;
+    let config: ModelConfig = serde_json::from_value(json!({"id":"test","name":"test","baseUrl":base,"model":"model","credentialRef":"","proxy":null,"providerId":"fixture","apiMode":"responses","maxOutputTokens":1024})).unwrap();
+    let provider = HttpModel {
+        extra_headers: Vec::new(),
+        config,
+        secret: "fixture-secret".into(),
+        stream_idle_timeout: HttpModel::DEFAULT_STREAM_IDLE_TIMEOUT,
+    };
+    let observed = Arc::new(Mutex::new(None));
+    let observed_by_sink = observed.clone();
+    let error = provider
+        .complete_with_partial_usage(
+            vec![],
+            vec![],
+            CancellationToken::new(),
+            Arc::new(|_| {}),
+            Arc::new(move |usage| *observed_by_sink.lock().unwrap() = Some(usage)),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, "INCOMPLETE_STREAM");
+    assert_eq!(
+        observed.lock().unwrap().as_ref().unwrap(),
+        &json!({"input_tokens":4,"output_tokens":1})
+    );
+    let _request = requests.recv().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn all_protocols_execute_approved_tools_and_replay_after_restart() {
     for mode in [
         ApiMode::ChatCompletions,
