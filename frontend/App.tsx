@@ -26,7 +26,7 @@ import type {WorkspaceInfo,SessionInfo,SessionEvent,ModelConfig,ProviderInfo,Def
 
 type Panel='models'|'presets'|'skills'|'plugins'|'tasks'|'plans'|'automations'|null;
 type SessionContextMenu={sessionId:string;x:number;y:number};
-type SessionRenameDraft={id:string;name:string};
+type SessionRenameDraft={id:string;name:string;dialogId:number};
 const TERMINAL_STATUS:{[status:string]:string}={running:'运行中',exited:'已退出',terminated:'已终止',interrupted:'已中断'};
 // 桌面权限模式（与 contracts 五档一一对应）；改动仍只落隔离工作副本，进原项目仍需 apply 确认。
 const APPROVAL_MODES:{value:ApprovalPolicy;label:string;description:string}[]=[
@@ -65,6 +65,8 @@ export default function App(){
  const [collapsed,setCollapsed]=useState<string[]>(()=>{try{const v=JSON.parse(localStorage.getItem('sessionCollapsed')??'[]');return Array.isArray(v)?v.filter(x=>typeof x==='string'):[]}catch{return []}});
  const [query,setQuery]=useState('');
  const [sessionContextMenu,setSessionContextMenu]=useState<SessionContextMenu|null>(null),[sessionRename,setSessionRename]=useState<SessionRenameDraft|null>(null),[sessionRenameError,setSessionRenameError]=useState('');
+ const [sessionRenameSavingIds,setSessionRenameSavingIds]=useState<Set<string>>(()=>new Set());
+ const sessionRenameDialogId=useRef(0),sessionRenameSaving=useRef(new Set<string>());
  const [pluginRevision,setPluginRevision]=useState(0);
  const [attachments,setAttachments]=useState<ArtifactMetadata[]>([]),[importing,setImporting]=useState(false);
  const [plusOpen,setPlusOpen]=useState(false);
@@ -76,6 +78,7 @@ export default function App(){
  // 模型浮层卡片与切换标记（仅内存：切换模型在会话流里的临时提示，不落库）。
  const [modelMenuOpen,setModelMenuOpen]=useState(false);
  const [modelNotes,setModelNotes]=useState<{sessionId:string;text:string}[]>([]);
+ const sessionTitleOverrides=useRef(new Map<string,string>()),manualSessionTitles=useRef(new Set<string>());
  useEffect(()=>{if(!plusOpen)return;const close=(e:MouseEvent)=>{if(!(e.target as Element|null)?.closest?.('.composer-plus-wrap'))setPlusOpen(false)};const esc=(e:KeyboardEvent)=>{if(e.key==='Escape')setPlusOpen(false)};document.addEventListener('mousedown',close);document.addEventListener('keydown',esc);return()=>{document.removeEventListener('mousedown',close);document.removeEventListener('keydown',esc)}},[plusOpen]);
  useEffect(()=>{if(!pjMenuOpen)return;const close=(e:MouseEvent)=>{if(!(e.target as Element|null)?.closest?.('.chip-row'))setPjMenuOpen(false)};const esc=(e:KeyboardEvent)=>{if(e.key==='Escape')setPjMenuOpen(false)};document.addEventListener('mousedown',close);document.addEventListener('keydown',esc);return()=>{document.removeEventListener('mousedown',close);document.removeEventListener('keydown',esc)}},[pjMenuOpen]);
  useEffect(()=>{if(!sessionContextMenu)return;const close=(e:MouseEvent)=>{if(!(e.target as Element|null)?.closest?.('.session-context-menu'))setSessionContextMenu(null)};const esc=(e:KeyboardEvent)=>{if(e.key==='Escape')setSessionContextMenu(null)};document.addEventListener('mousedown',close);document.addEventListener('keydown',esc);return()=>{document.removeEventListener('mousedown',close);document.removeEventListener('keydown',esc)}},[sessionContextMenu]);
@@ -127,7 +130,7 @@ export default function App(){
   void (async()=>{
    try{
     // 侧栏「最近 / 项目」视图需要跨工作区会话；当前工作区列表由全量过滤派生。
-    const full=await command<SessionInfo[]>('session_list',{workspaceId:targetWorkspaceId,allWorkspaces:true});
+    const full=preserveSessionTitleOverrides(await command<SessionInfo[]>('session_list',{workspaceId:targetWorkspaceId,allWorkspaces:true}));
     if(!current())return;
     setAllSessions(full);
     const list=full.filter(s=>s.workspaceId===targetWorkspaceId);
@@ -171,9 +174,25 @@ export default function App(){
    setNotice(`项目已重命名为「${ws.name}」。`);
   });
  }
- function updateSessionInfo(updated:SessionInfo){
-  setAllSessions(old=>[updated,...old.filter(item=>item.id!==updated.id)]);
-  setSessions(old=>old.some(item=>item.id===updated.id)?old.map(item=>item.id===updated.id?updated:item):updated.workspaceId===activeWorkspaceId.current?[updated,...old]:old);
+ function preserveSessionTitleOverrides(items:SessionInfo[]){
+  return items.map(item=>{
+   const title=sessionTitleOverrides.current.get(item.id);
+   return title===undefined||title===item.title?item:{...item,title};
+  });
+ }
+ function updateSessionInfo(updated:SessionInfo,manual=false){
+  if(manual){manualSessionTitles.current.add(updated.id);sessionTitleOverrides.current.set(updated.id,updated.title)}
+  const title=manualSessionTitles.current.has(updated.id)?sessionTitleOverrides.current.get(updated.id)??updated.title:updated.title;
+  sessionTitleOverrides.current.set(updated.id,title);
+  const existing=allSessions.find(item=>item.id===updated.id)??sessions.find(item=>item.id===updated.id);
+  const info={...updated,title,parentId:updated.parentId??existing?.parentId??null};
+  const upsertByUpdatedAt=(items:SessionInfo[])=>{
+   const index=items.findIndex(item=>item.id===info.id);
+   const next=index>=0?items.map(item=>item.id===info.id?info:item):[...items,info];
+   return next.sort((a,b)=>Date.parse(b.updatedAt)-Date.parse(a.updatedAt));
+  };
+  setAllSessions(upsertByUpdatedAt);
+  setSessions(old=>old.some(item=>item.id===info.id)?upsertByUpdatedAt(old):info.workspaceId===activeWorkspaceId.current?upsertByUpdatedAt(old):old);
  }
  function showSessionContextMenu(event:ReactMouseEvent<HTMLButtonElement>,item:SessionInfo){
   event.preventDefault();
@@ -187,17 +206,31 @@ export default function App(){
    .catch(()=>{})
    .finally(()=>titleGenerationRequests.current.delete(item.id));
  }
+ function openSessionRename(item:SessionInfo){
+  const dialogId=++sessionRenameDialogId.current;
+  setSessionRename({id:item.id,name:item.title,dialogId});setSessionRenameError('');
+ }
+ function closeSessionRename(){
+  sessionRenameDialogId.current++;setSessionRename(null);setSessionRenameError('');
+ }
  async function saveSessionRename(){
-  if(!sessionRename)return;
-  const title=sessionRename.name.trim();
+  const draft=sessionRename;
+  if(!draft||sessionRenameSaving.current.has(draft.id))return;
+  const title=draft.name.trim();
   if(!title){setSessionRenameError('会话名称不能为空');return}
   if(new TextEncoder().encode(title).length>512){setSessionRenameError('会话名称不得超过512字节');return}
   setSessionRenameError('');
+  sessionRenameSaving.current.add(draft.id);
+  setSessionRenameSavingIds(old=>new Set(old).add(draft.id));
   try{
-   const updated=await command<SessionInfo>('session_rename',{sessionId:sessionRename.id,title});
-   updateSessionInfo(updated);
-   setSessionRename(null);
-  }catch(e){setSessionRenameError(errorText(e))}
+   const updated=await command<SessionInfo>('session_rename',{sessionId:draft.id,title});
+   updateSessionInfo(updated,true);
+   if(sessionRenameDialogId.current===draft.dialogId)closeSessionRename();
+  }catch(e){if(sessionRenameDialogId.current===draft.dialogId)setSessionRenameError(errorText(e))}
+  finally{
+   sessionRenameSaving.current.delete(draft.id);
+   setSessionRenameSavingIds(old=>{if(!old.has(draft.id))return old;const next=new Set(old);next.delete(draft.id);return next});
+  }
  }
  function createSessionFor(targetWorkspaceId:string):Promise<SessionInfo>{
   const pending=creatingSessions.current.get(targetWorkspaceId);
@@ -318,7 +351,7 @@ export default function App(){
   if(spec.name==='plan'||spec.name==='goal'){setNotice(spec.name==='plan'?PLAN_USAGE:GOAL_USAGE);return}
   if(spec.name==='clear'){await newSession();return}
   if(!sessionId||sessionBusy||running[sessionId]||!modelId)return;
-  if(spec.name==='init'){await dispatchText(sessionId,INIT_PROMPT,[]);setNotice('已发起 AGENTS.md 生成；完成后用“查看更改”审阅并同步到原项目。');return}
+  if(spec.name==='init'){if(session)startSessionTitleGeneration(session,INIT_PROMPT,[],!events.some(event=>event.kind==='user.message'));await dispatchText(sessionId,INIT_PROMPT,[]);setNotice('已发起 AGENTS.md 生成；完成后用“查看更改”审阅并同步到原项目。');return}
   if(spec.name==='compact'){setNotice('正在压缩会话历史……');await attempt(async()=>{await command('session_compact',{sessionId,modelId,effort});useChat.getState().replace(sessionId,await command<SessionEvent[]>('session_events',{sessionId}));setNotice('历史已压缩为摘要，后续回合将基于摘要继续。')});return}
  }
  async function cancel(){await attempt(()=>command('session_cancel',{sessionId}))}
@@ -375,8 +408,8 @@ export default function App(){
    <footer className="composer-area">{drafting&&<div className="chip-row"><button type="button" className="chip" aria-haspopup="menu" aria-expanded={pjMenuOpen} aria-label="选择项目" onClick={()=>setPjMenuOpen(v=>!v)}><Folder size={13} aria-hidden="true"/><span className="nm">{draftWorkspaceId?projectName(draftWorkspaceId):'选择项目'}</span><ChevronDown size={13} aria-hidden="true"/></button>{pjMenuOpen&&<div className="pj-menu" role="menu" aria-label="选择项目"><div className="pj-search"><Search size={13} aria-hidden="true"/><input value={pjQuery} onChange={e=>setPjQuery(e.target.value)} placeholder="搜索项目" aria-label="搜索项目"/></div><div className="pj-list">{pjCandidates.map(ws=><button type="button" key={ws.id} role="menuitem" className={ws.id===draftWorkspaceId?'current':''} onClick={()=>{setDraftWorkspaceId(ws.id);setPjMenuOpen(false)}}><Folder size={13} aria-hidden="true"/><span className="nm">{ws.name}</span>{ws.pinned&&<Pin size={11} aria-hidden="true"/>}{ws.id===draftWorkspaceId&&<Check size={14} aria-hidden="true"/>}</button>)}{!pjCandidates.length&&<p className="pj-empty">没有匹配的项目</p>}</div><div className="pj-sep"/><button type="button" role="menuitem" onClick={()=>{setPjMenuOpen(false);void openWorkspace()}}><Plus size={13} aria-hidden="true"/><span className="nm">新建项目</span><span className="pj-sub">打开文件夹</span></button></div>}</div>}<form className="composer" onSubmit={submit}>{activeSkill&&<div className="slash-menu" role="listbox" aria-label="技能补全">{activeSkill.items.map((row,index)=>{const selected=index===Math.min(slashIndex,activeSkill.items.length-1);return <button type="button" key={row.name} role="option" aria-selected={selected} ref={selected?selectedOptionRef:undefined} className={selected?'selected':undefined} onMouseDown={e=>{e.preventDefault();applySkillCompletion(row,activeSkill.tok)}}><strong>${row.name}</strong><span>{row.description||'（无描述）'}</span></button>})}</div>}{activeSlash&&<div className="slash-menu" role="listbox" aria-label="斜杠命令补全">{activeSlash.items.map((spec,index)=>{const selected=index===Math.min(slashIndex,activeSlash.items.length-1);return <button type="button" key={spec.name} role="option" aria-selected={selected} ref={selected?selectedOptionRef:undefined} className={selected?'selected':undefined} onMouseDown={e=>{e.preventDefault();void executeSlash(spec)}}><strong>/{spec.name}</strong><span>{spec.description}</span></button>})}</div>}<textarea aria-label="消息" ref={textareaRef} placeholder={sessionBusy?'正在准备会话…':sessionId?'描述任务，或继续你的想法…（输入 / 唤出命令）':drafting&&draftWorkspaceId?`描述任务，发送后将在 ${projectName(draftWorkspaceId)} 创建会话（输入 / 唤出命令）`:'选择项目后开始协作'} value={text} onChange={e=>{setText(e.target.value);setCursor(e.currentTarget.selectionStart??0)}} onSelect={e=>setCursor(e.currentTarget.selectionStart??0)} disabled={sessionBusy||(!sessionId&&!drafting)} onKeyDown={e=>{const menu=activeSlash,menuSkill=activeSkill;if(menu){if(e.key==='ArrowDown'){e.preventDefault();setSlashIndex(menu.items.length?(slashIndex+1)%menu.items.length:0);return}if(e.key==='ArrowUp'){e.preventDefault();setSlashIndex(menu.items.length?(slashIndex-1+menu.items.length)%menu.items.length:0);return}if(e.key==='Tab'){e.preventDefault();applyCompletion(menu.items[Math.min(slashIndex,menu.items.length-1)],menu.token);return}if(e.key==='Escape'){e.preventDefault();setDismissedToken(menu.token);return}if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();const spec=menu.items[Math.min(slashIndex,menu.items.length-1)];if(spec)void executeSlash(spec);return}}if(menuSkill){if(e.key==='ArrowDown'){e.preventDefault();setSlashIndex(menuSkill.items.length?(slashIndex+1)%menuSkill.items.length:0);return}if(e.key==='ArrowUp'){e.preventDefault();setSlashIndex(menuSkill.items.length?(slashIndex-1+menuSkill.items.length)%menuSkill.items.length:0);return}if(e.key==='Tab'||e.key==='Enter'){e.preventDefault();const row=menuSkill.items[Math.min(slashIndex,menuSkill.items.length-1)];if(row)applySkillCompletion(row,menuSkill.tok);return}if(e.key==='Escape'){e.preventDefault();setDismissedToken(menuSkill.tok.token);return}}if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit()}}}/>{attachments.length>0&&<div className="permission-tags">{attachments.map(a=><span key={a.hash}>{a.name} <button type="button" aria-label={`移除附件 ${a.name}`} onClick={()=>setAttachments(old=>old.filter(item=>item.hash!==a.hash))}><X size={12}/></button></span>)}</div>}<div className="composer-bottom"><div className="composer-plus-wrap"><button type="button" className="composer-plus" aria-label="添加内容" aria-haspopup="menu" aria-expanded={plusOpen} disabled={!sessionId||sessionBusy||!!running[sessionId]} onClick={()=>setPlusOpen(v=>!v)}><Plus size={17}/></button>{plusOpen&&<div className="plus-menu" role="menu" aria-label="添加内容"><button type="button" role="menuitem" disabled={importing||attachments.length>=20} onClick={()=>{setPlusOpen(false);void addAttachment()}}><Paperclip size={15}/><span><strong>附件</strong><small>选择本地文件，随消息发送（最多 20 MiB）</small></span></button><button type="button" role="menuitem" onClick={()=>insertPlusCommand('plan')}><ListTodo size={15}/><span><strong>计划</strong><small>插入 /plan，让模型先制定实施计划</small></span></button><button type="button" role="menuitem" onClick={()=>insertPlusCommand('goal')}><Target size={15}/><span><strong>目标</strong><small>插入 /goal，为本会话设定一个目标</small></span></button></div>}</div><div className="model-select"><div className="mode-select"><select aria-label="权限模式" value={sessionId?approvalModeForSession(sessionId):approvalMode} onChange={e=>chooseApprovalMode(e.target.value as ApprovalPolicy)}>{APPROVAL_MODES.map(m=><option key={m.value} value={m.value} title={m.description}>{m.label}</option>)}</select></div><select aria-label="能力预设" value={presetId} onChange={e=>choosePreset(e.target.value)}><option value="">不使用预设</option>{presets.filter(p=>p.id!=='builtin:default').map(p=><option key={p.id} value={p.id} disabled={!!p.broken}>{p.name}{p.broken?'（不可用）':''}</option>)}</select><ModelSelect models={models} providers={providers} modelId={modelId} effort={effort} open={modelMenuOpen} onOpenChange={setModelMenuOpen} onPickModel={chooseModel} onPickEffort={chooseEffort} onOpenManage={()=>setPanel('models')}/></div><UsageRing models={models} providers={providers} modelId={modelId} sessionId={sessionId}/><div className="send-controls"><span>Enter 发送 · Shift + Enter 换行</span>{running[sessionId]?<button type="button" className="send" aria-label="取消生成" onClick={cancel}><Square size={16}/></button>:<button className="send" type="submit" aria-label="发送消息" disabled={sessionBusy||importing||(!text.trim()&&!attachments.length)||(!sessionId&&(!drafting||draftWorkspaceId===null))||!modelId}><ArrowUp size={19}/></button>}</div></div></form><div className="footer-note">原项目保持安全。模型生成的更改需要你确认后才会同步。</div></footer>
   </main>
   <SidePanel workspaceId={workspaceId}/>
-  {sessionContextMenu&&<div className="session-context-menu" role="menu" aria-label="会话操作" style={{left:sessionContextMenu.x,top:sessionContextMenu.y}} onContextMenu={event=>event.preventDefault()}><button type="button" role="menuitem" onClick={()=>{const item=allSessions.find(candidate=>candidate.id===sessionContextMenu.sessionId);if(item){setSessionRename({id:item.id,name:item.title});setSessionRenameError('')}setSessionContextMenu(null)}}><Pencil size={14}/>重命名</button></div>}
-  {sessionRename&&<Modal title="重命名会话" onClose={()=>{setSessionRename(null);setSessionRenameError('')}}><form className="settings-form" onSubmit={event=>{event.preventDefault();void saveSessionRename()}}><label>会话名称<input autoFocus value={sessionRename.name} onChange={event=>{setSessionRename(old=>old&&{...old,name:event.target.value});setSessionRenameError('')}}/></label>{sessionRenameError&&<p role="alert" className="inline-error">{sessionRenameError}</p>}<div className="actions"><button type="button" onClick={()=>{setSessionRename(null);setSessionRenameError('')}}>取消</button><button className="primary" type="submit">保存</button></div></form></Modal>}
+  {sessionContextMenu&&<div className="session-context-menu" role="menu" aria-label="会话操作" style={{left:sessionContextMenu.x,top:sessionContextMenu.y}} onContextMenu={event=>event.preventDefault()}><button type="button" role="menuitem" onClick={()=>{const item=allSessions.find(candidate=>candidate.id===sessionContextMenu.sessionId);if(item)openSessionRename(item);setSessionContextMenu(null)}}><Pencil size={14}/>重命名</button></div>}
+  {sessionRename&&<Modal title="重命名会话" onClose={closeSessionRename}><form className="settings-form" onSubmit={event=>{event.preventDefault();void saveSessionRename()}}><label>会话名称<input autoFocus disabled={sessionRenameSavingIds.has(sessionRename.id)} value={sessionRename.name} onChange={event=>{setSessionRename(old=>old&&{...old,name:event.target.value});setSessionRenameError('')}}/></label>{sessionRenameError&&<p role="alert" className="inline-error">{sessionRenameError}</p>}<div className="actions"><button type="button" onClick={closeSessionRename}>取消</button><button className="primary" type="submit" disabled={sessionRenameSavingIds.has(sessionRename.id)}>保存</button></div></form></Modal>}
   {panel==='models'&&<ModelPanel models={models} onClose={()=>setPanel(null)} onSaved={async()=>{const [ms,ps]=await Promise.all([command<ModelConfig[]>('model_list'),command<ProviderInfo[]>('provider_list')]);setModels(ms);setProviders(ps);if(!ms.some(m=>m.id===modelId)||!ms.find(m=>m.id===modelId)?.enabled){const usable=ms.filter(m=>m.enabled&&ps.some(p=>p.id===m.providerId&&p.enabled));setModelId(usable[0]?.id??'');setEffort(usable[0]?.efforts.at(-1)??null)}}}/>}
   {panel==='presets'&&<PresetsPanel models={models} providers={providers} onClose={()=>setPanel(null)} onChanged={async()=>{setPresets(await command<PresetInfo[]>('preset_list'))}}/>}
   {panel==='skills'&&<SkillsPanel workspaceId={workspaceId} onClose={()=>setPanel(null)}/>}

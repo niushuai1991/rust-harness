@@ -163,7 +163,9 @@ pub async fn session_rename(
     session_id: String,
     title: String,
 ) -> AppResult<SessionInfo> {
-    state.store.rename_session(&session_id, &title).await
+    let mut session = state.store.rename_session(&session_id, &title).await?;
+    session.parent_id = state.parent_of(&session_id);
+    Ok(session)
 }
 #[tauri::command]
 #[specta::specta]
@@ -176,7 +178,7 @@ pub async fn session_title_generate(
     attachment_names: Vec<String>,
 ) -> AppResult<SessionInfo> {
     if !state.store.session_title_auto_pending(&session_id).await? {
-        return state.store.session(&session_id).await;
+        return session_with_parent(state.inner(), &session_id).await;
     }
     let events = state.store.events(&session_id, 0).await?;
     let user_messages = events
@@ -192,7 +194,7 @@ pub async fn session_title_generate(
                 != Some(text.as_str())
         })
     {
-        return state.store.session(&session_id).await;
+        return session_with_parent(state.inner(), &session_id).await;
     }
 
     let request = format!(
@@ -222,7 +224,15 @@ pub async fn session_title_generate(
         .and_then(Result::ok)
         .unwrap_or_default();
     let title = session_title_from_answer(&generated, &text, &attachment_names);
-    state.store.set_generated_title(&session_id, &title).await
+    let mut session = state.store.set_generated_title(&session_id, &title).await?;
+    session.parent_id = state.parent_of(&session_id);
+    Ok(session)
+}
+
+async fn session_with_parent(state: &Runtime, id: &str) -> AppResult<SessionInfo> {
+    let mut session = state.store.session(id).await?;
+    session.parent_id = state.parent_of(id);
+    Ok(session)
 }
 #[tauri::command]
 #[specta::specta]
