@@ -425,8 +425,13 @@ fn startup(input: HANDLE, output: HANDLE, error_handle: HANDLE) -> AppResult<Sta
         Ok(startup)
     }
 }
+/// capability SID：uuid 形态的 id 直接取字节；其他形态（会话 id 等）用 uuid5 确定性派生，
+/// 同一 id 恒得同一 SID。
 pub(crate) fn capability(id: &str) -> AppResult<Local> {
-    let uuid = uuid::Uuid::parse_str(id).map_err(io)?;
+    let uuid = match uuid::Uuid::parse_str(id) {
+        Ok(uuid) => uuid,
+        Err(_) => uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, id.as_bytes()),
+    };
     let b = uuid.as_bytes();
     sid(&format!(
         "S-1-4-{}-{}-{}-{}",
@@ -725,11 +730,43 @@ pub(super) fn run(
         .ok_or_else(|| AppError::new("INVALID_WORKSPACE", "Missing workspace"))?;
     fs::create_dir_all(workspace.join("temp")).map_err(io)?;
     let temp = tempfile::tempdir_in(workspace.join("temp")).map_err(io)?;
-    let capability = capability(&id)?;
+    run_with(&root, &id, command, cancel, true, temp)
+}
+
+/// 调用方持有工作区运行租约的执行入口（副本/会话 worktree 通用）。
+/// `sandboxed=false` 为提权重跑：宿主令牌执行，绕过受限令牌边界。
+pub(super) fn run_in(
+    root: &Path,
+    capability_id: &str,
+    command: &str,
+    cancel: CancellationToken,
+    sandboxed: bool,
+) -> AppResult<ProcessOutput> {
+    if cancel.is_cancelled() {
+        return Err(AppError::new("CANCELLED", "Shell cancelled"));
+    }
+    crate::paths::check(root)?;
+    let temp = tempfile::tempdir().map_err(io)?;
+    run_with(root, capability_id, command, cancel, sandboxed, temp)
+}
+
+fn run_with(
+    root: &Path,
+    capability_id: &str,
+    command: &str,
+    cancel: CancellationToken,
+    sandboxed: bool,
+    temp: tempfile::TempDir,
+) -> AppResult<ProcessOutput> {
     let temp_capability = self::capability(&uuid::Uuid::new_v4().to_string())?;
     let world = sid("S-1-1-0")?;
     grant(temp.path(), temp_capability.0, world.0)?;
-    let token = token(capability.0, temp_capability.0, world.0)?;
+    let token = if sandboxed {
+        let capability = capability(capability_id)?;
+        Some(token(capability.0, temp_capability.0, world.0)?)
+    } else {
+        None
+    };
     unsafe {
         let job = Handle(CreateJobObjectW(null(), null()));
         if job.0.is_null() {
@@ -764,8 +801,10 @@ pub(super) fn run(
         let script_path = temp.path().join("command.ps1");
         fs::write(
             &script_path,
+            // 先强制 UTF-8 输出：中文系统 Windows PowerShell 的错误流默认按系统 ACP
+            // 编码，沙箱拒绝归类将无法匹配关键词。
             format!(
-                "\u{feff}$ErrorActionPreference='Stop'; Set-Location -LiteralPath '{}';\n{}",
+                "\u{feff}$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; Set-Location -LiteralPath '{}';\n{}",
                 root.to_string_lossy().replace('\'', "''"),
                 command
             ),
@@ -791,24 +830,42 @@ pub(super) fn run(
         let in_write = Handle(in_write);
         let startup = startup(in_read.0, out_write.0, err_write.0)?;
         let mut process: PROCESS_INFORMATION = std::mem::zeroed();
-        if CreateProcessAsUserW(
-            token.0,
-            wide(&executable).as_ptr(),
-            command_line.as_mut_ptr(),
-            null(),
-            null(),
-            1,
-            CREATE_SUSPENDED
-                | CREATE_NO_WINDOW
-                | CREATE_UNICODE_ENVIRONMENT
-                | EXTENDED_STARTUPINFO_PRESENT,
-            env.as_ptr().cast(),
-            wide(&root).as_ptr(),
-            &startup.info.StartupInfo,
-            &mut process,
-        ) == 0
-        {
-            return Err(error("CreateProcessAsUserW"));
+        // 提权重跑（token=None）走宿主令牌；否则以受限令牌启动。
+        let created = match &token {
+            Some(token) => CreateProcessAsUserW(
+                token.0,
+                wide(&executable).as_ptr(),
+                command_line.as_mut_ptr(),
+                null(),
+                null(),
+                1,
+                CREATE_SUSPENDED
+                    | CREATE_NO_WINDOW
+                    | CREATE_UNICODE_ENVIRONMENT
+                    | EXTENDED_STARTUPINFO_PRESENT,
+                env.as_ptr().cast(),
+                wide(root).as_ptr(),
+                &startup.info.StartupInfo,
+                &mut process,
+            ),
+            None => CreateProcessW(
+                wide(&executable).as_ptr(),
+                command_line.as_mut_ptr(),
+                null(),
+                null(),
+                1,
+                CREATE_SUSPENDED
+                    | CREATE_NO_WINDOW
+                    | CREATE_UNICODE_ENVIRONMENT
+                    | EXTENDED_STARTUPINFO_PRESENT,
+                null(),
+                wide(root).as_ptr(),
+                &startup.info.StartupInfo,
+                &mut process,
+            ),
+        };
+        if created == 0 {
+            return Err(error("CreateProcess"));
         }
         let process_handle = Handle(process.hProcess);
         let thread = Handle(process.hThread);

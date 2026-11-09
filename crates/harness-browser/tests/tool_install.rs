@@ -94,7 +94,10 @@ async fn fixture() -> (Arc<Runtime>, harness_contracts::SessionInfo) {
     let source = temp.path().join("source");
     std::fs::create_dir(&source).unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "browser")

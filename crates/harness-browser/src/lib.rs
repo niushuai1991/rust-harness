@@ -286,6 +286,7 @@ impl ExternalTool for Tool {
                 .map_err(|e| AppError::new("INTERNAL", e.to_string()))?,
             is_error: false,
             diff: None,
+            escalated: false,
         })
     }
 }

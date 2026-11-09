@@ -486,6 +486,7 @@ impl PluginManager {
             content,
             is_error: false,
             diff: None,
+            escalated: false,
         })
     }
 }

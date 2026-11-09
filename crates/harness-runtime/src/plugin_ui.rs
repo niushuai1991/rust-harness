@@ -96,7 +96,7 @@ impl Runtime {
         )
         .await?;
         let result = async {
-            self.approve(session, &call, &cancel).await?;
+            self.approve(session, &call, &cancel, false, None).await?;
             self.plugins
                 .execute_command(
                     &info.workspace_id,

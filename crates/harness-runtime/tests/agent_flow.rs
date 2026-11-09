@@ -114,7 +114,10 @@ async fn approved_edit_stays_in_replica_until_explicit_sync() {
     std::fs::create_dir(&source).unwrap();
     std::fs::write(source.join("a.txt"), "old").unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "test")
@@ -183,7 +186,10 @@ async fn token_budget_stops_the_turn_and_skips_the_returned_tool_batch() {
     let source = temp.path().join("source");
     std::fs::create_dir(&source).unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "budget")
@@ -232,7 +238,10 @@ async fn final_answer_is_delivered_when_its_usage_reaches_the_budget() {
     let source = temp.path().join("source");
     std::fs::create_dir(&source).unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "final answer at budget")
@@ -273,7 +282,10 @@ async fn usage_is_charged_even_when_protocol_tool_decoding_fails() {
     let source = temp.path().join("source");
     std::fs::create_dir(&source).unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "partial usage")
@@ -306,7 +318,10 @@ async fn cancellation_with_incomplete_partial_usage_keeps_cancelled_status() {
     let source = temp.path().join("source");
     std::fs::create_dir(&source).unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "cancel during stream")
@@ -347,7 +362,10 @@ async fn cancellation_with_complete_partial_usage_charges_before_stopping() {
     let source = temp.path().join("source");
     std::fs::create_dir(&source).unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "cancel after usage")
@@ -391,7 +409,10 @@ async fn unknown_usage_stops_before_a_follow_up_model_call() {
     let source = temp.path().join("source");
     std::fs::create_dir(&source).unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "missing usage")
@@ -439,7 +460,10 @@ async fn denied_write_is_logged_without_mutating_the_replica() {
     let source = temp.path().join("source");
     std::fs::create_dir(&source).unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "deny")
@@ -491,7 +515,10 @@ async fn duplicate_tool_ids_are_rejected_before_settling_assistant_history() {
     let source = temp.path().join("source");
     std::fs::create_dir(&source).unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let w = runtime.workspaces.create(&source, None).unwrap();
+    let w = runtime
+        .workspaces
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
     let s = runtime
         .store
         .create_session(&w.id, "duplicate")
@@ -552,7 +579,10 @@ async fn cancelling_after_side_effect_records_unknown_outcome_and_releases_lease
     let source = temp.path().join("source");
     std::fs::create_dir(&source).unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let w = runtime.workspaces.create(&source, None).unwrap();
+    let w = runtime
+        .workspaces
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
     let s = runtime.store.create_session(&w.id, "cancel").await.unwrap();
     let _guard = runtime.register_tool(Arc::new(WritesThenWaits)).unwrap();
     let model = Arc::new(Recorded {
@@ -594,7 +624,10 @@ async fn attachments_enter_model_history_and_spilled_output_is_readable_after_re
     std::fs::write(source.join("large.txt"), &huge).unwrap();
     let data = dir.path().join("host");
     let runtime = Runtime::open(data.clone()).await.unwrap();
-    let w = runtime.workspaces.create(&source, None).unwrap();
+    let w = runtime
+        .workspaces
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
     let s = runtime
         .store
         .create_session(&w.id, "artifacts")
@@ -723,7 +756,10 @@ async fn skills_catalog_enters_system_prompt_and_mention_injects_body() {
     )
     .unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "skills")
@@ -790,7 +826,10 @@ async fn disabled_skill_is_absent_from_catalog_and_mention() {
     )
     .unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
     runtime
         .skills
         .set_enabled(".agents/skills/zskills-fixture/SKILL.md", false)
@@ -851,7 +890,7 @@ async fn edit_and_write_results_carry_unified_diff() {
     std::fs::create_dir(&source).unwrap();
     std::fs::write(source.join("a.txt"), "old line\n").unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let workspace = runtime.workspaces.create(&source, None, harness_contracts::ExecutionMode::Replica).unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "diff")
@@ -927,7 +966,7 @@ async fn failed_edit_result_has_no_diff() {
     std::fs::create_dir(&source).unwrap();
     std::fs::write(source.join("a.txt"), "old line\n").unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let workspace = runtime.workspaces.create(&source, None, harness_contracts::ExecutionMode::Replica).unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "conflict")

@@ -982,6 +982,7 @@ impl ExternalTool for Tool {
             content: value.to_string(),
             is_error: false,
             diff: None,
+            escalated: false,
         })
     }
 }

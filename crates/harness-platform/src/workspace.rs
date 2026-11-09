@@ -1,6 +1,7 @@
 use crate::{diffview, io, paths};
 use harness_contracts::{
-    AppError, AppResult, FileChange, WorkspaceFileDiff, WorkspaceInfo, new_id, now,
+    AppError, AppResult, ExecutionMode, FileChange, SessionWorktree, WorkspaceFileDiff,
+    WorkspaceInfo, new_id, now,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -112,7 +113,12 @@ impl WorkspaceManager {
             info: self.get(id)?,
         })
     }
-    pub fn create(&self, source: &Path, name: Option<String>) -> AppResult<WorkspaceInfo> {
+    pub fn create(
+        &self,
+        source: &Path,
+        name: Option<String>,
+        execution_mode: ExecutionMode,
+    ) -> AppResult<WorkspaceInfo> {
         paths::check(source)?;
         let source = dunce::canonicalize(source).map_err(io)?;
         if !source.is_dir()
@@ -124,7 +130,18 @@ impl WorkspaceManager {
                 "Source and host data must be disjoint directories",
             ));
         }
-        let mut baseline = snapshot(&source)?;
+        if execution_mode == ExecutionMode::Worktree && !source.join(".git").exists() {
+            return Err(AppError::new(
+                "INVALID_WORKSPACE",
+                "worktree execution mode requires a git repository",
+            ));
+        }
+        let mut baseline = if execution_mode == ExecutionMode::Worktree {
+            // worktree 模式不走审阅同步，baseline 恒为空。
+            Snapshot::new()
+        } else {
+            snapshot(&source)?
+        };
         let id = new_id();
         let dir = self.dir(&id)?;
         let root = dir.join("root");
@@ -132,6 +149,26 @@ impl WorkspaceManager {
         File::create(dir.join("sync.lock")).map_err(io)?;
         let _lock = self.lock(&id, true)?;
         let result = (|| {
+            if execution_mode == ExecutionMode::Worktree {
+                // worktree 模式不建隔离副本；replica_path 仅作记录占位（加载校验依赖
+                // 其指向数据目录），会话执行根为源项目 .worktrees/ 下宿主懒建的
+                // 会话 worktree（ensure_session_worktree）。
+                let info = WorkspaceInfo {
+                    id: id.clone(),
+                    source_path: source.to_string_lossy().into_owned(),
+                    replica_path: root.to_string_lossy().into_owned(),
+                    created_at: now(),
+                    name: display_name(&source, name.as_deref()),
+                    pinned: false,
+                    execution_mode,
+                    worktrees: BTreeMap::new(),
+                };
+                self.save(&Record {
+                    info: info.clone(),
+                    baseline,
+                })?;
+                return Ok(info);
+            }
             if source.join(".git").exists() {
                 paths::check(&source.join(".git"))?;
                 let clone = Command::new("git")
@@ -222,6 +259,8 @@ impl WorkspaceManager {
                 created_at: now(),
                 name: display_name(&source, name.as_deref()),
                 pinned: false,
+                execution_mode,
+                worktrees: BTreeMap::new(),
             };
             self.save(&Record {
                 info: info.clone(),
@@ -269,6 +308,84 @@ impl WorkspaceManager {
         self.save(&record)?;
         Ok(record.info)
     }
+    /// 宿主为会话代建 worktree（worktree 执行模式，会话首个 turn 前懒调用）。
+    ///
+    /// 幂等：已登记的会话直接返回。路径为 `<源项目>/.worktrees/harness-<会话 id 前 8 位>`，
+    /// 分支 `feat/session-<同前缀>`，基于创建时刻的源项目 HEAD；成功后对 worktree 目录
+    /// 打沙箱授权（capability 派生自会话 id）并登记到 record。
+    pub fn ensure_session_worktree(
+        &self,
+        id: &str,
+        session_id: &str,
+    ) -> AppResult<SessionWorktree> {
+        let _lock = self.lock(id, true)?;
+        let mut record = self.load(id)?;
+        if record.info.execution_mode != ExecutionMode::Worktree {
+            return Err(AppError::new(
+                "INVALID_WORKSPACE",
+                "worktree sessions require the worktree execution mode",
+            ));
+        }
+        if let Some(existing) = record.info.worktrees.get(session_id) {
+            return Ok(existing.clone());
+        }
+        let prefix = &session_id[..session_id.len().min(8)];
+        let source = PathBuf::from(&record.info.source_path);
+        let root = source.join(".worktrees").join(format!("harness-{prefix}"));
+        let branch = format!("feat/session-{prefix}");
+        fs::create_dir_all(source.join(".worktrees")).map_err(io)?;
+        let output = Command::new("git")
+            .args(["-c", "core.hooksPath=NUL"])
+            .arg("-C")
+            .arg(&source)
+            .args(["worktree", "add"])
+            .arg(&root)
+            .args(["-b", &branch, "HEAD"])
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "NUL")
+            .output()
+            .map_err(io)?;
+        if !output.status.success() {
+            return Err(AppError::new(
+                "GIT",
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            ));
+        }
+        crate::shell::prepare(&root, session_id)?;
+        let worktree = SessionWorktree {
+            path: root.to_string_lossy().into_owned(),
+            branch,
+            created_at: now(),
+        };
+        record
+            .info
+            .worktrees
+            .insert(session_id.to_owned(), worktree.clone());
+        self.save(&record)?;
+        Ok(worktree)
+    }
+    /// 会话执行根：replica 模式为隔离副本；worktree 模式为宿主代建的会话
+    /// worktree（未建则懒建）。
+    pub fn execution_root(&self, id: &str, session_id: &str) -> AppResult<PathBuf> {
+        let info = self.get(id)?;
+        match info.execution_mode {
+            ExecutionMode::Replica => Ok(PathBuf::from(info.replica_path)),
+            ExecutionMode::Worktree => match info.worktrees.get(session_id) {
+                Some(existing) => Ok(PathBuf::from(&existing.path)),
+                None => Ok(PathBuf::from(
+                    self.ensure_session_worktree(id, session_id)?.path,
+                )),
+            },
+        }
+    }
+    /// 读取会话 worktree 登记；未登记返回 None。
+    pub fn session_worktree(
+        &self,
+        id: &str,
+        session_id: &str,
+    ) -> AppResult<Option<SessionWorktree>> {
+        Ok(self.get(id)?.worktrees.get(session_id).cloned())
+    }
     fn changes(&self, record: &Record) -> AppResult<(Vec<FileChange>, Snapshot, Snapshot)> {
         let after = snapshot_with_baseline(Path::new(&record.info.replica_path), &record.baseline)?;
         let source = snapshot_with_baseline(Path::new(&record.info.source_path), &record.baseline)?;
@@ -302,22 +419,46 @@ impl WorkspaceManager {
     }
     pub fn diff(&self, id: &str) -> AppResult<Vec<FileChange>> {
         let _lock = self.lock(id, false)?;
-        Ok(self.changes(&self.load(id)?)?.0)
+        let record = self.load(id)?;
+        if record.info.execution_mode == ExecutionMode::Worktree {
+            return self.worktree_changes(&record);
+        }
+        Ok(self.changes(&record)?.0)
     }
     /// 单文件 unified diff 视图（桌面端右侧面板懒加载）；未变更的文件返回 NOT_FOUND。
     pub fn diff_view(&self, id: &str, path: &str) -> AppResult<WorkspaceFileDiff> {
         let _lock = self.lock(id, false)?;
         let record = self.load(id)?;
-        let change = self
-            .changes(&record)?
-            .0
-            .into_iter()
-            .find(|c| c.path == path)
-            .ok_or_else(|| AppError::new("NOT_FOUND", path))?;
+        let change = if record.info.execution_mode == ExecutionMode::Worktree {
+            self.worktree_changes(&record)?
+        } else {
+            self.changes(&record)?.0
+        }
+        .into_iter()
+        .find(|c| c.path == path)
+        .ok_or_else(|| AppError::new("NOT_FOUND", path))?;
         Ok(WorkspaceFileDiff {
             path: change.path.clone(),
             unified: diffview::render(&change, false),
         })
+    }
+    /// worktree 模式差异：逐会话 worktree 执行 `git status --porcelain -z` 并汇总
+    /// （同路径以先到的会话为准）；无 source_hash/conflict 语义（改动即真实落盘）。
+    fn worktree_changes(&self, record: &Record) -> AppResult<Vec<FileChange>> {
+        let mut changes = Vec::new();
+        let mut seen = BTreeSet::new();
+        for worktree in record.info.worktrees.values() {
+            let root = PathBuf::from(&worktree.path);
+            if !root.is_dir() {
+                continue;
+            }
+            for change in git_worktree_status(&root)? {
+                if seen.insert(change.path.clone()) {
+                    changes.push(change);
+                }
+            }
+        }
+        Ok(changes)
     }
     pub fn apply(&self, id: &str, paths: &[String]) -> AppResult<Vec<FileChange>> {
         self.apply_inner(id, paths, None)
@@ -335,6 +476,12 @@ impl WorkspaceManager {
     ) -> AppResult<Vec<FileChange>> {
         let _lock = self.lock(id, true)?;
         let mut record = self.load(id)?;
+        if record.info.execution_mode == ExecutionMode::Worktree {
+            return Err(AppError::new(
+                "APPLY_NOT_SUPPORTED",
+                "worktree 模式改动已直接落盘，无需审阅同步",
+            ));
+        }
         for path in paths {
             paths::validate(path)?;
         }
@@ -443,6 +590,10 @@ impl WorkspaceManager {
     pub fn refresh(&self, id: &str) -> AppResult<WorkspaceInfo> {
         let _lock = self.lock(id, true)?;
         let mut record = self.load(id)?;
+        if record.info.execution_mode == ExecutionMode::Worktree {
+            // worktree 模式改动即真实落盘，无副本可同步。
+            return Ok(record.info);
+        }
         let source = snapshot_with_baseline(Path::new(&record.info.source_path), &record.baseline)?;
         let root = Path::new(&record.info.replica_path);
         for path in paths::list_files(root)? {
@@ -458,4 +609,89 @@ impl WorkspaceManager {
         self.save(&record)?;
         Ok(record.info)
     }
+}
+
+/// 解析单个会话 worktree 的 `git status --porcelain=v1 -z --untracked-files=all` 输出
+/// 为 FileChange 列表；rename 条目（`R`/`C`）取目标路径并跳过随后的来源段。
+fn git_worktree_status(root: &Path) -> AppResult<Vec<FileChange>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "NUL")
+        .output()
+        .map_err(io)?;
+    if !output.status.success() {
+        return Err(AppError::new(
+            "GIT",
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ));
+    }
+    let mut parts = output.stdout.split(|b| *b == 0).filter(|p| !p.is_empty());
+    let mut entries = Vec::new();
+    while let Some(raw) = parts.next() {
+        let text = std::str::from_utf8(raw).map_err(io)?;
+        if text.len() < 4 {
+            continue;
+        }
+        let xy = text[..2].to_owned();
+        let path = text[3..].to_owned();
+        if xy.contains('R') || xy.contains('C') {
+            parts.next();
+        }
+        entries.push((xy, path));
+    }
+    entries
+        .into_iter()
+        .map(|(xy, path)| {
+            let kind = if xy == "??" || xy.contains('A') {
+                "added"
+            } else if xy.contains('D') {
+                "deleted"
+            } else {
+                "modified"
+            };
+            let before = if kind == "added" {
+                None
+            } else {
+                git_show(root, &path).ok()
+            };
+            let after = if kind == "deleted" {
+                None
+            } else {
+                Some(paths::bytes(root, &path)?)
+            };
+            Ok(FileChange {
+                path,
+                kind: kind.into(),
+                before_hash: hash(before.as_ref()),
+                after_hash: hash(after.as_ref()),
+                source_hash: None,
+                conflict: false,
+                before_text: before.and_then(|b| String::from_utf8(b).ok()),
+                after_text: after
+                    .as_ref()
+                    .and_then(|b| String::from_utf8(b.clone()).ok()),
+            })
+        })
+        .collect()
+}
+
+fn git_show(root: &Path, path: &str) -> AppResult<Vec<u8>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["show", &format!("HEAD:{path}")])
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "NUL")
+        .output()
+        .map_err(io)?;
+    if !output.status.success() {
+        return Err(AppError::new(
+            "GIT",
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ));
+    }
+    Ok(output.stdout)
 }

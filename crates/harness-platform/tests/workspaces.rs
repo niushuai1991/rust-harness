@@ -1,3 +1,4 @@
+use harness_contracts::ExecutionMode;
 use harness_platform::*;
 use std::{fs, path::PathBuf};
 fn fixture() -> (tempfile::TempDir, PathBuf, WorkspaceManager) {
@@ -13,7 +14,9 @@ fn fixture() -> (tempfile::TempDir, PathBuf, WorkspaceManager) {
 #[test]
 fn changes_require_confirmation_and_detect_external_conflicts() {
     let (_temp, source, manager) = fixture();
-    let info = manager.create(&source, None).unwrap();
+    let info = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
     write_file(std::path::Path::new(&info.replica_path), "a.txt", "edited").unwrap();
     assert_eq!(fs::read_to_string(source.join("a.txt")).unwrap(), "initial");
     assert_eq!(manager.diff(&info.id).unwrap().len(), 1);
@@ -29,7 +32,9 @@ fn changes_require_confirmation_and_detect_external_conflicts() {
 #[test]
 fn leases_prevent_sync_across_manager_instances() {
     let (_temp, source, manager) = fixture();
-    let info = manager.create(&source, None).unwrap();
+    let info = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
     let lease = manager.acquire(&info.id).unwrap();
     let other = WorkspaceManager::new(source.parent().unwrap().join("host")).unwrap();
     assert_eq!(other.refresh(&info.id).unwrap_err().code, "BUSY");
@@ -40,7 +45,9 @@ fn leases_prevent_sync_across_manager_instances() {
 #[test]
 fn confirmed_apply_updates_baseline_and_persists() {
     let (_temp, source, manager) = fixture();
-    let info = manager.create(&source, None).unwrap();
+    let info = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
     write_file(std::path::Path::new(&info.replica_path), "a.txt", "edited").unwrap();
     manager.apply(&info.id, &["a.txt".into()]).unwrap();
     assert_eq!(fs::read_to_string(source.join("a.txt")).unwrap(), "edited");
@@ -63,7 +70,11 @@ fn rejects_escape_ads_and_nested_data() {
         assert!(resolve_path(&source, path, false).is_err(), "{path}");
     }
     let nested = WorkspaceManager::new(source.join("host")).unwrap();
-    assert!(nested.create(&source, None).is_err());
+    assert!(
+        nested
+            .create(&source, None, ExecutionMode::Replica)
+            .is_err()
+    );
     let _ = manager;
 }
 
@@ -73,7 +84,9 @@ fn ignored_caches_are_not_copied_and_hardlinks_are_rejected() {
     fs::write(source.join(".gitignore"), "cache/\n").unwrap();
     fs::create_dir(source.join("cache")).unwrap();
     fs::write(source.join("cache/large"), "ignored").unwrap();
-    let info = manager.create(&source, None).unwrap();
+    let info = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
     assert!(
         !std::path::Path::new(&info.replica_path)
             .join("cache")
@@ -81,7 +94,10 @@ fn ignored_caches_are_not_copied_and_hardlinks_are_rejected() {
     );
     fs::hard_link(source.join("a.txt"), source.join("linked.txt")).unwrap();
     assert_eq!(
-        manager.create(&source, None).unwrap_err().code,
+        manager
+            .create(&source, None, ExecutionMode::Replica)
+            .unwrap_err()
+            .code,
         "UNSAFE_LINK"
     );
 }
@@ -120,7 +136,9 @@ fn git_copy_preserves_history_without_sharing_metadata() {
     fs::write(source.join("a.txt"), "dirty").unwrap();
     fs::write(source.join(".gitignore"), "a.txt\n").unwrap();
     fs::write(source.join("untracked.txt"), "new").unwrap();
-    let info = manager.create(&source, None).unwrap();
+    let info = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
     let root = std::path::Path::new(&info.replica_path);
     assert_eq!(read_file(root, "a.txt").unwrap(), "dirty");
     assert_eq!(read_file(root, "untracked.txt").unwrap(), "new");
@@ -142,7 +160,9 @@ fn empty_git_project_can_be_imported() {
             .status
             .success()
     );
-    let info = manager.create(&source, None).unwrap();
+    let info = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
     assert_eq!(
         read_file(std::path::Path::new(&info.replica_path), "a.txt").unwrap(),
         "initial"
@@ -152,7 +172,9 @@ fn empty_git_project_can_be_imported() {
 #[test]
 fn new_ignore_rule_does_not_turn_baseline_file_into_a_deletion() {
     let (_temp, source, manager) = fixture();
-    let info = manager.create(&source, None).unwrap();
+    let info = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
     write_file(
         std::path::Path::new(&info.replica_path),
         ".gitignore",
@@ -168,7 +190,9 @@ fn new_ignore_rule_does_not_turn_baseline_file_into_a_deletion() {
 #[test]
 fn apply_reviewed_refuses_replica_or_source_changes_after_preview() {
     let (_temp, source, manager) = fixture();
-    let info = manager.create(&source, None).unwrap();
+    let info = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
     let root = std::path::Path::new(&info.replica_path);
     write_file(root, "a.txt", "reviewed v1").unwrap();
     let reviewed = manager.diff(&info.id).unwrap();
@@ -202,7 +226,9 @@ fn apply_reviewed_refuses_replica_or_source_changes_after_preview() {
 #[test]
 fn junction_components_are_rejected_before_host_operations() {
     let (_temp, source, manager) = fixture();
-    let info = manager.create(&source, None).unwrap();
+    let info = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
     let root = std::path::Path::new(&info.replica_path);
     let status = std::process::Command::new("cmd.exe")
         .args(["/d", "/c", "mklink", "/J"])
@@ -224,7 +250,9 @@ fn junction_components_are_rejected_before_host_operations() {
 #[test]
 fn diff_view_renders_unified_diff_per_file() {
     let (_temp, source, manager) = fixture();
-    let info = manager.create(&source, None).unwrap();
+    let info = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
     let replica = std::path::Path::new(&info.replica_path);
     write_file(
         replica,
@@ -266,13 +294,17 @@ fn create_names_workspace_or_falls_back_to_directory_name() {
     let (_temp, source, manager) = fixture();
     // 显式命名：去除首尾空白后落库
     let named = manager
-        .create(&source, Some("  我的项目  ".into()))
+        .create(&source, Some("  我的项目  ".into()), ExecutionMode::Replica)
         .unwrap();
     assert_eq!(named.name, "我的项目");
     // 未填名称（None 或空白）回退为源目录名
-    let blank = manager.create(&source, Some("   ".into())).unwrap();
+    let blank = manager
+        .create(&source, Some("   ".into()), ExecutionMode::Replica)
+        .unwrap();
     assert_eq!(blank.name, "source");
-    let none = manager.create(&source, None).unwrap();
+    let none = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
     assert_eq!(none.name, "source");
     // 持久化后重读仍一致
     assert_eq!(manager.get(&named.id).unwrap().name, "我的项目");
@@ -281,7 +313,9 @@ fn create_names_workspace_or_falls_back_to_directory_name() {
 #[test]
 fn rename_updates_name_and_rejects_blank() {
     let (_temp, source, manager) = fixture();
-    let info = manager.create(&source, None).unwrap();
+    let info = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
     let renamed = manager.rename(&info.id, "新名字".into()).unwrap();
     assert_eq!(renamed.name, "新名字");
     assert_eq!(manager.get(&info.id).unwrap().name, "新名字");
@@ -297,7 +331,9 @@ fn rename_updates_name_and_rejects_blank() {
 #[test]
 fn legacy_records_without_name_fall_back_to_directory_name() {
     let (_temp, source, manager) = fixture();
-    let info = manager.create(&source, None).unwrap();
+    let info = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
     // 手工把 record.json 改写为无 name 字段的旧格式，加载时应归一化为目录名
     let record_path = std::path::Path::new(&info.replica_path)
         .parent()
@@ -328,7 +364,9 @@ fn create_falls_back_to_directory_name_for_special_paths() {
         let source = temp.path().join(name);
         fs::create_dir(&source).unwrap();
         fs::write(source.join("a.txt"), "content").unwrap();
-        let info = manager.create(&source, None).unwrap();
+        let info = manager
+            .create(&source, None, ExecutionMode::Replica)
+            .unwrap();
         assert_eq!(info.name, name, "目录名 {name} 应原样回退为显示名");
         assert_eq!(
             fs::read_to_string(std::path::Path::new(&info.replica_path).join("a.txt")).unwrap(),
@@ -341,7 +379,9 @@ fn create_falls_back_to_directory_name_for_special_paths() {
 #[test]
 fn blank_stored_name_is_normalized_on_load() {
     let (_temp, source, manager) = fixture();
-    let info = manager.create(&source, None).unwrap();
+    let info = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
     let record_path = std::path::Path::new(&info.replica_path)
         .parent()
         .unwrap()
@@ -360,7 +400,9 @@ fn blank_stored_name_is_normalized_on_load() {
 #[test]
 fn root_source_path_falls_back_to_full_path() {
     let (_temp, source, manager) = fixture();
-    let info = manager.create(&source, None).unwrap();
+    let info = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
     let record_path = std::path::Path::new(&info.replica_path)
         .parent()
         .unwrap()
@@ -379,7 +421,9 @@ fn root_source_path_falls_back_to_full_path() {
 fn explicit_name_with_spaces_and_unicode_roundtrips() {
     let (_temp, source, manager) = fixture();
     // trim 只去首尾空白，中间空格与中文保留；创建与重命名都需落盘往返一致
-    let info = manager.create(&source, Some("My 项目 α".into())).unwrap();
+    let info = manager
+        .create(&source, Some("My 项目 α".into()), ExecutionMode::Replica)
+        .unwrap();
     assert_eq!(info.name, "My 项目 α");
     assert_eq!(manager.get(&info.id).unwrap().name, "My 项目 α");
     let renamed = manager.rename(&info.id, "我的 项目".into()).unwrap();
@@ -390,7 +434,9 @@ fn explicit_name_with_spaces_and_unicode_roundtrips() {
 #[test]
 fn diff_view_still_renders_when_source_side_conflicts() {
     let (_temp, source, manager) = fixture();
-    let info = manager.create(&source, None).unwrap();
+    let info = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
     write_file(std::path::Path::new(&info.replica_path), "a.txt", "edited").unwrap();
     fs::write(source.join("a.txt"), "external").unwrap();
     let changes = manager.diff(&info.id).unwrap();
@@ -398,4 +444,146 @@ fn diff_view_still_renders_when_source_side_conflicts() {
     // 冲突文件渲染的是基线与副本的差异，apply 由既有哈希校验兜底。
     let view = manager.diff_view(&info.id, "a.txt").unwrap();
     assert!(view.unified.unwrap().contains("+edited"));
+}
+
+fn git_commit_source(source: &std::path::Path) {
+    use std::process::Command;
+    for args in [
+        vec!["init", "-q"],
+        vec!["add", "a.txt"],
+        vec![
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "initial",
+        ],
+    ] {
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(source)
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+}
+
+#[test]
+fn worktree_mode_requires_git_repository() {
+    let (_temp, source, manager) = fixture();
+    assert_eq!(
+        manager
+            .create(&source, None, ExecutionMode::Worktree)
+            .unwrap_err()
+            .code,
+        "INVALID_WORKSPACE"
+    );
+}
+
+#[test]
+fn worktree_mode_creates_and_registers_session_worktree() {
+    let (_temp, source, manager) = fixture();
+    git_commit_source(&source);
+    let info = manager
+        .create(&source, None, ExecutionMode::Worktree)
+        .unwrap();
+    assert_eq!(info.execution_mode, ExecutionMode::Worktree);
+    // worktree 模式不创建隔离副本目录，replica_path 仅为记录占位。
+    assert!(!std::path::Path::new(&info.replica_path).exists());
+
+    let worktree = manager
+        .ensure_session_worktree(&info.id, "sess1a2b")
+        .unwrap();
+    let expected = PathBuf::from(&info.source_path)
+        .join(".worktrees")
+        .join("harness-sess1a2b");
+    assert_eq!(worktree.path, expected.to_string_lossy());
+    assert_eq!(worktree.branch, "feat/session-sess1a2b");
+    assert!(expected.join(".git").exists());
+    assert_eq!(read_file(&expected, "a.txt").unwrap(), "initial");
+
+    // 幂等：重复调用返回同一登记。
+    let again = manager
+        .ensure_session_worktree(&info.id, "sess1a2b")
+        .unwrap();
+    assert_eq!(again, worktree);
+
+    let reloaded = manager.get(&info.id).unwrap();
+    assert_eq!(reloaded.worktrees["sess1a2b"], worktree);
+    assert_eq!(
+        manager.execution_root(&info.id, "sess1a2b").unwrap(),
+        expected
+    );
+    // 其他会话懒建各自的 worktree。
+    let other = manager.execution_root(&info.id, "sess3c4d").unwrap();
+    assert_ne!(other, expected);
+    assert!(other.join(".git").exists());
+}
+
+#[test]
+fn worktree_mode_diff_tracks_real_changes_without_source_hash() {
+    let (_temp, source, manager) = fixture();
+    git_commit_source(&source);
+    let info = manager
+        .create(&source, None, ExecutionMode::Worktree)
+        .unwrap();
+    let worktree = manager.execution_root(&info.id, "sess1a2b").unwrap();
+    fs::write(worktree.join("a.txt"), "edited").unwrap();
+    fs::write(worktree.join("new.txt"), "added").unwrap();
+    let changes = manager.diff(&info.id).unwrap();
+    let modified = changes.iter().find(|c| c.path == "a.txt").unwrap();
+    assert_eq!(modified.kind, "modified");
+    assert_eq!(modified.before_text.as_deref(), Some("initial"));
+    assert_eq!(modified.after_text.as_deref(), Some("edited"));
+    assert!(!modified.conflict);
+    let added = changes.iter().find(|c| c.path == "new.txt").unwrap();
+    assert_eq!(added.kind, "added");
+    assert_eq!(added.before_text, None);
+    // 删除真实文件后不再出现在差异中。
+    fs::remove_file(worktree.join("new.txt")).unwrap();
+    let changes = manager.diff(&info.id).unwrap();
+    assert!(changes.iter().all(|c| c.path != "new.txt"));
+}
+
+#[test]
+fn worktree_mode_apply_is_rejected_and_refresh_is_noop() {
+    let (_temp, source, manager) = fixture();
+    git_commit_source(&source);
+    let info = manager
+        .create(&source, None, ExecutionMode::Worktree)
+        .unwrap();
+    let worktree = manager.execution_root(&info.id, "sess1a2b").unwrap();
+    fs::write(worktree.join("a.txt"), "edited").unwrap();
+    assert_eq!(
+        manager.apply(&info.id, &["a.txt".into()]).unwrap_err().code,
+        "APPLY_NOT_SUPPORTED"
+    );
+    assert_eq!(fs::read_to_string(source.join("a.txt")).unwrap(), "initial");
+    manager.refresh(&info.id).unwrap();
+    assert_eq!(
+        fs::read_to_string(worktree.join("a.txt")).unwrap(),
+        "edited"
+    );
+}
+
+#[test]
+fn worktree_mode_diff_view_renders_unified() {
+    let (_temp, source, manager) = fixture();
+    git_commit_source(&source);
+    let info = manager
+        .create(&source, None, ExecutionMode::Worktree)
+        .unwrap();
+    let worktree = manager.execution_root(&info.id, "sess1a2b").unwrap();
+    fs::write(worktree.join("a.txt"), "edited").unwrap();
+    let view = manager.diff_view(&info.id, "a.txt").unwrap();
+    let unified = view.unified.unwrap();
+    assert!(unified.contains("+edited"), "{unified}");
+    assert!(unified.contains("-initial"), "{unified}");
 }
