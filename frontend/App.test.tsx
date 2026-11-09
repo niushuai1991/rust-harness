@@ -269,6 +269,46 @@ describe('右侧面板',()=>{
   expect(screen.getByText('src/main.rs')).toBeInTheDocument();
   expect(screen.getByRole('tab',{name:'预览'})).toHaveAttribute('aria-selected','true');
  });
+ it('edit 工具显示行级差异：调用行收敛，结果卡带统计与 diff 展开',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  const unified=['--- a/src/config.ts','+++ b/src/config.ts','@@ -1,2 +1,3 @@',' const a=1;','-const b=2;','+const b=3;','+const c=4;'].join('\n');
+  mocks.command.mockImplementation(async(name:string,args:any)=>name==='session_events'?[
+   {id:'c1',sessionId:'a',seq:'1',kind:'tool.call',data:{id:'c1',name:'edit',arguments:{path:'src/config.ts',oldText:'const b=2;',newText:'const b=3;\nconst c=4;'}},createdAt:''},
+   {id:'r1',sessionId:'a',seq:'2',kind:'tool.result',data:{callId:'c1',name:'edit',content:'已修改副本 src/config.ts',isError:false,status:'completed',diff:unified,path:'src/config.ts'},createdAt:''},
+  ]:original(name,args));
+  render(<App/>);
+  expect((await screen.findAllByText('编辑')).length).toBe(2);
+  expect(screen.getAllByRole('button',{name:'config.ts'})).toHaveLength(2);
+  expect(screen.queryByText('调用中')).not.toBeInTheDocument();
+  expect(screen.getAllByText('src')).toHaveLength(2);
+  expect(screen.getByText('+2')).toBeInTheDocument();
+  expect(screen.getByText('-1')).toBeInTheDocument();
+  fireEvent.click(screen.getByText('已完成'));
+  expect(await screen.findByText('+const b=3;')).toBeVisible();
+  expect(screen.queryByText(/oldText/)).not.toBeInTheDocument();
+ });
+ it('edit 失败结果无 diff，展开显示错误内容',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name:string,args:any)=>name==='session_events'?[
+   {id:'r1',sessionId:'a',seq:'1',kind:'tool.result',data:{callId:'c1',name:'edit',content:'待替换文本必须在当前文件中恰好出现一次',isError:true,status:'error',diff:null,path:'src/config.ts'},createdAt:''},
+  ]:original(name,args));
+  render(<App/>);
+  expect(await screen.findByText('执行失败')).toBeInTheDocument();
+  expect(screen.queryByText(/^\+\d+$/)).not.toBeInTheDocument();
+  fireEvent.click(screen.getByText('执行失败'));
+  expect(await screen.findByText(/恰好出现一次/)).toBeVisible();
+ });
+ it('write 工具结果显示写入标签与全新增 diff',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name:string,args:any)=>name==='session_events'?[
+   {id:'r1',sessionId:'a',seq:'1',kind:'tool.result',data:{callId:'c1',name:'write',content:'已写入副本 docs/new.md',isError:false,status:'completed',diff:'--- /dev/null\n+++ b/docs/new.md\n@@ -0,0 +1,1 @@\n+# 标题',path:'docs/new.md'},createdAt:''},
+  ]:original(name,args));
+  render(<App/>);
+  expect(await screen.findByText('写入')).toBeInTheDocument();
+  expect(screen.getByText('+1')).toBeInTheDocument();
+  fireEvent.click(screen.getByText('已完成'));
+  expect(await screen.findByText('+# 标题')).toBeVisible();
+ });
  it('/diff 斜杠命令打开更改视图',async()=>{
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name:string,args:any)=>name==='workspace_diff'?[]:original(name,args));

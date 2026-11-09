@@ -842,3 +842,136 @@ async fn disabled_skill_is_absent_from_catalog_and_mention() {
     assert!(!fixture.enabled);
     assert!(skill_path.exists(), "禁用不动文件");
 }
+
+/// edit/write 的 tool.result 事件应携带 unified diff（桌面对话流行级差异展示的数据源）。
+#[tokio::test]
+async fn edit_and_write_results_carry_unified_diff() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("a.txt"), "old line\n").unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "diff")
+        .await
+        .unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([
+            call("c1", "read", json!({"path":"a.txt"})),
+            call(
+                "c2",
+                "edit",
+                json!({"path":"a.txt","oldText":"old line\n","newText":"new line\n"}),
+            ),
+            call("c3", "write", json!({"path":"b.txt","content":"created\n"})),
+            ModelAnswer {
+                content: "finished".into(),
+                ..Default::default()
+            },
+        ])),
+        requests: Mutex::new(vec![]),
+    });
+    let task = tokio::spawn(runtime.clone().run_session(
+        session.id.clone(),
+        "diff".into(),
+        provider.clone(),
+    ));
+    for _ in 0..2 {
+        let pending = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let list = runtime.approvals.list();
+                if let Some(r) = list.first() {
+                    break r.clone();
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        runtime.approvals.resolve(&pending.id, true).unwrap();
+    }
+    task.await.unwrap().unwrap();
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    let edit = events
+        .iter()
+        .find(|e| e.kind == "tool.result" && e.data["name"] == "edit")
+        .unwrap();
+    assert_eq!(edit.data["isError"], false);
+    assert_eq!(edit.data["path"], "a.txt");
+    let edit_diff = edit.data["diff"].as_str().unwrap();
+    assert!(edit_diff.contains("--- a.txt"));
+    assert!(edit_diff.contains("-old line"));
+    assert!(edit_diff.contains("+new line"));
+    assert!(edit_diff.contains("@@"));
+    let write = events
+        .iter()
+        .find(|e| e.kind == "tool.result" && e.data["name"] == "write")
+        .unwrap();
+    let write_diff = write.data["diff"].as_str().unwrap();
+    assert!(write_diff.contains("--- b.txt"));
+    assert!(write_diff.lines().any(|line| line.starts_with("+created")));
+    assert!(
+        !write_diff
+            .lines()
+            .any(|line| line.starts_with('-') && !line.starts_with("---")),
+        "新建文件的 diff 不应有删除行"
+    );
+}
+
+#[tokio::test]
+async fn failed_edit_result_has_no_diff() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("a.txt"), "old line\n").unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "conflict")
+        .await
+        .unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([
+            call("c1", "read", json!({"path":"a.txt"})),
+            call(
+                "c2",
+                "edit",
+                json!({"path":"a.txt","oldText":"missing\n","newText":"x\n"}),
+            ),
+            ModelAnswer {
+                content: "finished".into(),
+                ..Default::default()
+            },
+        ])),
+        requests: Mutex::new(vec![]),
+    });
+    let task = tokio::spawn(runtime.clone().run_session(
+        session.id.clone(),
+        "conflict".into(),
+        provider.clone(),
+    ));
+    let pending = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let list = runtime.approvals.list();
+            if let Some(r) = list.first() {
+                break r.clone();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    runtime.approvals.resolve(&pending.id, true).unwrap();
+    task.await.unwrap().unwrap();
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    let edit = events
+        .iter()
+        .find(|e| e.kind == "tool.result" && e.data["name"] == "edit")
+        .unwrap();
+    assert_eq!(edit.data["isError"], true);
+    assert_eq!(edit.data["status"], "error");
+    assert!(edit.data["diff"].is_null(), "失败结果不应携带 diff");
+}

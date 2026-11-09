@@ -1053,6 +1053,7 @@ impl Runtime {
                             e.to_string()
                         },
                         is_error: true,
+                        diff: None,
                     },
                 };
                 if !cancel.is_cancelled() {
@@ -1082,6 +1083,13 @@ impl Runtime {
                     result.is_error = true;
                 }
                 let mut content = result.content;
+                let result_diff = result.diff;
+                // edit/write 结果事件带上文件路径（结果事件无 arguments，前端展示行级差异卡需要）。
+                let result_path = if call.name.as_str() == "edit" || call.name.as_str() == "write" {
+                    call.arguments.get("path").cloned().unwrap_or(Value::Null)
+                } else {
+                    Value::Null
+                };
                 let mut artifact = None;
                 if content.len() > 64 * 1024 {
                     let hash = self.store.put_blob(content.as_bytes()).await?;
@@ -1096,7 +1104,7 @@ impl Runtime {
                         "{preview}\n\n[完整输出 artifact:{hash}；使用 read_artifact 分块读取]"
                     );
                 }
-                self.append(session,"tool.result",json!({"callId":call.id,"name":call.name,"content":content,"isError":result.is_error,"status":status,"artifact":artifact})).await?;
+                self.append(session,"tool.result",json!({"callId":call.id,"name":call.name,"content":content,"isError":result.is_error,"status":status,"artifact":artifact,"diff":result_diff,"path":result_path})).await?;
             }
             step = step.saturating_add(1);
         }
@@ -1195,6 +1203,8 @@ impl Runtime {
             cancel,
         } = input;
         let a = &call.arguments;
+        // edit/write 的 unified diff（tool.result 事件展示用）；其余工具保持 None。
+        let mut diff: Option<String> = None;
         let text = match call.name.as_str() {
             "read_artifact" => {
                 let offset = a["offset"]
@@ -1222,7 +1232,7 @@ impl Runtime {
                 let _mutation = FILE_MUTATION.lock().unwrap();
                 let path = arg(a, "path")?;
                 let existing = harness_platform::resolve_path(root, path, false)?;
-                if existing.exists() {
+                let before = if existing.exists() {
                     let current = harness_platform::read_file(root, path)?;
                     if reads.get(path) != Some(&current) {
                         return Err(AppError::new(
@@ -1230,10 +1240,14 @@ impl Runtime {
                             "修改已有文件前必须读取当前版本",
                         ));
                     }
-                }
+                    Some(current)
+                } else {
+                    None
+                };
                 let content = arg(a, "content")?;
                 harness_platform::write_file(root, path, content)?;
                 reads.insert(path.into(), content.into());
+                diff = harness_platform::diffview::from_texts(path, before.as_deref(), content);
                 format!("已写入副本 {path}")
             }
             "edit" => {
@@ -1259,6 +1273,7 @@ impl Runtime {
                 }
                 let updated = content.replacen(old, new, 1);
                 harness_platform::write_file(root, path, &updated)?;
+                diff = harness_platform::diffview::from_texts(path, Some(&content), &updated);
                 reads.insert(path.into(), updated);
                 format!("已修改副本 {path}")
             }
@@ -1294,6 +1309,7 @@ impl Runtime {
                 return Ok(ToolResult {
                     content: serde_json::to_string(&output).map_err(internal)?,
                     is_error: output.exit_code != 0,
+                    diff: None,
                 });
             }
             "web_fetch" => fetch(arg(a, "url")?, cancel).await?,
@@ -1411,6 +1427,7 @@ impl Runtime {
                         .execute_lsp_tool(name, workspace, root, a, cancel)
                         .await?,
                     is_error: false,
+                    diff: None,
                 });
             }
             _ => {
@@ -1438,6 +1455,7 @@ impl Runtime {
         Ok(ToolResult {
             content: text,
             is_error: false,
+            diff,
         })
     }
     pub async fn fork(&self, id: &str) -> AppResult<SessionInfo> {

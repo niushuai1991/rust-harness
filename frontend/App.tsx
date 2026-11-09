@@ -1,6 +1,6 @@
 import {Fragment,useEffect,useMemo,useRef,useState,type FormEvent,type MouseEvent as ReactMouseEvent,type ReactNode} from 'react';
 import {open,save} from '@tauri-apps/plugin-dialog';
-import {ArrowUp,Bot,Bookmark,CalendarClock,Check,ChevronDown,ChevronRight,FileCode,Folder,FolderOpen,GitCompareArrows,ListTodo,MessageSquare,Paperclip,Pencil,Pin,Plus,Search,Send,Settings2,ShieldCheck,Square,Sparkles,Target,Terminal,Timer,Unplug,X,Download} from 'lucide-react';
+import {ArrowUp,Bot,Bookmark,CalendarClock,Check,ChevronDown,ChevronRight,FileCode,FilePlus,Folder,FolderOpen,GitCompareArrows,ListTodo,MessageSquare,Paperclip,Pencil,Pin,Plus,Search,Send,Settings2,ShieldCheck,Square,Sparkles,Target,Terminal,Timer,Unplug,X,Download} from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {command,desktop,errorText,send} from './api';
@@ -9,6 +9,7 @@ import {INIT_PROMPT,SLASH_COMMANDS,commandTokenUnderCursor,expandSlashPrompt,fil
 import {filterSkillRows,skillRowsFrom,skillTokenUnderCursor,type SkillRow,type SkillToken} from './skills';
 import {GROUP_LABELS,filterByTitle,groupByProject,groupByTime,relativeLabel,type ViewMode} from './sessionList';
 import {useChat} from './store';
+import {DiffView,diffStats,parseUnifiedDiff} from './DiffView';
 import {ModelPanel} from './ModelPanel';
 import ModelSelect from './ModelSelect';
 import {UsageRing} from './UsageRing';
@@ -39,6 +40,7 @@ const APPROVAL_MODES:{value:ApprovalPolicy;label:string;description:string}[]=[
 const PLAN_USAGE='用法：/plan <任务描述>，发送后模型制定实施计划并经 plan_write 记录。';
 const GOAL_USAGE='用法：/goal <目标描述>，发送后模型经 goal_write 记录本会话目标。';
 const basename=(path:string)=>path.split(/[\\/]/).filter(Boolean).at(-1)??path;
+const dirOf=(path:string)=>{const parts=path.split(/[\\/]/).filter(Boolean);return parts.length>1?parts.slice(0,-1).join('/'):''};
 const printable=(value:unknown)=>typeof value==='string'?value:JSON.stringify(value,null,2);
 export default function App(){
  const [workspaces,setWorkspaces]=useState<WorkspaceInfo[]>([]),[workspaceId,setWorkspaceId]=useState('');
@@ -469,8 +471,24 @@ export function EventCard({event,...extras}:{event:SessionEvent}&EventCardExtras
  if(kind==='assistant.message'||kind==='assistant.attempt')return <article className="message assistant"><div className="avatar">R</div><div className="message-body"><div className="message-label">Rust Harness</div>{!!data.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{printable(data.reasoning)}</pre></details>}<div className="prose"><Markdown content={printable(data.content)}/></div>{!!data.error&&<div className="inline-error">{printable(data.error)}</div>}</div></article>;
  if(kind==='tool.call'||kind==='tool.result'){
   const args=typeof data.arguments==='object'&&data.arguments!==null?data.arguments as Record<string,unknown>:null;
-  const toolPath=(String(data.name)==='write'||String(data.name)==='edit')&&typeof args?.path==='string'?args.path:null;
-  return <details className="tool-card"><summary><Terminal size={15}/><strong>{printable(data.name)}</strong>{toolPath&&<button type="button" className="file-chip" title={toolPath} onClick={e=>{e.preventDefault();useSidePanel.getState().openPreview(toolPath)}}><FileCode size={12}/>{basename(toolPath)}</button>}<span>{kind==='tool.call'?'工具调用':data.isError?'执行失败':'已完成'}</span></summary>{kind==='tool.result'&&String(data.name).startsWith('plugin__')?<PluginResultCards workspaceId={extras.workspaceId} content={printable(data.content)}/>:<pre>{printable(data.arguments??data.content)}</pre>}{!!data.artifact&&<ArtifactDownload sessionId={event.sessionId} artifact={data.artifact as ArtifactMetadata}/>}</details>;
+  const toolName=String(data.name);
+  // 调用事件从 arguments 取路径；结果事件无 arguments，由后端在 data.path 补充。
+  const toolPath=(toolName==='write'||toolName==='edit')?(typeof args?.path==='string'?args.path:typeof data.path==='string'?data.path:null):null;
+  // edit/write 收敛为文件工具行（对齐 zcode）：调用只留一行，结果卡展开行级差异；旧事件无 diff 回退 JSON。
+  if(toolPath){
+   const isEdit=toolName==='edit';
+   const head=<>
+    {isEdit?<Pencil size={14} aria-hidden="true"/>:<FilePlus size={14} aria-hidden="true"/>}
+    <span className="ft-label">{isEdit?'编辑':'写入'}</span>
+    <button type="button" className="file-chip" title={toolPath} onClick={e=>{e.preventDefault();useSidePanel.getState().openPreview(toolPath)}}><FileCode size={12}/>{basename(toolPath)}</button>
+    {!!dirOf(toolPath)&&<span className="ft-dir">{dirOf(toolPath)}</span>}
+   </>;
+   if(kind==='tool.call')return <div className="tool-row">{head}</div>;
+   const diff=typeof data.diff==='string'&&data.diff?data.diff:null;
+   const stats=diff?diffStats(parseUnifiedDiff(diff)):null;
+   return <details className="tool-card file-tool"><summary>{head}{stats&&<span className="tool-stats"><b className="st-add">+{stats.add}</b><b className="st-del">-{stats.del}</b></span>}<span className={`ft-status${data.isError?' is-error':''}`}>{data.isError?'执行失败':'已完成'}</span><ChevronRight size={14} className="chev" aria-hidden="true"/></summary>{diff?<div className="tool-diff"><DiffView diff={diff}/></div>:<pre>{printable(data.arguments??data.content)}</pre>}{!!data.artifact&&<ArtifactDownload sessionId={event.sessionId} artifact={data.artifact as ArtifactMetadata}/>}</details>;
+  }
+  return <details className="tool-card"><summary><Terminal size={15}/><strong>{printable(data.name)}</strong>{toolPath&&<button type="button" className="file-chip" title={toolPath} onClick={e=>{e.preventDefault();useSidePanel.getState().openPreview(toolPath)}}><FileCode size={12}/>{basename(toolPath)}</button>}<span>{kind==='tool.call'?'工具调用':data.isError?'执行失败':'已完成'}</span></summary>{kind==='tool.result'&&toolName.startsWith('plugin__')?<PluginResultCards workspaceId={extras.workspaceId} content={printable(data.content)}/>:<pre>{printable(data.arguments??data.content)}</pre>}{!!data.artifact&&<ArtifactDownload sessionId={event.sessionId} artifact={data.artifact as ArtifactMetadata}/>}</details>;
  }
  if(kind==='plugin.command.result')return <article className="tool-card"><strong>{printable(data.name)}</strong><PluginResultCards workspaceId={extras.workspaceId} content={printable(data.content)}/></article>;
  if(kind==='job.started')return <details className="tool-card"><summary><Terminal size={15}/><strong>{printable(data.command)}</strong><span>{JOB_STATUS[String(data.status)]??'运行中'}</span></summary><pre>{printable(data)}</pre></details>;

@@ -164,6 +164,10 @@ pub struct ToolCall {
 pub struct ToolResult {
     pub content: String,
     pub is_error: bool,
+    /// edit/write 成功结果的 unified diff（桌面对话流行级差异展示）；其余为 None。
+    #[serde(default)]
+    #[specta(optional)]
+    pub diff: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

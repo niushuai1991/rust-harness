@@ -364,6 +364,8 @@ export type SkillScope = "project" | "user";
 export type ToolResult = {
 	content: string,
 	isError: boolean,
+	/**  edit/write 成功结果的 unified diff（桌面对话流行级差异展示）；其余为 None。 */
+	diff?: string | null,
 };
 
 /**  供应商剩余额度的卡片类别；与智谱 quota/limit 接口的 type/unit 匹配规则对应。 */
