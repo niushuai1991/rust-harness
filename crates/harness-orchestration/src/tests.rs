@@ -21,7 +21,7 @@ async fn setup() -> (tempfile::TempDir, Arc<Runtime>, ToolContext) {
     let source = dir.path().join("source");
     std::fs::create_dir(&source).unwrap();
     let runtime = Runtime::open(dir.path().join("data")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source).unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "父任务")

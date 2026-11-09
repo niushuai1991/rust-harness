@@ -7,7 +7,7 @@ async fn headless_attachment_import_read_save_enforces_session_scope() {
     let source = dir.path().join("source");
     std::fs::create_dir(&source).unwrap();
     let runtime = Runtime::open(dir.path().join("host")).await.unwrap();
-    let w = runtime.workspaces.create(&source).unwrap();
+    let w = runtime.workspaces.create(&source, None).unwrap();
     let s = runtime
         .store
         .create_session(&w.id, "attachments")

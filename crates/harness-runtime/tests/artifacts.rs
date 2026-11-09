@@ -8,7 +8,7 @@ async fn import_chunks_are_scoped_persistent_integrity_checked_and_save_full_byt
     std::fs::create_dir(&source).unwrap();
     let data = dir.path().join("host");
     let runtime = Runtime::open(data.clone()).await.unwrap();
-    let workspace = runtime.workspaces.create(&source).unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "attachments")
@@ -78,7 +78,7 @@ async fn binary_is_downloadable_and_chunks_are_bounded() {
     let source = dir.path().join("source");
     std::fs::create_dir(&source).unwrap();
     let runtime = Runtime::open(dir.path().join("host")).await.unwrap();
-    let w = runtime.workspaces.create(&source).unwrap();
+    let w = runtime.workspaces.create(&source, None).unwrap();
     let s = runtime.store.create_session(&w.id, "binary").await.unwrap();
     let input = dir.path().join("binary.bin");
     std::fs::write(&input, [0, 255, 128, 1]).unwrap();
@@ -116,11 +116,11 @@ async fn imports_reject_oversize_and_artifacts_do_not_leak_between_workspaces() 
     let source = dir.path().join("source");
     std::fs::create_dir(&source).unwrap();
     let runtime = Runtime::open(dir.path().join("host")).await.unwrap();
-    let w = runtime.workspaces.create(&source).unwrap();
+    let w = runtime.workspaces.create(&source, None).unwrap();
     let s = runtime.store.create_session(&w.id, "one").await.unwrap();
     let second_source = dir.path().join("second");
     std::fs::create_dir(&second_source).unwrap();
-    let other_w = runtime.workspaces.create(&second_source).unwrap();
+    let other_w = runtime.workspaces.create(&second_source, None).unwrap();
     let other = runtime
         .store
         .create_session(&other_w.id, "other")

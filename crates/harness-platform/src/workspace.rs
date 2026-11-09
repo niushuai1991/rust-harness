@@ -27,6 +27,16 @@ pub struct WorkspaceLease {
 fn hash(data: Option<&Vec<u8>>) -> Option<String> {
     data.map(|b| hex::encode(Sha256::digest(b)))
 }
+/// 项目显示名归一化：显式名称去除首尾空白；未填或空白回退为源目录名，永不为空。
+fn display_name(source: &Path, name: Option<&str>) -> String {
+    if let Some(name) = name.map(str::trim).filter(|n| !n.is_empty()) {
+        return name.to_owned();
+    }
+    source
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| source.to_string_lossy().into_owned())
+}
 fn snapshot(root: &Path) -> AppResult<Snapshot> {
     paths::list_files(root)?
         .into_iter()
@@ -64,10 +74,16 @@ impl WorkspaceManager {
     fn load(&self, id: &str) -> AppResult<Record> {
         let dir = self.dir(id)?;
         paths::check(&dir)?;
-        let record: Record =
+        let mut record: Record =
             serde_json::from_slice(&paths::bytes(&dir, "record.json")?).map_err(io)?;
         if record.info.id != id || Path::new(&record.info.replica_path) != dir.join("root") {
             return Err(AppError::new("INVALID_WORKSPACE", id));
+        }
+        // 旧记录（无 name 字段）加载时归一化为目录名并立即回写补齐；回写为原子替换，
+        // 失败不阻塞读取（内存归一化已生效），下次加载会再尝试。
+        if record.info.name.trim().is_empty() {
+            record.info.name = display_name(Path::new(&record.info.source_path), None);
+            let _ = self.save(&record);
         }
         Ok(record)
     }
@@ -96,7 +112,7 @@ impl WorkspaceManager {
             info: self.get(id)?,
         })
     }
-    pub fn create(&self, source: &Path) -> AppResult<WorkspaceInfo> {
+    pub fn create(&self, source: &Path, name: Option<String>) -> AppResult<WorkspaceInfo> {
         paths::check(source)?;
         let source = dunce::canonicalize(source).map_err(io)?;
         if !source.is_dir()
@@ -204,6 +220,7 @@ impl WorkspaceManager {
                 source_path: source.to_string_lossy().into_owned(),
                 replica_path: root.to_string_lossy().into_owned(),
                 created_at: now(),
+                name: display_name(&source, name.as_deref()),
                 pinned: false,
             };
             self.save(&Record {
@@ -239,6 +256,18 @@ impl WorkspaceManager {
     }
     pub fn get(&self, id: &str) -> AppResult<WorkspaceInfo> {
         Ok(self.load(id)?.info)
+    }
+    /// 项目重命名；空白名称拒绝（INVALID_NAME），返回更新后的工作区信息。
+    pub fn rename(&self, id: &str, name: String) -> AppResult<WorkspaceInfo> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(AppError::new("INVALID_NAME", "名称不能为空"));
+        }
+        let _lock = self.lock(id, true)?;
+        let mut record = self.load(id)?;
+        record.info.name = name.to_owned();
+        self.save(&record)?;
+        Ok(record.info)
     }
     fn changes(&self, record: &Record) -> AppResult<(Vec<FileChange>, Snapshot, Snapshot)> {
         let after = snapshot_with_baseline(Path::new(&record.info.replica_path), &record.baseline)?;

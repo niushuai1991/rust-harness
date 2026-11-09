@@ -12,7 +12,7 @@ vi.mock('./api',()=>({desktop:()=>true,command:mocks.command,send:mocks.send,err
 vi.mock('@tauri-apps/plugin-dialog',()=>({open:vi.fn(),save:vi.fn()}));
 const event=(id:string,sessionId:string,seq:string,content:string):SessionEvent=>({id,sessionId,seq,kind:'assistant.message',data:{content},createdAt:''});
 beforeEach(()=>{useChat.setState({events:{},streams:{},statuses:{}});useSidePanel.getState().reset();mocks.command.mockReset();mocks.send.mockReset();mocks.command.mockImplementation(async(name:string,args:any)=>{
- if(name==='workspace_list')return [{id:'w',sourcePath:'D:/project',replicaPath:'D:/copy',createdAt:''}];
+ if(name==='workspace_list')return [{id:'w',sourcePath:'D:/project',replicaPath:'D:/copy',createdAt:'',name:'project'}];
  if(name==='model_list')return [{id:'m',name:'测试模型',compatibility:'standard',providerId:'custom',apiMode:'chatCompletions',maxOutputTokens:null,baseUrl:'https://example.test',model:'m',credentialRef:'',proxy:null,efforts:['low','high'],effort:null,enabled:true,builtin:false}];
  if(name==='provider_list')return [{id:'custom',name:'自定义供应商',builtin:false,compatibility:'standard',endpoints:[{apiMode:'chatCompletions',baseUrl:'https://example.test'}],defaultModel:'m',credentialRef:'',proxy:null,enabled:true,builtinModels:[],disabledModels:[]}];
  if(name==='default_selection_get')return null;
@@ -28,7 +28,7 @@ describe('聊天交互',()=>{
   let resolveCreation!:(value:unknown)=>void;
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/project-A'},{id:'other',sourcePath:'D:/project-B'}];
+   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/project-A',name:'project-A'},{id:'other',sourcePath:'D:/project-B',name:'project-B'}];
    if(name==='session_create')return new Promise(resolve=>{resolveCreation=resolve});
    if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A'},{id:'b',workspaceId:'w',title:'会话 B'},{id:'other-session',workspaceId:'other',title:'B 的会话'}];
    return original(name,args);
@@ -67,7 +67,7 @@ describe('侧栏会话入口',()=>{
  it('多项目时不再显示工作区切换下拉框，新建聊天按钮可用',async()=>{
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/A'},{id:'other',sourcePath:'D:/B'}];
+   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/A',name:'A'},{id:'other',sourcePath:'D:/B',name:'B'}];
    if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A'},{id:'other-session',workspaceId:'other',title:'B 的会话'}];
    return original(name,args);
   });
@@ -87,7 +87,7 @@ describe('侧栏会话入口',()=>{
   let createdSession:{id:string;workspaceId:string;title:string}|null=null;
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/A'},{id:'other',sourcePath:'D:/B'}];
+   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/A',name:'A'},{id:'other',sourcePath:'D:/B',name:'B'}];
    if(name==='session_list')return [...(createdSession?[createdSession]:[]),{id:'a',workspaceId:'w',title:'会话 A'},{id:'other-session',workspaceId:'other',title:'B 的会话'}];
    if(name==='session_create'){createdSession={id:'created-other',workspaceId:'other',title:'B 的新会话'};return createdSession}
    return original(name,args);
@@ -291,7 +291,7 @@ describe('工作区的首次会话',()=>{
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
    if(name==='workspace_list')return [];
-   if(name==='workspace_open')return {id:'fresh',sourcePath:'D:/fresh',replicaPath:'D:/copy-fresh'};
+   if(name==='workspace_open')return {id:'fresh',sourcePath:'D:/fresh',replicaPath:'D:/copy-fresh',createdAt:'',name:'fresh'};
    if(name==='session_list')return [];
    if(name==='session_create')return {id:'first',workspaceId:'fresh',title:'新会话'};
    if(name==='session_events')return [];
@@ -301,6 +301,11 @@ describe('工作区的首次会话',()=>{
   render(<App/>);await screen.findByLabelText('当前模型');
   expect(screen.getByLabelText('消息')).toBeDisabled();
   fireEvent.click(screen.getByRole('button',{name:/打开工作区/}));
+  // 命名弹窗预填目录名，确认后携带名称创建
+  const dialog=await screen.findByRole('dialog',{name:'打开工作区'});
+  expect(screen.getByLabelText('项目名称')).toHaveValue('fresh');
+  fireEvent.click(within(dialog).getByRole('button',{name:'创建'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_open',{path:'D:/fresh',name:'fresh'}));
   await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_list',{workspaceId:'fresh',allWorkspaces:true}));
   await waitFor(()=>expect(screen.getByLabelText('消息')).toBeEnabled());
   const input=screen.getByLabelText('消息');input.focus();expect(input).toHaveFocus();
@@ -342,7 +347,7 @@ describe('工作区的首次会话',()=>{
   let resolveCreation!:(value:unknown)=>void;
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/A'},{id:'other',sourcePath:'D:/B'}];
+   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/A',name:'A'},{id:'other',sourcePath:'D:/B',name:'B'}];
    if(name==='session_list')return [{id:'other-session',workspaceId:'other',title:'B 的会话'}];
    if(name==='session_create')return new Promise(resolve=>{resolveCreation=resolve});
    return original(name,args);
@@ -364,7 +369,7 @@ describe('工作区的首次会话',()=>{
   let resolveCreation!:(value:unknown)=>void;
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/A'},{id:'other',sourcePath:'D:/B'}];
+   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/A',name:'A'},{id:'other',sourcePath:'D:/B',name:'B'}];
    if(name==='session_list')return created?[{id:'first',workspaceId:'w',title:'A 的首个会话'},{id:'other-session',workspaceId:'other',title:'B 的会话'}]:[{id:'other-session',workspaceId:'other',title:'B 的会话'}];
    if(name==='session_create'){created=true;return new Promise(resolve=>{resolveCreation=resolve})}
    return original(name,args);
@@ -720,12 +725,12 @@ describe('会话列表视图',()=>{
  function installSessionMocks(){
   mocks.command.mockImplementation(async(name:string,args:any)=>{
    if(name==='workspace_list')return [
-    {id:'w',sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',pinned:false},
-    {id:'other',sourcePath:'D:/beta',replicaPath:'D:/copy-b',createdAt:'',pinned:false}];
+    {id:'w',sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',name:'alpha',pinned:false},
+    {id:'other',sourcePath:'D:/beta',replicaPath:'D:/copy-b',createdAt:'',name:'beta',pinned:false}];
    if(name==='session_list')return [
     {id:'a',workspaceId:'w',title:'会话 A',createdAt:'',updatedAt:new Date().toISOString(),parentId:null},
     {id:'b',workspaceId:'other',title:'B 的会话',createdAt:'',updatedAt:new Date().toISOString(),parentId:null}];
-   if(name==='workspace_set_pinned')return {id:args.workspaceId,sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',pinned:args.pinned};
+   if(name==='workspace_set_pinned')return {id:args.workspaceId,sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',name:'alpha',pinned:args.pinned};
    if(name==='session_events')return [event(`e-${args.sessionId}`,args.sessionId,'1',`内容 ${args.sessionId}`)];
    return [];
   });
@@ -769,7 +774,7 @@ describe('会话列表视图',()=>{
  it('置顶失败时回滚乐观更新并显示错误',async()=>{
   localStorage.clear();
   mocks.command.mockImplementation(async(name:string,args:any)=>{
-   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',pinned:false}];
+   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',name:'alpha',pinned:false}];
    if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A',createdAt:'',updatedAt:new Date().toISOString(),parentId:null}];
    if(name==='workspace_set_pinned')throw new Error('写入失败');
    if(name==='session_events')return [event(`e-${args.sessionId}`,args.sessionId,'1',`内容 ${args.sessionId}`)];
@@ -780,5 +785,70 @@ describe('会话列表视图',()=>{
   fireEvent.click(screen.getByRole('button',{name:'置顶 alpha'}));
   await screen.findByText('写入失败');
   expect(screen.getByRole('button',{name:'置顶 alpha'})).toBeInTheDocument();
+ });
+});
+
+describe('项目命名',()=>{
+ function namingBackend(options:{empty?:boolean;renameError?:string}={}){
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='workspace_list')return options.empty?[]:[{id:'w',sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',name:'alpha'}];
+   if(name==='workspace_rename'){if(options.renameError)throw new Error(options.renameError);return {id:args.workspaceId,sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',name:args.name}}
+   if(name==='workspace_open')return {id:'fresh',sourcePath:args.path,replicaPath:'D:/copy',createdAt:'',name:args.name||'alpha-dir'};
+   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A',createdAt:'',updatedAt:new Date().toISOString(),parentId:null}];
+   if(name==='session_events')return [event(`e-${args.sessionId}`,args.sessionId,'1',`内容 ${args.sessionId}`)];
+   return original(name,args);
+  });
+ }
+ it('打开工作区时名称留空则回退目录名',async()=>{
+  localStorage.clear();namingBackend({empty:true});
+  vi.mocked(open).mockResolvedValueOnce('D:/alpha-dir');
+  render(<App/>);await screen.findByLabelText('当前模型');
+  fireEvent.click(screen.getByRole('button',{name:/打开工作区/}));
+  await screen.findByRole('dialog',{name:'打开工作区'});
+  expect(screen.getByText('留空则使用目录名「alpha-dir」。')).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText('项目名称'),{target:{value:'  '}});
+  fireEvent.click(screen.getByRole('button',{name:'创建'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_open',{path:'D:/alpha-dir',name:null}));
+  // 后端归一化后的目录名显示在工作区按钮与面包屑上
+  await waitFor(()=>expect(screen.getAllByText('alpha-dir').length).toBeGreaterThanOrEqual(2));
+ });
+ it('项目组头可重命名并立即显示新名称',async()=>{
+  localStorage.clear();namingBackend();
+  render(<App/>);await screen.findByText('内容 a');
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  expect(screen.getByRole('button',{name:/^alpha \d+$/})).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button',{name:'重命名 alpha'}));
+  const dialog=await screen.findByRole('dialog',{name:'重命名项目'});
+  expect(screen.getByLabelText('项目名称')).toHaveValue('alpha');
+  fireEvent.change(screen.getByLabelText('项目名称'),{target:{value:'新名字'}});
+  fireEvent.click(within(dialog).getByRole('button',{name:'保存'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_rename',{workspaceId:'w',name:'新名字'}));
+  expect(screen.getByRole('button',{name:/^新名字 \d+$/})).toBeInTheDocument();
+  expect(screen.queryByRole('button',{name:/^alpha \d+$/})).not.toBeInTheDocument();
+ });
+ it('重命名留空提交时显示后端错误且名称不变',async()=>{
+  localStorage.clear();namingBackend({renameError:'名称不能为空'});
+  render(<App/>);await screen.findByText('内容 a');
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  fireEvent.click(screen.getByRole('button',{name:'重命名 alpha'}));
+  await screen.findByRole('dialog',{name:'重命名项目'});
+  fireEvent.change(screen.getByLabelText('项目名称'),{target:{value:'  '}});
+  fireEvent.click(screen.getByRole('button',{name:'保存'}));
+  await screen.findByText('名称不能为空');
+  expect(screen.getByRole('button',{name:/^alpha \d+$/})).toBeInTheDocument();
+ });
+ it('中文与空格路径预填目录名并随创建提交',async()=>{
+  localStorage.clear();namingBackend({empty:true});
+  vi.mocked(open).mockResolvedValueOnce('D:/我的 项目');
+  render(<App/>);await screen.findByLabelText('当前模型');
+  fireEvent.click(screen.getByRole('button',{name:/打开工作区/}));
+  await screen.findByRole('dialog',{name:'打开工作区'});
+  // 预填保留空格与中文；确认后原样携带名称提交
+  expect(screen.getByLabelText('项目名称')).toHaveValue('我的 项目');
+  fireEvent.click(screen.getByRole('button',{name:'创建'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_open',{path:'D:/我的 项目',name:'我的 项目'}));
+  // 后端返回的中文名称显示在工作区按钮与面包屑上
+  await waitFor(()=>expect(screen.getAllByText('我的 项目').length).toBeGreaterThanOrEqual(2));
  });
 });

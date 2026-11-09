@@ -5,7 +5,10 @@ import { invoke as __TAURI_INVOKE, Channel } from "@tauri-apps/api/core";
 /** Commands */
 export const commands = {
 	workspaceList: () => typedError<WorkspaceInfo[], AppError>(__TAURI_INVOKE("workspace_list")),
-	workspaceOpen: (path: string) => typedError<WorkspaceInfo, AppError>(__TAURI_INVOKE("workspace_open", { path })),
+	/**  打开（创建）工作区；name 为空或未填时由后端归一化为源目录名。 */
+	workspaceOpen: (path: string, name: string | null) => typedError<WorkspaceInfo, AppError>(__TAURI_INVOKE("workspace_open", { path, name })),
+	/**  项目重命名；空白名称由平台层拒绝（INVALID_NAME），返回更新后的工作区信息。 */
+	workspaceRename: (workspaceId: string, name: string) => typedError<WorkspaceInfo, AppError>(__TAURI_INVOKE("workspace_rename", { workspaceId, name })),
 	/**  会话列表「项目」视图的置顶切换；先校验工作区存在，返回更新后的工作区信息。 */
 	workspaceSetPinned: (workspaceId: string, pinned: boolean) => typedError<WorkspaceInfo, AppError>(__TAURI_INVOKE("workspace_set_pinned", { workspaceId, pinned })),
 	workspaceDiff: (workspaceId: string) => typedError<FileChange[], AppError>(__TAURI_INVOKE("workspace_diff", { workspaceId })),
@@ -380,6 +383,8 @@ export type WorkspaceInfo = {
 	sourcePath: string,
 	replicaPath: string,
 	createdAt: string,
+	/**  项目显示名；创建未填时归一化为源目录名，加载旧记录（无此字段）时空值同样归一化，永不为空。 */
+	name?: string,
 	/**  会话列表「项目」视图置顶标记；工作区记录本身不落库，由桌面端从 settings KV 派生注入。 */
 	pinned?: boolean,
 };
