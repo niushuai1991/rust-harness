@@ -612,6 +612,38 @@ describe('斜杠命令补全',()=>{
  });
 });
 
+describe('补全弹层滚动跟随',()=>{
+ // jsdom 未实现 scrollIntoView：测试期间替换为 spy，结束后还原。
+ let scrollIntoView:ReturnType<typeof vi.fn>;
+ beforeEach(()=>{scrollIntoView=vi.fn();(Element.prototype as any).scrollIntoView=scrollIntoView});
+ afterEach(()=>{delete (Element.prototype as any).scrollIntoView});
+ it('斜杠菜单方向键移动选中项时列表滚动跟随',async()=>{
+  render(<App/>);await screen.findByText('内容 a');
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'/'}});
+  fireEvent.keyDown(input,{key:'ArrowDown'});
+  expect(scrollIntoView).toHaveBeenCalled();
+  expect(scrollIntoView).toHaveBeenLastCalledWith({block:'nearest'});
+ });
+ it('技能菜单键盘选择滚动跟随，Tab 补全选中项为规范名',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  const skills=Array.from({length:20},(_,i)=>({name:`skill-${i}`,description:`技能描述 ${i}`,path:`D:/skills/skill-${i}`,scope:'workspace',enabled:true,brokenReason:null}));
+  mocks.command.mockImplementation(async(name:string,args:any)=>name==='skill_list'?skills:original(name,args));
+  render(<App/>);await screen.findByText('内容 a');
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'$'}});
+  const options=within(screen.getByRole('listbox',{name:'技能补全'})).getAllByRole('option');
+  expect(options).toHaveLength(20);
+  expect(options[0]).toHaveAttribute('aria-selected','true');
+  fireEvent.keyDown(input,{key:'ArrowDown'});
+  expect(options[1]).toHaveAttribute('aria-selected','true');
+  expect(scrollIntoView).toHaveBeenCalled();
+  expect(scrollIntoView).toHaveBeenLastCalledWith({block:'nearest'});
+  fireEvent.keyDown(input,{key:'Tab'});
+  expect(input).toHaveValue('$skill-1 ');
+ });
+});
+
 describe('加号添加菜单',()=>{
  it('点 + 弹出菜单，计划/目标插入斜杠命令并关闭菜单',async()=>{
   render(<App/>);await screen.findByText('内容 a');
