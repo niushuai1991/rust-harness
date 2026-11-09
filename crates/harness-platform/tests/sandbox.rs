@@ -11,7 +11,9 @@ async fn restricted_process_writes_inside_and_cannot_write_outside() {
     fs::create_dir(&source).unwrap();
     fs::write(source.join("outside.txt"), "safe").unwrap();
     let manager = WorkspaceManager::new(tmp.path().join("host")).unwrap();
-    let info = manager.create(&source, None).unwrap();
+    let info = manager
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
     let command = format!(
         "[IO.File]::WriteAllText('inside.txt','ok'); try {{ [IO.File]::WriteAllText('{}','escape'); exit 9 }} catch {{ exit 0 }}",
         source.join("outside.txt").display()
@@ -41,7 +43,9 @@ async fn cancellation_returns_and_releases_runtime_lease() {
     let source = tmp.path().join("source");
     fs::create_dir(&source).unwrap();
     let manager = WorkspaceManager::new(tmp.path().join("host")).unwrap();
-    let info = manager.create(&source, None).unwrap();
+    let info = manager
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
     let cancel = CancellationToken::new();
     let ps = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
         .join("System32/WindowsPowerShell/v1.0/powershell.exe");
@@ -100,7 +104,9 @@ async fn sandboxed_stdio_roundtrip_and_drop_releases_lease() {
     let source = tmp.path().join("source");
     fs::create_dir(&source).unwrap();
     let manager = WorkspaceManager::new(tmp.path().join("host")).unwrap();
-    let info = manager.create(&source, None).unwrap();
+    let info = manager
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
     let ps = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
         .join("System32/WindowsPowerShell/v1.0/powershell.exe");
     let args = [
@@ -137,4 +143,37 @@ async fn sandboxed_stdio_roundtrip_and_drop_releases_lease() {
     assert_eq!(manager.refresh(&info.id).unwrap_err().code, "BUSY");
     drop(writer);
     manager.refresh(&info.id).unwrap();
+}
+
+#[tokio::test]
+async fn run_in_unsandboxed_writes_outside_replica() {
+    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.cache/tests");
+    fs::create_dir_all(&base).unwrap();
+    let tmp = tempfile::tempdir_in(base).unwrap();
+    let source = tmp.path().join("source");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("outside.txt"), "safe").unwrap();
+    let manager = WorkspaceManager::new(tmp.path().join("host")).unwrap();
+    let info = manager
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
+    // 提权重跑：宿主令牌直接写源项目（受限令牌下被拦截的位置）。
+    let command = format!(
+        "[IO.File]::WriteAllText('{}','escalated')",
+        source.join("outside.txt").display()
+    );
+    let out = ShellService::run_in(
+        std::path::Path::new(&info.replica_path),
+        &info.id,
+        &command,
+        CancellationToken::new(),
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.exit_code, 0, "{} {}", out.stdout, out.stderr);
+    assert_eq!(
+        fs::read_to_string(source.join("outside.txt")).unwrap(),
+        "escalated"
+    );
 }

@@ -22,14 +22,14 @@
 - `WorkspaceInfo`（harness-contracts）新增 `execution_mode: "replica" | "worktree"`，record.json 落盘；旧记录缺字段按 `replica` 解释，行为完全不变。`worktree` 模式仅对 git 仓库开放（源目录含 `.git`），创建工作区时选择，之后不可变更。
 - `record.json` 新增 `worktrees` 映射：`session_id -> { path, branch, created_at }`，登记宿主创建的会话 worktree，供清理与查询。
 - worktree 为**会话级**：每个会话一个，路径 `<sourcePath>/.worktrees/harness-<session_id 前 8 位>/`，分支默认 `feat/session-<session_id 前 8 位>`（宿主无法预知任务性质；模型可在提权批准后 `git branch -m` 改名以符合 AGENTS.md 的 feat/fix 约定）。基于创建时刻的源项目 `HEAD` 新建分支。
-- 创建时机：**会话首个 turn 启动前懒创建**（宿主进程执行 `git worktree add`，不经过 agent 沙箱）。创建失败（非 git、分支冲突、磁盘等）时会话回落 `replica` 模式并在流内提示；`.worktrees/` 缺失时先创建该目录。
+- 创建时机：**会话首个 turn 启动前懒创建**（宿主进程执行 `git worktree add`，不经过 agent 沙箱；`core.hooksPath=NUL` 防源项目 hooks）。创建失败（分支冲突、残留目录等）时本回合报错终止——worktree 模式不建隔离副本，无副本可降级；`.worktrees/` 缺失时先创建该目录。
 - 执行根解析收敛为单一来源：租约新增 `execution_root()`，replica 模式返回 `replica_path`，worktree 模式返回 worktree 路径。文件工具、shell、skills/LSP 扫描、`workspace_context`（`harness-runtime/src/agent.rs`）统一改读该方法。
 - 系统提示改写（worktree 模式）：「执行根为源项目的 worktree 分支 X（路径 Y），你的编辑直接生效于该分支工作区；worktree 已由宿主创建，无需自行 git worktree add。主仓 `.git` 与 main 工作区不可直接写入，commit/push 等操作用 shell 执行 git 命令，被沙箱拦截时会触发提权审批。」——显式声明代建事实以消解 AGENTS.md「必须自建 worktree」条款与运行环境的指令冲突。
 
 ## 沙箱租约与授权
 
 - `sandbox_lease`（`harness-platform/src/shell/windows.rs`）放宽结构校验：执行根允许两类——数据目录副本 root（现状）与已登记工作区的 `<sourcePath>/.worktrees/<dir>`；后者必须与 record.json 的 worktrees 登记匹配，防止路径逃逸。
-- capability SID 从会话 id 派生（`capability()` 现有实现不变）；宿主创建 worktree 后调用 `shell::prepare(root, session_id)` 对 worktree 目录打 DACL/完整性标签。ACL 打在**软件自建的目录**上，随目录删除一并消失，无残留。
+- capability SID 派生：uuid 形态的 id 直接取字节，其他形态（会话 id）用 uuid5 确定性派生，同一 id 恒得同一 SID。宿主创建 worktree 后调用 `shell::prepare(root, session_id)` 对 worktree 目录打 DACL/完整性标签。ACL 打在**软件自建的目录**上，随目录删除一并消失，无残留。
 - 沙箱临时目录沿用 `<data_dir>/workspaces/<wid>/temp`，不落在源项目内。
 - worktree 模式下主仓 `.git` 与 main 工作区位于授权树之外，受限令牌天然只读——与 codex 的「保护性元数据」语义等效，无需额外 deny ACE。
 
@@ -65,7 +65,8 @@
 - 不做宿主 git 通道（一键 commit/PR 面板）：git 写操作统一走提权重跑。
 - 副本模式保持默认与全部现有行为：本 spec 全部改动以 `execution_mode` 分流，replica 路径零变化，回归风险收敛在新增分支。
 - 多会话并行同工作区时各自独立 worktree，互不影响；会话删除不删 worktree（保留现场），工作区删除时按登记表清理宿主创建的 worktree。
-- 风险：提权关键词误判（保守表缓解）；AGENTS.md 与系统提示残余冲突（代建声明 + 分支改名通道缓解）；worktree 构建冷启动慢（v1 接受）。
+- v1 已知限制：stdio MCP 服务器与生产模式语言服务器启动依赖隔离副本的沙箱租约反推，worktree 执行模式下明确报错 `UNSUPPORTED`（test seam 注册的 LSP 连接不受影响）。
+- 风险：提权关键词误判（保守表缓解；中文系统 PowerShell 错误流已强制 UTF-8 输出并覆盖「的访问被拒绝」等措辞）；AGENTS.md 与系统提示残余冲突（代建声明 + 分支改名通道缓解）；worktree 构建冷启动慢（v1 接受）。
 
 ## 验收要点
 

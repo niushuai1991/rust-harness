@@ -7,7 +7,7 @@ const WIDTH_KEY='side-panel-width';
 const MIN_WIDTH=280;
 function savedWidth(){const value=Number(localStorage.getItem(WIDTH_KEY));return Number.isFinite(value)&&value>=MIN_WIDTH?value:430}
 // 右侧面板容器：更改审阅 + 文件预览；宽度手写 pointer 拖拽并记忆（参考 zcode，避免整树重渲染）。
-export function SidePanel({workspaceId}:{workspaceId:string}) {
+export function SidePanel({workspaceId,executionMode}:{workspaceId:string;executionMode?:'replica'|'worktree'}) {
  const open=useSidePanel(s=>s.open),view=useSidePanel(s=>s.view),previewPath=useSidePanel(s=>s.previewPath),setView=useSidePanel(s=>s.setView),close=useSidePanel(s=>s.close);
  const [width,setWidth]=useState(savedWidth);
  const widthRef=useRef(width);widthRef.current=width;
@@ -36,7 +36,7 @@ export function SidePanel({workspaceId}:{workspaceId:string}) {
    <button type="button" className="icon-soft" aria-label="关闭面板" onClick={close}><X size={17}/></button>
   </header>
   <div className="side-panel-body">
-   {view==='changes'?<ChangesView workspaceId={workspaceId}/>:<PreviewView workspaceId={workspaceId} path={previewPath}/>}
+   {view==='changes'?<ChangesView workspaceId={workspaceId} executionMode={executionMode}/>:<PreviewView workspaceId={workspaceId} path={previewPath}/>}
   </div>
   <div className="side-panel-resizer" role="separator" aria-orientation="vertical" aria-label="调整面板宽度" onPointerDown={startDrag}/>
  </aside>;

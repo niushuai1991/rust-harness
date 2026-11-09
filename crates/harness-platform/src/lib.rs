@@ -10,7 +10,7 @@ pub use paths::{
 };
 pub use pty::{OutputBuffer, PtyService, READ_CAP, SandboxedPty};
 pub use secrets::{delete_secret, get_secret, set_secret};
-pub use shell::{ProcessOutput, SandboxedStdio, ShellService};
+pub use shell::{ProcessOutput, SandboxedStdio, ShellService, classify_sandbox_denial};
 pub use workspace::{WorkspaceLease, WorkspaceManager};
 pub(crate) fn io(e: impl std::fmt::Display) -> harness_contracts::AppError {
     harness_contracts::AppError::new("IO", e.to_string())

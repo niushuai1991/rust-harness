@@ -6,7 +6,8 @@ import type {FileChange,WorkspaceFileDiff} from './types';
 type DiffState={loading?:boolean;view?:WorkspaceFileDiff;error?:string};
 const KIND_ICONS:{[kind:string]:typeof FilePen}={modified:FilePen,added:FilePlus,deleted:FileMinus};
 // 改动审阅视图：自 DiffPanel 迁入右侧面板；diff 懒加载，打开期间轮询保留用户勾选。
-export function ChangesView({workspaceId}:{workspaceId:string}) {
+// worktree 执行模式改动已直接落盘，审阅只读展示，无同步动作。
+export function ChangesView({workspaceId,executionMode='replica'}:{workspaceId:string;executionMode?:'replica'|'worktree'}) {
  const [changes,setChanges]=useState<FileChange[]>([]),[selected,setSelected]=useState<string[]>([]),[error,setError]=useState(''),[busy,setBusy]=useState(false),[confirm,setConfirm]=useState(false),[loaded,setLoaded]=useState(false),[status,setStatus]=useState('');
  const [expanded,setExpanded]=useState<Record<string,boolean>>({}),[diffs,setDiffs]=useState<Record<string,DiffState>>({});
  const changesRef=useRef<FileChange[]>([]),expandedRef=useRef<Record<string,boolean>>({});
@@ -74,7 +75,8 @@ export function ChangesView({workspaceId}:{workspaceId:string}) {
   </div>
   <div className="changes-foot">
    <span className="muted">已选择 {selected.length} 个文件</span>
-   {confirm?<><span>确认写入原项目？</span><button onClick={()=>setConfirm(false)} disabled={busy}>返回审阅</button><button className="primary" onClick={apply} disabled={busy}>{busy?'同步中…':'确认应用更改'}</button></>
+   {executionMode==='worktree'?<span className="muted">worktree 执行模式：改动已直接写入会话 worktree 分支，无需审阅同步。</span>
+    :confirm?<><span>确认写入原项目？</span><button onClick={()=>setConfirm(false)} disabled={busy}>返回审阅</button><button className="primary" onClick={apply} disabled={busy}>{busy?'同步中…':'确认应用更改'}</button></>
     :<button className="primary" disabled={busy||!selected.length} onClick={()=>setConfirm(true)}>同步选中文件</button>}
   </div>
  </>;

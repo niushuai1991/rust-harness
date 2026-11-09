@@ -66,10 +66,19 @@ pub struct Runtime {
     custom: crate::registry::Tools,
     _host_lock: std::fs::File,
 }
+/// 回合执行上下文：执行根、执行模式、shell 沙箱 capability 派生 id 与 worktree 模式的分支名。
+#[derive(Clone)]
+struct ExecContext {
+    root: PathBuf,
+    mode: ExecutionMode,
+    capability_id: String,
+    branch: Option<String>,
+}
 struct ToolExecution<'a> {
     session: &'a str,
     workspace: &'a str,
     root: &'a Path,
+    exec: &'a ExecContext,
     call: &'a ToolCall,
     reads: &'a mut HashMap<String, String>,
     provider: Arc<dyn ModelProvider>,
@@ -284,6 +293,13 @@ impl Runtime {
         match &config {
             ServerConfig::StreamableHttp { .. } => self.mcp.connect_http(&config, true).await?,
             ServerConfig::Stdio { command, args, .. } => {
+                // worktree 执行模式不建隔离副本，沙箱 stdio 反推租约失败；v1 明确不支持。
+                if info.execution_mode == ExecutionMode::Worktree {
+                    return Err(AppError::new(
+                        "UNSUPPORTED",
+                        "worktree 执行模式暂不支持 stdio MCP 服务器",
+                    ));
+                }
                 let child = ShellService::spawn_stdio(
                     Path::new(&info.replica_path),
                     command,
@@ -350,6 +366,13 @@ impl Runtime {
             return Ok(existing);
         }
         let info = self.workspaces.get(workspace)?;
+        // worktree 执行模式不建隔离副本，沙箱 stdio 反推租约失败；v1 明确不支持。
+        if info.execution_mode == ExecutionMode::Worktree {
+            return Err(AppError::new(
+                "UNSUPPORTED",
+                "worktree 执行模式暂不支持生产模式启动语言服务器；可用 test seam 注册连接",
+            ));
+        }
         let replica = PathBuf::from(&info.replica_path);
         let child = ShellService::spawn_stdio(
             &replica,
@@ -680,7 +703,13 @@ impl Runtime {
                 .await?;
             return Err(AppError::new("CANCELLED", "消息已在排队时取消"));
         }
-        let lease = self.workspaces.acquire(&session.workspace_id)?;
+        // worktree 执行模式：会话首个 turn 前懒建宿主代建的会话 worktree
+        // （写主仓 .git 由宿主完成，不经 agent 沙箱）；失败则本回合报错终止。
+        let exec = self
+            .resolve_exec_root(&session.workspace_id, &session_id)
+            .await?;
+        // 租约持有至回合结束（序列化同一工作区的并发运行与同步）。
+        let _lease = self.workspaces.acquire(&session.workspace_id)?;
         let token_budget = match inherited_budget {
             Some(budget) => budget,
             None => Arc::new(TurnBudget::new(
@@ -722,12 +751,12 @@ impl Runtime {
                 self.publish_token_budget(&session_id, &token_budget, token_budget.snapshot())
                     .await?;
             }
-            self.load_skill_mentions(&session_id, &text, Path::new(&lease.info.replica_path))
+            self.load_skill_mentions(&session_id, &text, &exec.root)
                 .await?;
             self.steps(
                 &session_id,
                 &session.workspace_id,
-                Path::new(&lease.info.replica_path),
+                &exec,
                 provider,
                 cancel.clone(),
                 token_budget.clone(),
@@ -793,11 +822,12 @@ impl Runtime {
         self: &Arc<Self>,
         session: &str,
         workspace: &str,
-        root: &Path,
+        exec: &ExecContext,
         provider: Arc<dyn ModelProvider>,
         cancel: CancellationToken,
         token_budget: Arc<TurnBudget>,
     ) -> AppResult<()> {
+        let root = exec.root.as_path();
         self.plugins.set_workspace_policy(
             workspace,
             vec![
@@ -811,7 +841,7 @@ impl Runtime {
             ],
         );
         let skills_catalog = self.skills.catalog(root).await?;
-        let context = workspace_context(root, &skills_catalog)?;
+        let context = workspace_context(root, exec, &skills_catalog)?;
         self.append(session, "context.snapshot", json!({"content":context}))
             .await?;
         let mut reads = HashMap::new();
@@ -1018,12 +1048,13 @@ impl Runtime {
                     let effective=tools.iter().find(|t|t.name==call.name).ok_or_else(||AppError::new("TOOL_UNAVAILABLE",&call.name))?;
                     if !jsonschema::validator_for(&effective.parameters).map_err(internal)?.is_valid(&call.arguments){return Err(AppError::new("TOOL_ARGUMENTS","钩子修改后的工具参数无效"));}
                     let needs_approval=self.custom.lock().unwrap().get(&call.name).map(|t|t.requires_approval()).unwrap_or_else(||requires_approval(&call.name));
-                    if needs_approval{self.approve(session,&call,&cancel).await?;}
+                    if needs_approval{self.approve(session,&call,&cancel,false,None).await?;}
                     let tool_cancel=cancel.child_token();
                     let work = self.execute_tool(ToolExecution {
                         session,
                         workspace,
                         root,
+                        exec,
                         call: &call,
                         reads: &mut reads,
                         provider: provider.clone(),
@@ -1053,6 +1084,7 @@ impl Runtime {
                             e.to_string()
                         },
                         is_error: true,
+                        escalated: false,
                     },
                 };
                 if !cancel.is_cancelled() {
@@ -1096,16 +1128,48 @@ impl Runtime {
                         "{preview}\n\n[完整输出 artifact:{hash}；使用 read_artifact 分块读取]"
                     );
                 }
-                self.append(session,"tool.result",json!({"callId":call.id,"name":call.name,"content":content,"isError":result.is_error,"status":status,"artifact":artifact})).await?;
+                self.append(session,"tool.result",json!({"callId":call.id,"name":call.name,"content":content,"isError":result.is_error,"status":status,"artifact":artifact,"escalated":result.escalated})).await?;
             }
             step = step.saturating_add(1);
         }
+    }
+    /// 解析会话执行根与执行上下文：replica 模式为隔离副本（capability 派生自工作区 id）；
+    /// worktree 模式为宿主代建的会话 worktree（capability 派生自会话 id，与 prepare 授权一致）。
+    async fn resolve_exec_root(
+        &self,
+        workspace_id: &str,
+        session_id: &str,
+    ) -> AppResult<ExecContext> {
+        let info = self.workspaces.get(workspace_id)?;
+        if info.execution_mode == ExecutionMode::Replica {
+            return Ok(ExecContext {
+                root: PathBuf::from(&info.replica_path),
+                mode: ExecutionMode::Replica,
+                capability_id: workspace_id.to_owned(),
+                branch: None,
+            });
+        }
+        let manager = self.workspaces.clone();
+        let wid = workspace_id.to_owned();
+        let sid = session_id.to_owned();
+        let worktree =
+            tokio::task::spawn_blocking(move || manager.ensure_session_worktree(&wid, &sid))
+                .await
+                .map_err(internal)??;
+        Ok(ExecContext {
+            root: PathBuf::from(&worktree.path),
+            mode: ExecutionMode::Worktree,
+            capability_id: session_id.to_owned(),
+            branch: Some(worktree.branch),
+        })
     }
     pub(crate) async fn approve(
         &self,
         session: &str,
         call: &ToolCall,
         cancel: &CancellationToken,
+        escalated: bool,
+        denial_rule: Option<&str>,
     ) -> AppResult<()> {
         let policy = self.approval_policy(session);
         // 自主档下 shell 危险命令在审批理由中点名规则，便于用户判断。
@@ -1122,9 +1186,18 @@ impl Runtime {
             session_id: session.into(),
             tool: call.name.clone(),
             arguments: call.arguments.clone(),
-            reason: match dangerous {
-                Some(rule) => format!("自主模式检测到危险命令（{rule}），需要确认本次执行。"),
-                None => "允许此工具在隔离工作副本中执行？原项目仍需单独确认同步。".into(),
+            escalated,
+            reason: match (escalated, dangerous) {
+                (true, _) => match denial_rule {
+                    Some(rule) => {
+                        format!("命令疑似被沙箱拦截（{rule}）。是否不带沙箱重跑一次？")
+                    }
+                    None => "该命令请求不带沙箱直接执行。是否批准一次提权重跑？".into(),
+                },
+                (false, Some(rule)) => {
+                    format!("自主模式检测到危险命令（{rule}），需要确认本次执行。")
+                }
+                (false, None) => "允许此工具在隔离工作副本中执行？原项目仍需单独确认同步。".into(),
             },
         };
         // 会话级策略（桌面端设置）可自动裁决的档位不经 pending 等待；事件流仍完整记录请求与结算。
@@ -1188,6 +1261,7 @@ impl Runtime {
             session,
             workspace,
             root,
+            exec,
             call,
             reads,
             provider,
@@ -1234,7 +1308,14 @@ impl Runtime {
                 let content = arg(a, "content")?;
                 harness_platform::write_file(root, path, content)?;
                 reads.insert(path.into(), content.into());
-                format!("已写入副本 {path}")
+                format!(
+                    "已写入{} {path}",
+                    if exec.mode == ExecutionMode::Worktree {
+                        ""
+                    } else {
+                        "副本"
+                    }
+                )
             }
             "edit" => {
                 let _mutation = FILE_MUTATION.lock().unwrap();
@@ -1260,7 +1341,14 @@ impl Runtime {
                 let updated = content.replacen(old, new, 1);
                 harness_platform::write_file(root, path, &updated)?;
                 reads.insert(path.into(), updated);
-                format!("已修改副本 {path}")
+                format!(
+                    "已修改{} {path}",
+                    if exec.mode == ExecutionMode::Worktree {
+                        ""
+                    } else {
+                        "副本"
+                    }
+                )
             }
             "list_files" => {
                 serde_json::to_string(&harness_platform::list_files(root)?).map_err(internal)?
@@ -1290,10 +1378,46 @@ impl Runtime {
                 found.join("\n")
             }
             "shell" => {
-                let output = ShellService::run(root, arg(a, "command")?, cancel).await?;
+                let command = arg(a, "command")?;
+                let mut escalated = false;
+                let output = if a["escalate"].as_bool().unwrap_or(false) {
+                    // 主动提权：首次即审批，批准后无沙箱执行。
+                    self.approve(session, call, &cancel, true, None).await?;
+                    escalated = true;
+                    ShellService::run_in(root, &exec.capability_id, command, cancel.clone(), false)
+                        .await?
+                } else {
+                    let first = ShellService::run_in(
+                        root,
+                        &exec.capability_id,
+                        command,
+                        cancel.clone(),
+                        true,
+                    )
+                    .await?;
+                    // 沙箱拒绝归类：命中关键词则申请提权重跑一次，裁决走统一审批通道。
+                    if first.exit_code != 0
+                        && let Some(rule) = harness_platform::classify_sandbox_denial(&first)
+                    {
+                        self.approve(session, call, &cancel, true, Some(rule))
+                            .await?;
+                        escalated = true;
+                        ShellService::run_in(
+                            root,
+                            &exec.capability_id,
+                            command,
+                            cancel.clone(),
+                            false,
+                        )
+                        .await?
+                    } else {
+                        first
+                    }
+                };
                 return Ok(ToolResult {
                     content: serde_json::to_string(&output).map_err(internal)?,
                     is_error: output.exit_code != 0,
+                    escalated,
                 });
             }
             "web_fetch" => fetch(arg(a, "url")?, cancel).await?,
@@ -1411,6 +1535,7 @@ impl Runtime {
                         .execute_lsp_tool(name, workspace, root, a, cancel)
                         .await?,
                     is_error: false,
+                    escalated: false,
                 });
             }
             _ => {
@@ -1438,6 +1563,7 @@ impl Runtime {
         Ok(ToolResult {
             content: text,
             is_error: false,
+            escalated: false,
         })
     }
     pub async fn fork(&self, id: &str) -> AppResult<SessionInfo> {
@@ -1506,11 +1632,18 @@ fn requires_approval(name: &str) -> bool {
             | "agent_status"
     )
 }
-fn workspace_context(root: &Path, skills_catalog: &str) -> AppResult<String> {
-    let mut context = format!(
-        "你是本地开发助手。执行根为隔离工作副本 {}。文件工具只接受相对路径。先读取再编辑，原项目变更需用户在差异界面单独确认。",
-        root.display()
-    );
+fn workspace_context(root: &Path, exec: &ExecContext, skills_catalog: &str) -> AppResult<String> {
+    let mut context = match exec.mode {
+        ExecutionMode::Replica => format!(
+            "你是本地开发助手。执行根为隔离工作副本 {}。文件工具只接受相对路径。先读取再编辑，原项目变更需用户在差异界面单独确认。",
+            root.display()
+        ),
+        ExecutionMode::Worktree => format!(
+            "你是本地开发助手。执行根为源项目的 worktree 分支 {}（路径 {}），你的编辑直接生效于该分支工作区。worktree 已由宿主创建，无需自行 git worktree add。主仓 .git 与 main 工作区不可直接写入，commit/push 等操作用 shell 执行 git 命令，被沙箱拦截时会触发提权审批。文件工具只接受相对路径。先读取再编辑。",
+            exec.branch.as_deref().unwrap_or("?"),
+            root.display()
+        ),
+    };
     for path in ["AGENTS.md", "CLAUDE.md"] {
         if let Ok(text) = harness_platform::read_file(root, path) {
             context.push_str(&format!(
@@ -1619,8 +1752,8 @@ pub fn builtin_tools() -> Vec<ToolDefinition> {
         ),
         def(
             "shell",
-            "在Windows系统写入沙箱内运行PowerShell命令，需审批",
-            json!({"command":s}),
+            "在Windows系统写入沙箱内运行PowerShell命令，需审批；escalate为true时请求不带沙箱重跑（需审批）",
+            json!({"command":s,"escalate":{"type":"boolean"}}),
             &["command"],
         ),
         def(

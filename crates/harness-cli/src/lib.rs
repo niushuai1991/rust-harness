@@ -46,9 +46,14 @@ pub async fn dispatch(runtime: Arc<Runtime>, method: &str, p: Value) -> AppResul
         }
         "workspace.list" => json!(runtime.workspaces.list()?),
         "workspace.open" => json!(
-            runtime
-                .workspaces
-                .create(&PathBuf::from(field(&p, "path")?))?
+            runtime.workspaces.create(
+                &PathBuf::from(field(&p, "path")?),
+                p["name"].as_str().map(str::to_owned),
+                serde_json::from_value::<harness_contracts::ExecutionMode>(
+                    p["executionMode"].clone()
+                )
+                .unwrap_or_default(),
+            )?
         ),
         "workspace.diff" => json!(runtime.workspaces.diff(field(&p, "workspaceId")?)?),
         "workspace.apply" => {

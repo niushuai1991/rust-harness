@@ -378,7 +378,7 @@ describe('工作区的首次会话',()=>{
   const dialog=await screen.findByRole('dialog',{name:'打开工作区'});
   expect(screen.getByLabelText('项目名称')).toHaveValue('fresh');
   fireEvent.click(within(dialog).getByRole('button',{name:'创建'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_open',{path:'D:/fresh',name:'fresh'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_open',{path:'D:/fresh',name:'fresh',executionMode:'replica'}));
   await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_list',{workspaceId:'fresh',allWorkspaces:true}));
   // 创建后进入草稿态：不自动创建会话，欢迎语带项目名，可直接输入
   await waitFor(()=>expect(screen.getByRole('heading',{name:/你想在 fresh 中构建什么/})).toBeInTheDocument());
@@ -939,7 +939,7 @@ describe('项目命名',()=>{
   expect(screen.getByText('留空则使用目录名「alpha-dir」。')).toBeInTheDocument();
   fireEvent.change(screen.getByLabelText('项目名称'),{target:{value:'  '}});
   fireEvent.click(screen.getByRole('button',{name:'创建'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_open',{path:'D:/alpha-dir',name:null}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_open',{path:'D:/alpha-dir',name:null,executionMode:'replica'}));
   // 后端归一化后的目录名显示在面包屑上
   await waitFor(()=>expect(screen.getAllByText('alpha-dir').length).toBeGreaterThanOrEqual(1));
  });
@@ -978,7 +978,7 @@ describe('项目命名',()=>{
   // 预填保留空格与中文；确认后原样携带名称提交
   expect(screen.getByLabelText('项目名称')).toHaveValue('我的 项目');
   fireEvent.click(screen.getByRole('button',{name:'创建'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_open',{path:'D:/我的 项目',name:'我的 项目'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_open',{path:'D:/我的 项目',name:'我的 项目',executionMode:'replica'}));
   // 后端返回的中文名称显示在面包屑上
   await waitFor(()=>expect(screen.getAllByText('我的 项目').length).toBeGreaterThanOrEqual(1));
  });
