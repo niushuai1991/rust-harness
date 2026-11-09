@@ -188,6 +188,10 @@ pub struct ToolCall {
 pub struct ToolResult {
     pub content: String,
     pub is_error: bool,
+    /// edit/write 成功结果的 unified diff（桌面对话流行级差异展示）；其余为 None。
+    #[serde(default)]
+    #[specta(optional)]
+    pub diff: Option<String>,
     /// 本结果由提权重跑产生（用户审批后无沙箱重跑一次）。
     #[serde(default)]
     pub escalated: bool,

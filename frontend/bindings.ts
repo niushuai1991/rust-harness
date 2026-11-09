@@ -376,6 +376,8 @@ export type SkillScope = "project" | "user";
 export type ToolResult = {
 	content: string,
 	isError: boolean,
+	/**  edit/write 成功结果的 unified diff（桌面对话流行级差异展示）；其余为 None。 */
+	diff?: string | null,
 	/**  本结果由提权重跑产生（用户审批后无沙箱重跑一次）。 */
 	escalated?: boolean,
 };

@@ -485,6 +485,7 @@ impl PluginManager {
         Ok(ToolResult {
             content,
             is_error: false,
+            diff: None,
             escalated: false,
         })
     }
