@@ -175,7 +175,7 @@ fn chatgpt_provider() -> ProviderInfo {
             "gpt-6.1-terra",
             "GPT-6.1 Terra",
             &["low", "medium", "high", "xhigh", "max"],
-            272_000,
+            500_000,
             None,
         ),
         (
@@ -1661,6 +1661,20 @@ mod tests {
                 assert_eq!(config.max_output_tokens, model.max_output_tokens);
             }
         }
+    }
+
+    #[test]
+    fn chatgpt_terra_uses_codex_default_context_window() {
+        let terra = builtin_providers()
+            .into_iter()
+            .find(|provider| provider.id == "chatgpt")
+            .unwrap()
+            .builtin_models
+            .into_iter()
+            .find(|model| model.id == "gpt-6.1-terra")
+            .unwrap();
+
+        assert_eq!(terra.context_window, Some(500_000));
     }
 
     #[tokio::test]

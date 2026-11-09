@@ -27,7 +27,7 @@
 ## 上下文窗口元数据
 
 - `BuiltinModel` 与 `ModelConfig` 新增 `context_window: Option<u32>`（serde default，旧存储兼容）。
-- 内置目录预填公开规格值（集中一处便于校正）：DeepSeek 系 128k、GLM Coding 系 glm-5.2/5.3/5.3-flash 为 1M、glm-5-turbo 为 200k、GPT（codex 后端）系 272k（codex 对未知模型的 fallback 值）。
+- 内置目录预填上下文窗口值（集中一处便于校正）：DeepSeek 系 128k、GLM Coding 系 glm-5.2/5.3/5.3-flash 为 1M、glm-5-turbo 为 200k；ChatGPT Codex 系跟随 Codex 目录的默认 `context_window`（当前 gpt-6.1-terra 为 500k，其余内置模型为 272k）。Codex 的 `max_context_window` 是配置覆盖上限，不作为用量环形分母。
 - 自定义模型缺省为 None → 不显示环形。
 
 ## ChatGPT 订阅用量
