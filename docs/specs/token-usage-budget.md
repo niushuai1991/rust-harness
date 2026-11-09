@@ -16,7 +16,7 @@
 - Chat Completions：`max(prompt_tokens - prompt_tokens_details.cached_tokens, 0) + completion_tokens`。
 - Responses：`max(input_tokens - input_tokens_details.cached_tokens, 0) + output_tokens`。
 - Anthropic：`input_tokens + cache_creation_input_tokens + output_tokens`；`cache_read_input_tokens` 是缓存命中，不计入。
-- 用量解析发生在模型响应成功后，即使模型返回的工具调用无效也不能绕过累计。usage 缺失、字段无效或协议形状无法识别时，以 `TOKEN_USAGE_UNAVAILABLE` 停止当前回合。
+- 用量解析发生在模型响应成功后，即使模型返回的工具调用无效也不能绕过累计。HTTP 流在工具参数解析失败前已收到 usage 时，仍先记账再返回协议错误；若只有不完整用量，则以 `TOKEN_USAGE_UNAVAILABLE` 停止当前回合。缓存 token 大于报告的输入总量也视为无效用量。
 
 ## 上限行为
 

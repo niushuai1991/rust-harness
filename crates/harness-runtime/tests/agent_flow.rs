@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use harness_contracts::*;
 use harness_runtime::{
     Runtime,
-    model::{DeltaSink, MessageRole, ModelAnswer, ModelMessage, ModelProvider},
+    model::{DeltaSink, MessageRole, ModelAnswer, ModelMessage, ModelProvider, PartialUsageSink},
 };
 use serde_json::{Value, json};
 use std::{
@@ -35,6 +35,32 @@ impl ModelProvider for Recorded {
             answer.usage = serde_json::json!({"prompt_tokens":0,"completion_tokens":0});
         }
         Ok(answer)
+    }
+}
+
+struct PartialUsageFailure;
+#[async_trait]
+impl ModelProvider for PartialUsageFailure {
+    async fn complete(
+        &self,
+        _: Vec<ModelMessage>,
+        _: Vec<ToolDefinition>,
+        _: CancellationToken,
+        _: DeltaSink,
+    ) -> AppResult<ModelAnswer> {
+        Err(AppError::new("MODEL_PROTOCOL", "工具参数 JSON 无效"))
+    }
+
+    async fn complete_with_partial_usage(
+        &self,
+        _: Vec<ModelMessage>,
+        _: Vec<ToolDefinition>,
+        _: CancellationToken,
+        _: DeltaSink,
+        partial_usage: PartialUsageSink,
+    ) -> AppResult<ModelAnswer> {
+        partial_usage(json!({"prompt_tokens":4,"completion_tokens":1}));
+        Err(AppError::new("MODEL_PROTOCOL", "工具参数 JSON 无效"))
     }
 }
 fn call(id: &str, name: &str, args: Value) -> ModelAnswer {
@@ -165,6 +191,80 @@ async fn token_budget_stops_the_turn_and_skips_the_returned_tool_batch() {
         .find(|event| event.kind == "turn.end")
         .unwrap();
     assert_eq!(end.data["error"]["code"], "TOKEN_BUDGET_EXCEEDED");
+}
+
+#[tokio::test]
+async fn final_answer_is_delivered_when_its_usage_reaches_the_budget() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "final answer at budget")
+        .await
+        .unwrap();
+    runtime.set_token_budget_limit(5).await.unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            content: "这是最终回答".into(),
+            usage: json!({"prompt_tokens":4,"completion_tokens":1}),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+
+    runtime
+        .clone()
+        .run_session(session.id.clone(), "请回答".into(), provider.clone())
+        .await
+        .unwrap();
+
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "assistant.message" && event.data["content"] == "这是最终回答"
+    }));
+    let end = events
+        .iter()
+        .find(|event| event.kind == "turn.end")
+        .unwrap();
+    assert_eq!(end.data["status"], "completed");
+    assert!(end.data["error"].is_null());
+    assert_eq!(provider.requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn usage_is_charged_even_when_protocol_tool_decoding_fails() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "partial usage")
+        .await
+        .unwrap();
+    runtime.set_token_budget_limit(5).await.unwrap();
+
+    let error = runtime
+        .clone()
+        .run_session(
+            session.id.clone(),
+            "工具参数会解析失败".into(),
+            Arc::new(PartialUsageFailure),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, "TOKEN_BUDGET_EXCEEDED");
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "token.budget"
+            && event.data["usedTokens"] == 5
+            && event.data["status"] == "exhausted"
+    }));
 }
 
 #[tokio::test]

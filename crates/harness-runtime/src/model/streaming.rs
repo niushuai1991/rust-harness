@@ -109,6 +109,13 @@ impl SseDecoder {
     pub fn is_finished(&self) -> bool {
         self.finished
     }
+    pub(crate) fn usage(&self) -> Value {
+        self.answer.usage.clone()
+    }
+    pub(crate) fn finish_with_usage(self) -> Result<ModelAnswer, (AppError, Value)> {
+        let usage = self.answer.usage.clone();
+        self.finish().map_err(|error| (error, usage))
+    }
     fn mode(&self) -> ApiMode {
         self.route.as_ref().map(|r| r.api_mode).unwrap_or_default()
     }

@@ -587,11 +587,13 @@ impl Runtime {
             Ok(tokens) => (token_budget.add_usage(tokens), None),
             Err(error) => (token_budget.mark_usage_unavailable(), Some(error)),
         };
-        self.publish_token_budget(session, token_budget, snapshot)
-            .await?;
+        let publish_result = self
+            .publish_token_budget(session, token_budget, snapshot)
+            .await;
         if snapshot.stopped.is_some() {
             token_budget.cancel_others(session);
         }
+        publish_result?;
         if let Some(error) = usage_error {
             return Err(token_budget.error().unwrap_or(error));
         }
@@ -866,6 +868,9 @@ impl Runtime {
                 json!({"id":request_id,"step":step,"messages":messages,"tools":tools,"route":provider.route(),"request":provider.request_snapshot(&messages,&tools)?}),
             )
             .await?;
+            // Tool discovery, hooks, history reads and snapshot persistence can await while a
+            // sibling consumes the shared budget. Recheck at the provider-call boundary.
+            token_budget.check_available()?;
             let sender = self.events.clone();
             let sid = session.to_owned();
             let rid = request_id.clone();
@@ -888,20 +893,43 @@ impl Runtime {
                     reasoning: d.reasoning,
                 });
             });
+            let partial_usage = Arc::new(Mutex::new(None::<Value>));
+            let partial_usage_for_sink = partial_usage.clone();
+            let partial_usage_sink = Arc::new(move |usage| {
+                *partial_usage_for_sink.lock().unwrap() = Some(usage);
+            });
             let answer = match provider
-                .complete(messages, tools.clone(), cancel.clone(), sink)
+                .complete_with_partial_usage(
+                    messages,
+                    tools.clone(),
+                    cancel.clone(),
+                    sink,
+                    partial_usage_sink,
+                )
                 .await
             {
                 Ok(answer) => answer,
                 Err(e) => {
+                    let partial_usage = partial_usage.lock().unwrap().take();
+                    let error = if let Some(usage) = partial_usage {
+                        match self
+                            .record_token_usage(session, &token_budget, &usage)
+                            .await
+                        {
+                            Ok(_) => e,
+                            Err(error) => error,
+                        }
+                    } else {
+                        e
+                    };
                     let p = partial.lock().unwrap().clone();
                     self.append(
                         session,
                         "assistant.attempt",
-                        json!({"requestId":request_id,"content":p.0,"reasoning":p.1,"error":e}),
+                        json!({"requestId":request_id,"content":p.0,"reasoning":p.1,"error":error}),
                     )
                     .await?;
-                    return Err(token_budget.error().unwrap_or(e));
+                    return Err(token_budget.error().unwrap_or(error));
                 }
             };
             let budget_snapshot = match self

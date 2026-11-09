@@ -43,7 +43,10 @@ pub(crate) fn consumed_tokens(usage: &Value) -> AppResult<u64> {
         let output = count(record.get("completion_tokens"))?.ok_or_else(unavailable)?;
         let cached =
             nested_count(record.get("prompt_tokens_details"), "cached_tokens")?.unwrap_or_default();
-        return Ok(input.saturating_sub(cached).saturating_add(output));
+        if cached > input {
+            return Err(unavailable());
+        }
+        return Ok((input - cached).saturating_add(output));
     }
 
     let input = count(record.get("input_tokens"))?.ok_or_else(unavailable)?;
@@ -61,7 +64,10 @@ pub(crate) fn consumed_tokens(usage: &Value) -> AppResult<u64> {
     }
     let cached =
         nested_count(record.get("input_tokens_details"), "cached_tokens")?.unwrap_or(cache_read);
-    Ok(input.saturating_sub(cached).saturating_add(output))
+    if cached > input {
+        return Err(unavailable());
+    }
+    Ok((input - cached).saturating_add(output))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -267,6 +273,26 @@ mod tests {
         assert!(consumed_tokens(&json!(null)).is_err());
         assert!(consumed_tokens(&json!({"input_tokens": "100", "output_tokens": 10})).is_err());
         assert!(consumed_tokens(&json!({"unknown": 100})).is_err());
+    }
+
+    #[test]
+    fn cached_tokens_cannot_exceed_reported_input_tokens() {
+        assert!(
+            consumed_tokens(&json!({
+                "prompt_tokens": 10,
+                "completion_tokens": 1,
+                "prompt_tokens_details": {"cached_tokens": 11}
+            }))
+            .is_err()
+        );
+        assert!(
+            consumed_tokens(&json!({
+                "input_tokens": 10,
+                "output_tokens": 1,
+                "input_tokens_details": {"cached_tokens": 11}
+            }))
+            .is_err()
+        );
     }
 
     #[test]

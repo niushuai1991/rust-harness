@@ -2,7 +2,7 @@
 use harness_contracts::*;
 use harness_runtime::{Runtime, model::*};
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -89,11 +89,20 @@ async fn fixture(
     mpsc::Receiver<Captured>,
     tokio::task::JoinHandle<()>,
 ) {
+    fixture_bodies((0..count).map(|step| answer(mode, step)).collect()).await
+}
+async fn fixture_bodies(
+    bodies: Vec<String>,
+) -> (
+    String,
+    mpsc::Receiver<Captured>,
+    tokio::task::JoinHandle<()>,
+) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}/prefix", listener.local_addr().unwrap());
-    let (tx, rx) = mpsc::channel(count);
+    let (tx, rx) = mpsc::channel(bodies.len());
     let job = tokio::spawn(async move {
-        for step in 0..count {
+        for body in bodies {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut bytes = Vec::new();
             let header_end = loop {
@@ -134,7 +143,6 @@ async fn fixture(
             })
             .await
             .unwrap();
-            let body = answer(mode, step);
             let head = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
@@ -147,6 +155,44 @@ async fn fixture(
     });
     (base, rx, job)
 }
+
+#[tokio::test]
+async fn malformed_tool_arguments_still_report_completed_usage() {
+    let malformed = sse(json!({
+        "choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"bad","type":"function","function":{"name":"todo_write","arguments":"{"}}]},"finish_reason":"tool_calls"}]
+    })) + &sse(
+        json!({"choices":[],"usage":{"prompt_tokens":4,"completion_tokens":1}}),
+    ) + "data: [DONE]\n\n";
+    let (base, mut requests, server) = fixture_bodies(vec![malformed]).await;
+    let config: ModelConfig = serde_json::from_value(json!({"id":"test","name":"test","baseUrl":base,"model":"model","credentialRef":"","proxy":null,"providerId":"fixture","apiMode":"chatCompletions","maxOutputTokens":1024})).unwrap();
+    let provider = HttpModel {
+        extra_headers: Vec::new(),
+        config,
+        secret: "fixture-secret".into(),
+        stream_idle_timeout: HttpModel::DEFAULT_STREAM_IDLE_TIMEOUT,
+    };
+    let observed = Arc::new(Mutex::new(None));
+    let observed_by_sink = observed.clone();
+    let error = provider
+        .complete_with_partial_usage(
+            vec![],
+            vec![],
+            CancellationToken::new(),
+            Arc::new(|_| {}),
+            Arc::new(move |usage| *observed_by_sink.lock().unwrap() = Some(usage)),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, "MODEL_PROTOCOL");
+    assert_eq!(
+        observed.lock().unwrap().as_ref().unwrap(),
+        &json!({"prompt_tokens":4,"completion_tokens":1})
+    );
+    let _request = requests.recv().await.unwrap();
+    server.await.unwrap();
+}
+
 #[tokio::test]
 async fn all_protocols_execute_approved_tools_and_replay_after_restart() {
     for mode in [
