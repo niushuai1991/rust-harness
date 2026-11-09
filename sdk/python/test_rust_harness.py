@@ -18,7 +18,10 @@ class ProviderApiTest(unittest.TestCase):
     def test_supplier_protocol_model_crud_and_builtin_protection(self):
         with tempfile.TemporaryDirectory() as data, Harness(str(EXE), data) as client:
             providers = client.list_providers()
-            self.assertEqual([p["id"] for p in providers], ["deepseek", "bigmodel"])
+            # PR #36 起内置供应商含 chatgpt（OAuth 账号）。
+            self.assertEqual(
+                [p["id"] for p in providers], ["deepseek", "bigmodel", "chatgpt"]
+            )
             self.assertEqual(len(providers[1]["endpoints"]), 3)
             changed = dict(providers[0], name="overridden")
             with self.assertRaises(RuntimeError):
@@ -40,12 +43,12 @@ class ProviderApiTest(unittest.TestCase):
             # model_list 含合成的内置目录条目；自定义模型排在其中且可被识别。
             self.assertTrue(all(m["builtin"] for m in models if m["id"] != model["id"]))
             self.assertIn(model["id"], [m["id"] for m in models])
-            self.assertEqual([m for m in models if m["providerId"] == copy["id"]][0]["id"], model["id"])
+            self.assertIn(model["id"], [m["id"] for m in models if m["providerId"] == copy["id"]])
             with self.assertRaises(RuntimeError):
                 client.remove_provider(copy["id"])
             client.remove_model(model["id"])
             client.remove_provider(copy["id"])
-            self.assertEqual(len(client.list_providers()), 2)
+            self.assertEqual(len(client.list_providers()), 3)
             self.assertEqual([m for m in client.list_models() if not m["builtin"]], [])
             self.assertTrue(all(m["enabled"] for m in client.list_models()))
 
