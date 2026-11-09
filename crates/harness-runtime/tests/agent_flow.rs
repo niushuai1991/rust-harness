@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use harness_contracts::*;
 use harness_runtime::{
     Runtime,
-    model::{DeltaSink, MessageRole, ModelAnswer, ModelMessage, ModelProvider},
+    model::{DeltaSink, MessageRole, ModelAnswer, ModelMessage, ModelProvider, PartialUsageSink},
 };
 use serde_json::{Value, json};
 use std::{
@@ -25,11 +25,75 @@ impl ModelProvider for Recorded {
         _: DeltaSink,
     ) -> AppResult<ModelAnswer> {
         self.requests.lock().unwrap().push(messages);
-        self.answers
+        let mut answer = self
+            .answers
             .lock()
             .unwrap()
             .pop_front()
-            .ok_or_else(|| AppError::new("FIXTURE", "unexpected extra request"))
+            .ok_or_else(|| AppError::new("FIXTURE", "unexpected extra request"))?;
+        if answer.usage.is_null() {
+            answer.usage = serde_json::json!({"prompt_tokens":0,"completion_tokens":0});
+        }
+        Ok(answer)
+    }
+}
+
+struct PartialUsageFailure;
+#[async_trait]
+impl ModelProvider for PartialUsageFailure {
+    async fn complete(
+        &self,
+        _: Vec<ModelMessage>,
+        _: Vec<ToolDefinition>,
+        _: CancellationToken,
+        _: DeltaSink,
+    ) -> AppResult<ModelAnswer> {
+        Err(AppError::new("MODEL_PROTOCOL", "工具参数 JSON 无效"))
+    }
+
+    async fn complete_with_partial_usage(
+        &self,
+        _: Vec<ModelMessage>,
+        _: Vec<ToolDefinition>,
+        _: CancellationToken,
+        _: DeltaSink,
+        partial_usage: PartialUsageSink,
+    ) -> AppResult<ModelAnswer> {
+        partial_usage(json!({"prompt_tokens":4,"completion_tokens":1}));
+        Err(AppError::new("MODEL_PROTOCOL", "工具参数 JSON 无效"))
+    }
+}
+
+struct CancelledWithPartialUsage {
+    started: tokio::sync::Notify,
+    usage: Value,
+}
+#[async_trait]
+impl ModelProvider for CancelledWithPartialUsage {
+    async fn complete(
+        &self,
+        _: Vec<ModelMessage>,
+        _: Vec<ToolDefinition>,
+        cancel: CancellationToken,
+        _: DeltaSink,
+    ) -> AppResult<ModelAnswer> {
+        self.started.notify_one();
+        cancel.cancelled().await;
+        Err(AppError::new("CANCELLED", "用户取消"))
+    }
+
+    async fn complete_with_partial_usage(
+        &self,
+        _: Vec<ModelMessage>,
+        _: Vec<ToolDefinition>,
+        cancel: CancellationToken,
+        _: DeltaSink,
+        partial_usage: PartialUsageSink,
+    ) -> AppResult<ModelAnswer> {
+        self.started.notify_one();
+        cancel.cancelled().await;
+        partial_usage(self.usage.clone());
+        Err(AppError::new("CANCELLED", "用户取消"))
     }
 }
 fn call(id: &str, name: &str, args: Value) -> ModelAnswer {
@@ -111,6 +175,262 @@ async fn approved_edit_stays_in_replica_until_explicit_sync() {
         std::fs::read_to_string(source.join("a.txt")).unwrap(),
         "new"
     );
+}
+
+#[tokio::test]
+async fn token_budget_stops_the_turn_and_skips_the_returned_tool_batch() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "budget")
+        .await
+        .unwrap();
+    runtime.set_token_budget_limit(5).await.unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            calls: vec![ToolCall {
+                id: "todo-1".into(),
+                name: "todo_write".into(),
+                arguments: json!({"items":[]}),
+            }],
+            usage: json!({"prompt_tokens":4,"completion_tokens":1}),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+
+    let error = runtime
+        .clone()
+        .run_session(session.id.clone(), "循环测试".into(), provider.clone())
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, "TOKEN_BUDGET_EXCEEDED");
+    assert_eq!(provider.requests.lock().unwrap().len(), 1);
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    assert!(!events.iter().any(|event| event.kind == "todo.state"));
+    assert!(events.iter().any(|event| {
+        event.kind == "tool.result"
+            && event.data["status"] == "denied"
+            && event.data["isError"] == true
+            && event.data["content"].as_str().unwrap().contains("未执行")
+    }));
+    let end = events
+        .iter()
+        .find(|event| event.kind == "turn.end")
+        .unwrap();
+    assert_eq!(end.data["error"]["code"], "TOKEN_BUDGET_EXCEEDED");
+}
+
+#[tokio::test]
+async fn final_answer_is_delivered_when_its_usage_reaches_the_budget() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "final answer at budget")
+        .await
+        .unwrap();
+    runtime.set_token_budget_limit(5).await.unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            content: "这是最终回答".into(),
+            usage: json!({"prompt_tokens":4,"completion_tokens":1}),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+
+    runtime
+        .clone()
+        .run_session(session.id.clone(), "请回答".into(), provider.clone())
+        .await
+        .unwrap();
+
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "assistant.message" && event.data["content"] == "这是最终回答"
+    }));
+    let end = events
+        .iter()
+        .find(|event| event.kind == "turn.end")
+        .unwrap();
+    assert_eq!(end.data["status"], "completed");
+    assert!(end.data["error"].is_null());
+    assert_eq!(provider.requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn usage_is_charged_even_when_protocol_tool_decoding_fails() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "partial usage")
+        .await
+        .unwrap();
+    runtime.set_token_budget_limit(5).await.unwrap();
+
+    let error = runtime
+        .clone()
+        .run_session(
+            session.id.clone(),
+            "工具参数会解析失败".into(),
+            Arc::new(PartialUsageFailure),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, "TOKEN_BUDGET_EXCEEDED");
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "token.budget"
+            && event.data["usedTokens"] == 5
+            && event.data["status"] == "exhausted"
+    }));
+}
+
+#[tokio::test]
+async fn cancellation_with_incomplete_partial_usage_keeps_cancelled_status() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "cancel during stream")
+        .await
+        .unwrap();
+    let provider = Arc::new(CancelledWithPartialUsage {
+        started: tokio::sync::Notify::new(),
+        usage: Value::Null,
+    });
+    let task = tokio::spawn(runtime.clone().run_session(
+        session.id.clone(),
+        "开始后取消".into(),
+        provider.clone(),
+    ));
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        provider.started.notified(),
+    )
+    .await
+    .unwrap();
+    runtime.cancel(&session.id);
+
+    assert_eq!(task.await.unwrap().unwrap_err().code, "CANCELLED");
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    let end = events
+        .iter()
+        .find(|event| event.kind == "turn.end")
+        .unwrap();
+    assert_eq!(end.data["status"], "cancelled");
+    assert!(!events.iter().any(|event| {
+        event.kind == "token.budget" && event.data["status"] == "usageUnavailable"
+    }));
+}
+
+#[tokio::test]
+async fn cancellation_with_complete_partial_usage_charges_before_stopping() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "cancel after usage")
+        .await
+        .unwrap();
+    runtime.set_token_budget_limit(10).await.unwrap();
+    let provider = Arc::new(CancelledWithPartialUsage {
+        started: tokio::sync::Notify::new(),
+        usage: json!({"prompt_tokens":3,"completion_tokens":2}),
+    });
+    let task = tokio::spawn(runtime.clone().run_session(
+        session.id.clone(),
+        "先取得 usage 再取消".into(),
+        provider.clone(),
+    ));
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        provider.started.notified(),
+    )
+    .await
+    .unwrap();
+    runtime.cancel(&session.id);
+
+    assert_eq!(task.await.unwrap().unwrap_err().code, "CANCELLED");
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "token.budget"
+            && event.data["usedTokens"] == 5
+            && event.data["status"] == "active"
+    }));
+    let end = events
+        .iter()
+        .find(|event| event.kind == "turn.end")
+        .unwrap();
+    assert_eq!(end.data["status"], "cancelled");
+}
+
+#[tokio::test]
+async fn unknown_usage_stops_before_a_follow_up_model_call() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime.workspaces.create(&source, None).unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "missing usage")
+        .await
+        .unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            content: "usage missing".into(),
+            usage: json!({"unknown_tokens":10}),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+
+    let error = runtime
+        .clone()
+        .run_session(session.id.clone(), "测试".into(), provider.clone())
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, "TOKEN_USAGE_UNAVAILABLE");
+    assert_eq!(provider.requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn token_budget_limit_defaults_persists_and_rejects_zero() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = temp.path().join("host");
+    let runtime = Runtime::open(data_dir.clone()).await.unwrap();
+    assert_eq!(runtime.token_budget_limit().await.unwrap(), 1_000_000);
+    runtime.set_token_budget_limit(42).await.unwrap();
+    assert_eq!(
+        runtime.set_token_budget_limit(0).await.unwrap_err().code,
+        "TOKEN_BUDGET_LIMIT"
+    );
+    drop(runtime);
+
+    let reopened = Runtime::open(data_dir).await.unwrap();
+    assert_eq!(reopened.token_budget_limit().await.unwrap(), 42);
 }
 
 #[tokio::test]

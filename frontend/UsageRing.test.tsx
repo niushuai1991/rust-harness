@@ -1,4 +1,4 @@
-import {afterEach,expect,it,vi} from 'vitest';
+import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {UsageRing} from './UsageRing';
 import {useChat} from './store';
@@ -29,11 +29,30 @@ function renderRing(props:{models?:any[];providers?:any[];modelId?:string|null;s
 }
 function pushEvents(events:SessionEvent[]){act(()=>{useChat.getState().replace('s1',events)})}
 
-afterEach(()=>{cleanup();useChat.setState({events:{},streams:{},statuses:{}})});
+beforeEach(()=>{mocks.command.mockReset();mocks.command.mockResolvedValue(undefined)});
+afterEach(()=>{cleanup();mocks.command.mockReset();useChat.setState({events:{},streams:{},statuses:{}})});
 
-it('模型无上下文窗口值时不渲染',()=>{
- const {container}=renderRing({models:[{id:'m1',name:'自定义',baseUrl:'',model:'m',credentialRef:'',proxy:null,providerId:'custom',compatibility:'standard',auth:'apiKey',apiMode:'chatCompletions',maxOutputTokens:null,efforts:[],effort:null,enabled:true,builtin:false} as any],modelId:'m1'});
- expect(container).toBeEmptyDOMElement();
+it('模型没有上下文窗口时仍显示 Token 预算入口',async()=>{
+ renderRing({models:[{id:'m1',name:'自定义',baseUrl:'',model:'m',credentialRef:'',proxy:null,providerId:'custom',compatibility:'standard',auth:'apiKey',apiMode:'chatCompletions',maxOutputTokens:null,efforts:[],effort:null,enabled:true,builtin:false} as any],modelId:'m1'});
+ const button=screen.getByRole('button',{name:'本轮预算 0%'});
+ fireEvent.mouseEnter(button);
+ expect(await screen.findByText('本轮 Token 预算')).toBeInTheDocument();
+ expect(screen.getByLabelText('每回合上限（下一条消息生效）')).toBeInTheDocument();
+});
+
+it('显示本轮累计预算并保存下一回合上限',async()=>{
+ pushEvents([event('token.budget',{turnId:'turn-1',usedTokens:12_345,limitTokens:1_000_000,status:'active'})]);
+ mocks.command.mockImplementation(async(name:string)=>name==='token_budget_limit_get'?1_000_000:undefined);
+ renderRing();
+ const button=screen.getByRole('button',{name:/上下文用量/});
+ fireEvent.mouseEnter(button);
+ expect(await screen.findByText('本轮 Token 预算')).toBeInTheDocument();
+ expect(screen.getByText('12.3k / 1M')).toBeInTheDocument();
+ const input=screen.getByLabelText('每回合上限（下一条消息生效）');
+ fireEvent.change(input,{target:{value:'2000000'}});
+ fireEvent.click(screen.getByRole('button',{name:'保存'}));
+ expect(await screen.findByRole('status')).toHaveTextContent('已保存，从下一条用户消息起生效');
+ expect(mocks.command).toHaveBeenCalledWith('token_budget_limit_set',{limitTokens:2_000_000});
 });
 
 it('环形显示上下文占用百分比（usage 归一化后 62.1k/200k ≈ 31%）',()=>{

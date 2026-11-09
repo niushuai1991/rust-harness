@@ -1,4 +1,4 @@
-# 能力状态（2026-11-08）
+# 能力状态（2026-11-09）
 
 状态说明：已实现表示存在实际执行代码；已验证另需对应测试或实际构建证据。不以计划或接口占位替代功能。
 
@@ -30,6 +30,7 @@
 |配置预设（模型/effort/审批策略命名组合）|已实现并接线|契约 3 项、PresetService 6 项、审批分层 6 项单测与 CLI 链路/ACP 2 项集成测试先红后绿；真实 `harness run --preset` 回合完成；桌面 3 项面板测试与发送框级联填充测试通过；解析为显式参数>预设>宿主缺省三层，桌面审批保持交互式，见[配置预设规范](specs/config-presets.md)，桌面 UI 抽查待用户|
 |Skills 技能（.agents/skills 目录、catalog 注入、$name 提及、启停）|已实现并接线|skills 模块 17 项单测与 agent_flow 2 项集成（catalog 进 system、$ 注入与 $PATH 排除、禁用生效）先红后绿；CLI skills 子命令//skills 与 $ 补全 6 项测试、前端 13 项（skills 纯函数+SkillsPanel/EventCard）通过；真实模型端到端与桌面 UI 抽查待用户，见[Skills 支持规范](specs/skills.md)|
 |输入框斜杠快捷指令（/ 命令注册表、补全弹窗、加号添加菜单）|已实现并接线|CLI 弹窗/过滤/补全/命令与真实模型回合、桌面菜单交互真实抽查通过（2026-11-06）；2026-11-07 扩展的 /plan /goal 命令与加号添加菜单 UI 抽查待用户，见[斜杠快捷指令规范](specs/slash-commands.md)|
+|每回合 Token 预算（父子代理共享、UsageRing 可调）|已实现并接线|三协议用量归一化、上限工具跳过、缺失 usage 失败关闭、子代理共享预算与设置持久化集成覆盖；Rust 全工作区 all-features 测试、clippy、build、fmt 检查通过；前端全量 223 项测试与生产构建通过；自动标题一次性请求不计入回合预算，桌面 UI 抽查待用户，见[每回合 Token 预算规范](specs/token-usage-budget.md)|
 |权限模式（五档审批策略 ask/edit/auto/never/guarded）|已实现并接线|contracts 决策矩阵与危险命令规则 19 项单测、runtime 会话策略/默认档/子代理继承 6 项集成、CLI approval 6 项与 ACP modes 测试、前端模式选择器 2 项测试通过；四端接入（CLI --approval、预设字段、ACP modes、桌面选择器+KV 默认档）接线完成；真实会话各档行为与桌面 UI 抽查待用户，见[权限模式规范](specs/permission-modes.md)|
 |搜索provider/Office预览|未实现|不能计为P2/P3完成|
 |脚本工作流/签名插件市场|未实现|不能计为P3完成|

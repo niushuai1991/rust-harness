@@ -255,7 +255,7 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .usage-ring-btn{border:0;background:transparent;padding:5px;border-radius:6px;display:inline-flex;align-items:center;justify-content:center}
 .usage-ring-btn:hover{background:#e4eddb}
 .usage-ring-btn svg{display:block}
-.usage-ring-pop{position:absolute;bottom:calc(100% + 8px);left:-6px;width:280px;max-width:82vw;background:var(--panel);border:1px solid var(--border);border-radius:11px;box-shadow:0 8px 24px rgba(36,51,44,.16);padding:11px 13px;z-index:40;transform-origin:bottom left;animation:usage-pop-in .13s ease-out}
+.usage-ring-pop{position:absolute;bottom:calc(100% + 8px);left:-6px;width:280px;max-width:82vw;max-height:70vh;overflow:auto;background:var(--panel);border:1px solid var(--border);border-radius:11px;box-shadow:0 8px 24px rgba(36,51,44,.16);padding:11px 13px;z-index:40;transform-origin:bottom left;animation:usage-pop-in .13s ease-out}
 /* 隐形桥接：填满浮层与按钮之间的 8px 间隙，光标跨越间隙时命中点仍在浮层内，避免误触发关闭。 */
 .usage-ring-pop::before{content:'';position:absolute;top:100%;left:0;right:0;height:8px}
 @keyframes usage-pop-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
@@ -266,6 +266,14 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .usage-ring-line strong{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums}
 .usage-ring-line span{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
 .usage-ring-bar{margin-top:6px}
+.usage-budget-setting{margin-top:10px;padding-top:9px;border-top:1px solid #e9ede4}
+.usage-budget-setting label{display:block;font-size:10px;color:var(--muted);margin-bottom:5px}
+.usage-budget-input{display:flex;gap:6px}
+.usage-budget-input input{min-width:0;flex:1;padding:5px 7px;font-size:11px;font-variant-numeric:tabular-nums}
+.usage-budget-input button{padding:4px 8px;font-size:10px}
+.usage-budget-error,.usage-budget-notice{font-size:10px;margin:5px 0 0}
+.usage-budget-error{color:#ac564b}
+.usage-budget-notice{color:#63804b}
 .usage-ring-card{padding:6px 0}
 .usage-ring-card+.usage-ring-card{border-top:1px solid #e9ede4}
 .usage-ring-card-top{display:flex;align-items:baseline;justify-content:space-between;gap:8px}

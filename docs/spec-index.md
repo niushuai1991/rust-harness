@@ -27,6 +27,7 @@
 | [Skills（技能）支持](specs/skills.md) | 2026-11-07（计划批准） | 技能目录（项目级 `.agents/skills/` + 用户级 `~/.agents/skills/` + 兜底扫描）、frontmatter 解析、catalog 注入系统提示、`$name` 显式提及全文注入、禁用名单落库；CLI 管理子命令/`/skills`/`$` 补全与桌面面板/composer 补全；参考 codex skills 体系。 |
 | [会话列表「最近 / 项目」视图](specs/session-list.md) | 2026-11-08（计划拟制）；2026-11-09 修订 | 桌面侧栏任务列表按最近（时间分组跨工作区）/ 按项目（分组折叠）两种视图、项目置顶（`workspace_set_pinned`）、标题搜索与跨工作区跳转、「新建聊天」草稿态、首问自动生成标题、右键重命名；参考 zcode 会话历史取舍。 |
 | [会话用量环形指示器与上下文窗口](specs/context-usage-indicator.md) | 2026-11-08（计划批准） | 会话输入区用量环形（本体显示当前上下文占用）+ 双段悬停明细卡（上下文窗口/套餐额度）；模型目录 `context_window` 元数据；ChatGPT `/wham/usage` 订阅用量接入；参考 zcode/codex 用量设计。 |
+| [每回合 Token 预算](specs/token-usage-budget.md) | 2026-11-09（计划批准） | 每条用户消息独立累计输出与未缓存输入 token，父子代理共享额度，默认 1M 且可调；UsageRing 进度展示与设置。 |
 | [权限模式（五档审批策略）](specs/permission-modes.md) | 2026-11-09（计划批准） | 五档权限模式统一定义（ask/edit/auto/never/guarded）与四端接入：CLI `--approval`、预设 approval 字段、ACP modes、桌面发送框权限模式选择器（KV 默认档）；guarded 档危险 shell 命令识别规则；参考 codex approval presets 与 zcode permissionMode。 |
 | [工作区（项目）命名](specs/workspace-naming.md) | 2026-11-09（计划批准） | 工作区显示名落 `record.json`（非可选 String，创建未填/空白归一化为源目录名，旧记录加载归一化）；桌面创建命名弹窗与「按项目」组头重命名按钮；各显示点统一消费名称字段；CLI 不提供命名参数。 |
 
@@ -51,6 +52,7 @@
 - Skills 支持规范闭环配置预设规范列为「另行立项」的 skills 启停项，并落地斜杠快捷指令规范当时列为非目标的 codex `$` skill 体系；catalog 注入不改变 `context.snapshot` 事件结构，技能读取走现有免审批 `read` 工具，不新增模型工具。
 - 会话列表视图规范为桌面可视化专项规范：置顶集合与视图偏好属桌面用户偏好，不进入 CLI / JSON-RPC 契约；`session_list` 的 `all_workspaces` 仅扩展桌面查询参数，缺省过滤语义不变。
 - 会话用量环形指示器规范依附模型设置规范的两级目录（窗口值来自模型条目）与智谱额度规范的快照语义；上下文占用为前端派生值（事件流最近 usage），不落库不进契约；ChatGPT 用量复用智谱额度规范的 `fetch_usage` 分发与 `ProviderUsageSnapshot` 结构。
+- 每回合 Token 预算规范依附会话用量环形界面，但使用独立的共享 Runtime 累计状态和 `token.budget` 事件；不改变上下文窗口统计与压缩语义。
 - 权限模式规范统一 CLI/ACP/预设/桌面四端的审批档位（决策矩阵唯一实现在 harness-contracts），修订 CLI 规范的三档审批策略表与配置预设规范的「桌面端审批策略接管」非目标；所有档位不改变副本+apply 边界、Windows 沙箱与免审批只读白名单，桌面权限模式与预设 approval 互相独立。
 - 工作区命名规范为工作区实体属性扩展：名称随 `record.json` 持久化（CLI 与桌面单一事实源），与置顶的「桌面偏好 KV 派生注入」方案不同源；不改工作副本隔离、同步与审批语义，桌面显示点统一消费该字段。
 - 当前完成情况以 [能力状态矩阵](capability-matrix.md) 为准，具体执行与验证证据见 [交付记录](delivery.md)。

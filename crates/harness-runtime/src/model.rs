@@ -96,6 +96,7 @@ pub struct StreamDelta {
     pub reasoning: bool,
 }
 pub type DeltaSink = Arc<dyn Fn(StreamDelta) + Send + Sync>;
+pub type PartialUsageSink = Arc<dyn Fn(Value) + Send + Sync>;
 #[async_trait]
 pub trait ModelProvider: Send + Sync {
     fn route(&self) -> Option<ModelRoute> {
@@ -115,6 +116,16 @@ pub trait ModelProvider: Send + Sync {
         cancel: CancellationToken,
         sink: DeltaSink,
     ) -> AppResult<ModelAnswer>;
+    async fn complete_with_partial_usage(
+        &self,
+        messages: Vec<ModelMessage>,
+        tools: Vec<ToolDefinition>,
+        cancel: CancellationToken,
+        sink: DeltaSink,
+        _partial_usage: PartialUsageSink,
+    ) -> AppResult<ModelAnswer> {
+        self.complete(messages, tools, cancel, sink).await
+    }
 }
 pub struct HttpModel {
     pub config: ModelConfig,
@@ -128,26 +139,14 @@ pub struct HttpModel {
 impl HttpModel {
     /// 对齐 codex 参考实现的 5 分钟空闲窗口。
     pub const DEFAULT_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
-}
-#[async_trait]
-impl ModelProvider for HttpModel {
-    fn route(&self) -> Option<ModelRoute> {
-        Some(ModelRoute::from(&self.config))
-    }
-    fn request_snapshot(
-        &self,
-        messages: &[ModelMessage],
-        tools: &[ToolDefinition],
-    ) -> AppResult<Value> {
-        let (url, body) = encode_request(&self.config, messages, tools)?;
-        Ok(serde_json::json!({"url":url,"body":body}))
-    }
-    async fn complete(
+
+    async fn complete_inner(
         &self,
         messages: Vec<ModelMessage>,
         tools: Vec<ToolDefinition>,
         cancel: CancellationToken,
         sink: DeltaSink,
+        partial_usage: Option<PartialUsageSink>,
     ) -> AppResult<ModelAnswer> {
         let mut builder = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(20))
@@ -206,21 +205,95 @@ impl ModelProvider for HttpModel {
         let mut decoder = SseDecoder::for_route(ModelRoute::from(&self.config));
         while !decoder.is_finished() {
             let next = tokio::select! {
-                _ = cancel.cancelled() => return Err(cancelled()),
+                _ = cancel.cancelled() => Err(cancelled()),
                 n = tokio::time::timeout(self.stream_idle_timeout, stream.next()) => match n {
-                    Ok(next) => next,
-                    Err(_) => return Err(stream_idle_timeout(self.stream_idle_timeout)),
+                    Ok(next) => Ok(next),
+                    Err(_) => Err(stream_idle_timeout(self.stream_idle_timeout)),
                 },
             };
+            let next = match next {
+                Ok(next) => next,
+                Err(error) => {
+                    if let Some(observer) = &partial_usage {
+                        observer(decoder.usage());
+                    }
+                    return Err(error);
+                }
+            };
             let Some(chunk) = next else { break };
-            for delta in decoder.push(&chunk.map_err(transport_error)?)? {
+            let chunk = match chunk {
+                Ok(chunk) => chunk,
+                Err(error) => {
+                    if let Some(observer) = &partial_usage {
+                        observer(decoder.usage());
+                    }
+                    return Err(transport_error(error));
+                }
+            };
+            let deltas = match decoder.push(&chunk) {
+                Ok(deltas) => deltas,
+                Err(error) => {
+                    if let Some(observer) = &partial_usage {
+                        observer(decoder.usage());
+                    }
+                    return Err(error);
+                }
+            };
+            for delta in deltas {
                 sink(delta);
             }
         }
         if cancel.is_cancelled() {
+            if let Some(observer) = &partial_usage {
+                observer(decoder.usage());
+            }
             return Err(cancelled());
         }
-        decoder.finish()
+        match decoder.finish_with_usage() {
+            Ok(answer) => Ok(answer),
+            Err((error, usage)) => {
+                if let Some(observer) = partial_usage {
+                    observer(usage);
+                }
+                Err(error)
+            }
+        }
+    }
+}
+#[async_trait]
+impl ModelProvider for HttpModel {
+    fn route(&self) -> Option<ModelRoute> {
+        Some(ModelRoute::from(&self.config))
+    }
+    fn request_snapshot(
+        &self,
+        messages: &[ModelMessage],
+        tools: &[ToolDefinition],
+    ) -> AppResult<Value> {
+        let (url, body) = encode_request(&self.config, messages, tools)?;
+        Ok(serde_json::json!({"url":url,"body":body}))
+    }
+    async fn complete(
+        &self,
+        messages: Vec<ModelMessage>,
+        tools: Vec<ToolDefinition>,
+        cancel: CancellationToken,
+        sink: DeltaSink,
+    ) -> AppResult<ModelAnswer> {
+        self.complete_inner(messages, tools, cancel, sink, None)
+            .await
+    }
+
+    async fn complete_with_partial_usage(
+        &self,
+        messages: Vec<ModelMessage>,
+        tools: Vec<ToolDefinition>,
+        cancel: CancellationToken,
+        sink: DeltaSink,
+        partial_usage: PartialUsageSink,
+    ) -> AppResult<ModelAnswer> {
+        self.complete_inner(messages, tools, cancel, sink, Some(partial_usage))
+            .await
     }
 }
 pub fn cancelled() -> AppError {

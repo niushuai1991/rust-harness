@@ -7,7 +7,10 @@ use harness_runtime::{
 use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 use tokio_util::sync::CancellationToken;
 
@@ -23,11 +26,16 @@ impl ModelProvider for Recorded {
         _: CancellationToken,
         _: DeltaSink,
     ) -> AppResult<ModelAnswer> {
-        self.answers
+        let mut answer = self
+            .answers
             .lock()
             .unwrap()
             .pop_front()
-            .ok_or_else(|| AppError::new("FIXTURE", "unexpected extra request"))
+            .ok_or_else(|| AppError::new("FIXTURE", "unexpected extra request"))?;
+        if answer.usage.is_null() {
+            answer.usage = serde_json::json!({"prompt_tokens":0,"completion_tokens":0});
+        }
+        Ok(answer)
     }
 }
 fn call(id: &str, name: &str, args: Value) -> ModelAnswer {
@@ -68,6 +76,107 @@ fn auto_approve(runtime: &Arc<Runtime>) {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     });
+}
+
+struct SharedBudgetProvider {
+    parent_calls: AtomicUsize,
+    child_calls: AtomicUsize,
+}
+
+#[async_trait]
+impl ModelProvider for SharedBudgetProvider {
+    async fn complete(
+        &self,
+        messages: Vec<ModelMessage>,
+        _: Vec<ToolDefinition>,
+        cancel: CancellationToken,
+        _: DeltaSink,
+    ) -> AppResult<ModelAnswer> {
+        let child = messages
+            .iter()
+            .any(|message| message.content == "预算子任务");
+        if child {
+            self.child_calls.fetch_add(1, Ordering::SeqCst);
+            return Ok(ModelAnswer {
+                content: "子任务完成".into(),
+                usage: json!({"prompt_tokens":0,"completion_tokens":3}),
+                ..Default::default()
+            });
+        }
+        if self.parent_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Ok(ModelAnswer {
+                calls: vec![ToolCall {
+                    id: "spawn-budget-child".into(),
+                    name: "agent_spawn".into(),
+                    arguments: json!({"task":"预算子任务"}),
+                }],
+                usage: json!({"prompt_tokens":2,"completion_tokens":0}),
+                ..Default::default()
+            });
+        }
+        tokio::select! {
+            _ = cancel.cancelled() => Err(AppError::new("CANCELLED", "shared budget cancelled parent")),
+            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => Ok(ModelAnswer {
+                content: "unexpected additional parent response".into(),
+                usage: json!({"prompt_tokens":0,"completion_tokens":0}),
+                ..Default::default()
+            }),
+        }
+    }
+}
+
+#[tokio::test]
+async fn child_usage_consumes_the_parent_turn_budget() {
+    let (_temp, runtime, session) = setup("shared budget").await;
+    runtime.set_token_budget_limit(5).await.unwrap();
+    let provider = Arc::new(SharedBudgetProvider {
+        parent_calls: AtomicUsize::new(0),
+        child_calls: AtomicUsize::new(0),
+    });
+    auto_approve(&runtime);
+
+    let error = runtime
+        .clone()
+        .run_session(session.clone(), "parent".into(), provider.clone())
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, "TOKEN_BUDGET_EXCEEDED");
+    assert_eq!(provider.child_calls.load(Ordering::SeqCst), 1);
+    assert!(provider.parent_calls.load(Ordering::SeqCst) <= 2);
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let parent_events = runtime.store.events(&session, 0).await.unwrap();
+            if parent_events.iter().any(|event| {
+                event.kind == "token.budget"
+                    && event.data["usedTokens"] == 5
+                    && event.data["status"] == "exhausted"
+            }) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let child = runtime.children_of(&session).pop().unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if runtime
+                .store
+                .events(&child, 0)
+                .await
+                .unwrap()
+                .iter()
+                .any(|event| event.kind == "turn.end")
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]

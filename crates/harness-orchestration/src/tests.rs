@@ -12,6 +12,7 @@ impl ModelProvider for Answer {
     ) -> AppResult<ModelAnswer> {
         Ok(ModelAnswer {
             content: "摘要和回复".into(),
+            usage: serde_json::json!({"prompt_tokens":0,"completion_tokens":0}),
             ..Default::default()
         })
     }
