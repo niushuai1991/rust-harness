@@ -106,3 +106,54 @@ async fn recovery_finds_calls_committed_inside_assistant_before_tool_registratio
         && e.data["callId"] == "c"
         && e.data["status"] == "unknown"));
 }
+
+#[tokio::test]
+async fn timeline_page_reads_latest_then_strictly_older_bounded_windows() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Store::open(&dir.path().join("events.db")).await.unwrap();
+    let session = db.create_session("work-a", "long").await.unwrap();
+    for index in 1..=205 {
+        db.append(
+            &session.id,
+            "assistant.message",
+            json!({"content": format!("event-{index}")}),
+        )
+        .await
+        .unwrap();
+    }
+
+    let latest = db.timeline_page(&session.id, None, None).await.unwrap();
+    assert_eq!(latest.through_seq, "205");
+    assert!(latest.has_older);
+    assert_eq!(latest.older_cursor.as_deref(), Some("126"));
+    assert_eq!(latest.events.len(), 80);
+    assert_eq!(latest.events.first().unwrap().seq, "126");
+    assert_eq!(latest.events.last().unwrap().seq, "205");
+
+    let older = db
+        .timeline_page(&session.id, Some(126), Some(80))
+        .await
+        .unwrap();
+    assert_eq!(older.through_seq, "205");
+    assert!(older.has_older);
+    assert_eq!(older.older_cursor.as_deref(), Some("46"));
+    assert_eq!(older.events.len(), 80);
+    assert_eq!(older.events.first().unwrap().seq, "46");
+    assert_eq!(older.events.last().unwrap().seq, "125");
+    assert!(latest
+        .events
+        .iter()
+        .all(|event| older.events.iter().all(|other| other.id != event.id)));
+
+    let capped = db.timeline_page(&session.id, None, Some(255)).await.unwrap();
+    assert_eq!(capped.events.len(), 200);
+    assert_eq!(capped.events.first().unwrap().seq, "6");
+    assert_eq!(capped.events.last().unwrap().seq, "205");
+
+    let empty = db.create_session("work-a", "empty").await.unwrap();
+    let page = db.timeline_page(&empty.id, None, None).await.unwrap();
+    assert_eq!(page.through_seq, "0");
+    assert!(page.events.is_empty());
+    assert!(!page.has_older);
+    assert_eq!(page.older_cursor, None);
+}

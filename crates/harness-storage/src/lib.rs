@@ -298,18 +298,70 @@ impl Store {
             .fetch_all(&self.pool)
             .await
             .map_err(db_error)?;
-        rows.iter()
-            .map(|r| {
-                Ok(SessionEvent {
-                    id: r.get("id"),
-                    session_id: r.get("session_id"),
-                    seq: r.get::<i64, _>("seq").to_string(),
-                    kind: r.get("kind"),
-                    data: serde_json::from_str(r.get("data")).map_err(db_error)?,
-                    created_at: r.get("created_at"),
-                })
+        rows.iter().map(event_row).collect()
+    }
+    /// Returns a bounded durable-event window for the desktop timeline.
+    pub async fn timeline_page(
+        &self,
+        session: &str,
+        before: Option<u64>,
+        limit: Option<u16>,
+    ) -> AppResult<TimelinePage> {
+        let through: Option<i64> = sqlx::query_scalar("SELECT MAX(seq) FROM events WHERE session_id=?")
+            .bind(session)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db_error)?;
+        let through = through.unwrap_or(0);
+        if through == 0 {
+            return Ok(TimelinePage {
+                session_id: session.into(),
+                events: vec![],
+                older_cursor: None,
+                through_seq: "0".into(),
+                has_older: false,
+            });
+        }
+        let before = before
+            .map(|cursor| {
+                i64::try_from(cursor).map_err(|_| AppError::new("INVALID_CURSOR", "游标溢出"))
             })
-            .collect()
+            .transpose()?;
+        let limit = limit
+            .unwrap_or(DEFAULT_TIMELINE_PAGE_SIZE)
+            .clamp(1, MAX_TIMELINE_PAGE_SIZE);
+        let mut rows = sqlx::query(
+            "SELECT * FROM events WHERE session_id=? AND seq<=? AND (? IS NULL OR seq<?) \
+             ORDER BY seq DESC LIMIT ?",
+        )
+        .bind(session)
+        .bind(through)
+        .bind(before)
+        .bind(before)
+        .bind(i64::from(limit) + 1)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_error)?;
+        let has_older = rows.len() > usize::from(limit);
+        if has_older {
+            rows.pop();
+        }
+        let mut events = rows.iter().map(event_row).collect::<AppResult<Vec<_>>>()?;
+        events.reverse();
+        let older_cursor = has_older.then(|| {
+            events
+                .first()
+                .expect("a page with earlier events cannot be empty")
+                .seq
+                .clone()
+        });
+        Ok(TimelinePage {
+            session_id: session.into(),
+            events,
+            older_cursor,
+            through_seq: through.to_string(),
+            has_older,
+        })
     }
     /// Called before accepting work. Recovery records uncertainty, never invokes a tool.
     pub async fn recover(&self) -> AppResult<usize> {
@@ -568,4 +620,15 @@ fn session_row(r: &sqlx::sqlite::SqliteRow) -> SessionInfo {
         updated_at: r.get("updated_at"),
         parent_id: None,
     }
+}
+
+fn event_row(r: &sqlx::sqlite::SqliteRow) -> AppResult<SessionEvent> {
+    Ok(SessionEvent {
+        id: r.get("id"),
+        session_id: r.get("session_id"),
+        seq: r.get::<i64, _>("seq").to_string(),
+        kind: r.get("kind"),
+        data: serde_json::from_str(r.get("data")).map_err(db_error)?,
+        created_at: r.get("created_at"),
+    })
 }
