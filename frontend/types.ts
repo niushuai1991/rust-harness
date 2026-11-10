@@ -7,6 +7,7 @@ export interface SessionWorktree {path:string;branch:string;createdAt:string}
 export interface WorkspaceInfo {id:string;sourcePath:string;replicaPath:string;createdAt:string;name:string;pinned:boolean;executionMode:ExecutionMode;worktrees:{[sessionId:string]:SessionWorktree}}
 export interface SessionInfo {id:string;workspaceId:string;title:string;createdAt:string;updatedAt:string;parentId?:string|null}
 export interface SessionEvent {id:string;sessionId:string;seq:string;kind:string;data:Record<string,unknown>;createdAt:string}
+export interface TimelinePage {sessionId:string;events:SessionEvent[];olderCursor:string|null;throughSeq:string;hasOlder:boolean}
 export type LiveEvent = {type:'durable';event:SessionEvent}|{type:'delta';sessionId:string;requestId:string;index:number;text:string;reasoning:boolean}|{type:'status';sessionId:string;status:string};
 export type ApiMode='chatCompletions'|'responses'|'anthropic';
 export type ProviderCompatibility='standard'|'deepSeek'|'bigModel';
