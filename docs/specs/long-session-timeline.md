@@ -55,8 +55,8 @@ SQLite events（完整、持久、仅追加）
         ├─ 既有 session_events(after)：CLI / ACP / 增量补拉兼容接口
         │
         └─ 新增 TimelineRepository
-              ├─ latest_page / older_page：受限条数的显示摘要
-              └─ event_detail：按需读取工具结果、diff、终端输出等正文
+              ├─ 快照订阅 / 前后分页：受限条数的显示摘要
+              └─ detail / payload_chunk：按需、限字节读取工具结果、diff、终端输出等正文
                        │
                        ├─ Tauri command → React 可变高度虚拟时间线
                        └─ Rust facade → GPUI 虚拟时间线（后续 POC）
@@ -66,12 +66,19 @@ SQLite events（完整、持久、仅追加）
 
 ## 时间线查询契约
 
-既有 `session_events(sessionId, after?)` 保持不变，继续用于 CLI、ACP 和丢帧后的增量追赶。桌面端改用以下新增查询：
+既有 `session_events(sessionId, after?)` 保持不变，继续用于 CLI、ACP 和兼容用途；它不再是桌面长会话的丢帧追赶接口，因为 `after` 到当前的事件数可能无界。桌面端改用以下新增查询：
 
 ```text
-session_timeline_page(sessionId, beforeSeq?, limit?) -> TimelinePage
-session_timeline_event_detail(sessionId, eventId) -> SessionEvent
+session_timeline_subscribe(sessionId) -> TimelineSubscription
+session_timeline_page(sessionId, beforeSeq?, throughSeq, limit?) -> TimelinePage
+session_timeline_forward_page(sessionId, afterSeq, throughSeq?, limit?) -> TimelinePage
+session_timeline_event_detail(sessionId, eventId) -> TimelineEventDetail
+session_timeline_payload_chunk(sessionId, eventId, field, offset?, limitBytes?) -> TimelinePayloadPage
 ```
+
+`session_timeline_subscribe` 必须在线程/事务边界内先注册该会话的订阅，再捕获并返回 `headSeq`。此后 `seq > headSeq` 的事件先进入该订阅的有界缓冲，`seq <= headSeq` 的事件只从快照分页返回；两者不能在注册与读快照之间留下空窗。实现可使用 Tauri `Channel`、Rust stream 或 GPUI callback，但线性化语义必须相同。
+
+客户端先订阅取得 `headSeq`，再调用最新页（`throughSeq=headSeq`），最后按 `seq` 顺序合并订阅缓冲。若缓冲溢出、检测到 seq 缺口或订阅重连，客户端以最后一个连续 `seq` 为 `afterSeq` 调用有上限的 `session_timeline_forward_page`，持续分页至观察到的水位；不得退回调用无界的 `session_events(after)`。订阅缓冲只含 `TimelineEvent` 摘要，达到上限时丢弃缓冲并标记为需要上述补拉，不能把完整事件正文堆积在内存。
 
 ### `TimelinePage`
 
@@ -80,37 +87,51 @@ TimelinePage {
   sessionId: String,
   events: Vec<TimelineEvent>,       // seq 升序，长度受服务端上限限制
   olderCursor: Option<String>,      // 本页最早事件之前的游标；None 表示没有更早记录
-  newestSeq: String,                // 读取时该会话可见的最新 seq
+  throughSeq: String,               // 本次快照的固定上界，不会混入更晚事件
   hasOlder: bool,
+}
+
+TimelineSubscription { subscriptionId: String, headSeq: String }
+
+TimelinePayloadPage {
+  field: String,
+  offset: u64,
+  bytes: Vec<u8>,
+  totalBytes: u64,
+  nextOffset: Option<u64>,
+  truncated: bool,
 }
 ```
 
-- `beforeSeq=None` 请求最新页；传入游标时请求严格早于该游标的一页。
+- `beforeSeq=None` 请求不晚于 `throughSeq` 的最新页；传入游标时请求严格早于该游标的一页。初始 `throughSeq` 必须使用订阅返回的 `headSeq`；旧页请求沿用当前快照上界。
+- `session_timeline_forward_page` 返回严格大于 `afterSeq` 且不晚于可选 `throughSeq` 的一页，并携带本页实际观察到的水位。连续追赶时，客户端只推进到连续收到的最大 `seq`，直至追到水位。
 - 存储层以 `(session_id, seq)` 主键逆序限量读取，再恢复为 seq 升序返回；不得先读取全量事件后再在内存切片。
 - 初始建议页大小为 80 个显示事件，服务端硬上限为 200；实现计划须通过基准验证并把这两个值集中为可调常量。
 - 页边界允许落在一个回合内部。渲染器把边界处的工具链标记为“本回合较早步骤尚未加载”，加载上一页后再合并，不得为了补齐一个回合而无界扩页。
 
 ### `TimelineEvent`
 
-列表接口不返回无显示必要的大型 `data` 正文。它返回渲染摘要：
+列表接口不返回无显示必要的大型 `data` 正文。每个 `TimelineEvent` 至少有稳定的 `id`、`sessionId`、`seq`、`kind`、`createdAt`、`runId?`、`callId?`、`approvalId?`、状态和受限的显示摘要；工具调用/结果以相同 `callId` 关联，审批请求/处理结果以相同 `approvalId` 关联，回合开始/结束与消息以 `runId` 关联。这些关联键即使分处不同页也不能被摘要投影省略。
+
+它返回的渲染摘要如下：
 
 | 事件类型 | 列表载荷 | 展开后载荷 |
 |---|---|---|
-| 用户/助手消息 | 文本正文、附件元数据、必要状态；助手 reasoning 默认折叠 | 与原始事件等价的完整数据 |
+| 用户/助手消息 | 限字节正文预览、附件元数据、必要状态；助手 reasoning 默认折叠 | 按字段分块读取完整正文 |
 | `tool.call` / `tool.result` | 工具名、状态、路径、短摘要、可展开标记、已知 diff 统计 | 参数、完整工具输出、完整 unified diff、artifact 引用 |
 | 终端/后台任务 | 命令、状态、退出码、短摘要 | 完整 stdout/stderr 或 artifact 内容 |
-| 计划、目标、审批、子代理 | 当前卡片所需的结构化摘要 | 原始事件数据 |
+| 计划、目标、审批、子代理 | 当前卡片所需的结构化摘要和稳定关联键 | 限字节详情字段或原始事件元数据 |
 
-列表摘要中的正文大小必须有明确上限；超过上限时携带 `truncated` 与 `detailAvailable`，而不是静默截断或将完整内容传入 UI。详情查询按 `sessionId + eventId` 校验归属，返回完整原始事件；展开卡片后才保留该正文。
+列表摘要中的正文大小必须有明确上限；超过上限时携带 `truncated`、`detailAvailable` 与字段 `payloadRef`，而不是静默截断或将完整内容传入 UI。`TimelineEventDetail` 返回元数据、受限的标量预览和可读取字段的 `payloadRef`，不直接返回完整 `SessionEvent` 或任意长度字符串。`session_timeline_payload_chunk` 按 `sessionId + eventId + field` 校验归属，单次 `limitBytes` 受服务端硬上限限制，并以 `nextOffset`、`totalBytes` 和 `truncated` 让客户端显式继续读取。原始 `SessionEvent` 仍只在存储/导出等既有边界内使用。
 
 ## 客户端状态与渲染规则
 
 ### 有界缓存
 
-- 活动会话缓存当前页、向上加载的有限页和当前展开卡片的详情；页数与详情缓存均设 LRU 上限。
+- 活动会话缓存当前页、向上加载的有限页和当前展开卡片的详情；页数与详情缓存均设 LRU 上限，并同时设置 resident `TimelineEvent` 数量、详情项数和序列化字节总额三种预算。任一预算触顶时优先逐出最久未见的详情、Markdown AST 和语法高亮缓存，再逐出整页。
 - 非活动会话最多保留滚动锚点、最新游标、加载状态和轻量会话摘要；切出后释放事件正文、Markdown AST、diff 行和工具输出。
 - 建议初值为“活动会话至多 3 页、最多 2 个非活动会话保留轻量元数据”。这些是受基准调整的产品常量，不得散落在组件状态中。
-- 收到非活动会话的新 durable event 时仅失效其最新页和侧栏摘要，不把正文写入缓存；重新激活时增量刷新最新页。
+- 收到非活动会话的新 durable event 时仅失效其最新页和侧栏摘要，不把正文写入缓存；重新激活时通过快照订阅和有界前向页刷新最新页。
 
 ### 可变高度虚拟时间线
 
@@ -122,8 +143,9 @@ TimelinePage {
 ### 流式消息
 
 - IPC/订阅继续接收全部 delta，但 UI 在 animation frame 或短时间窗内合并多个 delta 后提交一次可见状态。
-- 流式中显示轻量纯文本/等宽预览，不对每个 token 重跑完整 GFM 解析；收到 durable `assistant.message` 后用最终 Markdown 卡片原子替换临时流卡片。
-- 去重索引不能随输出 token 数无界增长；只保留请求 id、最后连续 index 与一个小型乱序窗口，完成或取消后立即释放。
+- 流式中显示轻量纯文本/等宽预览，不对每个 token 重跑完整 GFM 解析。临时流卡只保留受预算约束的前缀预览与末尾窗口；超出部分写入 durable 事件或暂存的 payload 引用，不能在 UI 字符串中无限追加。
+- 收到 durable `assistant.message` 后，临时流卡原子替换为带 `payloadRef` 的最终 Markdown 卡片。首次展开可按块增量展示正文，但完整文本、Markdown AST 和高亮结果必须受详情字节预算约束。
+- 去重索引和订阅追赶状态不能随输出 token 数无界增长；只保留请求 id、最后连续 index 与一个小型乱序窗口，完成或取消后立即释放。
 
 ### Markdown、代码与 diff
 
@@ -144,6 +166,7 @@ GPUI 可以通过自绘文本和虚拟列表降低 WebView2/DOM 的基础与节�
 ## 一致性、并发与错误处理
 
 - 分页游标使用持久 `seq`，不使用数组下标或 UI 生成 id；重复页与并发返回结果以事件 id 去重并按 seq 排序。
+- 初始订阅、快照页、缓冲事件与前向补拉遵循“订阅注册 → 固定 `headSeq` 快照 → 按 seq 合并缓冲/补拉”的顺序。任何缺口、缓冲溢出或重连都必须进入有界前向补拉；不得假设事件到达顺序天然连续。
 - 切换会话或工作区时，旧查询结果必须通过请求 generation/session id 校验后才能写入缓存。
 - 新事件到达与加载旧页并发时，最新页按 `seq` 合并；旧页不会覆盖更高 seq 的实时事件。
 - `session_timeline_event_detail` 读取失败时保留摘要卡，显示可重试错误；不得导致整个时间线重拉全量历史。
@@ -155,12 +178,14 @@ GPUI 可以通过自绘文本和虚拟列表降低 WebView2/DOM 的基础与节�
 
 至少验证：
 
-1. 分页无重复、无遗漏、seq 顺序稳定；跨页回合能正确显示 continuation 并在合并后恢复完整结构。
+1. 分页无重复、无遗漏、seq 顺序稳定；跨页回合能正确显示 continuation 并在合并后恢复完整结构。工具 call/result、审批 request/resolved 和回合关联跨页时仍以稳定关联键正确配对。
 2. 切换到长会话的查询结果条数、传输字节和首次挂载卡片数均受页大小限制。
 3. 连续打开多个长会话后，非活动会话的完整正文已从客户端缓存释放。
 4. 向上加载时滚动锚点不跳动；阅读历史时流式新消息不夺取滚动位置。
-5. 流式持续输出时，重绘次数受节流窗口限制，完成后最终 Markdown、代码块和工具卡内容正确。
-6. 导出、搜索、恢复、CLI/ACP 的 `session_events(after)` 行为不变；`/compact` 后仍可浏览和导出原始历史。
+5. 在“订阅注册前后追加事件、快照读取期间追加事件、订阅缓冲溢出、重连”四种场景下，客户端都能通过有界前向页得到每一个 seq，且不会调用无界的 `session_events(after)`。
+6. 单条超大助手消息、工具结果、diff 和流式输出均不会突破列表、详情和流卡的字节预算；分块读取能依 `nextOffset` 无重复地还原内容。
+7. 流式持续输出时，重绘次数受节流窗口限制，完成后最终 Markdown、代码块和工具卡内容正确。
+8. 导出、恢复、CLI/ACP 的 `session_events(after)` 行为不变；`/compact` 后仍可浏览和导出原始历史。
 
 基准报告必须记录：事件总数与正文总字节、每页事件数和响应字节、切换冷/热耗时、滚动帧时间、应用进程与 WebView2 子进程的总工作集、客户端 resident event/detail/DOM（或 GPUI 元素）数量。先记录现状基线，再在同一机器、同一 fixture 下比较改造后数据。
 
@@ -178,5 +203,5 @@ GPUI 可以通过自绘文本和虚拟列表降低 WebView2/DOM 的基础与节�
 
 - 真实长程任务的代表性事件数、正文大小和目标硬件，以便冻结基准阈值。
 - 初始页大小、活动/非活动缓存预算，以及工具摘要最大字节数。
-- 用户是否需要在聊天区直接搜索全部历史；若需要，应走 SQLite FTS 定位并按 seq 打开相应页，而不是预加载全部事件。
+- 用户是否需要在聊天区直接搜索全部历史。现有 `message_search` 只索引会话 id 与内容，不能定位到事件 id/seq；该能力不属于本期。若后续实施，须另行迁移 FTS schema，加入可定位的 `event_id`/`seq`、完成回填与重建，并以命中 seq 分页定位，不能预加载全部事件。
 - 在有界时间线完成后的决策门槛：WebView2 的实际基础内存与 GPUI 重写成本达到何种比例时，才启动 GPUI UI 迁移规范。
