@@ -4,9 +4,10 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {command,errorText} from './api';
 import {Modal,TodoList} from './App';
-import type {PlanStateOverview,SessionEvent} from './types';
+import type {PlanStateOverview,SessionEvent,TimelinePage} from './types';
 
 const STATE_KINDS=['todo.state','plan.state','goal.state'];
+const MAX_PLAN_HISTORY_PAGES=3;
 const KIND_LABEL:{[kind:string]:string}={'todo.state':'待办清单','plan.state':'计划','goal.state':'目标'};
 const localTime=(iso:string)=>{const t=Date.parse(iso);return Number.isFinite(t)?new Date(t).toLocaleString():iso};
 const todoItems=(data:Record<string,unknown>)=>Array.isArray(data.items)?(data.items as Record<string,unknown>[]):[];
@@ -27,8 +28,14 @@ export function PlansPanel({currentSessionId,onOpenSession,onClose}:{currentSess
   if(history[sessionId]===undefined){
    setHistory(old=>({...old,[sessionId]:null}));
    try{
-    const list=await command<SessionEvent[]>('session_events',{sessionId});
-    setHistory(old=>({...old,[sessionId]:list.filter(e=>STATE_KINDS.includes(e.kind)).reverse()}));
+    const list:SessionEvent[]=[];let beforeSeq:string|undefined;
+    for(let index=0;index<MAX_PLAN_HISTORY_PAGES;index++){
+     const page=await command<TimelinePage>('session_timeline_page',beforeSeq?{sessionId,beforeSeq}:{sessionId});
+     list.push(...page.events);
+     if(!page.hasOlder||!page.olderCursor)break;
+     beforeSeq=page.olderCursor;
+    }
+    setHistory(old=>({...old,[sessionId]:list.filter(e=>STATE_KINDS.includes(e.kind)).sort((a,b)=>BigInt(a.seq)>BigInt(b.seq)?-1:BigInt(a.seq)<BigInt(b.seq)?1:0)}));
    }catch(e){setError(errorText(e));setHistory(old=>{const next={...old};delete next[sessionId];return next})}
   }
  }
@@ -45,7 +52,7 @@ export function PlansPanel({currentSessionId,onOpenSession,onClose}:{currentSess
      </div>
     </header>
     {expanded===g.sessionId&&(history[g.sessionId]===null?<p className="muted">加载中…</p>:
-     <div className="plan-history">{!history[g.sessionId]?.length&&<p className="muted">该会话暂无状态记录。</p>}
+     <div className="plan-history"><p className="muted">为控制内存，仅显示最近 3 页状态记录。</p>{!history[g.sessionId]?.length&&<p className="muted">该会话暂无状态记录。</p>}
       {history[g.sessionId]?.map(h=><div key={h.id} className="plan-history-row"><small className="muted">{localTime(h.createdAt)} · {KIND_LABEL[h.kind]??h.kind}</small><span>{h.kind==='todo.state'?todoSummary(h.data):planSnippet(h.data)}</span></div>)}
      </div>)}
     {g.items.map(e=>

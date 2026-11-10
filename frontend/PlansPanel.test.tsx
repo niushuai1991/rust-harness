@@ -30,11 +30,11 @@ describe('计划与目标面板',()=>{
  it('演变历史懒加载并只保留状态事件',async()=>{
   mocks.command.mockImplementation(async(name:string,args:any)=>{
    if(name==='plan_overview')return [entry()];
-   if(name==='session_events'&&args.sessionId==='s1')return [
-    {id:'e1',sessionId:'s1',seq:'1',kind:'user.message',data:{content:'你好'},createdAt:'2026-11-06T09:00:00Z'},
-    {id:'e2',sessionId:'s1',seq:'2',kind:'plan.state',data:{content:'旧计划'},createdAt:'2026-11-06T09:05:00Z'},
-    {id:'e3',sessionId:'s1',seq:'3',kind:'plan.state',data:{content:'最新计划'},createdAt:'2026-11-06T10:00:00Z'},
-   ];
+   if(name==='session_timeline_page'&&args.sessionId==='s1')return {sessionId:'s1',events:[
+     {id:'e1',sessionId:'s1',seq:'1',kind:'user.message',data:{content:'你好'},createdAt:'2026-11-06T09:00:00Z'},
+     {id:'e2',sessionId:'s1',seq:'2',kind:'plan.state',data:{content:'旧计划'},createdAt:'2026-11-06T09:05:00Z'},
+     {id:'e3',sessionId:'s1',seq:'3',kind:'plan.state',data:{content:'最新计划'},createdAt:'2026-11-06T10:00:00Z'},
+    ],olderCursor:null,throughSeq:'3',hasOlder:false};
    return [];
   });
   render(<PlansPanel currentSessionId="s1" onOpenSession={vi.fn()} onClose={vi.fn()}/>);
@@ -42,6 +42,8 @@ describe('计划与目标面板',()=>{
   expect(screen.queryByText('旧计划')).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button',{name:'演变历史'}));
   await screen.findByText('旧计划');
+  expect(mocks.command).toHaveBeenCalledWith('session_timeline_page',{sessionId:'s1'});
+  expect(mocks.command.mock.calls.some(([name])=>name==='session_events')).toBe(false);
   expect(screen.queryByText('你好')).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button',{name:'收起历史'}));
   expect(screen.queryByText('旧计划')).not.toBeInTheDocument();

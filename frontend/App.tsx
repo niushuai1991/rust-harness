@@ -330,7 +330,7 @@ export default function App(){
   catch(e){if(request===timelineRequest.current&&activeSessionId.current===id)setError(errorText(e))}
   finally{if(request===timelineRequest.current&&activeSessionId.current===id)setOlderTimelineLoading(false)}
  }
- async function dispatchText(id:string,input:string,hashes:string[]){setRunning(old=>({...old,[id]:true}));await attempt(async()=>{if(hashes.length)await send(id,input,modelId,useChat.getState().receive,hashes,effort);else await send(id,input,modelId,useChat.getState().receive,undefined,effort)});setRunning(old=>({...old,[id]:false}));useChat.getState().clearStream(id);await loadLatestTimeline(id)}
+ async function dispatchText(id:string,input:string,hashes:string[]){setRunning(old=>({...old,[id]:true}));await attempt(async()=>{if(hashes.length)await send(id,input,modelId,useChat.getState().receive,hashes,effort);else await send(id,input,modelId,useChat.getState().receive,undefined,effort)});setRunning(old=>({...old,[id]:false}));useChat.getState().clearStream(id);if(activeSessionId.current===id)await loadLatestTimeline(id)}
  async function submit(e:FormEvent){
   e.preventDefault();
   if(sessionBusy||importing||(!text.trim()&&!attachments.length)||running[sessionId]||!modelId)return;

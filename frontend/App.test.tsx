@@ -84,6 +84,25 @@ describe('聊天交互',()=>{
   expect(screen.queryByText('迟到的 A 内容')).not.toBeInTheDocument();
   expect(screen.getByText('会话 B 的内容')).toBeInTheDocument();
  });
+ it('非活动会话的发送结束不会废弃当前会话的时间线加载',async()=>{
+  let releaseSend!:()=>void,resolveB!:(page:ReturnType<typeof timeline>)=>void;
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_timeline_page'&&args.sessionId==='b')return new Promise(resolve=>{resolveB=resolve});
+   return original(name,args);
+  });
+  mocks.send.mockImplementation(async()=>new Promise<void>(resolve=>{releaseSend=resolve}));
+  render(<App/>);
+  await screen.findByText('内容 a');
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'发给 A 的消息'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(releaseSend).toBeTypeOf('function'));
+  fireEvent.click(screen.getByRole('button',{name:/会话 B/}));
+  await waitFor(()=>expect(resolveB).toBeTypeOf('function'));
+  await act(async()=>releaseSend());
+  await act(async()=>resolveB(timeline('b',[event('b-1','b','1','会话 B 的最新消息')])));
+  expect(await screen.findByText('会话 B 的最新消息')).toBeInTheDocument();
+ });
  it('切换会话会清除被中断的更早页加载态',async()=>{
   let resolveOlder!:(page:ReturnType<typeof timeline>)=>void;
   const original=mocks.command.getMockImplementation()!;

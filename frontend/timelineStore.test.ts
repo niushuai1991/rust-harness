@@ -30,4 +30,23 @@ describe('timeline page cache',()=>{
   expect(useChat.getState().timeline('a')).toBeUndefined();
   expect(useChat.getState().events.d.map(item=>item.id)).toEqual(['d-1']);
  });
+
+ it('does not recreate an unbounded event cache for an LRU-evicted session',()=>{
+  for(const sessionId of ['a','b','c','d'])useChat.getState().replaceTimelinePage(sessionId,page(sessionId,1,1,null,false));
+
+  useChat.getState().receive({type:'durable',event:event('a',2)});
+
+  expect(useChat.getState().events.a).toBeUndefined();
+  expect(useChat.getState().timeline('a')).toBeUndefined();
+ });
+
+ it('retains durable events that arrive after a latest-page snapshot begins',()=>{
+  const state=useChat.getState(),snapshot=page('a',1,1,null,false);
+  state.replaceTimelinePage('a',snapshot);
+  state.receive({type:'durable',event:event('a',2)});
+  state.replaceTimelinePage('a',snapshot);
+
+  expect(useChat.getState().events.a.map(item=>item.seq)).toEqual(['1','2']);
+  expect(useChat.getState().timeline('a')?.throughSeq).toBe('2');
+ });
 });

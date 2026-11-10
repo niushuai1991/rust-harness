@@ -11,7 +11,10 @@ interface State {
 }
 export const useChat=create<State>((set,get)=>({events:{},timelines:{},timelineLru:[],streams:{},statuses:{},
  replace:(id,events)=>set(state=>({events:{...state.events,[id]:mergeEvents(events,state.events[id]??[])}})),
- replaceTimelinePage:(id,page)=>set(state=>storeTimeline(state,id,timelineFromPage(page))),
+ replaceTimelinePage:(id,page)=>set(state=>{
+  const newer=(state.events[id]??[]).filter(event=>BigInt(event.seq)>BigInt(page.throughSeq));
+  return storeTimeline(state,id,timelineFromPage(page,newer));
+ }),
  prependTimelinePage:(id,page)=>set(state=>{
   const current=state.timelines[id];if(!current||current.reachedPageLimit)return state;
   const pages=[page.events,...current.pages].slice(0,MAX_TIMELINE_PAGES);
@@ -25,7 +28,7 @@ export const useChat=create<State>((set,get)=>({events:{},timelines:{},timelineL
    const id=event.event.sessionId,streams={...state.streams};
    if(event.event.kind==='assistant.message'||event.event.kind==='message.assistant')delete streams[id];
    const current=state.timelines[id];
-   if(!current)return {events:{...state.events,[id]:mergeEvents(state.events[id]??[],[event.event])},streams};
+   if(!current)return {streams};
    const pages=current.pages.length?current.pages.map((page,index)=>index===current.pages.length-1?trimPage(mergeEvents(page,[event.event])):page):[[event.event]];
    return {...storeTimeline(state,id,{...current,pages,throughSeq:maxSeq(current.throughSeq,event.event.seq)}),streams};
   }
@@ -36,7 +39,10 @@ export const useChat=create<State>((set,get)=>({events:{},timelines:{},timelineL
  })
 }));
 
-function timelineFromPage(page:TimelinePage):TimelineState {return {olderCursor:page.olderCursor,hasOlder:page.hasOlder,throughSeq:page.throughSeq,pagesLoaded:1,reachedPageLimit:false,pages:[trimPage(page.events)]}}
+function timelineFromPage(page:TimelinePage,newer:SessionEvent[]=[]):TimelineState {
+ const all=mergeEvents(page.events,newer),events=trimPage(all),trimmed=events.length<all.length;
+ return {olderCursor:trimmed?events[0]?.seq??null:page.olderCursor,hasOlder:page.hasOlder||trimmed,throughSeq:all.reduce((seq,event)=>maxSeq(seq,event.seq),page.throughSeq),pagesLoaded:1,reachedPageLimit:false,pages:[events]}
+}
 function emptyTimeline():TimelineState {return {olderCursor:null,hasOlder:false,throughSeq:'0',pagesLoaded:0,reachedPageLimit:false,pages:[]}}
 function storeTimeline(state:State,id:string,timeline:TimelineState){
  const lru=[id,...state.timelineLru.filter(item=>item!==id)],events={...state.events,[id]:flattenPages(timeline.pages)},timelines={...state.timelines,[id]:timeline};
