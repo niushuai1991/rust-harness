@@ -307,11 +307,12 @@ impl Store {
         before: Option<u64>,
         limit: Option<u16>,
     ) -> AppResult<TimelinePage> {
-        let through: Option<i64> = sqlx::query_scalar("SELECT MAX(seq) FROM events WHERE session_id=?")
-            .bind(session)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(db_error)?;
+        let through: Option<i64> =
+            sqlx::query_scalar("SELECT MAX(seq) FROM events WHERE session_id=?")
+                .bind(session)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(db_error)?;
         let through = through.unwrap_or(0);
         if through == 0 {
             return Ok(TimelinePage {

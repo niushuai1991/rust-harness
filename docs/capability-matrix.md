@@ -1,4 +1,4 @@
-# 能力状态（2026-11-09）
+# 能力状态（2026-11-10）
 
 状态说明：已实现表示存在实际执行代码；已验证另需对应测试或实际构建证据。不以计划或接口占位替代功能。
 
@@ -8,6 +8,7 @@
 |DeepSeek/智谱双供应商与Chat/Responses/Anthropic|已实现并接线|六条固定路由、三协议本地HTTP/SSE工具审批及重启回放、复制兼容与凭据隔离；两供应商六条真实连接及 Agent 工具链路已通过；模型设置两级结构、智谱 Coding Plan 额度卡、模型选择交互的桌面 UI 与真实模型/额度抽查待用户，见[模型设置规范](specs/model-settings.md)、[Coding Plan 额度规范](specs/coding-plan-usage.md)、[模型选择规范](specs/model-selection.md)|
 |ChatGPT 账号供应商（浏览器 OAuth 登录、token 自动刷新与吊销、ChatGPT 后端 Responses 变体、CLI login/logout 与桌面登录卡片）|已实现并接线|OAuth 模块 16 项单测与 6 项 mock issuer e2e（回调保存/state 校验/取消/刷新轮换/永久失败）通过；真实抽查通过：Chrome 授权登录、`login status`、gpt-5.6-luna 真实流式回合、effort 档位、工具闭环（write→审批→read）、桌面已登录状态两端共享。已知缺口：内置模型目录为 codex 全量列表，free 套餐仅部分模型可用（其余 400），待按账号从 /models 过滤；国内访问需代理（CLI 走 HTTPS_PROXY 环境变量，桌面走供应商代理字段）|
 |SQLite WAL、游标、恢复、FTS、JSONL、附件/spill|已实现并验证|持久顺序、未知结果结算、导入事务；schema2备份迁移、回滚和重试；附件导入、会话隔离、分块读取、下载与重启回归|
+|长会话有界时间线（第一期）|已实现并验证|桌面改用 `session_timeline_page`：默认 80 条、硬上限 200 条、严格向前游标；前端每会话最多 3 页、全局最多 3 个会话 LRU 缓存，用户按需加载更早页，到达上限可返回最新页。storage 游标边界、Tauri cursor 解析、Zustand 缓存与 App 分页/切换竞态共 94 项前端测试通过；可变高度虚拟列表、摘要化和断线补拉仍未实现，见[长会话时间线规范](specs/long-session-timeline.md)|
 |原项目/执行副本分离与人工同步|已实现|冲突、预览hash、ignore、链接、Git独立副本回归；桌面右侧面板行级diff审阅与文件预览已实现（见[右侧面板规范](specs/side-panel.md)），UI抽查待用户|
 |Windows受限token/Low IL/ACL/Job/stdio|已实现|真实Windows内部允许、外部拒绝、取消子树和split生命周期测试|
 |WASM/WIT、权限、ZIP、hook、KV、声明式界面|已实现并接线|真实component超限/取消/停用与安装攻击；设置、审批命令、受控HTTP、主题和安全卡片回归|

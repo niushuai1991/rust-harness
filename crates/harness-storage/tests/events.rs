@@ -140,12 +140,17 @@ async fn timeline_page_reads_latest_then_strictly_older_bounded_windows() {
     assert_eq!(older.events.len(), 80);
     assert_eq!(older.events.first().unwrap().seq, "46");
     assert_eq!(older.events.last().unwrap().seq, "125");
-    assert!(latest
-        .events
-        .iter()
-        .all(|event| older.events.iter().all(|other| other.id != event.id)));
+    assert!(
+        latest
+            .events
+            .iter()
+            .all(|event| older.events.iter().all(|other| other.id != event.id))
+    );
 
-    let capped = db.timeline_page(&session.id, None, Some(255)).await.unwrap();
+    let capped = db
+        .timeline_page(&session.id, None, Some(255))
+        .await
+        .unwrap();
     assert_eq!(capped.events.len(), 200);
     assert_eq!(capped.events.first().unwrap().seq, "6");
     assert_eq!(capped.events.last().unwrap().seq, "205");

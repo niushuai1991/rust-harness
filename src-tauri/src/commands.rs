@@ -15,7 +15,9 @@ fn error(e: impl std::fmt::Display) -> AppError {
     AppError::new("DESKTOP", e.to_string())
 }
 fn parse_timeline_before(before_seq: Option<&str>) -> AppResult<Option<u64>> {
-    before_seq.map(|cursor| cursor.parse::<u64>().map_err(error)).transpose()
+    before_seq
+        .map(|cursor| cursor.parse::<u64>().map_err(error))
+        .transpose()
 }
 
 #[tauri::command]
@@ -262,7 +264,11 @@ pub async fn session_timeline_page(
 ) -> AppResult<TimelinePage> {
     state
         .store
-        .timeline_page(&session_id, parse_timeline_before(before_seq.as_deref())?, limit)
+        .timeline_page(
+            &session_id,
+            parse_timeline_before(before_seq.as_deref())?,
+            limit,
+        )
         .await
 }
 #[tauri::command]
