@@ -14,6 +14,9 @@ pub const DEFAULT_SELECTION_KEY: &str = "app.default_selection";
 fn error(e: impl std::fmt::Display) -> AppError {
     AppError::new("DESKTOP", e.to_string())
 }
+fn parse_timeline_before(before_seq: Option<&str>) -> AppResult<Option<u64>> {
+    before_seq.map(|cursor| cursor.parse::<u64>().map_err(error)).transpose()
+}
 
 #[tauri::command]
 #[specta::specta]
@@ -248,6 +251,19 @@ pub async fn session_events(
         .parse::<u64>()
         .map_err(error)?;
     state.store.events(&session_id, after).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn session_timeline_page(
+    state: Backend<'_>,
+    session_id: String,
+    before_seq: Option<String>,
+    limit: Option<u16>,
+) -> AppResult<TimelinePage> {
+    state
+        .store
+        .timeline_page(&session_id, parse_timeline_before(before_seq.as_deref())?, limit)
+        .await
 }
 #[tauri::command]
 #[specta::specta]
@@ -947,6 +963,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         session_rename,
         session_title_generate,
         session_events,
+        session_timeline_page,
         session_send,
         session_cancel,
         session_export,
@@ -1036,7 +1053,7 @@ fn session_title_from_answer(answer: &str, text: &str, attachment_names: &[Strin
 
 #[cfg(test)]
 mod session_title_tests {
-    use super::session_title_from_answer;
+    use super::{parse_timeline_before, session_title_from_answer};
 
     #[test]
     fn uses_a_clean_single_line_model_title() {
@@ -1056,5 +1073,12 @@ mod session_title_tests {
             session_title_from_answer("", "", &["README.md".into()]),
             "README.md"
         );
+    }
+
+    #[test]
+    fn parses_optional_timeline_before_cursor() {
+        assert_eq!(parse_timeline_before(None).unwrap(), None);
+        assert_eq!(parse_timeline_before(Some("42")).unwrap(), Some(42));
+        assert!(parse_timeline_before(Some("not-a-seq")).is_err());
     }
 }
