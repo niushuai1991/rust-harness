@@ -12,3 +12,6 @@ node_modules/
 __pycache__/
 *.pyc
 src-tauri/gen/
+
+# Tauri Specta generated bindings
+/frontend/bindings.ts
