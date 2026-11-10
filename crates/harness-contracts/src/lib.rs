@@ -142,6 +142,21 @@ pub struct SessionEvent {
     pub created_at: String,
 }
 
+/// Desktop timeline default and hard maximum page sizes. The durable log itself is never capped.
+pub const DEFAULT_TIMELINE_PAGE_SIZE: u16 = 80;
+pub const MAX_TIMELINE_PAGE_SIZE: u16 = 200;
+
+/// A bounded, cursor-addressable window into one session's durable event log.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelinePage {
+    pub session_id: String,
+    pub events: Vec<SessionEvent>,
+    pub older_cursor: Option<String>,
+    pub through_seq: String,
+    pub has_older: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(
     tag = "type",

@@ -11,13 +11,14 @@ const mocks=vi.hoisted(()=>({command:vi.fn(),send:vi.fn()}));
 vi.mock('./api',()=>({desktop:()=>true,command:mocks.command,send:mocks.send,errorText:(e:unknown)=>e instanceof Error?e.message:String(e)}));
 vi.mock('@tauri-apps/plugin-dialog',()=>({open:vi.fn(),save:vi.fn()}));
 const event=(id:string,sessionId:string,seq:string,content:string):SessionEvent=>({id,sessionId,seq,kind:'assistant.message',data:{content},createdAt:''});
-beforeEach(()=>{useChat.setState({events:{},streams:{},statuses:{}});useSidePanel.getState().reset();mocks.command.mockReset();mocks.send.mockReset();mocks.command.mockImplementation(async(name:string,args:any)=>{
+const timeline=(sessionId:string,events:SessionEvent[])=>({sessionId,events,olderCursor:null,throughSeq:events[events.length-1]?.seq??'0',hasOlder:false});
+beforeEach(()=>{useChat.setState({events:{},streams:{},statuses:{},timelines:{},timelineLru:[]});useSidePanel.getState().reset();mocks.command.mockReset();mocks.send.mockReset();mocks.command.mockImplementation(async(name:string,args:any)=>{
  if(name==='workspace_list')return [{id:'w',sourcePath:'D:/project',replicaPath:'D:/copy',createdAt:'',name:'project'}];
  if(name==='model_list')return [{id:'m',name:'测试模型',compatibility:'standard',providerId:'custom',apiMode:'chatCompletions',maxOutputTokens:null,baseUrl:'https://example.test',model:'m',credentialRef:'',proxy:null,efforts:['low','high'],effort:null,enabled:true,builtin:false}];
  if(name==='provider_list')return [{id:'custom',name:'自定义供应商',builtin:false,compatibility:'standard',endpoints:[{apiMode:'chatCompletions',baseUrl:'https://example.test'}],defaultModel:'m',credentialRef:'',proxy:null,enabled:true,builtinModels:[],disabledModels:[]}];
  if(name==='default_selection_get')return null;
  if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A'},{id:'b',workspaceId:'w',title:'会话 B'}];
- if(name==='session_events')return [event(`e-${args.sessionId}`,args.sessionId,'1',`内容 ${args.sessionId}`)];
+ if(name==='session_timeline_page')return timeline(args.sessionId,[event(`e-${args.sessionId}`,args.sessionId,'1',`内容 ${args.sessionId}`)]);
  if(name==='approval_list')return [];
  if(name==='approval_mode_get')return 'ask';
  return [];
@@ -48,9 +49,83 @@ describe('聊天交互',()=>{
   await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('late-session','发给迟到会话','m',expect.any(Function),undefined,'high'));
  });
  it('切换会话只显示该会话的消息',async()=>{render(<App/>);await screen.findByText('内容 a');fireEvent.click(screen.getByRole('button',{name:/会话 B/}));await screen.findByText('内容 b');expect(screen.queryByText('内容 a')).not.toBeInTheDocument()});
+ it('会话打开使用有界时间线页而非全量事件接口',async()=>{
+  render(<App/>);
+  await screen.findByText('内容 a');
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_timeline_page',{sessionId:'a'}));
+  expect(mocks.command.mock.calls.some(([name])=>name==='session_events')).toBe(false);
+ });
+ it('在用户请求时以前页游标加载更早消息',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_timeline_page'&&args.beforeSeq==='4')return {sessionId:'a',events:[event('older-1','a','1','更早 1'),event('older-2','a','2','更早 2'),event('older-3','a','3','更早 3')],olderCursor:null,throughSeq:'6',hasOlder:false};
+   if(name==='session_timeline_page')return {sessionId:'a',events:[event('latest-4','a','4','最新 4'),event('latest-5','a','5','最新 5'),event('latest-6','a','6','最新 6')],olderCursor:'4',throughSeq:'6',hasOlder:true};
+   return original(name,args);
+  });
+  render(<App/>);
+  await screen.findByText('最新 4');
+  fireEvent.click(screen.getByRole('button',{name:'加载更早消息'}));
+  await screen.findByText('更早 1');
+  expect(mocks.command).toHaveBeenCalledWith('session_timeline_page',{sessionId:'a',beforeSeq:'4'});
+ });
+ it('切换会话后丢弃迟到的时间线页响应',async()=>{
+  let resolveA!:(page:ReturnType<typeof timeline>)=>void;
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_timeline_page'&&args.sessionId==='a')return new Promise(resolve=>{resolveA=resolve});
+   if(name==='session_timeline_page'&&args.sessionId==='b')return timeline('b',[event('b-1','b','1','会话 B 的内容')]);
+   return original(name,args);
+  });
+  render(<App/>);
+  await waitFor(()=>expect(resolveA).toBeTypeOf('function'));
+  fireEvent.click(screen.getByRole('button',{name:/会话 B/}));
+  await screen.findByText('会话 B 的内容');
+  await act(async()=>resolveA(timeline('a',[event('a-late','a','1','迟到的 A 内容')])));
+  expect(screen.queryByText('迟到的 A 内容')).not.toBeInTheDocument();
+  expect(screen.getByText('会话 B 的内容')).toBeInTheDocument();
+ });
+ it('非活动会话的发送结束不会废弃当前会话的时间线加载',async()=>{
+  let releaseSend!:()=>void,resolveB!:(page:ReturnType<typeof timeline>)=>void;
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_timeline_page'&&args.sessionId==='b')return new Promise(resolve=>{resolveB=resolve});
+   return original(name,args);
+  });
+  mocks.send.mockImplementation(async()=>new Promise<void>(resolve=>{releaseSend=resolve}));
+  render(<App/>);
+  await screen.findByText('内容 a');
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'发给 A 的消息'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(releaseSend).toBeTypeOf('function'));
+  fireEvent.click(screen.getByRole('button',{name:/会话 B/}));
+  await waitFor(()=>expect(resolveB).toBeTypeOf('function'));
+  await act(async()=>releaseSend());
+  await act(async()=>resolveB(timeline('b',[event('b-1','b','1','会话 B 的最新消息')])));
+  expect(await screen.findByText('会话 B 的最新消息')).toBeInTheDocument();
+ });
+ it('切换会话会清除被中断的更早页加载态',async()=>{
+  let resolveOlder!:(page:ReturnType<typeof timeline>)=>void;
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_timeline_page'&&args.sessionId==='a'&&args.beforeSeq==='4')return new Promise(resolve=>{resolveOlder=resolve});
+   if(name==='session_timeline_page'&&args.sessionId==='a')return {...timeline('a',[event('latest-4','a','4','最新消息')]),olderCursor:'4',hasOlder:true};
+   if(name==='session_timeline_page'&&args.sessionId==='b')return timeline('b',[event('b-1','b','1','会话 B 的内容')]);
+   return original(name,args);
+  });
+  render(<App/>);
+  await screen.findByText('最新消息');
+  fireEvent.click(screen.getByRole('button',{name:'加载更早消息'}));
+  await waitFor(()=>expect(resolveOlder).toBeTypeOf('function'));
+  fireEvent.click(screen.getByRole('button',{name:/会话 B/}));
+  await screen.findByText('会话 B 的内容');
+  fireEvent.click(screen.getByRole('button',{name:/会话 A/}));
+  await screen.findByText('最新消息');
+  expect(screen.getByRole('button',{name:'加载更早消息'})).toBeEnabled();
+  await act(async()=>resolveOlder(timeline('a',[])));
+ });
  it('完成回合折叠过程但始终显示 Markdown 最终总结',async()=>{
   const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_events'?[{id:'start',sessionId:'a',seq:'1',kind:'turn.start',data:{runId:'r'},createdAt:'2026-11-05T00:00:00Z'},{id:'user',sessionId:'a',seq:'2',kind:'user.message',data:{content:'实现预览'},createdAt:'2026-11-05T00:00:01Z'},{id:'process',sessionId:'a',seq:'3',kind:'assistant.message',data:{content:'正在检查。'},createdAt:'2026-11-05T00:00:10Z'},{id:'call',sessionId:'a',seq:'4',kind:'tool.call',data:{name:'shell',arguments:{command:'cargo test'}},createdAt:'2026-11-05T00:01:00Z'},{id:'result',sessionId:'a',seq:'5',kind:'tool.result',data:{name:'shell',content:'ok'},createdAt:'2026-11-05T00:02:00Z'},{id:'final',sessionId:'a',seq:'6',kind:'assistant.message',data:{content:'## 最终总结\n\n- 已完成 **Markdown** 预览'},createdAt:'2026-11-05T00:03:00Z'},{id:'end',sessionId:'a',seq:'7',kind:'turn.end',data:{runId:'r',status:'completed'},createdAt:'2026-11-05T00:03:22Z'}]:original(name,args));
+  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,[{id:'start',sessionId:'a',seq:'1',kind:'turn.start',data:{runId:'r'},createdAt:'2026-11-05T00:00:00Z'},{id:'user',sessionId:'a',seq:'2',kind:'user.message',data:{content:'实现预览'},createdAt:'2026-11-05T00:00:01Z'},{id:'process',sessionId:'a',seq:'3',kind:'assistant.message',data:{content:'正在检查。'},createdAt:'2026-11-05T00:00:10Z'},{id:'call',sessionId:'a',seq:'4',kind:'tool.call',data:{name:'shell',arguments:{command:'cargo test'}},createdAt:'2026-11-05T00:01:00Z'},{id:'result',sessionId:'a',seq:'5',kind:'tool.result',data:{name:'shell',content:'ok'},createdAt:'2026-11-05T00:02:00Z'},{id:'final',sessionId:'a',seq:'6',kind:'assistant.message',data:{content:'## 最终总结\n\n- 已完成 **Markdown** 预览'},createdAt:'2026-11-05T00:03:00Z'},{id:'end',sessionId:'a',seq:'7',kind:'turn.end',data:{runId:'r',status:'completed'},createdAt:'2026-11-05T00:03:22Z'}]):original(name,args));
   render(<App/>);
   await screen.findByRole('heading',{name:'最终总结',level:2});
   expect(screen.getByText('本轮已完成，用时3分22秒')).toBeVisible();
@@ -87,24 +162,24 @@ describe('聊天交互',()=>{
   await waitFor(()=>expect(screen.queryByRole('status',{name:'正在思考'})).not.toBeInTheDocument());
  });
  it('send 结束后不在历史事件回读期间重新显示思考状态',async()=>{
-  let releaseSend!:()=>void,releaseRefresh!:(events:SessionEvent[])=>void,eventReads=0;
+  let releaseSend!:()=>void,releaseRefresh!:(page:ReturnType<typeof timeline>)=>void,eventReads=0;
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_events'&&args.sessionId==='a'&&++eventReads===2)return new Promise(resolve=>releaseRefresh=resolve);
+   if(name==='session_timeline_page'&&args.sessionId==='a'&&++eventReads===2)return new Promise(resolve=>releaseRefresh=resolve);
    return original(name,args);
   });
   mocks.send.mockImplementation(async()=>new Promise<void>(resolve=>releaseSend=resolve));
   render(<App/>);await screen.findByText('内容 a');fireEvent.change(screen.getByLabelText('消息'),{target:{value:'请求'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
   expect(await screen.findByRole('status',{name:'正在思考'})).toBeVisible();await act(async()=>releaseSend());await waitFor(()=>expect(releaseRefresh).toBeTypeOf('function'));
   const visibleWhileHistoryIsLoading=screen.queryByRole('status',{name:'正在思考'})!==null;
-  await act(async()=>releaseRefresh([{id:'end',sessionId:'a',seq:'2',kind:'turn.end',data:{runId:'r',status:'completed'},createdAt:''}]));
+  await act(async()=>releaseRefresh(timeline('a',[{id:'end',sessionId:'a',seq:'2',kind:'turn.end',data:{runId:'r',status:'completed'},createdAt:''}])));
   expect(visibleWhileHistoryIsLoading).toBe(false);expect(screen.queryByRole('status',{name:'正在思考'})).not.toBeInTheDocument();
  });
  it('发送错误可见且不插入假成功消息，也不在历史回读期间显示思考状态',async()=>{
-  let rejectSend!:(reason:unknown)=>void,releaseRefresh!:(events:SessionEvent[])=>void,eventReads=0;
+  let rejectSend!:(reason:unknown)=>void,releaseRefresh!:(page:ReturnType<typeof timeline>)=>void,eventReads=0;
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_events'&&args.sessionId==='a'&&++eventReads===2)return new Promise(resolve=>releaseRefresh=resolve);
+   if(name==='session_timeline_page'&&args.sessionId==='a'&&++eventReads===2)return new Promise(resolve=>releaseRefresh=resolve);
    return original(name,args);
   });
   mocks.send.mockImplementation(()=>new Promise<void>((_resolve,reject)=>rejectSend=reject));
@@ -112,7 +187,7 @@ describe('聊天交互',()=>{
   expect(await screen.findByRole('status',{name:'正在思考'})).toBeVisible();await act(async()=>rejectSend(new Error('连接失败')));await screen.findByText('连接失败');
   await waitFor(()=>expect(releaseRefresh).toBeTypeOf('function'));
   const visibleWhileHistoryIsLoading=screen.queryByRole('status',{name:'正在思考'})!==null;
-  await act(async()=>releaseRefresh([{id:'end',sessionId:'a',seq:'2',kind:'turn.end',data:{runId:'r',status:'error'},createdAt:''}]));
+  await act(async()=>releaseRefresh(timeline('a',[{id:'end',sessionId:'a',seq:'2',kind:'turn.end',data:{runId:'r',status:'error'},createdAt:''}])));
   expect(visibleWhileHistoryIsLoading).toBe(false);expect(screen.queryByRole('status',{name:'正在思考'})).not.toBeInTheDocument();expect(screen.getByRole('button',{name:'发送消息'})).toBeInTheDocument();
  });
  it('审批通过传递真实请求id',async()=>{const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name,args)=>name==='approval_list'?[{id:'approval-1',sessionId:'a',tool:'shell',arguments:{command:'cargo test'},reason:'执行测试'}]:original(name,args));render(<App/>);await screen.findByRole('dialog',{name:'操作需要你的批准'});fireEvent.click(screen.getByRole('button',{name:'批准此次操作'}));await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('approval_resolve',{id:'approval-1',allow:true}))});
@@ -258,7 +333,7 @@ describe('右侧面板',()=>{
  it('write 工具卡的文件按钮切到预览 tab 显示内容',async()=>{
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name:string,args:any)=>{
-   if(name==='session_events')return [{id:'w1',sessionId:'a',seq:'1',kind:'tool.result',data:{name:'write',arguments:{path:'src/main.rs'},content:'已写入副本 src/main.rs'},createdAt:'2026-11-07T00:00:00Z'}];
+   if(name==='session_timeline_page')return timeline(args.sessionId,[{id:'w1',sessionId:'a',seq:'1',kind:'tool.result',data:{name:'write',arguments:{path:'src/main.rs'},content:'已写入副本 src/main.rs'},createdAt:'2026-11-07T00:00:00Z'}]);
    if(name==='workspace_file_preview')return {path:'src/main.rs',content:'fn main(){}',truncated:false,binary:false,sizeBytes:11};
    return original(name,args);
   });
@@ -272,10 +347,10 @@ describe('右侧面板',()=>{
  it('edit 工具显示行级差异：调用行收敛，结果卡带统计与 diff 展开',async()=>{
   const original=mocks.command.getMockImplementation()!;
   const unified=['--- a/src/config.ts','+++ b/src/config.ts','@@ -1,2 +1,3 @@',' const a=1;','-const b=2;','+const b=3;','+const c=4;'].join('\n');
-  mocks.command.mockImplementation(async(name:string,args:any)=>name==='session_events'?[
+  mocks.command.mockImplementation(async(name:string,args:any)=>name==='session_timeline_page'?timeline(args.sessionId,[
    {id:'c1',sessionId:'a',seq:'1',kind:'tool.call',data:{id:'c1',name:'edit',arguments:{path:'src/config.ts',oldText:'const b=2;',newText:'const b=3;\nconst c=4;'}},createdAt:''},
    {id:'r1',sessionId:'a',seq:'2',kind:'tool.result',data:{callId:'c1',name:'edit',content:'已修改副本 src/config.ts',isError:false,status:'completed',diff:unified,path:'src/config.ts'},createdAt:''},
-  ]:original(name,args));
+   ]):original(name,args));
   render(<App/>);
   expect((await screen.findAllByText('编辑')).length).toBe(2);
   expect(screen.getAllByRole('button',{name:'config.ts'})).toHaveLength(2);
@@ -289,9 +364,9 @@ describe('右侧面板',()=>{
  });
  it('edit 失败结果无 diff，展开显示错误内容',async()=>{
   const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name:string,args:any)=>name==='session_events'?[
+  mocks.command.mockImplementation(async(name:string,args:any)=>name==='session_timeline_page'?timeline(args.sessionId,[
    {id:'r1',sessionId:'a',seq:'1',kind:'tool.result',data:{callId:'c1',name:'edit',content:'待替换文本必须在当前文件中恰好出现一次',isError:true,status:'error',diff:null,path:'src/config.ts'},createdAt:''},
-  ]:original(name,args));
+   ]):original(name,args));
   render(<App/>);
   expect(await screen.findByText('执行失败')).toBeInTheDocument();
   expect(screen.queryByText(/^\+\d+$/)).not.toBeInTheDocument();
@@ -300,9 +375,9 @@ describe('右侧面板',()=>{
  });
  it('write 工具结果显示写入标签与全新增 diff',async()=>{
   const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name:string,args:any)=>name==='session_events'?[
+  mocks.command.mockImplementation(async(name:string,args:any)=>name==='session_timeline_page'?timeline(args.sessionId,[
    {id:'r1',sessionId:'a',seq:'1',kind:'tool.result',data:{callId:'c1',name:'write',content:'已写入副本 docs/new.md',isError:false,status:'completed',diff:'--- /dev/null\n+++ b/docs/new.md\n@@ -0,0 +1,1 @@\n+# 标题',path:'docs/new.md'},createdAt:''},
-  ]:original(name,args));
+   ]):original(name,args));
   render(<App/>);
   expect(await screen.findByText('写入')).toBeInTheDocument();
   expect(screen.getByText('+1')).toBeInTheDocument();
@@ -339,7 +414,7 @@ const jobEvents:SessionEvent[]=[
 describe('后台任务可视化',()=>{
  it('消息流渲染后台任务、定时任务与子代理事件卡片',async()=>{
   const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_events'?jobEvents:original(name,args));
+  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,jobEvents):original(name,args));
   render(<App/>);
   await screen.findByText('npm run build');
   expect(screen.getAllByText('cargo test --all-features').length).toBeGreaterThan(0);
@@ -351,7 +426,7 @@ describe('后台任务可视化',()=>{
  });
  it('渲染定时任务创建卡片与执行状态行，historyOnly 子代理不渲染',async()=>{
   const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_events'?[...jobEvents,{id:'sa2',sessionId:'a',seq:'10',kind:'subagent.created',data:{sessionId:'ghost',source:'a',historyOnly:true},createdAt:'2026-11-06T01:08:00Z'}]:original(name,args));
+  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,[...jobEvents,{id:'sa2',sessionId:'a',seq:'10',kind:'subagent.created',data:{sessionId:'ghost',source:'a',historyOnly:true},createdAt:'2026-11-06T01:08:00Z'}]):original(name,args));
   render(<App/>);
   await screen.findByText('以后执行');
   expect(screen.getByText('2099-01-01T00:00:00Z')).toBeInTheDocument();
@@ -361,7 +436,7 @@ describe('后台任务可视化',()=>{
  it('顶栏按钮统计未终结的后台任务并以浮层开关面板',async()=>{
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_events')return jobEvents.filter(e=>['s1','f1','s2'].includes(e.id));
+   if(name==='session_timeline_page')return timeline(args.sessionId,jobEvents.filter(e=>['s1','f1','s2'].includes(e.id)));
    if(name==='job_list')return [];
    if(name==='schedule_list')return [];
    return original(name,args);
@@ -388,7 +463,7 @@ const terminalEvents:SessionEvent[]=[
 describe('终端事件可视化',()=>{
  it('消息流渲染终端打开与关闭卡片',async()=>{
   const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_events'?terminalEvents:original(name,args));
+  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,terminalEvents):original(name,args));
   render(<App/>);
   await screen.findByText(/已打开交互式终端 term-1/);
   expect(screen.getByText(/交互式终端已结束 term-1/)).toBeInTheDocument();
@@ -407,7 +482,7 @@ describe('工作区的首次会话',()=>{
    if(name==='workspace_open')return {id:'fresh',sourcePath:'D:/fresh',replicaPath:'D:/copy-fresh',createdAt:'',name:'fresh',pinned:false};
    if(name==='session_list')return [];
    if(name==='session_create')return {id:'first',workspaceId:'fresh',title:'新会话'};
-   if(name==='session_events')return [];
+   if(name==='session_timeline_page')return timeline(args.sessionId,[]);
    return original(name,args);
   });
   vi.mocked(open).mockResolvedValueOnce('D:/fresh');
@@ -435,7 +510,7 @@ describe('工作区的首次会话',()=>{
   mocks.command.mockImplementation(async(name,args)=>{
    if(name==='session_list')return [];
    if(name==='session_create')return {id:'restored',workspaceId:'w',title:'新会话'};
-   if(name==='session_events')return [];
+   if(name==='session_timeline_page')return timeline(args.sessionId,[]);
    return original(name,args);
   });
   render(<App/>);
@@ -453,7 +528,7 @@ describe('工作区的首次会话',()=>{
   mocks.command.mockImplementation(async(name,args)=>{
    if(name==='session_list')return [];
    if(name==='session_create'){if(fail)throw new Error('创建会话失败');return {id:'retry',workspaceId:'w',title:'新会话'};}
-   if(name==='session_events')return [];
+   if(name==='session_timeline_page')return timeline(args.sessionId,[]);
    return original(name,args);
   });
   render(<App/>);await screen.findByRole('heading',{name:/你想在 project 中构建什么/});
@@ -489,7 +564,7 @@ describe('工作区的首次会话',()=>{
    if(name==='workspace_list')return [{id:'w',sourcePath:'D:/A',replicaPath:'D:/ca',createdAt:'',name:'project',pinned:false},{id:'other',sourcePath:'D:/B',replicaPath:'D:/cb',createdAt:'',name:'other-pj',pinned:false}];
    if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A',createdAt:'',updatedAt:new Date().toISOString(),parentId:null}];
    if(name==='session_create')return {id:'in-other',workspaceId:'other',title:'新会话'};
-   if(name==='session_events')return [];
+   if(name==='session_timeline_page')return timeline(args.sessionId,[]);
    return original(name,args);
   });
   render(<App/>);await screen.findByLabelText('当前模型');
@@ -570,7 +645,7 @@ describe('附件与完整输出',()=>{
   fireEvent.change(screen.getByLabelText('消息'),{target:{value:'无附件'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('b','无附件','m',expect.any(Function),undefined,'high'));
  });
  it('附件和大输出卡片通过保存对话框导出真实完整内容',async()=>{
-  const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name,args)=>name==='session_events'?[{id:'attached',sessionId:'a',seq:'1',kind:'user.message',data:{content:'查看',attachments:[attachment]},createdAt:''},{id:'output',sessionId:'a',seq:'2',kind:'tool.result',data:{name:'read',content:'预览',artifact:{...attachment,name:'完整输出.txt'}},createdAt:''}]:original(name,args));vi.mocked(save).mockResolvedValueOnce('C:/saved/output.txt');
+  const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,[{id:'attached',sessionId:'a',seq:'1',kind:'user.message',data:{content:'查看',attachments:[attachment]},createdAt:''},{id:'output',sessionId:'a',seq:'2',kind:'tool.result',data:{name:'read',content:'预览',artifact:{...attachment,name:'完整输出.txt'}},createdAt:''}]):original(name,args));vi.mocked(save).mockResolvedValueOnce('C:/saved/output.txt');
   render(<App/>);await screen.findByRole('button',{name:'下载 完整输出.txt'});fireEvent.click(screen.getByRole('button',{name:'下载 完整输出.txt'}));await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('artifact_save',{sessionId:'a',hash:attachment.hash,path:'C:/saved/output.txt'}));expect(screen.getByRole('button',{name:'下载 说明.txt'})).toBeInTheDocument();
  });
 });
@@ -581,10 +656,10 @@ describe('子代理与任务状态可视化',()=>{
   mocks.command.mockImplementation(async(name,args)=>{
    if(name==='session_list')return [{id:'a',workspaceId:'w',title:'父会话'},{id:'child',workspaceId:'w',title:'依赖梳理子任务',parentId:'a'}];
    if(name==='session_active_list')return ['child'];
-   if(name==='session_events')return args.sessionId==='a'?[
+   if(name==='session_timeline_page')return timeline(args.sessionId,args.sessionId==='a'?[
     {id:'s1',sessionId:'a',seq:'1',kind:'subagent.created',data:{sessionId:'child'},createdAt:''},
     {id:'s2',sessionId:'a',seq:'2',kind:'subagent.message_sent',data:{sessionId:'child',content:'梳理依赖'},createdAt:''}
-   ]:[event(`e-${args.sessionId}`,args.sessionId,'1',`内容 ${args.sessionId}`)];
+    ]:[event(`e-${args.sessionId}`,args.sessionId,'1',`内容 ${args.sessionId}`)]);
    return original(name,args);
   });
   render(<App/>);
@@ -598,19 +673,19 @@ describe('子代理与任务状态可视化',()=>{
  });
  it('fork 副本中的历史派生记录不提供跳转',async()=>{
   const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_events'?[
+  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,[
    {id:'s1',sessionId:'a',seq:'1',kind:'subagent.created',data:{sessionId:'child',historyOnly:true},createdAt:''}
-  ]:original(name,args));
+   ]):original(name,args));
   render(<App/>);
   await screen.findByText('历史派生记录，原父子关系属于源会话。');
   expect(screen.queryByRole('button',{name:'查看会话'})).not.toBeInTheDocument();
  });
  it('todo与plan状态事件渲染为清单与文本卡片',async()=>{
   const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_events'?[
+  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,[
    {id:'t1',sessionId:'a',seq:'1',kind:'todo.state',data:{items:[{text:'已完成项',done:true},{text:'待办项'}]},createdAt:''},
    {id:'p1',sessionId:'a',seq:'2',kind:'plan.state',data:{content:'## 分三步走'},createdAt:''}
-  ]:original(name,args));
+   ]):original(name,args));
   const {container}=render(<App/>);
   await screen.findByText('待办清单');
   expect(container.querySelector('.todo-list li.done')?.textContent).toContain('已完成项');
@@ -900,7 +975,7 @@ describe('会话列表视图',()=>{
     {id:'a',workspaceId:'w',title:'会话 A',createdAt:'',updatedAt:new Date().toISOString(),parentId:null},
     {id:'b',workspaceId:'other',title:'B 的会话',createdAt:'',updatedAt:new Date().toISOString(),parentId:null}];
    if(name==='workspace_set_pinned')return {id:args.workspaceId,sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',name:'alpha',pinned:args.pinned};
-   if(name==='session_events')return [event(`e-${args.sessionId}`,args.sessionId,'1',`内容 ${args.sessionId}`)];
+   if(name==='session_timeline_page')return timeline(args.sessionId,[event(`e-${args.sessionId}`,args.sessionId,'1',`内容 ${args.sessionId}`)]);
    return [];
   });
  }
@@ -946,7 +1021,7 @@ describe('会话列表视图',()=>{
    if(name==='workspace_list')return [{id:'w',sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',name:'alpha',pinned:false}];
    if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A',createdAt:'',updatedAt:new Date().toISOString(),parentId:null}];
    if(name==='workspace_set_pinned')throw new Error('写入失败');
-   if(name==='session_events')return [event(`e-${args.sessionId}`,args.sessionId,'1',`内容 ${args.sessionId}`)];
+   if(name==='session_timeline_page')return timeline(args.sessionId,[event(`e-${args.sessionId}`,args.sessionId,'1',`内容 ${args.sessionId}`)]);
    return [];
   });
   render(<App/>);await screen.findByText('内容 a');
@@ -965,7 +1040,7 @@ describe('项目命名',()=>{
    if(name==='workspace_rename'){if(options.renameError)throw new Error(options.renameError);return {id:args.workspaceId,sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',name:args.name}}
    if(name==='workspace_open')return {id:'fresh',sourcePath:args.path,replicaPath:'D:/copy',createdAt:'',name:args.name||'alpha-dir'};
    if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A',createdAt:'',updatedAt:new Date().toISOString(),parentId:null}];
-   if(name==='session_events')return [event(`e-${args.sessionId}`,args.sessionId,'1',`内容 ${args.sessionId}`)];
+   if(name==='session_timeline_page')return timeline(args.sessionId,[event(`e-${args.sessionId}`,args.sessionId,'1',`内容 ${args.sessionId}`)]);
    return original(name,args);
   });
  }
@@ -1033,7 +1108,7 @@ describe('会话命名',()=>{
   mocks.command.mockImplementation(async(name,args)=>{
    if(name==='workspace_list')return [{id:'w',sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',name:'alpha'}];
    if(name==='session_list')return [newer,older];
-   if(name==='session_events')return args.sessionId==='newer'?[event('e-newer','newer','1','新会话内容')]:[];
+   if(name==='session_timeline_page')return timeline(args.sessionId,args.sessionId==='newer'?[event('e-newer','newer','1','新会话内容')]:[]);
    if(name==='session_rename')return {...older,title:args.title};
    return original(name,args);
   });
@@ -1054,13 +1129,13 @@ describe('会话命名',()=>{
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
    if(name==='session_list')return [newer,older];
-   if(name==='session_events')return args.sessionId==='newer'?[event('e-newer','newer','1','较新会话内容')]:[];
+   if(name==='session_timeline_page')return timeline(args.sessionId,args.sessionId==='newer'?[event('e-newer','newer','1','较新会话内容')]:[]);
    if(name==='session_title_generate')return {...older,title:'首问自动标题',updatedAt:'2026-11-09T12:00:00Z'};
    return original(name,args);
   });
   render(<App/>);await screen.findByText('较新会话内容');
   fireEvent.click(screen.getByRole('button',{name:/新会话/}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_events',{sessionId:'older'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_timeline_page',{sessionId:'older'}));
   fireEvent.change(screen.getByLabelText('消息'),{target:{value:'今天首次提问'}});
   fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
   await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_title_generate',{sessionId:'older',text:'今天首次提问',modelId:'m',effort:'high',attachmentNames:[]}));
@@ -1074,7 +1149,7 @@ describe('会话命名',()=>{
    if(name==='session_list')return [
     {id:'parent',workspaceId:'w',title:'父会话',createdAt:'',updatedAt:'2026-11-09T11:00:00Z',parentId:null},
     {id:'child',workspaceId:'w',title:'子会话',createdAt:'',updatedAt:'2026-11-09T10:00:00Z',parentId:'parent'}];
-   if(name==='session_events')return args.sessionId==='parent'?[event('e-parent','parent','1','父消息')]:[];
+   if(name==='session_timeline_page')return timeline(args.sessionId,args.sessionId==='parent'?[event('e-parent','parent','1','父消息')]:[]);
    if(name==='session_rename')return {id:'child',workspaceId:'w',title:args.title,createdAt:'',updatedAt:'2026-11-09T10:00:00Z',parentId:null};
    return original(name,args);
   });
@@ -1109,7 +1184,7 @@ describe('会话命名',()=>{
    if(name==='session_list')return [];
    if(name==='session_create')return {id:'first',workspaceId:'w',title:'新会话',createdAt:'',updatedAt:''};
    if(name==='session_title_generate')return new Promise(resolve=>{resolveTitle=resolve});
-   if(name==='session_events')return [];
+   if(name==='session_timeline_page')return timeline(args.sessionId,[]);
    return original(name,args);
   });
   render(<App/>);await screen.findByRole('button',{name:'选择项目'});
@@ -1127,7 +1202,7 @@ describe('会话命名',()=>{
    if(name==='session_list')return [];
    if(name==='session_create')return {id:'first',workspaceId:'w',title:'新会话',createdAt:'',updatedAt:''};
    if(name==='session_title_generate')throw new Error('标题服务不可用');
-   if(name==='session_events')return [];
+   if(name==='session_timeline_page')return timeline(args.sessionId,[]);
    return original(name,args);
   });
   render(<App/>);await screen.findByRole('button',{name:'选择项目'});
@@ -1140,12 +1215,12 @@ describe('会话命名',()=>{
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
    if(name==='session_list')return [{id:'blank',workspaceId:'w',title:'新会话',createdAt:'',updatedAt:''}];
-   if(name==='session_events'&&args.sessionId==='blank')return [];
+   if(name==='session_timeline_page'&&args.sessionId==='blank')return timeline(args.sessionId,[]);
    if(name==='session_title_generate')return {id:'blank',workspaceId:'w',title:'空会话首问',createdAt:'',updatedAt:''};
    return original(name,args);
   });
   render(<App/>);await screen.findByRole('button',{name:/新会话/});
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_events',{sessionId:'blank'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_timeline_page',{sessionId:'blank'}));
   fireEvent.change(screen.getByLabelText('消息'),{target:{value:'梳理项目入口'}});
   fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
   await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_title_generate',{sessionId:'blank',text:'梳理项目入口',modelId:'m',effort:'high',attachmentNames:[]}));
@@ -1155,7 +1230,7 @@ describe('会话命名',()=>{
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
    if(name==='session_list')return [{id:'blank',workspaceId:'w',title:'新会话',createdAt:'',updatedAt:'',parentId:null}];
-   if(name==='session_events'&&args.sessionId==='blank')return [];
+   if(name==='session_timeline_page'&&args.sessionId==='blank')return timeline(args.sessionId,[]);
    if(name==='session_title_generate')return {id:'blank',workspaceId:'w',title:'初始化项目说明',createdAt:'',updatedAt:''};
    return original(name,args);
   });
@@ -1172,7 +1247,7 @@ describe('会话命名',()=>{
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
    if(name==='session_list')return [{id:'blank',workspaceId:'w',title:'新会话',createdAt:'',updatedAt:'',parentId:null}];
-   if(name==='session_events'&&args.sessionId==='blank')return [];
+   if(name==='session_timeline_page'&&args.sessionId==='blank')return timeline(args.sessionId,[]);
    if(name==='session_title_generate')return new Promise(resolve=>{resolveTitle=resolve});
    if(name==='session_rename')return {id:'blank',workspaceId:'w',title:args.title,createdAt:'',updatedAt:'',parentId:null};
    return original(name,args);
@@ -1202,8 +1277,8 @@ describe('会话命名',()=>{
     {id:'blank',workspaceId:'w',title:'新会话',createdAt:'',updatedAt:'2026-11-09T11:00:00Z',parentId:null},
     {id:'other-session',workspaceId:'other',title:'B 的会话',createdAt:'',updatedAt:'2026-11-09T10:00:00Z',parentId:null}];
    if(name==='session_list'&&args.workspaceId==='other')return new Promise(resolve=>{resolveList=resolve});
-   if(name==='session_events'&&args.sessionId==='blank')return [];
-   if(name==='session_events'&&args.sessionId==='other-session')return [event('e-other','other-session','1','B 的内容')];
+   if(name==='session_timeline_page'&&args.sessionId==='blank')return timeline(args.sessionId,[]);
+   if(name==='session_timeline_page'&&args.sessionId==='other-session')return timeline(args.sessionId,[event('e-other','other-session','1','B 的内容')]);
    if(name==='session_title_generate')return new Promise(resolve=>{resolveTitle=resolve});
    return original(name,args);
   });
@@ -1224,7 +1299,7 @@ describe('会话命名',()=>{
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
    if(name==='session_list')return [{id:'used',workspaceId:'w',title:'新会话',createdAt:'',updatedAt:''}];
-   if(name==='session_events'&&args.sessionId==='used')return [{id:'old-user',sessionId:'used',seq:'1',kind:'user.message',data:{content:'之前的问题'},createdAt:''}];
+   if(name==='session_timeline_page'&&args.sessionId==='used')return timeline(args.sessionId,[{id:'old-user',sessionId:'used',seq:'1',kind:'user.message',data:{content:'之前的问题'},createdAt:''}]);
    return original(name,args);
   });
   render(<App/>);await screen.findByText('之前的问题');
