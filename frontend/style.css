@@ -216,8 +216,11 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .view-switch[aria-checked="true"] .sw-label.b{color:var(--accent)}
 @media(prefers-reduced-motion:reduce){.view-switch .knob,.view-switch .sw-label{transition:none}}
 
-/* 标题栏：会话名占据左侧剩余空间，操作入口固定在右侧。 */
+/* 标题栏：会话名从左侧开始，工作区上下文紧随其后，操作入口固定在右侧。 */
 .topbar .breadcrumb{flex:1;min-width:0}
+.topbar-session-title{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.breadcrumb>span.workspace-context{display:flex;align-items:center;gap:7px;min-width:0;padding:0}
+.workspace-context .workspace-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .topbar .toolbar{flex:0 0 auto}
 .archive-button{font-size:11px;padding:8px 10px;border:1px solid var(--border);background:transparent;color:var(--muted)}
 .archive-button:hover{background:var(--surface);color:var(--text)}
