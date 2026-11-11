@@ -982,6 +982,8 @@ describe('会话列表视图',()=>{
  it('「最近」视图按时间分组并展示跨工作区会话，switch 切到「项目」按工作区分组',async()=>{
   localStorage.clear();installSessionMocks();
   render(<App/>);await screen.findByText('内容 a');
+  const sessionList=screen.getByRole('navigation',{name:'会话列表'});
+  expect(sessionList).toHaveClass('session-scrollbar');
   // 回归：switch 外不应再有「最近」文本（spec：标题行右侧仅 switch 内嵌两词）
   for(const el of screen.getAllByText('最近')) expect(el.closest('.view-switch')).not.toBeNull();
   // 最近视图：今天分组下同时出现两个项目的会话
@@ -998,6 +1000,18 @@ describe('会话列表视图',()=>{
   expect(screen.getAllByRole('button',{name:/会话 A/}).length).toBeGreaterThan(0);
   expect(screen.getAllByRole('button',{name:/B 的会话/}).length).toBeGreaterThan(0);
   expect(localStorage.getItem('sessionView')).toBe('project');
+ });
+ it('会话标题栏将标题固定在左侧，并在右侧提供存档入口',async()=>{
+  localStorage.clear();installSessionMocks();
+  render(<App/>);await screen.findByText('内容 a');
+  const topbar=document.querySelector('.topbar');
+  const breadcrumb=topbar?.querySelector('.breadcrumb');
+  expect(topbar).not.toBeNull();
+  expect(breadcrumb).not.toBeNull();
+  expect(within(breadcrumb as HTMLElement).getByText('会话 A')).toBeInTheDocument();
+  expect(topbar?.firstElementChild).toBe(breadcrumb);
+  expect(within(topbar as HTMLElement).getByRole('button',{name:'存档会话'})).toBeInTheDocument();
+  expect(topbar?.lastElementChild).toContainElement(within(topbar as HTMLElement).getByRole('button',{name:'存档会话'}));
  });
  it('项目组可置顶并调用 workspace_set_pinned，搜索按标题过滤',async()=>{
   localStorage.clear();installSessionMocks();
