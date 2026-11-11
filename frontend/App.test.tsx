@@ -982,6 +982,8 @@ describe('会话列表视图',()=>{
  it('「最近」视图按时间分组并展示跨工作区会话，switch 切到「项目」按工作区分组',async()=>{
   localStorage.clear();installSessionMocks();
   render(<App/>);await screen.findByText('内容 a');
+  const sessionList=screen.getByRole('navigation',{name:'会话列表'});
+  expect(sessionList).toHaveClass('session-scrollbar');
   // 回归：switch 外不应再有「最近」文本（spec：标题行右侧仅 switch 内嵌两词）
   for(const el of screen.getAllByText('最近')) expect(el.closest('.view-switch')).not.toBeNull();
   // 最近视图：今天分组下同时出现两个项目的会话

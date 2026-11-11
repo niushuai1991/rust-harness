@@ -232,6 +232,12 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 
 /* 「最近」视图：时间分组头 + 双行条目（标题/子任务 + 项目/置顶/运行中） */
 .sessions .group-head{position:sticky;top:0;z-index:2;background:var(--sidebar);font-size:10.5px;color:var(--muted);padding:9px 4px 5px}
+.session-scrollbar{scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--muted) 48%,transparent) transparent;scrollbar-gutter:stable}
+.session-scrollbar::-webkit-scrollbar{width:8px}
+.session-scrollbar::-webkit-scrollbar-track{background:transparent}
+.session-scrollbar::-webkit-scrollbar-thumb{min-height:42px;border:2px solid transparent;border-radius:999px;background-clip:padding-box;background-color:color-mix(in srgb,var(--muted) 48%,transparent)}
+.session-scrollbar:hover::-webkit-scrollbar-thumb{background-color:color-mix(in srgb,var(--muted) 70%,transparent)}
+.session-scrollbar::-webkit-scrollbar-thumb:active{background-color:var(--accent)}
 .sessions .session-row{align-items:flex-start;gap:8px}
 .session-lines{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
 .session-l1{display:flex;align-items:baseline;gap:6px;min-width:0}
