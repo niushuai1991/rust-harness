@@ -1,6 +1,7 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {act,cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
 import App from './App';
+import './style.css';
 import {ChangesView} from './ChangesView';
 import {GOAL_PROMPT,INIT_PROMPT,PLAN_PROMPT} from './slashCommands';
 import {useChat} from './store';
@@ -1015,6 +1016,14 @@ describe('会话列表视图',()=>{
   expect(topbar?.firstElementChild).toBe(breadcrumb);
   expect(within(topbar as HTMLElement).getByRole('button',{name:'存档会话'})).toBeInTheDocument();
   expect(topbar?.lastElementChild).toContainElement(within(topbar as HTMLElement).getByRole('button',{name:'存档会话'}));
+ });
+ it('最近视图的短会话标题保持左对齐',async()=>{
+  localStorage.clear();installSessionMocks();
+  render(<App/>);await screen.findByText('内容 a');
+  const row=screen.getByRole('button',{name:/会话 A/});
+  expect(getComputedStyle(row).textAlign).toBe('left');
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  expect(getComputedStyle(screen.getByRole('button',{name:/会话 A/})).textAlign).toBe('left');
  });
  it('项目组可置顶并调用 workspace_set_pinned，搜索按标题过滤',async()=>{
   localStorage.clear();installSessionMocks();

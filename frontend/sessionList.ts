@@ -48,6 +48,7 @@ export function groupByTime(sessions:SessionInfo[],now:Date):RecentGroup[]{
   if(last&&last.group===group)last.sessions.push(s);
   else groups.push({group,sessions:[s]});
  }
+ if(!groups.some(group=>group.group===0))groups.unshift({group:0,sessions:[]});
  return groups;
 }
 
