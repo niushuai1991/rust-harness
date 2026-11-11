@@ -78,10 +78,10 @@ it('占用达到 90% 时环形转红',()=>{
  expect(container.querySelector('svg circle')?.getAttribute('stroke')).toBe('#a53e3a');
 });
 
-it('占用不足 70% 时环形为默认灰绿',()=>{
+it('占用不足 70% 时环形使用主题次要文字颜色',()=>{
  pushEvents([assistant({input_tokens:60_000,output_tokens:2_100})]);
  const {container}=renderRing();
- expect(container.querySelector('svg circle')?.getAttribute('stroke')).toBe('#768178');
+ expect(container.querySelector('svg circle')?.getAttribute('stroke')).toBe('var(--muted)');
 });
 
 it('悬停弹出双段面板：上下文段 + 智谱套餐三卡',async()=>{

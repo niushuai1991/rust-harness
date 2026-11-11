@@ -6,7 +6,7 @@ import {tokenBudgetFromEvents} from './tokenBudget';
 import {useChat} from './store';
 import type {ModelConfig,ProviderInfo,ProviderUsageSnapshot,UsageCardKind} from './types';
 
-const RING_OK='#768178',RING_WARN='#a06a43',RING_DANGER='#a53e3a';
+const RING_OK='var(--muted)',RING_WARN='#a06a43',RING_DANGER='#a53e3a';
 const CIRCUMFERENCE=2*Math.PI*10;
 const DEFAULT_BUDGET_LIMIT=1_000_000;
 const EMPTY_EVENTS:never[]=[];
@@ -15,7 +15,7 @@ function usedPercent(tokens:number,windowSize:number):number{
  if(windowSize<=0)return 0;
  return Math.min(100,Math.max(0,tokens/windowSize*100));
 }
-/// 占用口径的紧急度颜色：<70% 灰绿，70–90% 琥珀，≥90% 红（与自动压缩告警语义呼应）。
+/// 占用口径的紧急度颜色：<70% 灰色，70–90% 琥珀，≥90% 红（与自动压缩告警语义呼应）。
 function ringColor(percent:number):string{
  if(percent>=90)return RING_DANGER;
  if(percent>=70)return RING_WARN;

@@ -116,7 +116,7 @@ export default function ModelSelect({
   }
 
   const triggerLabel = activeModel ? activeModel.name || activeModel.model : '选择模型';
-  const sliderFill = `linear-gradient(to right,#34573f calc(8px + (100% - 16px) * ${fill}),#dce2da calc(8px + (100% - 16px) * ${fill}))`;
+  const sliderFill = `linear-gradient(to right,var(--accent) calc(8px + (100% - 16px) * ${fill}),var(--border) calc(8px + (100% - 16px) * ${fill}))`;
   let flatIndex = -1;
 
   return (
