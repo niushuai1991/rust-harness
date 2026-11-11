@@ -72,3 +72,11 @@ describe('右侧面板容器',()=>{
   localStorage.removeItem('side-panel-width');
  });
 });
+it('网页面板显示当前地址并可切换回文件预览',()=>{
+ render(<SidePanel workspaceId="w"/>);
+ act(()=>useSidePanel.getState().openWeb('https://example.com/'));
+ expect(screen.getByRole('tab',{name:'网页'})).toHaveAttribute('aria-selected','true');
+ expect(screen.getByText('https://example.com/')).toBeInTheDocument();
+ fireEvent.click(screen.getByRole('tab',{name:'预览'}));
+ expect(screen.getByText('预览视图 空')).toBeInTheDocument();
+});
