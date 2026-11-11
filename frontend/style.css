@@ -216,6 +216,20 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .view-switch[aria-checked="true"] .sw-label.b{color:var(--accent)}
 @media(prefers-reduced-motion:reduce){.view-switch .knob,.view-switch .sw-label{transition:none}}
 
+/* 标题栏：会话名占据左侧剩余空间，操作入口固定在右侧。 */
+.topbar .breadcrumb{flex:1;min-width:0}
+.topbar .toolbar{flex:0 0 auto}
+.archive-button{font-size:11px;padding:8px 10px;border:1px solid var(--border);background:transparent;color:var(--muted)}
+.archive-button:hover{background:var(--surface);color:var(--text)}
+
+/* switch 的选中项使用主色文字，滑块保持白色，和规范中的视觉层级一致。 */
+.section-label button.view-switch{padding:0;border:0;background:var(--accent)}
+.view-switch .knob{background:#fff}
+.view-switch .sw-label.a{color:var(--accent)}
+.view-switch .sw-label.b{color:#fff}
+.view-switch[aria-checked="true"] .sw-label.a{color:#fff}
+.view-switch[aria-checked="true"] .sw-label.b{color:var(--accent)}
+
 /* 「最近」视图：时间分组头 + 双行条目（标题/子任务 + 项目/置顶/运行中） */
 .sessions .group-head{position:sticky;top:0;z-index:2;background:var(--sidebar);font-size:10.5px;color:var(--muted);padding:9px 4px 5px}
 .sessions .session-row{align-items:flex-start;gap:8px}

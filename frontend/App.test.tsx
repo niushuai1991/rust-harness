@@ -999,6 +999,18 @@ describe('会话列表视图',()=>{
   expect(screen.getAllByRole('button',{name:/B 的会话/}).length).toBeGreaterThan(0);
   expect(localStorage.getItem('sessionView')).toBe('project');
  });
+ it('会话标题栏将标题固定在左侧，并在右侧提供存档入口',async()=>{
+  localStorage.clear();installSessionMocks();
+  render(<App/>);await screen.findByText('内容 a');
+  const topbar=document.querySelector('.topbar');
+  const breadcrumb=topbar?.querySelector('.breadcrumb');
+  expect(topbar).not.toBeNull();
+  expect(breadcrumb).not.toBeNull();
+  expect(within(breadcrumb as HTMLElement).getByText('会话 A')).toBeInTheDocument();
+  expect(topbar?.firstElementChild).toBe(breadcrumb);
+  expect(within(topbar as HTMLElement).getByRole('button',{name:'存档会话'})).toBeInTheDocument();
+  expect(topbar?.lastElementChild).toContainElement(within(topbar as HTMLElement).getByRole('button',{name:'存档会话'}));
+ });
  it('项目组可置顶并调用 workspace_set_pinned，搜索按标题过滤',async()=>{
   localStorage.clear();installSessionMocks();
   render(<App/>);await screen.findByText('内容 a');
