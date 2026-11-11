@@ -56,6 +56,11 @@ describe('groupByTime',()=>{
   expect(groups.map(g=>g.group)).toEqual([0,1,3]);
   expect(groups[0].sessions.map(s=>s.id)).toEqual(['a','b']);
  });
+ it('没有今天会话时仍保留今天空分组',()=>{
+  const groups=groupByTime([session({id:'y',updatedAt:at(2026,11,7,9,0)}),session({id:'old',updatedAt:at(2026,10,9,9,0)})],NOW);
+  expect(groups.map(g=>g.group)).toEqual([0,1,3]);
+  expect(groups[0].sessions).toEqual([]);
+ });
 });
 
 describe('groupByProject',()=>{
