@@ -241,7 +241,7 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .session-scrollbar::-webkit-scrollbar-thumb{min-height:42px;border:2px solid transparent;border-radius:999px;background-clip:padding-box;background-color:color-mix(in srgb,var(--muted) 48%,transparent)}
 .session-scrollbar:hover::-webkit-scrollbar-thumb{background-color:color-mix(in srgb,var(--muted) 70%,transparent)}
 .session-scrollbar::-webkit-scrollbar-thumb:active{background-color:var(--accent)}
-.sessions .session-row{align-items:flex-start;gap:8px}
+.sessions .session-row{align-items:flex-start;gap:8px;text-align:left}
 .session-lines{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
 .session-l1{display:flex;align-items:baseline;gap:6px;min-width:0}
 .session-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
