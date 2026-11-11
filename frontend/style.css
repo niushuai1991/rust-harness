@@ -334,3 +334,5 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .st-del{color:#b0452f;font-weight:500}
 .tool-diff{margin:0 14px 12px;border:1px solid var(--border);border-radius:7px;background:var(--panel);max-height:260px;overflow:auto}
 .tool-diff .diff-body{border-top:0}
+
+.web-panel{display:flex;flex-direction:column;height:100%;min-height:0}.web-panel-address{display:flex;align-items:center;gap:6px;padding:8px;border-bottom:1px solid var(--border)}.web-panel-address span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.web-panel-address button{font-size:11px;padding:5px}.web-panel-content{flex:1;min-height:0}.link-context-menu{width:190px;z-index:100}.link-context-menu button{width:100%;justify-content:flex-start}

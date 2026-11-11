@@ -3,6 +3,7 @@ mod commands;
 mod desktop;
 mod plugin_commands;
 pub mod uninstall;
+mod web_panel;
 use tauri::Manager;
 
 pub fn export_bindings() -> Result<(), Box<dyn std::error::Error>> {
@@ -151,5 +152,26 @@ mod tests {
             super::p1_guest_browser_args_from(Some("1"), Some("WDAGUtilityAccount"), Some("80")),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod web_link_tests {
+    #[test]
+    fn accepts_only_absolute_http_and_https_urls() {
+        for url in ["https://example.com/a", "http://localhost:8080/"] {
+            assert!(super::web_panel::validated_url(url).is_ok());
+        }
+        assert!(super::web_panel::external_url("http://127.0.0.1:1420/").is_ok());
+        for url in [
+            "javascript:alert(1)",
+            "file:///C:/secret",
+            "//example.com",
+            "https://",
+            "http://tauri.localhost/",
+            "http://127.0.0.1:1420/",
+        ] {
+            assert!(super::web_panel::validated_url(url).is_err());
+        }
     }
 }

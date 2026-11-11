@@ -1420,3 +1420,46 @@ describe('会话命名',()=>{
   await act(async()=>resolveRename({id:'a',workspaceId:'w',title:'新的标题',createdAt:'',updatedAt:'',parentId:null}));
  });
 });
+it('会话中的助手链接和用户网址打开网页抽屉',async()=>{
+ const original=mocks.command.getMockImplementation()!;
+ mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline('a',[
+  {id:'u',sessionId:'a',seq:'1',kind:'user.message',data:{content:'请看 https://example.org/test。'},createdAt:''},
+  event('e','a','2','[站点](https://example.com/path)')
+ ]):original(name,args));
+ render(<App/>);
+ const link=await screen.findByRole('link',{name:'站点'});
+ fireEvent.click(link);
+ expect(useSidePanel.getState()).toMatchObject({view:'web',webUrl:'https://example.com/path'});
+ const userLink=screen.getByRole('link',{name:'https://example.org/test'});
+ fireEvent.click(userLink);
+ expect(useSidePanel.getState().webUrl).toBe('https://example.org/test');
+});
+it('链接右键菜单复制完整地址并可在默认浏览器中打开',async()=>{
+ const original=mocks.command.getMockImplementation()!;
+ mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline('a',[event('e','a','1','[站点](https://example.com/path?q=1)')]):original(name,args));
+ const copy=vi.fn().mockResolvedValue(undefined);
+ Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:copy}});
+ render(<App/>);
+ fireEvent.contextMenu(await screen.findByRole('link',{name:'站点'}));
+ fireEvent.click(screen.getByRole('menuitem',{name:'复制链接'}));
+ await waitFor(()=>expect(copy).toHaveBeenCalledWith('https://example.com/path?q=1'));
+ fireEvent.contextMenu(screen.getByRole('link',{name:'站点'}));
+ fireEvent.click(screen.getByRole('menuitem',{name:'在默认浏览器中打开'}));
+ await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('open_external_link',{url:'https://example.com/path?q=1'}));
+});
+it('用户消息中的网址不包含句末标点',async()=>{
+ const original=mocks.command.getMockImplementation()!;
+ mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline('a',[
+  {id:'u',sessionId:'a',seq:'1',kind:'user.message',data:{content:'访问 https://example.org/page. 然后继续'},createdAt:''},
+  event('e','a','2','完成')
+ ]):original(name,args));
+ render(<App/>);
+ expect(await screen.findByRole('link',{name:'https://example.org/page'})).toHaveAttribute('href','https://example.org/page');
+});
+it('非 HTTP Markdown 链接保留原有地址与行为',async()=>{
+ const original=mocks.command.getMockImplementation()!;
+ mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline('a',[event('e','a','1','[邮件](mailto:hello@example.com)')]):original(name,args));
+ render(<App/>);
+ const link=await screen.findByRole('link',{name:'邮件'});
+ expect(link).toHaveAttribute('href','mailto:hello@example.com');
+});

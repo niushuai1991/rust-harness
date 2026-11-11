@@ -954,6 +954,10 @@ pub async fn automation_run_now(orch: Orchestration<'_>, id: String) -> AppResul
 
 pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
     tauri_specta::Builder::new().commands(tauri_specta::collect_commands![
+        crate::web_panel::open_external_link,
+        crate::web_panel::web_panel_open,
+        crate::web_panel::web_panel_bounds,
+        crate::web_panel::web_panel_close,
         workspace_list,
         workspace_open,
         workspace_rename,
