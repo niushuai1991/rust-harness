@@ -1009,6 +1009,9 @@ describe('会话列表视图',()=>{
   expect(topbar).not.toBeNull();
   expect(breadcrumb).not.toBeNull();
   expect(within(breadcrumb as HTMLElement).getByText('会话 A')).toBeInTheDocument();
+  expect(breadcrumb?.firstElementChild).toHaveClass('topbar-session-title');
+  expect(breadcrumb?.querySelector('.topbar-session-title')).toHaveTextContent('会话 A');
+  expect(breadcrumb?.querySelector('.workspace-context')).toHaveTextContent('alpha');
   expect(topbar?.firstElementChild).toBe(breadcrumb);
   expect(within(topbar as HTMLElement).getByRole('button',{name:'存档会话'})).toBeInTheDocument();
   expect(topbar?.lastElementChild).toContainElement(within(topbar as HTMLElement).getByRole('button',{name:'存档会话'}));
