@@ -351,3 +351,4 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .ask-popover-head button:hover{background:var(--surface);color:var(--text)}
 .ask-popover .actions{margin-top:12px}
 .ask-popover .ask-textarea{display:block;width:100%;min-height:66px;resize:vertical;border:1px solid var(--border);border-radius:8px;background:var(--panel);color:var(--text);padding:9px 12px;font-size:12.5px;line-height:1.7;margin:6px 0 0}
+.ask-badge{font-style:normal;font-size:9px;color:#8b7946;background:#f2efdf;border-radius:4px;padding:1px 6px;flex-shrink:0}
