@@ -1,6 +1,7 @@
 import {Fragment,useEffect,useMemo,useRef,useState,type FormEvent,type MouseEvent as ReactMouseEvent,type ReactNode} from 'react';
 import {open,save} from '@tauri-apps/plugin-dialog';
-import {Archive,ArrowUp,Bot,Bookmark,CalendarClock,Check,ChevronDown,ChevronRight,FileCode,FilePlus,Folder,FolderOpen,GitCompareArrows,ListTodo,MessageSquare,Paperclip,Pencil,Pin,Plus,Search,Send,Settings2,ShieldCheck,Square,Sparkles,Target,Terminal,Timer,Unplug,X,Download} from 'lucide-react';
+import {createPortal} from 'react-dom';
+import {Archive,ArrowUp,Bot,CalendarClock,Check,ChevronDown,ChevronRight,FileCode,FilePlus,Folder,FolderOpen,GitCompareArrows,ListTodo,MessageSquare,Paperclip,Pencil,Pin,Plus,Search,Send,Settings,ShieldCheck,Square,Sparkles,Target,Terminal,Timer,Unplug,X,Download} from 'lucide-react';
 import {SessionMarkdown,LinkedText} from './SessionLinks';
 import {command,desktop,errorText,send} from './api';
 import {KNOWN_APPROVALS} from './types';
@@ -19,6 +20,7 @@ import {PluginContributionsPanel,PluginThemeHost} from './PluginContributionsPan
 import {PluginResultCards} from './PluginResultCards';
 import {BackgroundTasksPanel,JOB_STATUS,SCHEDULE_STATUS} from './BackgroundTasksPanel';
 import {PlansPanel} from './PlansPanel';
+import {SettingsPage} from './SettingsPage';
 import {AutomationsPanel} from './AutomationsPanel';
 import {SidePanel} from './SidePanel';
 import {useSidePanel} from './sidePanelStore';
@@ -48,7 +50,7 @@ export default function App(){
  const [allSessions,setAllSessions]=useState<SessionInfo[]>([]);
  const [models,setModels]=useState<ModelConfig[]>([]),[modelId,setModelId]=useState(''),[providers,setProviders]=useState<ProviderInfo[]>([]),[effort,setEffort]=useState<string|null>(null);
  const [presets,setPresets]=useState<PresetInfo[]>([]),[presetId,setPresetId]=useState('');
- const [approvals,setApprovals]=useState<ApprovalRequest[]>([]),[panel,setPanel]=useState<Panel>(null);
+ const [approvals,setApprovals]=useState<ApprovalRequest[]>([]),[panel,setPanel]=useState<Panel>(null),[settingsOpen,setSettingsOpen]=useState(false);
  // ask_user 提问：与审批同用轮询通道；答复后从列表移除。
  const [questions,setQuestions]=useState<AskRequest[]>([]);
  // 权限模式：默认档全局持久化；会话内切档记录显式覆盖（后端同口径：覆盖优先于默认档）。
@@ -398,7 +400,7 @@ export default function App(){
  async function resolve(id:string,allow:boolean){await attempt(async()=>{await command('approval_resolve',{id,allow});setApprovals(old=>old.filter(a=>a.id!==id))})}
  async function resolveQuestion(id:string,answer:AskAnswer){await attempt(async()=>{await command('question_resolve',{id,answer});setQuestions(old=>old.filter(q=>q.id!==id))})}
  async function exportSession(){await attempt(async()=>{const path=await save({defaultPath:'rust-harness-session.json',filters:[{name:'JSON',extensions:['json']}]});if(!path)return;await command('session_export',{sessionId,path});setNotice('会话已导出。')})}
- return <div className="app">
+ return <div className="app" aria-hidden={settingsOpen||undefined}>
   <aside className="sidebar">
    <button className="new-chat" title="新建聊天" onClick={newSession} disabled={sessionBusy}><Plus size={16}/><span>新建聊天</span></button>
    <div className="session-search"><Search size={14} aria-hidden="true"/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="搜索会话…" aria-label="搜索会话"/></div>
@@ -422,7 +424,7 @@ export default function App(){
     {!visibleSessions.length&&<p className="muted empty-small">{query?'无匹配会话。':workspaceId?'还没有会话，点击「新建聊天」开始':'打开工作区后，会话将保存在本机。'}</p>}
     {!visibleSessions.length&&!query&&!workspaceId&&<button className="empty-open" onClick={openWorkspace} disabled={busy||!desktop()}><FolderOpen size={14}/>打开工作区</button>}
    </nav>
-   <div className="sidebar-bottom"><div className="local-badge"><i className="live-dot"/> 本地优先 · 无遥测</div><button onClick={()=>setPanel('plans')}><Target size={17}/>计划与目标</button><button onClick={()=>setPanel('presets')}><Bookmark size={17}/>能力预设</button><button onClick={()=>setPanel('skills')}><Sparkles size={17}/>技能</button><button onClick={()=>setPanel('automations')}><Timer size={17}/>自动化{automationCount!==null&&<span className="count">{automationCount}</span>}</button><button onClick={()=>setPanel('plugins')}><Unplug size={17}/>插件与权限</button><button onClick={()=>setPanel('models')}><Settings2 size={17}/>模型设置 <span className="count">{models.length}</span></button></div>
+   <div className="sidebar-bottom"><div className="local-badge"><i className="live-dot"/> 本地优先 · 无遥测</div><button onClick={()=>setPanel('plans')}><Target size={17}/>计划与目标</button><button onClick={()=>setPanel('automations')}><Timer size={17}/>自动化{automationCount!==null&&<span className="count">{automationCount}</span>}</button><button aria-label="设置" onClick={()=>setSettingsOpen(true)}><Settings size={17}/>设置</button></div>
   </aside>
   <main className="main"><header className="topbar"><div className="breadcrumb"><strong className="topbar-session-title">{session?.title??(drafting?'新会话':'新的可能，从这里开始')}</strong><span className="workspace-context"><Folder size={15}/><span className="workspace-name">{workspace?workspace.name:'工作台'}</span></span></div><div className="toolbar"><button className="icon-button" title="导出会话" aria-label="导出会话" disabled={!sessionId} onClick={exportSession}><Download size={17}/></button><button className="soft" aria-expanded={panel==='tasks'} aria-controls="task-popover" onClick={()=>setPanel(p=>p==='tasks'?null:'tasks')} disabled={!sessionId}><ListTodo size={16}/>后台任务{taskCount>0&&<span className="count">{taskCount}</span>}</button><button className="soft" aria-expanded={sideOpen} onClick={()=>useSidePanel.getState().toggle()} disabled={!workspaceId}><GitCompareArrows size={16}/>查看更改</button><button className="archive-button" type="button" title="存档会话" aria-label="存档会话" disabled={!sessionId}><Archive size={16}/>存档</button>{panel==='tasks'&&sessionId&&<BackgroundTasksPanel sessionId={sessionId} onClose={()=>setPanel(null)}/>}</div></header>
    {!desktop()&&<div className="host-banner"><Terminal size={16}/>当前为界面预览，需要桌面宿主才能访问工作区和模型。</div>}
@@ -456,6 +458,7 @@ export default function App(){
    <div className="actions"><button type="button" onClick={()=>setWsDialog(null)}>取消</button><button className="primary" type="submit">{wsDialog.mode==='create'?'创建':'保存'}</button></div>
   </form></Modal>}
   {approvals[0]&&<Modal title="操作需要你的批准" onClose={()=>void resolve(approvals[0].id,false)}><div className="approval-heading"><ShieldCheck size={24}/><strong>{approvals[0].tool}</strong></div><p>{approvals[0].reason}</p><pre className="code-block">{printable(approvals[0].arguments)}</pre><p className="muted">会话：{sessions.find(s=>s.id===approvals[0].sessionId)?.title??approvals[0].sessionId}</p><div className="actions"><button onClick={()=>resolve(approvals[0].id,false)}>拒绝</button><button className="primary" onClick={()=>resolve(approvals[0].id,true)}>批准此次操作</button></div></Modal>}
+  {settingsOpen&&createPortal(<SettingsPage onClose={()=>setSettingsOpen(false)} onOpenPanel={next=>{setPanel(next);setSettingsOpen(false)}}/>,document.body)}
  </div>
 }
 // ask_user 提问浮层：锚定在输入框上方（参考 zcode，非阻塞）；自定义答复是选项列表的「其他」一项，「忽略」按 unattended 结算。

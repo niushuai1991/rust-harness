@@ -38,7 +38,7 @@ beforeEach(()=>{reset();mocks.command.mockReset();mocks.command.mockImplementati
  return [];
 })});
 afterEach(cleanup);
-async function openPanel(){render(<App/>);fireEvent.click(screen.getByRole('button',{name:/模型设置/}));await screen.findByRole('button',{name:'添加自定义供应商'})}
+async function openPanel(){render(<App/>);fireEvent.click(screen.getByRole('button',{name:'设置'}));const page=await screen.findByRole('dialog',{name:'设置'});fireEvent.click(within(page).getByRole('button',{name:'模型设置'}));fireEvent.click(within(page).getByRole('button',{name:'打开现有面板'}));await screen.findByRole('button',{name:'添加自定义供应商'})}
 async function chooseZhipu(){fireEvent.click(screen.getByRole('button',{name:/智谱 Coding Plan/}));await screen.findByText('GLM Coding Pro')}
 
 it('内置供应商展示内置徽标与启停开关，启停写入个人覆盖',async()=>{

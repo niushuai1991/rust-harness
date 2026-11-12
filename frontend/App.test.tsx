@@ -26,6 +26,23 @@ beforeEach(()=>{useChat.setState({events:{},streams:{},statuses:{},timelines:{},
  return [];
 })});
 afterEach(()=>{cleanup();vi.useRealTimers()});
+describe('设置入口',()=>{
+ it('从侧栏打开全屏设置页，可切换分类并返回工作台',async()=>{
+  render(<App/>);await screen.findByText('内容 a');
+  fireEvent.click(screen.getByRole('button',{name:'设置'}));
+  const page=await screen.findByRole('dialog',{name:'设置'});
+  const navigation=within(page).getByRole('navigation',{name:'设置导航'});
+  expect(within(navigation).getByRole('button',{name:'能力预设'})).toBeInTheDocument();
+  expect(within(navigation).getByRole('button',{name:'技能'})).toBeInTheDocument();
+  expect(within(navigation).getByRole('button',{name:'插件与权限'})).toBeInTheDocument();
+  expect(within(navigation).getByRole('button',{name:'模型设置'})).toBeInTheDocument();
+  fireEvent.click(within(navigation).getByRole('button',{name:'技能'}));
+  expect(within(page).getByRole('heading',{name:'技能'})).toBeInTheDocument();
+  fireEvent.click(within(page).getByRole('button',{name:'关闭设置，返回工作台'}));
+  expect(screen.queryByRole('dialog',{name:'设置'})).not.toBeInTheDocument();
+  expect(screen.getByText('内容 a')).toBeInTheDocument();
+ });
+});
 describe('聊天交互',()=>{
  it('草稿发送的迟到响应不污染当前会话，会话行仍并入侧栏',async()=>{
   let resolveCreation!:(value:unknown)=>void;
