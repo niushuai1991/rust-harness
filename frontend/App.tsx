@@ -61,6 +61,8 @@ export default function App(){
  // 补全弹层（/ 与 $）当前选中项：方向键移动选中项时滚动跟随用。
  const selectedOptionRef=useRef<HTMLButtonElement|null>(null);
  const [notice,setNotice]=useState('');
+ const exportNoticeTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
+ useEffect(()=>()=>{if(exportNoticeTimer.current!==null)clearTimeout(exportNoticeTimer.current)},[]);
  // 会话列表「最近 / 项目」视图：视图模式与项目折叠状态存 localStorage，跨重启保留。
  const [viewMode,setViewMode]=useState<ViewMode>(()=>{try{return localStorage.getItem('sessionView')==='project'?'project':'recent'}catch{return 'recent'}});
  const [collapsed,setCollapsed]=useState<string[]>(()=>{try{const v=JSON.parse(localStorage.getItem('sessionCollapsed')??'[]');return Array.isArray(v)?v.filter(x=>typeof x==='string'):[]}catch{return []}});
@@ -389,7 +391,7 @@ export default function App(){
  function chooseView(mode:ViewMode){setViewMode(mode);try{localStorage.setItem('sessionView',mode)}catch{}}
  function toggleCollapsed(id:string){setCollapsed(old=>{const next=old.includes(id)?old.filter(x=>x!==id):[...old,id];try{localStorage.setItem('sessionCollapsed',JSON.stringify(next))}catch{}return next})}
  async function resolve(id:string,allow:boolean){await attempt(async()=>{await command('approval_resolve',{id,allow});setApprovals(old=>old.filter(a=>a.id!==id))})}
- async function exportSession(){await attempt(async()=>{const path=await save({defaultPath:'rust-harness-session.json',filters:[{name:'JSON',extensions:['json']}]});if(!path)return;await command('session_export',{sessionId,path});setNotice('会话已导出。')})}
+ async function exportSession(){await attempt(async()=>{const path=await save({defaultPath:'rust-harness-session.json',filters:[{name:'JSON',extensions:['json']}]});if(!path)return;await command('session_export',{sessionId,path});if(exportNoticeTimer.current!==null)clearTimeout(exportNoticeTimer.current);setNotice('会话已导出。');exportNoticeTimer.current=setTimeout(()=>{setNotice(current=>current==='会话已导出。'?'':current);exportNoticeTimer.current=null},3000)})}
  return <div className="app">
   <aside className="sidebar">
    <div className="brand"><span className="brand-mark"><Terminal size={23}/></span><span>Rust Harness<small>你的本地开发搭档</small></span><span className="version">α</span></div>

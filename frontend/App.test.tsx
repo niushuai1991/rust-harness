@@ -26,6 +26,19 @@ beforeEach(()=>{useChat.setState({events:{},streams:{},statuses:{},timelines:{},
 })});
 afterEach(()=>{cleanup();vi.useRealTimers()});
 describe('聊天交互',()=>{
+ it('导出成功提示自动关闭，重复导出重新计时',async()=>{
+  vi.mocked(save).mockResolvedValueOnce('D:/export.json').mockResolvedValueOnce('D:/export.json');
+  render(<App/>);await screen.findByText('内容 a');
+  vi.useFakeTimers();
+  await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'导出会话'}))});
+  expect(screen.getByText('会话已导出。')).toBeInTheDocument();
+  act(()=>vi.advanceTimersByTime(2000));
+  await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'导出会话'}))});
+  act(()=>vi.advanceTimersByTime(2000));
+  expect(screen.getByText('会话已导出。')).toBeInTheDocument();
+  act(()=>vi.advanceTimersByTime(1000));
+  expect(screen.queryByText('会话已导出。')).not.toBeInTheDocument();
+ });
  it('草稿发送的迟到响应不污染当前会话，会话行仍并入侧栏',async()=>{
   let resolveCreation!:(value:unknown)=>void;
   const original=mocks.command.getMockImplementation()!;
