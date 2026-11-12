@@ -26,7 +26,7 @@ beforeEach(()=>{reset();mocks.command.mockReset();mocks.command.mockImplementati
  return [];
 })});
 afterEach(cleanup);
-async function openPanel(){render(<App/>);fireEvent.click(screen.getByRole('button',{name:/能力预设/}));await screen.findByRole('button',{name:/批量重构/})}
+async function openPanel(){render(<App/>);fireEvent.click(screen.getByRole('button',{name:'设置'}));fireEvent.click(await screen.findByRole('button',{name:'能力预设'}));fireEvent.click(screen.getByRole('button',{name:'打开现有面板'}));await screen.findByRole('button',{name:/批量重构/})}
 
 it('内置预设只读置顶，用户预设与不可用标记可见',async()=>{
  await openPanel();
