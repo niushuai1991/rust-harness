@@ -165,3 +165,67 @@ it('光标移出浮层卡片后浮层延迟自动关闭',async()=>{
  await act(async()=>{await new Promise(resolve=>setTimeout(resolve,150))});
  expect(screen.queryByRole('dialog',{name:'用量明细'})).not.toBeInTheDocument();
 });
+
+// —— 供应商切换同步：切换模型后套餐数据必须失效并重拉当前供应商 ——
+
+const chatgpt={...bigmodel,id:'chatgpt',name:'ChatGPT',compatibility:'standard',auth:'chatGptOAuth',credentialRef:'',defaultModel:'gpt-6.1-terra',builtinModels:[{id:'gpt-6.1-terra',name:'GPT-6.1 Terra',efforts:[],contextWindow:272_000}]} as any;
+const codexConfig={...glmConfig,id:'builtin:chatgpt:gpt-6.1-terra',name:'GPT-6.1 Terra',model:'gpt-6.1-terra',providerId:'chatgpt',compatibility:'standard',auth:'chatGptOAuth',contextWindow:272_000} as any;
+const chatgptUsage={planName:'ChatGPT Plus',cards:[{kind:'fiveHour',remainingPercent:50,resetAt:null},{kind:'weekly',remainingPercent:60,resetAt:null}]};
+
+function mockCommand(usage:unknown){
+ mocks.command.mockImplementation(async(name:string)=>name==='provider_usage'
+  ?structuredClone(usage)
+  :name==='token_budget_limit_get'?1_000_000:undefined);
+}
+async function closePanel(button:HTMLElement){
+ fireEvent.mouseLeave(button);
+ await act(async()=>{await new Promise(resolve=>setTimeout(resolve,150))});
+}
+const usageCalls=()=>mocks.command.mock.calls.filter(([name])=>name==='provider_usage').map(([,args])=>(args as {providerId:string}).providerId);
+
+it('切换供应商后重新拉取新供应商套餐',async()=>{
+ pushEvents([]);
+ mockCommand(usageOk);
+ const view=renderRing({providers:[bigmodel,chatgpt],models:[glmConfig,codexConfig]});
+ const button=screen.getByRole('button',{name:/上下文用量/});
+ fireEvent.mouseEnter(button);
+ expect(await screen.findByText('GLM Coding Pro')).toBeInTheDocument();
+ await closePanel(button);
+ view.rerender(<UsageRing models={[glmConfig,codexConfig]} providers={[bigmodel,chatgpt]} modelId={codexConfig.id} sessionId='s1'/>);
+ mockCommand(chatgptUsage);
+ fireEvent.mouseEnter(button);
+ expect(await screen.findByText('ChatGPT Plus')).toBeInTheDocument();
+ expect(screen.queryByText('GLM Coding Pro')).not.toBeInTheDocument();
+ expect(usageCalls()).toEqual(['bigmodel','chatgpt']);
+});
+
+it('切到按量计费供应商再切回后重新拉取原供应商套餐',async()=>{
+ pushEvents([]);
+ mockCommand(usageOk);
+ const view=renderRing({providers:[bigmodel,deepseek],models:[glmConfig,deepseekConfig]});
+ const button=screen.getByRole('button',{name:/上下文用量/});
+ fireEvent.mouseEnter(button);
+ expect(await screen.findByText('GLM Coding Pro')).toBeInTheDocument();
+ await closePanel(button);
+ view.rerender(<UsageRing models={[glmConfig,deepseekConfig]} providers={[bigmodel,deepseek]} modelId={deepseekConfig.id} sessionId='s1'/>);
+ fireEvent.mouseEnter(button);
+ expect(await screen.findByText('上下文窗口')).toBeInTheDocument();
+ expect(screen.queryByText('套餐额度')).not.toBeInTheDocument();
+ await closePanel(button);
+ view.rerender(<UsageRing models={[glmConfig,deepseekConfig]} providers={[bigmodel,deepseek]} modelId={glmConfig.id} sessionId='s1'/>);
+ fireEvent.mouseEnter(button);
+ expect(await screen.findByText('GLM Coding Pro')).toBeInTheDocument();
+ expect(usageCalls()).toEqual(['bigmodel','bigmodel']);
+});
+
+it('面板展开时切换供应商立即清空旧套餐数据',async()=>{
+ pushEvents([]);
+ mockCommand(usageOk);
+ const view=renderRing({providers:[bigmodel,chatgpt],models:[glmConfig,codexConfig]});
+ const button=screen.getByRole('button',{name:/上下文用量/});
+ fireEvent.mouseEnter(button);
+ expect(await screen.findByText('GLM Coding Pro')).toBeInTheDocument();
+ view.rerender(<UsageRing models={[glmConfig,codexConfig]} providers={[bigmodel,chatgpt]} modelId={codexConfig.id} sessionId='s1'/>);
+ expect(screen.queryByText('GLM Coding Pro')).not.toBeInTheDocument();
+ await waitFor(()=>expect(usageCalls()).toEqual(["bigmodel","chatgpt"]));
+});
