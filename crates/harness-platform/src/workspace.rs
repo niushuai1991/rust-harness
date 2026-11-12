@@ -160,6 +160,7 @@ impl WorkspaceManager {
                     created_at: now(),
                     name: display_name(&source, name.as_deref()),
                     pinned: false,
+                    hidden: false,
                     execution_mode,
                     worktrees: BTreeMap::new(),
                 };
@@ -259,6 +260,7 @@ impl WorkspaceManager {
                 created_at: now(),
                 name: display_name(&source, name.as_deref()),
                 pinned: false,
+                hidden: false,
                 execution_mode,
                 worktrees: BTreeMap::new(),
             };
@@ -586,20 +588,6 @@ impl WorkspaceManager {
         }
         paths::replace(&backup_dir, "status", b"committed")?;
         Ok(selected)
-    }
-    /// 项目移除：仅删除宿主侧记录目录（record.json、隔离副本与备份），绝不触碰
-    /// source_path 指向的用户项目；返回被移除的项目信息供上层登记挂回。
-    /// worktree 模式在源项目登记的会话 worktree 与分支一并保留（属用户仓库，
-    /// 由用户自行清理）。运行中的会话持有共享锁，排他锁会以 BUSY 拒绝移除。
-    pub fn remove(&self, id: &str) -> AppResult<WorkspaceInfo> {
-        let dir = self.dir(id)?;
-        if !dir.join("record.json").exists() {
-            return Err(AppError::new("NOT_FOUND", id));
-        }
-        let _lock = self.lock(id, true)?;
-        let info = self.load(id)?.info;
-        fs::remove_dir_all(dir).map_err(io)?;
-        Ok(info)
     }
     pub fn refresh(&self, id: &str) -> AppResult<WorkspaceInfo> {
         let _lock = self.lock(id, true)?;

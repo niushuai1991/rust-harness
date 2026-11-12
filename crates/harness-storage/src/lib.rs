@@ -1,6 +1,5 @@
 //! SQLite is the authoritative session log; views and search indexes are disposable.
 use harness_contracts::*;
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{
@@ -17,23 +16,8 @@ const SCHEMA_VERSION: i64 = 4;
 /// 会话列表「项目」视图置顶工作区集合的 settings KV 键。
 pub const PINNED_WORKSPACES_KEY: &str = "workspace.pinned.v1";
 /// 已移除项目登记（重开同源路径时挂回旧会话与自动化）的 settings KV 键。
-pub const REMOVED_WORKSPACES_KEY: &str = "workspace.removed.v1";
-/// 已移除项目的挂回登记：记录移除时刻的项目属性与待恢复集合。
-/// `unarchived_session_ids` 是移除前仍活跃（移除时被批量归档）的会话，
-/// 重开同源路径项目时恢复为活跃；其余归档会话迁移后保持归档。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RemovedWorkspaceRecord {
-    pub workspace_id: String,
-    pub source_path: String,
-    pub name: String,
-    pub pinned: bool,
-    pub removed_at: String,
-    pub unarchived_session_ids: Vec<String>,
-    pub automation_ids: Vec<String>,
-    /// 移除时仍处于启用状态的自动化（挂回时恢复启用并重算触发点；手工暂停的保持暂停）。
-    pub enabled_automation_ids: Vec<String>,
-}
+/// 项目移除（隐藏）集合的 settings KV 键；隐藏只影响任务列表入口显示，记录与会话原样保留。
+pub const HIDDEN_WORKSPACES_KEY: &str = "workspace.hidden.v1";
 fn db_error(e: impl std::fmt::Display) -> AppError {
     AppError::new("STORAGE", e.to_string())
 }
@@ -282,45 +266,24 @@ impl Store {
         }
         self.session(id).await
     }
-    /// 批量归档工作区下所有未归档会话（项目移除用）；已归档保持原状态，返回归档条数。
-    pub async fn archive_workspace_sessions(&self, workspace: &str) -> AppResult<u64> {
-        let result = sqlx::query(
-            "UPDATE sessions SET archived=1,archived_at=? WHERE workspace_id=? AND archived=0",
-        )
-        .bind(now())
-        .bind(workspace)
-        .execute(&self.pool)
-        .await
-        .map_err(db_error)?;
-        Ok(result.rows_affected())
+    /// 项目移除（隐藏）集合（settings KV，跨重启保留）；与置顶同模式，只影响任务列表入口显示。
+    pub async fn hidden_workspaces(&self) -> AppResult<Vec<String>> {
+        Ok(self
+            .get(HIDDEN_WORKSPACES_KEY)
+            .await?
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default())
     }
-    /// 会话迁移（重开同源路径项目挂回）：全部会话换绑到新工作区，
-    /// `restore_ids` 中的会话恢复为未归档（移除时被批量归档的那批），其余保持归档。
-    pub async fn reassign_sessions(
-        &self,
-        from: &str,
-        to: &str,
-        restore_ids: &[String],
-    ) -> AppResult<u64> {
-        let mut tx = self.pool.begin().await.map_err(db_error)?;
-        let result = sqlx::query("UPDATE sessions SET workspace_id=? WHERE workspace_id=?")
-            .bind(to)
-            .bind(from)
-            .execute(&mut *tx)
-            .await
-            .map_err(db_error)?;
-        for id in restore_ids {
-            sqlx::query(
-                "UPDATE sessions SET archived=0,archived_at=NULL WHERE id=? AND workspace_id=?",
-            )
-            .bind(id)
-            .bind(to)
-            .execute(&mut *tx)
-            .await
-            .map_err(db_error)?;
+    pub async fn set_workspace_hidden(&self, workspace: &str, hidden: bool) -> AppResult<()> {
+        let mut ids = self.hidden_workspaces().await?;
+        if hidden {
+            if !ids.iter().any(|id| id == workspace) {
+                ids.push(workspace.to_string());
+            }
+        } else {
+            ids.retain(|id| id != workspace);
         }
-        tx.commit().await.map_err(db_error)?;
-        Ok(result.rows_affected())
+        self.set(HIDDEN_WORKSPACES_KEY, &json!(ids)).await
     }
     pub async fn rename_session(&self, id: &str, title: &str) -> AppResult<SessionInfo> {
         let title = title.trim();
@@ -602,35 +565,6 @@ impl Store {
             ids.retain(|id| id != workspace);
         }
         self.set(PINNED_WORKSPACES_KEY, &json!(ids)).await
-    }
-    /// 已移除项目登记列表（settings KV，跨重启保留）。
-    pub async fn removed_workspaces(&self) -> AppResult<Vec<RemovedWorkspaceRecord>> {
-        Ok(self
-            .get(REMOVED_WORKSPACES_KEY)
-            .await?
-            .and_then(|v| serde_json::from_value(v).ok())
-            .unwrap_or_default())
-    }
-    /// 追加一条已移除项目登记；同工作区重复移除以最新一条为准。
-    pub async fn push_removed_workspace(&self, record: &RemovedWorkspaceRecord) -> AppResult<()> {
-        let mut records = self.removed_workspaces().await?;
-        records.retain(|r| r.workspace_id != record.workspace_id);
-        records.insert(0, record.clone());
-        self.set(REMOVED_WORKSPACES_KEY, &json!(records)).await
-    }
-    /// 按 source_path 取出并移除一条登记（重开项目挂回时消费）；路径需精确匹配。
-    pub async fn pop_removed_workspace(
-        &self,
-        source_path: &str,
-    ) -> AppResult<Option<RemovedWorkspaceRecord>> {
-        let mut records = self.removed_workspaces().await?;
-        let position = records.iter().position(|r| r.source_path == source_path);
-        let Some(position) = position else {
-            return Ok(None);
-        };
-        let record = records.remove(position);
-        self.set(REMOVED_WORKSPACES_KEY, &json!(records)).await?;
-        Ok(Some(record))
     }
     pub async fn export(&self, id: &str) -> AppResult<String> {
         let mut lines = vec![

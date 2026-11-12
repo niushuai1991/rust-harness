@@ -23,7 +23,7 @@ const INTRO:Record<SettingsPanelId|'archive',string>={
  archive:'归档后的会话不会出现在任务列表里，但仍保留在本机；在这里按项目查看并恢复。',
 };
 
-export function SettingsPage({onClose,onOpenPanel,archivedSessions,projectName,onRestore,canRestore}:{onClose:()=>void;onOpenPanel:(panel:SettingsPanelId)=>void;archivedSessions:SessionInfo[];projectName:(id:string)=>string;onRestore:(id:string)=>void;canRestore:(id:string)=>boolean}){
+export function SettingsPage({onClose,onOpenPanel,archivedSessions,projectName,onRestore}:{onClose:()=>void;onOpenPanel:(panel:SettingsPanelId)=>void;archivedSessions:SessionInfo[];projectName:(id:string)=>string;onRestore:(id:string)=>void}){
  const [active,setActive]=useState<SettingsSectionId>('overview');
  const dialogRef=useRef<HTMLDivElement>(null),closeRef=useRef(onClose);
  closeRef.current=onClose;
@@ -60,7 +60,7 @@ export function SettingsPage({onClose,onOpenPanel,archivedSessions,projectName,o
   <section className="settings-main" aria-label="设置内容">
    <header className="settings-topbar"><div className="settings-breadcrumb"><span>设置</span>{selected&&<><ChevronRight size={14}/><strong>{selected.title}</strong></>}</div><div className="settings-top-actions"><span className="settings-preview-badge"><Sparkles size={13}/>布局预览</span><button type="button" className="settings-close" aria-label="关闭设置，返回工作台" title="关闭设置" onClick={onClose}><X size={18}/></button></div></header>
    <div className="settings-scroll">
-    {selected?<SettingsCategory item={selected} onOpenPanel={openPanel} archivedSessions={archivedSessions} projectName={projectName} onRestore={onRestore} canRestore={canRestore}/>:<SettingsOverview onSelect={setActive}/>}
+    {selected?<SettingsCategory item={selected} onOpenPanel={openPanel} archivedSessions={archivedSessions} projectName={projectName} onRestore={onRestore}/>:<SettingsOverview onSelect={setActive}/>}
    </div>
   </section>
  </div>;
@@ -81,7 +81,7 @@ function SettingsOverview({onSelect}:{onSelect:(section:SettingsPanelId|'archive
  </div>;
 }
 
-function SettingsCategory({item,onOpenPanel,archivedSessions,projectName,onRestore,canRestore}:{item:SettingsItem;onOpenPanel:(panel:SettingsPanelId)=>void;archivedSessions:SessionInfo[];projectName:(id:string)=>string;onRestore:(id:string)=>void;canRestore:(id:string)=>boolean}){
+function SettingsCategory({item,onOpenPanel,archivedSessions,projectName,onRestore}:{item:SettingsItem;onOpenPanel:(panel:SettingsPanelId)=>void;archivedSessions:SessionInfo[];projectName:(id:string)=>string;onRestore:(id:string)=>void}){
  const Icon=item.icon;
  return <div className="settings-content settings-category-content">
   <div className="settings-eyebrow">{item.group.toUpperCase()}</div>
@@ -89,7 +89,7 @@ function SettingsCategory({item,onOpenPanel,archivedSessions,projectName,onResto
   {item.id!=='archive'&&<div className="settings-preview-notice"><Sparkles size={15}/><span>页面布局预览 · 下方为示例内容，不会修改真实设置</span></div>}
   {item.id==='presets'&&<PresetPreview/>}
   {item.id==='skills'&&<SkillsPreview/>}
-  {item.id==='archive'&&<ArchivePreview archived={archivedSessions} projectName={projectName} onRestore={onRestore} canRestore={canRestore}/>}
+  {item.id==='archive'&&<ArchivePreview archived={archivedSessions} projectName={projectName} onRestore={onRestore}/>}
   {item.id==='plugins'&&<PluginsPreview/>}
   {item.id==='models'&&<ModelsPreview/>}
   {item.legacyPanel&&<div className="settings-existing-action"><div><strong>继续使用当前管理功能</strong><p>此版先展示设置页的导航与布局；原有配置面板暂时保持不变。</p></div><button type="button" className="settings-manage-button" onClick={()=>onOpenPanel(item.legacyPanel!)}>打开现有面板<ArrowRight size={15}/></button></div>}
@@ -125,7 +125,7 @@ function ModelsPreview(){
 }
 
 
-function ArchivePreview({archived,projectName,onRestore,canRestore}:{archived:SessionInfo[];projectName:(id:string)=>string;onRestore:(id:string)=>void;canRestore:(id:string)=>boolean}){
+function ArchivePreview({archived,projectName,onRestore}:{archived:SessionInfo[];projectName:(id:string)=>string;onRestore:(id:string)=>void}){
  // 按项目分组：组内按最后更新倒序，组间按组内最新会话倒序。
  const byWorkspace=new Map<string,SessionInfo[]>();
  for(const item of [...archived].sort((a,b)=>Date.parse(b.updatedAt)-Date.parse(a.updatedAt))){
@@ -139,7 +139,7 @@ function ArchivePreview({archived,projectName,onRestore,canRestore}:{archived:Se
    <div className="settings-example-list">{list.map(item=><article key={item.id} className="settings-example-item">
     <span className="settings-example-icon"><Archive size={16}/></span>
     <span className="settings-example-copy"><strong>{item.title}</strong><small>归档于 {relativeLabel(item.archivedAt??item.updatedAt,new Date())}</small></span>
-    <button type="button" className="settings-manage-button" disabled={!canRestore(workspaceId)} title={canRestore(workspaceId)?undefined:'项目已移除；重新打开同一目录的项目后会自动挂回'} onClick={()=>onRestore(item.id)}><Undo2 size={13}/>恢复</button>
+    <button type="button" className="settings-manage-button" onClick={()=>onRestore(item.id)}><Undo2 size={13}/>恢复</button>
    </article>)}</div>
   </section>)}
  </>;
