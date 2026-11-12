@@ -457,12 +457,14 @@ export default function App(){
   {questions[0]&&<QuestionModal question={questions[0]} sessionTitle={sessions.find(s=>s.id===questions[0].sessionId)?.title??questions[0].sessionId} onSubmit={answer=>void resolveQuestion(questions[0].id,answer)}/>}
  </div>
 }
-// ask_user 提问对话框：与审批 Modal 同形态（轮询驱动）；选项单选或自由输入，无法回答按 unattended 结算。
+// ask_user 提问对话框：与审批 Modal 同形态（轮询驱动）；自定义答复是选项列表的「其他」一项，无法回答按 unattended 结算。
 function QuestionModal({question,sessionTitle,onSubmit}:{question:AskRequest;sessionTitle:string;onSubmit:(answer:AskAnswer)=>void}) {
  const [choice,setChoice]=useState<number|null>(null),[freeText,setFreeText]=useState('');
+ const hasOptions=question.options.length>0,otherIndex=question.options.length;
  const decline=()=>onSubmit({text:'',source:'unattended'});
- const submit=()=>{if(freeText.trim())onSubmit({text:freeText.trim(),source:'text'});else if(choice!==null)onSubmit({text:question.options[choice].label,source:'selected'})};
- return <Modal title="Agent 需要你的输入" onClose={decline}><div className="approval-heading"><MessageSquare size={24}/><strong>{question.question}</strong></div><p className="muted">会话：{sessionTitle}</p>{question.options.length>0&&<div role="radiogroup" aria-label="选项">{question.options.map((option,index)=><label key={option.label} className="ask-option"><input type="radio" name={`ask-${question.id}`} aria-label={`选项 ${option.label}`} checked={choice===index} onChange={()=>{setChoice(index);setFreeText('')}}/><span>{option.label}{option.description?`（${option.description}）`:''}</span></label>)}</div>}<textarea aria-label="自由答复" placeholder={question.options.length?'或输入自定义答复…':'输入答复文本…'} value={freeText} onChange={e=>{setFreeText(e.target.value);setChoice(null)}}/><div className="actions"><button onClick={decline}>无法回答</button><button className="primary" disabled={!freeText.trim()&&choice===null} onClick={submit}>提交答复</button></div></Modal>}
+ const submit=()=>{if(choice===otherIndex||!hasOptions){if(freeText.trim())onSubmit({text:freeText.trim(),source:'text'});return}if(choice!==null)onSubmit({text:question.options[choice].label,source:'selected'})};
+ const canSubmit=hasOptions?choice!==null&&(choice!==otherIndex||!!freeText.trim()):!!freeText.trim();
+ return <Modal title="Agent 需要你的输入" onClose={decline}><div className="approval-heading"><MessageSquare size={24}/><strong>{question.question}</strong></div><p className="muted">会话：{sessionTitle}</p>{hasOptions&&<div role="radiogroup" aria-label="选项">{question.options.map((option,index)=><label key={option.label} className="ask-option"><input type="radio" name={`ask-${question.id}`} aria-label={`选项 ${option.label}`} checked={choice===index} onChange={()=>setChoice(index)}/><span>{option.label}{option.description?`（${option.description}）`:''}</span></label>)}<label className="ask-option"><input type="radio" name={`ask-${question.id}`} aria-label="选项 其他" checked={choice===otherIndex} onChange={()=>setChoice(otherIndex)}/><span>其他（自定义答复）</span></label></div>}{(!hasOptions||choice===otherIndex)&&<textarea aria-label="自定义答复" placeholder="输入答复文本…" value={freeText} onChange={e=>setFreeText(e.target.value)}/>}<div className="actions"><button onClick={decline}>无法回答</button><button className="primary" disabled={!canSubmit} onClick={submit}>提交答复</button></div></Modal>}
 const EMPTY_EVENTS:SessionEvent[]=[];
 function Markdown({content}:{content:string}){return <SessionMarkdown content={content}/>}
 function durationLabel(start?:SessionEvent,end?:SessionEvent){
