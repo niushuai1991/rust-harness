@@ -392,7 +392,6 @@ export default function App(){
  async function exportSession(){await attempt(async()=>{const path=await save({defaultPath:'rust-harness-session.json',filters:[{name:'JSON',extensions:['json']}]});if(!path)return;await command('session_export',{sessionId,path});setNotice('会话已导出。')})}
  return <div className="app">
   <aside className="sidebar">
-   <div className="brand"><span className="brand-mark"><Terminal size={23}/></span><span>Rust Harness<small>你的本地开发搭档</small></span><span className="version">α</span></div>
    <button className="new-chat" title="新建聊天" onClick={newSession} disabled={sessionBusy}><Plus size={16}/><span>新建聊天</span></button>
    <div className="session-search"><Search size={14} aria-hidden="true"/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="搜索会话…" aria-label="搜索会话"/></div>
    <div className="section-label"><span>任务列表</span><span className="label-spacer"/><button type="button" role="switch" aria-checked={viewMode==='project'} aria-label="切换视图：最近 / 项目" className="view-switch" onClick={()=>chooseView(viewMode==='recent'?'project':'recent')}><span className="knob" aria-hidden="true"/><span className="sw-label a" aria-hidden="true">最近</span><span className="sw-label b" aria-hidden="true">项目</span></button></div>
