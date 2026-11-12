@@ -336,3 +336,19 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .tool-diff .diff-body{border-top:0}
 
 .web-panel{display:flex;flex-direction:column;height:100%;min-height:0}.web-panel-address{display:flex;align-items:center;gap:6px;padding:8px;border-bottom:1px solid var(--border)}.web-panel-address span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.web-panel-address button{font-size:11px;padding:5px}.web-panel-content{flex:1;min-height:0}.link-context-menu{width:190px;z-index:100}.link-context-menu button{width:100%;justify-content:flex-start}
+.ask-option{display:flex;gap:9px;align-items:center;padding:7px 9px;border:1px solid var(--border);border-radius:7px;margin:4px 0;font-size:12px;cursor:pointer}
+.ask-option:hover{background:var(--surface)}
+.ask-option input{accent-color:var(--accent);margin:0}
+.ask-options{margin:8px 0;padding-left:18px;font-size:11px}
+
+.ask-textarea:focus{outline:none;border-color:var(--accent)}
+.ask-textarea::placeholder{color:var(--muted)}
+.ask-popover{position:absolute;bottom:calc(100% + 10px);left:30px;right:30px;background:var(--panel);border:1px solid var(--border);border-radius:12px;box-shadow:0 12px 36px rgba(32,33,36,.18);padding:14px 16px 12px;z-index:30;font-size:12px}
+.ask-popover-head{display:flex;align-items:center;gap:8px;color:var(--text);font-size:13.5px;margin-bottom:2px}
+.ask-popover-head strong{flex:1;min-width:0;font-weight:550;overflow-wrap:anywhere}
+.ask-popover-head svg{color:var(--muted);flex-shrink:0}
+.ask-popover-head button{border:0;background:transparent;padding:3px;color:var(--muted)}
+.ask-popover-head button:hover{background:var(--surface);color:var(--text)}
+.ask-popover .actions{margin-top:12px}
+.ask-popover .ask-textarea{display:block;width:100%;min-height:66px;resize:vertical;border:1px solid var(--border);border-radius:8px;background:var(--panel);color:var(--text);padding:9px 12px;font-size:12.5px;line-height:1.7;margin:6px 0 0}
+.ask-badge{font-style:normal;font-size:9px;color:#8b7946;background:#f2efdf;border-radius:4px;padding:1px 6px;flex-shrink:0}

@@ -32,6 +32,7 @@
 | [工作区（项目）命名](specs/workspace-naming.md) | 2026-11-09（计划批准） | 工作区显示名落 `record.json`（非可选 String，创建未填/空白归一化为源目录名，旧记录加载归一化）；桌面创建命名弹窗与「按项目」组头重命名按钮；各显示点统一消费名称字段；CLI 不提供命名参数。 |
 | [宿主代建 worktree 执行模式与沙箱提权重跑](specs/worktree-execution.md) | 2026-11-10（计划拟制） | 工作区「worktree 执行模式」：宿主在真实项目 `.worktrees/` 代建会话 worktree、执行根切换、编辑直落真实分支工作区；shell 沙箱提权重跑（审批后无沙箱重跑一次，与五档权限模式组合矩阵）；主仓 `.git` 保持对 agent 只读。设计参考 codex escalation 与 zcode worktree 隔离契约。 |
 | [长会话时间线性能与有界渲染](specs/long-session-timeline.md) | 2026-11-10（设计草案） | 桌面长会话的事件分页、正文惰性读取、缓存上限、可变高度虚拟时间线和流式渲染节流；作为现有 Tauri 与后续 GPUI 共用的时间线契约。 |
+| [ask_user 提问工具](specs/ask-user.md) | 2026-11-12（计划批准） | 会话中模型向用户提问的 `ask_user` 内置工具：挂起等待与无人在场/超时自动结算、`ask.request`/`ask.resolved` 事件对、CLI/JSON-RPC/桌面接入与时间线回放；ACP 端 v1 自动结算，elicitation 转发留待后续。 |
 
 ## 关系说明
 
@@ -59,6 +60,7 @@
 - worktree 执行模式规范为执行边界专项规范：新增 worktree 执行根路径并引入提权重跑，修订总体规范「文件改动只落隔离副本」不变量为「落会话 worktree 或隔离副本，由执行模式决定」；权限模式规范的决策矩阵扩展 escalated 维度，副本模式与既有审阅同步语义不变。
 - 工作区命名规范为工作区实体属性扩展：名称随 `record.json` 持久化（CLI 与桌面单一事实源），与置顶的「桌面偏好 KV 派生注入」方案不同源；不改工作副本隔离、同步与审批语义，桌面显示点统一消费该字段。
 - 长会话时间线性能规范为桌面查询与渲染专项：SQLite 原始事件仍为唯一事实来源，既有 `session_events(after)` 保持 CLI/ACP 增量补拉兼容；桌面新增受限页查询与详情惰性读取，不改变 `/compact` 保留原始事件的语义。该契约先服务 Tauri 前端，后续 GPUI 仅复用它，不以迁移渲染器替代有界数据策略。
+- ask_user 提问工具规范为模型工具能力专项规范：挂起通道与审批同构（pending 表 + oneshot 宿主回传），免审批白名单成员；不改变权限模式五档决策矩阵、副本 + apply 边界与 Windows 沙箱；ACP 端 elicitation 转发维持该规范非目标，提问以无人在场自动结算。
 - 当前完成情况以 [能力状态矩阵](capability-matrix.md) 为准，具体执行与验证证据见 [交付记录](delivery.md)。
 - 后续发布仅构建使用系统已有 WebView2 的单一 NSIS 包（历史双安装包仅对应 0.1.2 当次交付）。
 

@@ -700,6 +700,16 @@ pub async fn approval_resolve(state: Backend<'_>, id: String, allow: bool) -> Ap
 }
 #[tauri::command]
 #[specta::specta]
+pub async fn question_list(state: Backend<'_>) -> AppResult<Vec<AskRequest>> {
+    Ok(state.questions.list())
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn question_resolve(state: Backend<'_>, id: String, answer: AskAnswer) -> AppResult<()> {
+    state.questions.resolve(&id, answer)
+}
+#[tauri::command]
+#[specta::specta]
 pub async fn plugin_list(state: Backend<'_>) -> AppResult<Vec<PluginInfo>> {
     state.plugins.list()
 }
@@ -1009,6 +1019,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         skill_set_enabled,
         approval_list,
         approval_resolve,
+        question_list,
+        question_resolve,
         plugin_list,
         plugin_install,
         plugin_enable,

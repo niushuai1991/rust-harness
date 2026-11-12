@@ -226,6 +226,61 @@ pub struct ApprovalRequest {
     pub escalated: bool,
 }
 
+/// `ask_user` 提问的候选项；`description` 为补充说明，可缺省。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AskOption {
+    pub label: String,
+    #[serde(default)]
+    #[specta(optional)]
+    pub description: Option<String>,
+}
+
+/// 一次向用户的提问请求（`ask.request` 事件 data）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AskRequest {
+    pub id: String,
+    pub session_id: String,
+    pub question: String,
+    /// 候选项；为空表示纯自由文本提问。有候选项时仍允许自由输入。
+    #[serde(default)]
+    pub options: Vec<AskOption>,
+}
+
+/// 提问答复来源：用户选中的候选项、自由输入，或无人在场/超时的自动结算。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AskSource {
+    /// 用户选择的候选项。
+    #[default]
+    Selected,
+    /// 用户自由输入的文本。
+    Text,
+    /// 宿主无人在场（非交互会话）自动结算。
+    Unattended,
+    /// 挂起超过等待上限自动结算。
+    Timeout,
+}
+
+/// 提问答复：给模型的文本与来源（`ask.resolved` 事件 data 与回传入口共用）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AskAnswer {
+    pub text: String,
+    pub source: AskSource,
+}
+
+impl AskAnswer {
+    /// 无人在场的统一结算答复（运行时 unattended、等待超时与宿主 EOF 共用语义）。
+    pub fn unattended() -> Self {
+        Self {
+            text: "当前无用户在场（未答复）".into(),
+            source: AskSource::Unattended,
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum ApiMode {
@@ -1463,5 +1518,71 @@ mod model_settings_tests {
         };
         let json = serde_json::to_string(&model).unwrap();
         assert!(json.contains("\"auth\":\"chatGptOAuth\""));
+    }
+}
+
+#[cfg(test)]
+mod ask_request_tests {
+    use super::*;
+
+    /// ask.request 数据 camelCase 键名与桌面绑定一致，往返不丢字段。
+    #[test]
+    fn ask_request_roundtrips_camel_case() {
+        let request = AskRequest {
+            id: "q1".into(),
+            session_id: "s1".into(),
+            question: "先改哪个文件？".into(),
+            options: vec![AskOption {
+                label: "session.rs".into(),
+                description: Some("会话存储层".into()),
+            }],
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"sessionId\""));
+        assert!(json.contains("\"label\":\"session.rs\""));
+        assert!(json.contains("\"description\":\"会话存储层\""));
+        let back: AskRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, request);
+    }
+
+    /// 纯自由文本提问允许省略 options；旧存储缺省为空集合。
+    #[test]
+    fn ask_request_minimal_json_defaults() {
+        let request: AskRequest =
+            serde_json::from_str(r#"{"id":"q1","sessionId":"s1","question":"继续吗？"}"#).unwrap();
+        assert!(request.options.is_empty());
+
+        // 选项 description 可缺省。
+        let option: AskOption = serde_json::from_str(r#"{"label":"auth.rs"}"#).unwrap();
+        assert_eq!(option.description, None);
+    }
+
+    /// 答复来源枚举以 camelCase 字符串序列化；缺省为 selected。
+    #[test]
+    fn ask_answer_sources_serialize_as_strings() {
+        let answer = AskAnswer {
+            text: "session.rs".into(),
+            source: AskSource::Selected,
+        };
+        assert_eq!(
+            serde_json::to_string(&answer).unwrap(),
+            r#"{"text":"session.rs","source":"selected"}"#
+        );
+        for (json, expected) in [
+            (r#""text""#, AskSource::Text),
+            (r#""unattended""#, AskSource::Unattended),
+            (r#""timeout""#, AskSource::Timeout),
+        ] {
+            let source: AskSource = serde_json::from_str(json).unwrap();
+            assert_eq!(source, expected);
+        }
+        assert_eq!(AskSource::default(), AskSource::Selected);
+        assert_eq!(
+            AskAnswer::unattended(),
+            AskAnswer {
+                text: "当前无用户在场（未答复）".into(),
+                source: AskSource::Unattended,
+            }
+        );
     }
 }

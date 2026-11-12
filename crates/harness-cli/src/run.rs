@@ -5,7 +5,9 @@ use crate::{
     diffview::ColorChoice,
     scope::{Phase, RunScope, Verdict},
 };
-use harness_contracts::{AppError, AppResult, ApprovalRequest, LiveEvent, SessionEvent};
+use harness_contracts::{
+    AppError, AppResult, ApprovalRequest, AskAnswer, AskRequest, LiveEvent, SessionEvent,
+};
 use harness_runtime::Runtime;
 use std::{
     collections::HashMap,
@@ -87,6 +89,8 @@ enum Signal {
 
 pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<i32> {
     let stdin_tty = std::io::stdin().is_terminal();
+    // 非交互 stdin 无人值守：ask_user 提问不经挂起直接自动结算（交互式 run 仍等待用户答复）。
+    runtime.set_unattended(!stdin_tty);
     // 预设层：显式 --preset > settings `cli.default_preset`；字段级仍以显式参数优先。
     let preset = crate::manage::resolve_preset(&runtime, args.preset.as_deref()).await?;
     let preset_approval = preset
@@ -336,6 +340,12 @@ async fn handle_durable(
     {
         resolve_approval(runtime, console, policy, &request)?;
     }
+    if event.kind == "ask.request"
+        && let Ok(request) = serde_json::from_value::<AskRequest>(event.data.clone())
+        && scope.in_scope(&request.session_id)
+    {
+        resolve_ask(runtime, console, &request)?;
+    }
     Ok(match verdict {
         Verdict::TurnClosed(status) => Some(Signal::ParentClosed(status)),
         Verdict::Cancelled => Some(Signal::Cancelled),
@@ -396,6 +406,53 @@ fn read_confirmation() -> bool {
     match std::io::stdin().lock().read_line(&mut line) {
         Ok(0) | Err(_) => false,
         Ok(_) => matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes"),
+    }
+}
+
+/// ask_user 提问答复：渲染问题与选项后读 stdin；序号选选项、文本为自由答复、EOF 视为无人在场。
+fn resolve_ask(runtime: &Runtime, console: &mut Console, request: &AskRequest) -> AppResult<()> {
+    // 无人在场模式 runtime 已不经挂起直接结算，宿主不交互。
+    if runtime.unattended() {
+        return Ok(());
+    }
+    loop {
+        console.ask(request).map_err(io_err)?;
+        let mut line = String::new();
+        match std::io::stdin().lock().read_line(&mut line) {
+            // EOF：stdin 关闭即无人在场，与运行时等待超时同语义自动结算。
+            Ok(0) | Err(_) => {
+                runtime
+                    .questions
+                    .resolve(&request.id, AskAnswer::unattended())?;
+                return Ok(());
+            }
+            Ok(_) => {
+                let input = line.trim();
+                if input.is_empty() {
+                    continue;
+                }
+                runtime
+                    .questions
+                    .resolve(&request.id, parse_ask_input(input, request))?;
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// 输入解析：命中序号（1-based）选对应选项，其余文本为自由答复。
+fn parse_ask_input(input: &str, request: &AskRequest) -> AskAnswer {
+    if let Ok(index) = input.parse::<usize>()
+        && (1..=request.options.len()).contains(&index)
+    {
+        return AskAnswer {
+            text: request.options[index - 1].label.clone(),
+            source: harness_contracts::AskSource::Selected,
+        };
+    }
+    AskAnswer {
+        text: input.to_owned(),
+        source: harness_contracts::AskSource::Text,
     }
 }
 
@@ -539,5 +596,55 @@ async fn drain_children(
                 return Ok(());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use harness_contracts::{AskOption, AskSource};
+
+    fn request(options: &[(&str, Option<&str>)]) -> AskRequest {
+        AskRequest {
+            id: "q1".into(),
+            session_id: "s1".into(),
+            question: "先改哪个文件？".into(),
+            options: options
+                .iter()
+                .map(|(label, description)| AskOption {
+                    label: (*label).into(),
+                    description: description.map(Into::into),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn numeric_input_selects_option_by_index() {
+        let request = request(&[("session.rs", Some("存储层")), ("auth.rs", None)]);
+        let answer = parse_ask_input("1", &request);
+        assert_eq!(answer.text, "session.rs");
+        assert_eq!(answer.source, AskSource::Selected);
+        let answer = parse_ask_input("2", &request);
+        assert_eq!(answer.text, "auth.rs");
+        assert_eq!(answer.source, AskSource::Selected);
+    }
+
+    #[test]
+    fn out_of_range_numbers_and_text_fall_back_to_free_input() {
+        let request = request(&[("session.rs", None), ("auth.rs", None)]);
+        for input in ["0", "3", "99", "改 auth.rs 吧"] {
+            let answer = parse_ask_input(input, &request);
+            assert_eq!(answer.text, input);
+            assert_eq!(answer.source, AskSource::Text);
+        }
+    }
+
+    #[test]
+    fn numeric_input_without_options_is_free_text() {
+        let request = request(&[]);
+        let answer = parse_ask_input("7", &request);
+        assert_eq!(answer.text, "7");
+        assert_eq!(answer.source, AskSource::Text);
     }
 }
