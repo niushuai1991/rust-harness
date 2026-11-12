@@ -53,8 +53,12 @@ export function groupByTime(sessions:SessionInfo[],now:Date):RecentGroup[]{
 }
 
 export interface ProjectGroup{workspace:WorkspaceInfo;sessions:SessionInfo[];}
-/** 有会话的工作区成组；置顶排最前，同状态按组内最新会话倒序。 */
-export function groupByProject(sessions:SessionInfo[],workspaces:WorkspaceInfo[]):ProjectGroup[]{
+/**
+ * 工作区成组；置顶排最前，同状态内有会话的按组内最新会话倒序。
+ * includeEmpty=true 时无会话的项目也保留组头（排在同状态有会话组之后，空组间按名称排序），
+ * 供任务列表在项目会话被全部存档后仍可回到该项目；缺省不出现（搜索过滤场景）。
+ */
+export function groupByProject(sessions:SessionInfo[],workspaces:WorkspaceInfo[],includeEmpty=false):ProjectGroup[]{
  const byWorkspace=new Map<string,SessionInfo[]>();
  for(const s of sessions){
   const list=byWorkspace.get(s.workspaceId);
@@ -64,9 +68,15 @@ export function groupByProject(sessions:SessionInfo[],workspaces:WorkspaceInfo[]
  for(const workspace of workspaces){
   const list=byWorkspace.get(workspace.id);
   if(list&&list.length)groups.push({workspace,sessions:list});
+  else if(includeEmpty)groups.push({workspace,sessions:[]});
  }
  return groups.sort((a,b)=>{
   if(a.workspace.pinned!==b.workspace.pinned)return a.workspace.pinned?-1:1;
+  if(!a.sessions.length||!b.sessions.length){
+   if(a.sessions.length)return -1;
+   if(b.sessions.length)return 1;
+   return a.workspace.name.localeCompare(b.workspace.name);
+  }
   return Date.parse(b.sessions[0].updatedAt)-Date.parse(a.sessions[0].updatedAt);
  });
 }

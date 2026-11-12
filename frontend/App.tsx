@@ -440,7 +440,7 @@ export default function App(){
     {viewMode==='recent'?groupByTime(visibleSessions,new Date()).map(group=><Fragment key={group.group}>
      <div className="group-head">{GROUP_LABELS[group.group]}</div>
      {group.sessions.map(s=>{const ws=workspaces.find(w=>w.id===s.workspaceId);return <button key={s.id} className={`session-row${sessionId===s.id?' active':''}${s.parentId?' child':''}`} title={s.parentId?'子代理会话':undefined} onClick={()=>openFromSidebar(s)} onContextMenu={event=>showSessionContextMenu(event,s)}><MessageSquare size={16}/><span className="session-lines"><span className="session-l1"><span className="session-title">{s.title}</span>{s.parentId&&<em className="subagent-badge">子任务</em>}{pendingAskIds.has(s.id)&&<em className="ask-badge">待答复</em>}<span className="session-time">{relativeLabel(s.updatedAt,new Date())}</span><span role="button" tabIndex={0} className="session-archive" aria-label="存档会话" title="存档会话" onClick={event=>{event.stopPropagation();archiveSession(s)}}><Archive size={13}/></span></span><span className="session-l2">{ws&&<span>{projectName(s.workspaceId)}</span>}{ws?.pinned&&<Pin size={10} aria-hidden="true"/>}{(running[s.id]||activeIds.has(s.id))&&<i className="live-dot" aria-label="运行中"/>}</span></span></button>})}
-    </Fragment>):groupByProject(visibleSessions,workspaces).map(({workspace:ws,sessions:list})=>{
+    </Fragment>):groupByProject(visibleSessions,workspaces,!query).map(({workspace:ws,sessions:list})=>{
      const open=!collapsed.includes(ws.id);
      return <div key={ws.id} className="ws-group">
       <div className="ws-head">
@@ -452,7 +452,7 @@ export default function App(){
       {open&&list.map(s=><button key={s.id} className={`session-row one${sessionId===s.id?' active':''}${s.parentId?' child':''}`} title={s.parentId?'子代理会话':undefined} onClick={()=>openFromSidebar(s)} onContextMenu={event=>showSessionContextMenu(event,s)}><MessageSquare size={16}/><span className="session-title">{s.title}</span>{s.parentId&&<em className="subagent-badge">子任务</em>}{pendingAskIds.has(s.id)&&<em className="ask-badge">待答复</em>}{(running[s.id]||activeIds.has(s.id))&&<i className="live-dot" aria-label="运行中"/>}<span className="session-time">{relativeLabel(s.updatedAt,new Date())}</span><span role="button" tabIndex={0} className="session-archive" aria-label="存档会话" title="存档会话" onClick={event=>{event.stopPropagation();archiveSession(s)}}><Archive size={13}/></span></button>)}
      </div>;
     })}
-    {!visibleSessions.length&&<p className="muted empty-small">{query?'无匹配会话。':workspaceId?'还没有会话，点击「新建聊天」开始':'打开工作区后，会话将保存在本机。'}</p>}
+    {(!visibleSessions.length&&!(viewMode==='project'&&!query&&workspaces.length))&&<p className="muted empty-small">{query?'无匹配会话。':workspaceId?'还没有会话，点击「新建聊天」开始':'打开工作区后，会话将保存在本机。'}</p>}
     {!visibleSessions.length&&!query&&!workspaceId&&<button className="empty-open" onClick={openWorkspace} disabled={busy||!desktop()}><FolderOpen size={14}/>打开工作区</button>}
    </nav>
    <div className="sidebar-bottom"><div className="local-badge"><i className="live-dot"/> 本地优先 · 无遥测</div><button onClick={()=>setPanel('plans')}><Target size={17}/>计划与目标</button><button onClick={()=>setPanel('automations')}><Timer size={17}/>自动化{automationCount!==null&&<span className="count">{automationCount}</span>}</button><button aria-label="设置" onClick={openSettings}><Settings size={17}/>设置</button></div>
