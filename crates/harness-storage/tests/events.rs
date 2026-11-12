@@ -2,6 +2,47 @@ use harness_storage::Store;
 use serde_json::json;
 
 #[tokio::test]
+async fn export_omits_request_snapshots_and_preserves_importable_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Store::open(&dir.path().join("events.db")).await.unwrap();
+    let session = db.create_session("work-a", "history").await.unwrap();
+    for (kind, data) in [
+        ("user.message", json!({"content":"before"})),
+        ("request.snapshot", json!({"messages":["secret snapshot"]})),
+        ("tool.call", json!({"id":"call", "name":"read"})),
+        ("tool.result", json!({"callId":"call", "content":"result"})),
+        ("request.snapshot", json!({"messages":["another snapshot"]})),
+        (
+            "compaction.summary",
+            json!({"content":"summary", "throughSeq":"5"}),
+        ),
+        ("assistant.message", json!({"content":"after"})),
+    ] {
+        db.append(&session.id, kind, data).await.unwrap();
+    }
+    let exported = db.export(&session.id).await.unwrap();
+    assert!(!exported.contains("secret snapshot"));
+    assert!(!exported.contains("another snapshot"));
+    let imported = db.import(&exported, "work-b").await.unwrap();
+    let events = db.events(&imported.id, 0).await.unwrap();
+    assert_eq!(
+        events.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(),
+        [
+            "user.message",
+            "tool.call",
+            "tool.result",
+            "compaction.summary",
+            "assistant.message"
+        ]
+    );
+    assert_eq!(events[0].data["content"], "before");
+    assert_eq!(events[2].data["content"], "result");
+    assert_eq!(events[3].data["throughSeq"], "3");
+    assert_eq!(events[4].data["content"], "after");
+    assert_eq!(db.events(&session.id, 0).await.unwrap().len(), 7);
+}
+
+#[tokio::test]
 async fn reopen_preserves_order_and_cursor() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("events.db");

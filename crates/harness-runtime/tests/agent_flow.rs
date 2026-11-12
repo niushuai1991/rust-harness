@@ -890,7 +890,10 @@ async fn edit_and_write_results_carry_unified_diff() {
     std::fs::create_dir(&source).unwrap();
     std::fs::write(source.join("a.txt"), "old line\n").unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source, None, harness_contracts::ExecutionMode::Replica).unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "diff")
@@ -966,7 +969,10 @@ async fn failed_edit_result_has_no_diff() {
     std::fs::create_dir(&source).unwrap();
     std::fs::write(source.join("a.txt"), "old line\n").unwrap();
     let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
-    let workspace = runtime.workspaces.create(&source, None, harness_contracts::ExecutionMode::Replica).unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
     let session = runtime
         .store
         .create_session(&workspace.id, "conflict")
