@@ -44,7 +44,7 @@
 | CLI chat（TTY） | `ask.request` 到达后渲染问题+编号选项（stderr），stdin 行读：序号选选项、其余文本为自由答复、空行重试、EOF 视为无人在场结算 |
 | CLI run | 非 TTY stdin 设 `Runtime::set_unattended(true)`：runtime 不经挂起直接落 request+resolved（source=unattended）；TTY run 交互同 chat |
 | JSON-RPC | `ask.list` / `ask.resolve`（仿 `approval.*`）；`ask.request` 经 `session.event` 通知推送 |
-| 桌面 | `question_list` / `question_resolve` 命令；前端 2 秒轮询（与审批同 effect），弹出「Agent 需要你的输入」Modal（选项单选或自由输入，「无法回答」按 unattended 提交）；等待提问时隐藏思考指示；时间线 `ask.request` 卡片按 id 配对 `ask.resolved` 显示答复/未答复 |
+| 桌面 | `question_list` / `question_resolve` 命令；前端 2 秒轮询（与审批同 effect），弹出「Agent 需要你的输入」Modal（选项单选或自由输入，「忽略」按 unattended 提交）；等待提问时隐藏思考指示；时间线 `ask.request` 卡片按 id 配对 `ask.resolved` 显示答复/未答复 |
 | ACP | v1 不做交互转发：`acp` 子命令构造实例即设 unattended，提问自动结算；`tool.call`/`tool.result` 经既有通用转发展示（标题「提问 …」）；elicitation 转发留待后续专项 |
 
 ## 不变量
