@@ -49,7 +49,11 @@ export function UsageRing({models,providers,modelId,sessionId}:{models:ModelConf
  const [budgetNotice,setBudgetNotice]=useState('');
  const [budgetBusy,setBudgetBusy]=useState(false);
  const timer=useRef<number|null>(null);
- const loadedAt=useRef(0),inflight=useRef(false),alive=useRef(true);
+ const loadedAt=useRef(0),alive=useRef(true);
+ // 在途请求序号：新请求发起即作废旧请求，避免切换供应商后旧响应晚到覆盖新数据。
+ const requestSeq=useRef(0);
+ // 上次拉取所属供应商；变化即失效旧快照、错误与 60s 缓存时间戳。
+ const lastProviderId=useRef<string|null>(null);
  useEffect(()=>{alive.current=true;return()=>{alive.current=false}},[]);
  useEffect(()=>{
   void command<number>('token_budget_limit_get').then(limit=>{
@@ -69,26 +73,30 @@ export function UsageRing({models,providers,modelId,sessionId}:{models:ModelConf
  }
 
  async function loadUsage(force=false){
-  if(!usageSupported||inflight.current)return;
+  if(!usageSupported||!provider)return;
   if(!force&&loadedAt.current&&Date.now()-loadedAt.current<60_000)return;
-  inflight.current=true;
+  const token=++requestSeq.current;
   setUsageBusy(true);setUsageError('');
   try{
-   const snapshot=await command<ProviderUsageSnapshot>('provider_usage',{providerId:provider!.id});
-   if(!alive.current)return;
+   const snapshot=await command<ProviderUsageSnapshot>('provider_usage',{providerId:provider.id});
+   if(!alive.current||token!==requestSeq.current)return;
    setUsage(snapshot);loadedAt.current=Date.now();
   }catch(error){
-   if(!alive.current)return;
+   if(!alive.current||token!==requestSeq.current)return;
    setUsage(null);setUsageError(errorText(error));
   }finally{
-   inflight.current=false;
-   if(alive.current)setUsageBusy(false);
+   if(alive.current&&token===requestSeq.current)setUsageBusy(false);
   }
  }
  useEffect(()=>{
+  if(lastProviderId.current!==provider?.id){
+   lastProviderId.current=provider?.id??null;
+   // 切换供应商：上一家的套餐快照立即作废，避免展示上一个供应商的套餐与额度。
+   setUsage(null);setUsageError('');loadedAt.current=0;
+  }
   if(open&&usageSupported)void loadUsage();
   // eslint-disable-next-line react-hooks/exhaustive-deps -- 面板展开时按需拉取；loadUsage 闭包读取最新 props。
- },[open,usageSupported]);
+ },[open,usageSupported,provider?.id]);
  useEffect(()=>{
   function onDocumentClick(event:MouseEvent){
    if(!wrapRef.current?.contains(event.target as Node))setOpen(false);
