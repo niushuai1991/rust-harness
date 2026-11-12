@@ -1,25 +1,29 @@
 import {useEffect,useRef,useState,type ReactNode} from 'react';
-import {ArrowRight,Bookmark,Check,ChevronRight,Cpu,KeyRound,Layers,Plug,Settings,ShieldCheck,Sparkles,Terminal,X,type LucideIcon} from 'lucide-react';
+import {ArrowRight,Archive,Bookmark,Check,ChevronRight,Cpu,Folder,KeyRound,Layers,Plug,Settings,ShieldCheck,Sparkles,Terminal,Undo2,X,type LucideIcon} from 'lucide-react';
+import {relativeLabel} from './sessionList';
+import type {SessionInfo} from './types';
 
 export type SettingsPanelId='presets'|'skills'|'plugins'|'models';
-type SettingsSectionId='overview'|SettingsPanelId;
+type SettingsSectionId='overview'|SettingsPanelId|'archive';
 
-type SettingsItem={id:SettingsPanelId;title:string;description:string;summary:string;group:string;icon:LucideIcon};
+type SettingsItem={id:SettingsPanelId|'archive';title:string;description:string;summary:string;group:string;icon:LucideIcon;legacyPanel?:SettingsPanelId};
 const ITEMS:SettingsItem[]=[
- {id:'presets',title:'能力预设',description:'组合模型、推理档位与审批策略，快速切换常用工作方式。',summary:'3 个示例预设',group:'工作方式',icon:Bookmark},
- {id:'skills',title:'技能',description:'管理项目与用户技能，让助手按需加载专用工作指引。',summary:'2 个示例技能',group:'工作方式',icon:Sparkles},
- {id:'plugins',title:'插件与权限',description:'查看扩展、连接与权限策略，了解每项能力的授权范围。',summary:'扩展与安全策略',group:'扩展与安全',icon:Plug},
- {id:'models',title:'模型设置',description:'管理模型供应商、API 连接与可用模型。',summary:'2 家供应商 · 4 个示例模型',group:'扩展与安全',icon:Cpu},
+ {id:'presets',title:'能力预设',description:'组合模型、推理档位与审批策略，快速切换常用工作方式。',summary:'3 个示例预设',group:'工作方式',icon:Bookmark,legacyPanel:'presets'},
+ {id:'skills',title:'技能',description:'管理项目与用户技能，让助手按需加载专用工作指引。',summary:'2 个示例技能',group:'工作方式',icon:Sparkles,legacyPanel:'skills'},
+ {id:'archive',title:'存档管理',description:'集中查看各项目的已归档会话，随时恢复到任务列表。',summary:'按项目分组 · 可恢复',group:'会话',icon:Archive},
+ {id:'plugins',title:'插件与权限',description:'查看扩展、连接与权限策略，了解每项能力的授权范围。',summary:'扩展与安全策略',group:'扩展与安全',icon:Plug,legacyPanel:'plugins'},
+ {id:'models',title:'模型设置',description:'管理模型供应商、API 连接与可用模型。',summary:'2 家供应商 · 4 个示例模型',group:'扩展与安全',icon:Cpu,legacyPanel:'models'},
 ];
-const GROUPS=['工作方式','扩展与安全'];
-const INTRO:Record<SettingsPanelId,string>={
+const GROUPS=['工作方式','会话','扩展与安全'];
+const INTRO:Record<SettingsPanelId|'archive',string>={
  presets:'把常用模型、推理档位和审批方式保存为一组配置，之后可以在发送框快速切换。',
  skills:'查看当前工作区和用户目录中的技能，并管理它们是否参与助手的技能目录。',
  plugins:'集中查看本地插件、MCP 连接及其声明与授权的权限范围。',
  models:'管理模型供应商、凭据和模型目录；API 密钥只保存在系统凭据管理器中。',
+ archive:'归档后的会话不会出现在任务列表里，但仍保留在本机；在这里按项目查看并恢复。',
 };
 
-export function SettingsPage({onClose,onOpenPanel}:{onClose:()=>void;onOpenPanel:(panel:SettingsPanelId)=>void}){
+export function SettingsPage({onClose,onOpenPanel,archivedSessions,projectName,onRestore}:{onClose:()=>void;onOpenPanel:(panel:SettingsPanelId)=>void;archivedSessions:SessionInfo[];projectName:(id:string)=>string;onRestore:(id:string)=>void}){
  const [active,setActive]=useState<SettingsSectionId>('overview');
  const dialogRef=useRef<HTMLDivElement>(null),closeRef=useRef(onClose);
  closeRef.current=onClose;
@@ -56,13 +60,13 @@ export function SettingsPage({onClose,onOpenPanel}:{onClose:()=>void;onOpenPanel
   <section className="settings-main" aria-label="设置内容">
    <header className="settings-topbar"><div className="settings-breadcrumb"><span>设置</span>{selected&&<><ChevronRight size={14}/><strong>{selected.title}</strong></>}</div><div className="settings-top-actions"><span className="settings-preview-badge"><Sparkles size={13}/>布局预览</span><button type="button" className="settings-close" aria-label="关闭设置，返回工作台" title="关闭设置" onClick={onClose}><X size={18}/></button></div></header>
    <div className="settings-scroll">
-    {selected?<SettingsCategory item={selected} onOpenPanel={openPanel}/>:<SettingsOverview onSelect={setActive}/>}
+    {selected?<SettingsCategory item={selected} onOpenPanel={openPanel} archivedSessions={archivedSessions} projectName={projectName} onRestore={onRestore}/>:<SettingsOverview onSelect={setActive}/>}
    </div>
   </section>
  </div>;
 }
 
-function SettingsOverview({onSelect}:{onSelect:(section:SettingsPanelId)=>void}){
+function SettingsOverview({onSelect}:{onSelect:(section:SettingsPanelId|'archive')=>void}){
  return <div className="settings-content">
   <div className="settings-eyebrow">PREFERENCES</div>
   <h1>设置</h1>
@@ -77,17 +81,18 @@ function SettingsOverview({onSelect}:{onSelect:(section:SettingsPanelId)=>void})
  </div>;
 }
 
-function SettingsCategory({item,onOpenPanel}:{item:SettingsItem;onOpenPanel:(panel:SettingsPanelId)=>void}){
+function SettingsCategory({item,onOpenPanel,archivedSessions,projectName,onRestore}:{item:SettingsItem;onOpenPanel:(panel:SettingsPanelId)=>void;archivedSessions:SessionInfo[];projectName:(id:string)=>string;onRestore:(id:string)=>void}){
  const Icon=item.icon;
  return <div className="settings-content settings-category-content">
   <div className="settings-eyebrow">{item.group.toUpperCase()}</div>
   <div className="settings-category-heading"><div><h1>{item.title}</h1><p className="settings-lead">{INTRO[item.id]}</p></div><span className="settings-category-icon"><Icon size={21}/></span></div>
-  <div className="settings-preview-notice"><Sparkles size={15}/><span>页面布局预览 · 下方为示例内容，不会修改真实设置</span></div>
+  {item.id!=='archive'&&<div className="settings-preview-notice"><Sparkles size={15}/><span>页面布局预览 · 下方为示例内容，不会修改真实设置</span></div>}
   {item.id==='presets'&&<PresetPreview/>}
   {item.id==='skills'&&<SkillsPreview/>}
+  {item.id==='archive'&&<ArchivePreview archived={archivedSessions} projectName={projectName} onRestore={onRestore}/>}
   {item.id==='plugins'&&<PluginsPreview/>}
   {item.id==='models'&&<ModelsPreview/>}
-  <div className="settings-existing-action"><div><strong>继续使用当前管理功能</strong><p>此版先展示设置页的导航与布局；原有配置面板暂时保持不变。</p></div><button type="button" className="settings-manage-button" onClick={()=>onOpenPanel(item.id)}>打开现有面板<ArrowRight size={15}/></button></div>
+  {item.legacyPanel&&<div className="settings-existing-action"><div><strong>继续使用当前管理功能</strong><p>此版先展示设置页的导航与布局；原有配置面板暂时保持不变。</p></div><button type="button" className="settings-manage-button" onClick={()=>onOpenPanel(item.legacyPanel!)}>打开现有面板<ArrowRight size={15}/></button></div>}
  </div>;
 }
 
@@ -118,6 +123,28 @@ function ModelsPreview(){
   <div className="settings-key-note"><KeyRound size={15}/><span>API 密钥由系统凭据管理器保管，模型列表不会读取或显示密钥。</span></div>
  </div>;
 }
+
+
+function ArchivePreview({archived,projectName,onRestore}:{archived:SessionInfo[];projectName:(id:string)=>string;onRestore:(id:string)=>void}){
+ // 按项目分组：组内按最后更新倒序，组间按组内最新会话倒序。
+ const byWorkspace=new Map<string,SessionInfo[]>();
+ for(const item of [...archived].sort((a,b)=>Date.parse(b.updatedAt)-Date.parse(a.updatedAt))){
+  const list=byWorkspace.get(item.workspaceId);
+  if(list)list.push(item);else byWorkspace.set(item.workspaceId,[item]);
+ }
+ if(!archived.length)return <p className="muted settings-archive-empty">还没有归档的会话。在侧栏对会话执行「存档」后，会话会按项目显示在这里。</p>;
+ return <>
+  {[...byWorkspace.entries()].map(([workspaceId,list])=><section key={workspaceId} aria-label={`已归档会话：${projectName(workspaceId)||workspaceId}`}>
+   <div className="archive-group-title"><Folder size={13} aria-hidden="true"/><span>{projectName(workspaceId)||workspaceId}</span><small>{list.length}</small></div>
+   <div className="settings-example-list">{list.map(item=><article key={item.id} className="settings-example-item">
+    <span className="settings-example-icon"><Archive size={16}/></span>
+    <span className="settings-example-copy"><strong>{item.title}</strong><small>归档于 {relativeLabel(item.archivedAt??item.updatedAt,new Date())}</small></span>
+    <button type="button" className="settings-manage-button" onClick={()=>onRestore(item.id)}><Undo2 size={13}/>恢复</button>
+   </article>)}</div>
+  </section>)}
+ </>;
+}
+
 function PreviewItem({icon,title,description,badge,selected=false}:{icon:ReactNode;title:string;description:string;badge:string;selected?:boolean}){
  return <article className={`settings-example-item${selected?' selected':''}`}><span className="settings-example-icon">{icon}</span><span className="settings-example-copy"><strong>{title}</strong><small>{description}</small></span><span className="settings-example-badge">{badge}</span></article>;
 }

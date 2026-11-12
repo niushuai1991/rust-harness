@@ -140,7 +140,7 @@ impl Runtime {
         let (events, _) = broadcast::channel(4096);
         let mut children: HashMap<String, Vec<String>> = HashMap::new();
         let mut parents: HashMap<String, String> = HashMap::new();
-        for session in store.sessions(None).await? {
+        for session in store.sessions(None, None).await? {
             for event in store.events(&session.id, 0).await? {
                 if event.kind == "subagent.created"
                     && event.data["historyOnly"] != true
@@ -245,8 +245,13 @@ impl Runtime {
         self.parents.lock().unwrap().get(session).cloned()
     }
     /// 会话列表并附加父子关系；`workspace` 过滤工作区。
-    pub async fn list_sessions(&self, workspace: Option<&str>) -> AppResult<Vec<SessionInfo>> {
-        let mut sessions = self.store.sessions(workspace).await?;
+    /// 会话列表并附加父子关系；`workspace` 过滤工作区，`archived` 过滤归档状态（None=仅活跃）。
+    pub async fn list_sessions(
+        &self,
+        workspace: Option<&str>,
+        archived: Option<bool>,
+    ) -> AppResult<Vec<SessionInfo>> {
+        let mut sessions = self.store.sessions(workspace, archived).await?;
         let parents = self.parents.lock().unwrap();
         for session in &mut sessions {
             if let Some(parent) = parents.get(&session.id) {

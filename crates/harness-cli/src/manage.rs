@@ -169,7 +169,7 @@ pub async fn logout(runtime: Arc<Runtime>) -> AppResult<()> {
 pub async fn sessions(runtime: Arc<Runtime>, args: SessionsArgs) -> AppResult<()> {
     match args.cmd.unwrap_or(SessionsCmd::List) {
         SessionsCmd::List => {
-            for session in runtime.store.sessions(None).await? {
+            for session in runtime.store.sessions(None, None).await? {
                 println!(
                     "{}\t{}\t{}\t{}",
                     session.id, session.workspace_id, session.title, session.created_at

@@ -214,7 +214,11 @@ async fn agent_spawn_with_unknown_model_is_rejected_without_creating_child() {
             .unwrap()
             .contains("MODEL_NOT_FOUND")
     );
-    let sessions = runtime.store.sessions(Some(&workspace_id)).await.unwrap();
+    let sessions = runtime
+        .store
+        .sessions(Some(&workspace_id), None)
+        .await
+        .unwrap();
     assert_eq!(sessions.len(), 1, "无效 modelId 不得创建子会话");
     assert!(runtime.children_of(&session).is_empty());
 }
@@ -322,7 +326,7 @@ async fn parent_link_survives_restart_and_decorates_session_list() {
         "重启后父子关系应从事件重建"
     );
     assert!(reopened.children_of(&session).contains(&child));
-    let listed = reopened.list_sessions(None).await.unwrap();
+    let listed = reopened.list_sessions(None, None).await.unwrap();
     let child_row = listed.iter().find(|s| s.id == child).unwrap();
     assert_eq!(child_row.parent_id.as_deref(), Some(session.as_str()));
     let parent_row = listed.iter().find(|s| s.id == session).unwrap();

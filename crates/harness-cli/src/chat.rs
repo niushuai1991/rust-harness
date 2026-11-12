@@ -308,7 +308,7 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<()> {
                 }
             }
             ChatCommand::Resume(None) => {
-                let sessions = runtime.list_sessions(Some(&workspace_id)).await?;
+                let sessions = runtime.list_sessions(Some(&workspace_id), None).await?;
                 let listed: Vec<_> = sessions
                     .iter()
                     .filter(|info| info.parent_id.is_none())
@@ -329,7 +329,7 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<()> {
                 }
             }
             ChatCommand::Resume(Some(id)) => {
-                let sessions = runtime.list_sessions(Some(&workspace_id)).await?;
+                let sessions = runtime.list_sessions(Some(&workspace_id), None).await?;
                 match sessions.iter().find(|info| info.id == id) {
                     Some(info) => {
                         session_id = info.id.clone();

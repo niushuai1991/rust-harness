@@ -385,14 +385,14 @@ pub fn install_with(runtime: Arc<Runtime>, world: Arc<dyn PtyWorld>) -> AppResul
             }
             if let Err(e) = ticker.tick(first).await
                 && let Some(r) = ticker.runtime.upgrade()
-                && let Ok(sessions) = r.store.sessions(None).await
+                && let Ok(sessions) = r.store.sessions(None, None).await
                 && let Some(s) = sessions.first()
             {
                 let _ = r.append(&s.id, "schedule.error", json!({"error":e})).await;
             }
             if let Err(e) = ticker.tick_automations(first).await
                 && let Some(r) = ticker.runtime.upgrade()
-                && let Ok(sessions) = r.store.sessions(None).await
+                && let Ok(sessions) = r.store.sessions(None, None).await
                 && let Some(s) = sessions.first()
             {
                 let _ = r
@@ -1105,7 +1105,7 @@ impl State {
         let Some(r) = self.runtime.upgrade() else {
             return Ok(());
         };
-        for s in r.store.sessions(None).await? {
+        for s in r.store.sessions(None, None).await? {
             let mut open = HashMap::new();
             for e in r.store.events(&s.id, 0).await? {
                 if let Some(id) = e.data["id"].as_str() {
@@ -1139,7 +1139,7 @@ impl State {
         let Some(r) = self.runtime.upgrade() else {
             return Ok(());
         };
-        for s in r.store.sessions(None).await? {
+        for s in r.store.sessions(None, None).await? {
             let mut open = HashMap::new();
             for e in r.store.events(&s.id, 0).await? {
                 if let Some(id) = e.data["id"].as_str() {

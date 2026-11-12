@@ -104,7 +104,7 @@ async fn migrates_v2_sessions_preserving_titles_and_marks_only_empty_placeholder
         .fetch_one(&check)
         .await
         .unwrap();
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
     let states: Vec<(String, String, String)> =
         sqlx::query_as("SELECT id,title,title_state FROM sessions ORDER BY id")
             .fetch_all(&check)
@@ -119,6 +119,6 @@ async fn migrates_v2_sessions_preserving_titles_and_marks_only_empty_placeholder
         ]
     );
     assert_eq!(db.session("empty").await.unwrap().title, "新会话");
-    assert_eq!(db.sessions(None).await.unwrap().len(), 3);
+    assert_eq!(db.sessions(None, None).await.unwrap().len(), 3);
     check.close().await;
 }

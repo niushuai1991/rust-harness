@@ -66,7 +66,11 @@ pub async fn dispatch(runtime: Arc<Runtime>, method: &str, p: Value) -> AppResul
             )
         }
         "session.list" => {
-            json!(runtime.list_sessions(p["workspaceId"].as_str()).await?)
+            json!(
+                runtime
+                    .list_sessions(p["workspaceId"].as_str(), None)
+                    .await?
+            )
         }
         "session.active" => json!(runtime.active_ids()),
         "session.create" => {

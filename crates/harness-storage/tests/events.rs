@@ -123,7 +123,7 @@ async fn import_failure_rolls_back_the_entire_new_session() {
         "{\"id\":\"e2\",\"sessionId\":\"old\",\"seq\":\"2\",\"kind\":\"broken\",\"data\":{},\"createdAt\":\"date\"}\n"
     );
     assert!(db.import(input, "workspace").await.is_err());
-    assert!(db.sessions(None).await.unwrap().is_empty());
+    assert!(db.sessions(None, None).await.unwrap().is_empty());
 }
 
 #[tokio::test]

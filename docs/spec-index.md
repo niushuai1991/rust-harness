@@ -25,7 +25,7 @@
 | [右侧面板（文件预览、改动审阅与网页浏览）](specs/side-panel.md) | 2026-11-07（计划拟制）；2026-11-12 修订 | 桌面右侧面板承载更改审阅、工作副本文件预览和会话链接网页浏览。 |
 | [自动化任务（周期调度）](specs/automation.md) | 2026-11-07（计划拟制） | 桌面端用户可管理的周期自动化任务：单次/每天/每周/每月/每年五类周期（24 小时制、单次含秒）、可选绑定会话或自动新建会话投递回合；缺日跳过、错过不补跑；独立管理面板（列表/启停/编辑/删除/立即执行/运行历史）；参考 zcode 自动化取舍。 |
 | [Skills（技能）支持](specs/skills.md) | 2026-11-07（计划批准） | 技能目录（项目级 `.agents/skills/` + 用户级 `~/.agents/skills/` + 兜底扫描）、frontmatter 解析、catalog 注入系统提示、`$name` 显式提及全文注入、禁用名单落库；CLI 管理子命令/`/skills`/`$` 补全与桌面面板/composer 补全；参考 codex skills 体系。 |
-| [会话列表「最近 / 项目」视图](specs/session-list.md) | 2026-11-08（计划拟制）；2026-11-09 修订 | 桌面侧栏任务列表按最近（时间分组跨工作区）/ 按项目（分组折叠）两种视图、项目置顶（`workspace_set_pinned`）、标题搜索与跨工作区跳转、「新建聊天」草稿态、首问自动生成标题、右键重命名；参考 zcode 会话历史取舍。 |
+| [会话列表「最近 / 项目」视图](specs/session-list.md) | 2026-11-08（计划拟制）；2026-11-09 / 2026-11-12 修订 | 桌面侧栏任务列表按最近（时间分组跨工作区）/ 按项目（分组折叠）两种视图、项目置顶（`workspace_set_pinned`）、标题搜索与跨工作区跳转、「新建聊天」草稿态、首问自动生成标题、右键重命名、会话存档（`session_archive`/`session_restore`，schema v4）与设置页存档管理；参考 zcode 会话历史取舍。 |
 | [会话用量环形指示器与上下文窗口](specs/context-usage-indicator.md) | 2026-11-08（计划批准） | 会话输入区用量环形（本体显示当前上下文占用）+ 双段悬停明细卡（上下文窗口/套餐额度）；模型目录 `context_window` 元数据；ChatGPT `/wham/usage` 订阅用量接入；参考 zcode/codex 用量设计。 |
 | [每回合 Token 预算](specs/token-usage-budget.md) | 2026-11-09（计划批准） | 每条用户消息独立累计输出与未缓存输入 token，父子代理共享额度，默认 1M 且可调；UsageRing 进度展示与设置。 |
 | [权限模式（五档审批策略）](specs/permission-modes.md) | 2026-11-09（计划批准） | 五档权限模式统一定义（ask/edit/auto/never/guarded）与四端接入：CLI `--approval`、预设 approval 字段、ACP modes、桌面发送框权限模式选择器（KV 默认档）；guarded 档危险 shell 命令识别规则；参考 codex approval presets 与 zcode permissionMode。 |
@@ -53,7 +53,7 @@
 - 右侧面板规范为桌面可视化专项规范，unified diff 渲染语义与 CLI diff 契约共享自 harness-platform；文件预览与审阅均为只读展示，会话链接可在独立网页视图中打开，文件写入仍走既有 `workspace_apply` 审阅快照校验，agent 写文件不自动弹面板。
 - 自动化任务规范与 P2 后台任务规范同属 orchestration 调度域：复用 `run_owned` 回合通道、250ms ticker 与 `schedules_lock`，KV 键独立（`orchestration.automations.v1`）；面向用户桌面管理而非模型工具，错过不补跑语义与既有单次调度基线一致。
 - Skills 支持规范闭环配置预设规范列为「另行立项」的 skills 启停项，并落地斜杠快捷指令规范当时列为非目标的 codex `$` skill 体系；catalog 注入不改变 `context.snapshot` 事件结构，技能读取走现有免审批 `read` 工具，不新增模型工具。
-- 会话列表视图规范为桌面可视化专项规范：置顶集合与视图偏好属桌面用户偏好，不进入 CLI / JSON-RPC 契约；`session_list` 的 `all_workspaces` 仅扩展桌面查询参数，缺省过滤语义不变。
+- 会话列表视图规范为桌面可视化专项规范：置顶集合与视图偏好属桌面用户偏好，不进入 CLI / JSON-RPC 契约；`session_list` 的 `all_workspaces` 与 `archived` 仅扩展桌面查询参数，缺省过滤语义不变。会话存档为 SQLite `sessions` 表状态列（schema v4）加 `archivedAt` 可选契约字段，事件流不感知存档；CLI / JSON-RPC / ACP 不暴露存档命令。
 - 会话用量环形指示器规范依附模型设置规范的两级目录（窗口值来自模型条目）与智谱额度规范的快照语义；上下文占用为前端派生值（事件流最近 usage），不落库不进契约；ChatGPT 用量复用智谱额度规范的 `fetch_usage` 分发与 `ProviderUsageSnapshot` 结构。
 - 每回合 Token 预算规范依附会话用量环形界面，但使用独立的共享 Runtime 累计状态和 `token.budget` 事件；不改变上下文窗口统计与压缩语义。
 - 权限模式规范统一 CLI/ACP/预设/桌面四端的审批档位（决策矩阵唯一实现在 harness-contracts），修订 CLI 规范的三档审批策略表与配置预设规范的「桌面端审批策略接管」非目标；所有档位不改变副本+apply 边界、Windows 沙箱与免审批只读白名单，桌面权限模式与预设 approval 互相独立。
