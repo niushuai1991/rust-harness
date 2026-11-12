@@ -214,11 +214,7 @@ async fn agent_spawn_with_unknown_model_is_rejected_without_creating_child() {
             .unwrap()
             .contains("MODEL_NOT_FOUND")
     );
-    let sessions = runtime
-        .store
-        .sessions(Some(&workspace_id), None)
-        .await
-        .unwrap();
+    let sessions = runtime.store.sessions(Some(&workspace_id)).await.unwrap();
     assert_eq!(sessions.len(), 1, "无效 modelId 不得创建子会话");
     assert!(runtime.children_of(&session).is_empty());
 }

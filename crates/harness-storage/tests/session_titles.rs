@@ -119,6 +119,6 @@ async fn migrates_v2_sessions_preserving_titles_and_marks_only_empty_placeholder
         ]
     );
     assert_eq!(db.session("empty").await.unwrap().title, "新会话");
-    assert_eq!(db.sessions(None, None).await.unwrap().len(), 3);
+    assert_eq!(db.sessions(None).await.unwrap().len(), 3);
     check.close().await;
 }

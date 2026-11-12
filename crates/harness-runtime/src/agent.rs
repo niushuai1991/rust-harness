@@ -140,7 +140,7 @@ impl Runtime {
         let (events, _) = broadcast::channel(4096);
         let mut children: HashMap<String, Vec<String>> = HashMap::new();
         let mut parents: HashMap<String, String> = HashMap::new();
-        for session in store.sessions(None, None).await? {
+        for session in store.sessions(None).await? {
             for event in store.events(&session.id, 0).await? {
                 if event.kind == "subagent.created"
                     && event.data["historyOnly"] != true
@@ -251,7 +251,7 @@ impl Runtime {
         workspace: Option<&str>,
         archived: Option<bool>,
     ) -> AppResult<Vec<SessionInfo>> {
-        let mut sessions = self.store.sessions(workspace, archived).await?;
+        let mut sessions = self.store.sessions_filtered(workspace, archived).await?;
         let parents = self.parents.lock().unwrap();
         for session in &mut sessions {
             if let Some(parent) = parents.get(&session.id) {

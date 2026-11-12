@@ -303,8 +303,12 @@ impl Store {
         }
         self.session(id).await
     }
-    /// 会话列表：`workspace` 过滤工作区；`archived` 过滤归档状态（None=仅活跃，Some(true)=仅归档，Some(false)=全部）。
-    pub async fn sessions(
+    /// 全量会话列表（含归档）：保持既有查询语义不变，恢复/检索回退与子代理推导共用。
+    pub async fn sessions(&self, workspace: Option<&str>) -> AppResult<Vec<SessionInfo>> {
+        self.sessions_filtered(workspace, Some(false)).await
+    }
+    /// 按归档状态过滤的会话列表：`workspace` 过滤工作区；`archived` 为 None=仅活跃，Some(true)=仅归档，Some(false)=全部。
+    pub async fn sessions_filtered(
         &self,
         workspace: Option<&str>,
         archived: Option<bool>,
@@ -423,7 +427,7 @@ impl Store {
     /// Called before accepting work. Recovery records uncertainty, never invokes a tool.
     pub async fn recover(&self) -> AppResult<usize> {
         let mut recovered = 0;
-        for s in self.sessions(None, None).await? {
+        for s in self.sessions(None).await? {
             let events = self.events(&s.id, 0).await?;
             let last_start = events.iter().rposition(|e| e.kind == "turn.start");
             let last_end = events.iter().rposition(|e| e.kind == "turn.end");
@@ -501,7 +505,7 @@ impl Store {
     }
     pub async fn search(&self, query: &str) -> AppResult<Vec<SessionInfo>> {
         if query.trim().is_empty() {
-            return self.sessions(None, None).await;
+            return self.sessions(None).await;
         }
         let literal = format!("\"{}\"", query.replace('"', "\"\""));
         let rows = sqlx::query("SELECT DISTINCT s.* FROM sessions s JOIN message_search m ON s.id=m.session_id WHERE message_search MATCH ? ORDER BY s.updated_at DESC LIMIT 100")

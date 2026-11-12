@@ -43,7 +43,7 @@
 - **入口**：「最近 / 项目」两种视图的会话行右侧提供 hover 浮现的存档图标按钮，右键菜单在「重命名」下新增「存档」项，顶栏「存档」按钮作用于当前会话；三处入口共用同一存档行为。存档中的会话仍在执行时同样可存档（存档只改变列表可见性，不中断运行回合）。
 - **存储**：SQLite `sessions` 表新增 `archived`（INTEGER，默认 0）与 `archived_at`（TEXT）列；schema v4 从 v3 迁移，既有会话默认未归档。`Store::archive_session` 记录归档时刻且不改变 `updated_at`，重复归档幂等；`Store::restore_session` 回到列表并清空归档时刻，不存在或未归档报 `NOT_FOUND`。事件与附件不随存档变化。
 - **公开契约**：`SessionInfo` 追加 `archived_at: Option<String>`（serde default，camelCase `archivedAt`）；未归档为 null。
-- **列表过滤**：`Store::sessions` 与 `Runtime::list_sessions` 增加 `archived` 参数——缺省（None）仅返回活跃会话（CLI / JSON-RPC 既有语义不变），`true` 仅归档，`false` 返回全部。桌面 `session_list` 新增可选参数 `archived` 透传该语义；崩溃恢复（recover）、全文检索回退与子代理关系推导遍历全部会话（含归档）。
+- **列表过滤**：`Store::sessions` 保持既有签名与全量语义（含归档，恢复、检索回退与子代理关系推导共用）；新增 `Store::sessions_filtered` 携带 `archived` 参数——缺省（None）仅返回活跃会话（CLI / JSON-RPC 既有语义不变），`true` 仅归档，`false` 返回全部。`Runtime::list_sessions` 同参透传；桌面 `session_list` 新增可选参数 `archived`。
 - **桌面命令**：新增 `session_archive { sessionId }` 与 `session_restore { sessionId }`，成功返回更新后的 `SessionInfo`（附父子关系）。CLI / JSON-RPC / ACP 不暴露存档命令。
 - **前端行为**：存档成功后从任务列表（`allSessions` / 当前工作区列表）移除并进入归档集合；被存档的是当前会话时自动切换到同项目下一个会话。恢复成功后按 `updated_at` 排序插回列表。操作失败显示错误并保持原状态。
 - **设置页存档管理**：全屏设置页新增「会话」分组与「存档管理」分类；面板按项目分组展示归档会话（组头为项目名与数量，组内按最后更新倒序，条目显示归档时间相对标签），每项提供「恢复」按钮；打开设置页时刷新归档列表，无归档数据时显示空态文案。该分类不提供「打开现有面板」入口（新面板即最终界面）。

@@ -19,16 +19,19 @@ async fn archive_hides_session_from_default_list_and_records_archived_at() {
         "归档不改变 updated_at"
     );
 
-    let active = db.sessions(None, None).await.unwrap();
+    let active = db.sessions_filtered(None, None).await.unwrap();
     assert_eq!(
         active.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
         vec![keep.id.as_str()]
     );
-    let archived_list = db.sessions(None, Some(true)).await.unwrap();
+    let archived_list = db.sessions_filtered(None, Some(true)).await.unwrap();
     assert_eq!(archived_list.len(), 1);
     assert_eq!(archived_list[0].id, gone.id);
     // 显式请求 Some(false) 表示不过滤（返回全部，含活跃与归档）。
-    assert_eq!(db.sessions(None, Some(false)).await.unwrap().len(), 2);
+    assert_eq!(
+        db.sessions_filtered(None, Some(false)).await.unwrap().len(),
+        2
+    );
     // 存档不是删除：会话条目本身仍可读。
     assert_eq!(db.session(&gone.id).await.unwrap().id, gone.id);
 }
@@ -43,8 +46,13 @@ async fn restore_returns_session_to_default_list_and_clears_archived_at() {
 
     let restored = db.restore_session(&session.id).await.unwrap();
     assert_eq!(restored.archived_at, None);
-    assert_eq!(db.sessions(None, None).await.unwrap().len(), 1);
-    assert!(db.sessions(None, Some(true)).await.unwrap().is_empty());
+    assert_eq!(db.sessions_filtered(None, None).await.unwrap().len(), 1);
+    assert!(
+        db.sessions_filtered(None, Some(true))
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// 归档状态跨重启保留。
@@ -59,8 +67,8 @@ async fn archive_state_survives_reopen() {
         session.id
     };
     let db = Store::open(&path).await.unwrap();
-    assert!(db.sessions(None, None).await.unwrap().is_empty());
-    let archived = db.sessions(None, Some(true)).await.unwrap();
+    assert!(db.sessions_filtered(None, None).await.unwrap().is_empty());
+    let archived = db.sessions_filtered(None, Some(true)).await.unwrap();
     assert_eq!(archived.len(), 1);
     assert_eq!(archived[0].id, id);
     assert!(!archived[0].archived_at.as_deref().unwrap_or("").is_empty());
@@ -90,7 +98,10 @@ async fn archive_is_idempotent() {
     db.archive_session(&session.id).await.unwrap();
     let again = db.archive_session(&session.id).await.unwrap();
     assert!(!again.archived_at.as_deref().unwrap_or("").is_empty());
-    assert_eq!(db.sessions(None, Some(true)).await.unwrap().len(), 1);
+    assert_eq!(
+        db.sessions_filtered(None, Some(true)).await.unwrap().len(),
+        1
+    );
 }
 
 /// v3 → v4：为 sessions 表补 archived/archived_at 列，既有会话默认未归档。
@@ -134,11 +145,16 @@ async fn migrates_v3_sessions_with_archive_columns() {
     pool.close().await;
 
     let db = Store::open(&path).await.unwrap();
-    let active = db.sessions(None, None).await.unwrap();
+    let active = db.sessions_filtered(None, None).await.unwrap();
     assert_eq!(active.len(), 1);
     assert_eq!(active[0].id, "s1");
     assert_eq!(active[0].archived_at, None, "旧会话默认未归档");
-    assert!(db.sessions(None, Some(true)).await.unwrap().is_empty());
+    assert!(
+        db.sessions_filtered(None, Some(true))
+            .await
+            .unwrap()
+            .is_empty()
+    );
 
     let check = SqlitePoolOptions::new()
         .connect_with(
