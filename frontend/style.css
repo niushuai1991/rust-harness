@@ -340,4 +340,6 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .ask-option:hover{background:var(--surface)}
 .ask-option input{accent-color:var(--accent);margin:0}
 .ask-options{margin:8px 0;padding-left:18px;font-size:11px}
-.ask-card textarea{width:100%;min-height:64px;resize:vertical;border:1px solid var(--border);border-radius:7px;background:var(--panel);color:var(--text);padding:9px 11px;font-size:12px;margin-top:8px}
+.ask-textarea{display:block;width:calc(100% - 26px);min-height:66px;resize:vertical;border:1px solid var(--border);border-radius:8px;background:var(--panel);color:var(--text);padding:9px 12px;font-size:12.5px;line-height:1.7;margin:6px 0 4px 26px;transition:border-color .15s}
+.ask-textarea:focus{outline:none;border-color:var(--accent)}
+.ask-textarea::placeholder{color:var(--muted)}
