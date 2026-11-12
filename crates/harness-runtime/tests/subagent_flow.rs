@@ -322,7 +322,7 @@ async fn parent_link_survives_restart_and_decorates_session_list() {
         "重启后父子关系应从事件重建"
     );
     assert!(reopened.children_of(&session).contains(&child));
-    let listed = reopened.list_sessions(None).await.unwrap();
+    let listed = reopened.list_sessions(None, None).await.unwrap();
     let child_row = listed.iter().find(|s| s.id == child).unwrap();
     assert_eq!(child_row.parent_id.as_deref(), Some(session.as_str()));
     let parent_row = listed.iter().find(|s| s.id == session).unwrap();

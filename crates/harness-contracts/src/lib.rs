@@ -128,6 +128,9 @@ pub struct SessionInfo {
     pub updated_at: String,
     /// 子代理归属的父会话；由运行时从 subagent.created 事件推导，存储层恒为空。
     pub parent_id: Option<String>,
+    /// 归档时刻（RFC3339）；None 表示未归档。归档只是桌面侧列表隐藏，不影响事件与跨端同步。
+    #[serde(default)]
+    pub archived_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

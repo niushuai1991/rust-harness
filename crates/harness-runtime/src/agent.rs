@@ -245,8 +245,13 @@ impl Runtime {
         self.parents.lock().unwrap().get(session).cloned()
     }
     /// 会话列表并附加父子关系；`workspace` 过滤工作区。
-    pub async fn list_sessions(&self, workspace: Option<&str>) -> AppResult<Vec<SessionInfo>> {
-        let mut sessions = self.store.sessions(workspace).await?;
+    /// 会话列表并附加父子关系；`workspace` 过滤工作区，`archived` 过滤归档状态（None=仅活跃）。
+    pub async fn list_sessions(
+        &self,
+        workspace: Option<&str>,
+        archived: Option<bool>,
+    ) -> AppResult<Vec<SessionInfo>> {
+        let mut sessions = self.store.sessions_filtered(workspace, archived).await?;
         let parents = self.parents.lock().unwrap();
         for session in &mut sessions {
             if let Some(parent) = parents.get(&session.id) {

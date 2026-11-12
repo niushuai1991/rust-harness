@@ -142,11 +142,12 @@ pub async fn session_list(
     state: Backend<'_>,
     workspace_id: String,
     all_workspaces: Option<bool>,
+    archived: Option<bool>,
 ) -> AppResult<Vec<SessionInfo>> {
     if all_workspaces.unwrap_or(false) {
-        return state.list_sessions(None).await;
+        return state.list_sessions(None, archived).await;
     }
-    state.list_sessions(Some(&workspace_id)).await
+    state.list_sessions(Some(&workspace_id), archived).await
 }
 #[tauri::command]
 #[specta::specta]
@@ -162,6 +163,22 @@ pub async fn session_create(
 ) -> AppResult<SessionInfo> {
     state.workspaces.get(&workspace_id)?;
     state.store.create_session(&workspace_id, &title).await
+}
+/// 归档会话：从桌面任务列表隐藏（事件保留），返回更新后的会话信息。
+#[tauri::command]
+#[specta::specta]
+pub async fn session_archive(state: Backend<'_>, session_id: String) -> AppResult<SessionInfo> {
+    let mut session = state.store.archive_session(&session_id).await?;
+    session.parent_id = state.parent_of(&session_id);
+    Ok(session)
+}
+/// 恢复归档会话：回到任务列表，返回更新后的会话信息。
+#[tauri::command]
+#[specta::specta]
+pub async fn session_restore(state: Backend<'_>, session_id: String) -> AppResult<SessionInfo> {
+    let mut session = state.store.restore_session(&session_id).await?;
+    session.parent_id = state.parent_of(&session_id);
+    Ok(session)
 }
 #[tauri::command]
 #[specta::specta]
@@ -981,6 +998,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         session_active_list,
         session_create,
         session_rename,
+        session_archive,
+        session_restore,
         session_title_generate,
         session_events,
         session_timeline_page,

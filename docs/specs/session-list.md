@@ -1,8 +1,8 @@
 # 会话列表「最近 / 项目」视图规范（参考 zcode）
 
-- 日期：2026-11-08（计划拟制）；2026-11-09 修订（侧栏会话入口重整、标题生成与重命名）
+- 日期：2026-11-08（计划拟制）；2026-11-09 修订（侧栏会话入口重整、标题生成与重命名）；2026-11-12 修订（会话存档与存档管理）
 - 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
-- 范围：桌面侧栏任务列表的两种显示模式（按最近 / 按项目）、项目置顶持久化、标题搜索过滤、跨工作区会话跳转、首问标题生成与会话重命名；不改变公开会话字段与跨端同步语义。
+- 范围：桌面侧栏任务列表的两种显示模式（按最近 / 按项目）、项目置顶持久化、标题搜索过滤、跨工作区会话跳转、首问标题生成与会话重命名、会话存档与设置页存档管理；公开 `SessionInfo` 仅追加 `archivedAt` 可选字段，既有字段与跨端同步语义不变。
 
 ## 背景与痛点
 
@@ -32,11 +32,21 @@
 
 ### 数据加载与跳转
 
-- `session_list` 新增可选参数 `all_workspaces`：true 时返回全部工作区会话（仍按 `updated_at` 倒序，附带运行时父子关系推导）；缺省行为不变（按工作区过滤），CLI / JSON-RPC 契约不受影响。
+- `session_list` 新增可选参数 `all_workspaces`：true 时返回全部工作区会话（仍按 `updated_at` 倒序，附带运行时父子关系推导）；缺省行为不变（按工作区过滤，仅活跃会话），CLI / JSON-RPC 契约不受影响。归档过滤见「会话存档与存档管理」。
 - 桌面端拉取全量后本地过滤出当前工作区列表（既有 `sessions` 语义不变），全量存 `allSessions` 供侧栏渲染；新建会话同步插入两个列表，且即便其所属工作区已不再是激活工作区（创建迟到完成）也并入 `allSessions`（侧栏可见、可点击返回），但不改变当前激活会话与发送目标。
 - 侧栏点击非当前工作区的会话：先切换工作区，再经既有 `pendingJump` 机制跳转到该会话；同工作区走既有 `openSession`。
 - 侧栏不设工作区切换下拉框（2026-11-09 移除）：切换项目的入口是点击侧栏会话（跨工作区经 pendingJump）与项目组头新建按钮。
 - 视图模式与项目折叠状态存 localStorage（`sessionView` / `sessionCollapsed`），跨重启保留。
+
+### 会话存档与存档管理
+
+- **入口**：「最近 / 项目」两种视图的会话行右侧提供 hover 浮现的存档图标按钮，右键菜单在「重命名」下新增「存档」项，顶栏「存档」按钮作用于当前会话；三处入口共用同一存档行为。存档中的会话仍在执行时同样可存档（存档只改变列表可见性，不中断运行回合）。
+- **存储**：SQLite `sessions` 表新增 `archived`（INTEGER，默认 0）与 `archived_at`（TEXT）列；schema v4 从 v3 迁移，既有会话默认未归档。`Store::archive_session` 记录归档时刻且不改变 `updated_at`，重复归档幂等；`Store::restore_session` 回到列表并清空归档时刻，不存在或未归档报 `NOT_FOUND`。事件与附件不随存档变化。
+- **公开契约**：`SessionInfo` 追加 `archived_at: Option<String>`（serde default，camelCase `archivedAt`）；未归档为 null。
+- **列表过滤**：`Store::sessions` 保持既有签名与全量语义（含归档，恢复、检索回退与子代理关系推导共用）；新增 `Store::sessions_filtered` 携带 `archived` 参数——缺省（None）仅返回活跃会话（CLI / JSON-RPC 既有语义不变），`true` 仅归档，`false` 返回全部。`Runtime::list_sessions` 同参透传；桌面 `session_list` 新增可选参数 `archived`。
+- **桌面命令**：新增 `session_archive { sessionId }` 与 `session_restore { sessionId }`，成功返回更新后的 `SessionInfo`（附父子关系）。CLI / JSON-RPC / ACP 不暴露存档命令。
+- **前端行为**：存档成功后从任务列表（`allSessions` / 当前工作区列表）移除并进入归档集合；被存档的是当前会话时自动切换到同项目下一个会话。恢复成功后按 `updated_at` 排序插回列表。操作失败显示错误并保持原状态。
+- **设置页存档管理**：全屏设置页新增「会话」分组与「存档管理」分类；面板按项目分组展示归档会话（组头为项目名与数量，组内按最后更新倒序，条目显示归档时间相对标签），每项提供「恢复」按钮；打开设置页时刷新归档列表，无归档数据时显示空态文案。该分类不提供「打开现有面板」入口（新面板即最终界面）。
 
 ### 搜索过滤
 
@@ -52,7 +62,8 @@
 
 ## 非目标
 
-- 不做会话移动；不改变公开会话字段与跨端同步语义。
+- 不做会话移动；既有公开会话字段与跨端同步语义不变（`SessionInfo` 仅追加 `archivedAt` 可选字段）。
+- 存档不做自动归档（按闲置时间）、不做归档会话的彻底删除；归档会话暂不支持在存档管理中重命名（可恢复后在列表重命名）。
 - 不接入 FTS 全文检索（`session_search` 留待后续叠加）。
 - CLI / JSON-RPC / ACP 不暴露视图与置顶概念（置顶是桌面端用户偏好，不进入工作区记录）。
 
@@ -61,5 +72,5 @@
 - `harness-storage`：置顶集合读写、重开持久化与去重（`tests/workspace_pins.rs`）。
 - `harness-storage`：v2→v3 标题状态迁移、占位标题识别、手动重命名校验与自动标题条件更新（`tests/session_titles.rs`）。
 - `sessionList` 纯函数：时间分组、相对时间标签、标题过滤、项目分组与置顶排序（`frontend/sessionList.test.ts`）。
-- `App`：最近 / 项目切换、置顶命令调用与组间排序、置顶失败回滚、搜索过滤与空态、侧栏会话入口、首问标题并行生成、右键重命名与菜单关闭、手动标题优先（`frontend/App.test.tsx`）。
+- `App`：最近 / 项目切换、置顶命令调用与组间排序、置顶失败回滚、搜索过滤与空态、侧栏会话入口、首问标题并行生成、右键重命名与菜单关闭、手动标题优先、右键存档调用 `session_archive` 并移出列表、设置存档管理展示归档会话与恢复调用 `session_restore`、无归档空态（`frontend/App.test.tsx`）。
 - 提交前运行 `cargo fmt --check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo test --all-features`、`cargo build --all-features` 与 `npm test`。

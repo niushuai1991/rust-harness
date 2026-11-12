@@ -12,7 +12,7 @@ use std::{
     time::Duration,
 };
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 /// 会话列表「项目」视图置顶工作区集合的 settings KV 键。
 pub const PINNED_WORKSPACES_KEY: &str = "workspace.pinned.v1";
 fn db_error(e: impl std::fmt::Display) -> AppError {
@@ -161,6 +161,22 @@ impl Store {
                 .map_err(db_error)?;
             tx.commit().await.map_err(db_error)?;
         }
+        if version <= 3 {
+            let mut tx = pool.begin().await.map_err(db_error)?;
+            sqlx::query("ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+                .execute(&mut *tx)
+                .await
+                .map_err(db_error)?;
+            sqlx::query("ALTER TABLE sessions ADD COLUMN archived_at TEXT")
+                .execute(&mut *tx)
+                .await
+                .map_err(db_error)?;
+            sqlx::query("PRAGMA user_version = 4")
+                .execute(&mut *tx)
+                .await
+                .map_err(db_error)?;
+            tx.commit().await.map_err(db_error)?;
+        }
         let artifact_dir = path.parent().unwrap_or(Path::new(".")).join("artifacts");
         std::fs::create_dir_all(&artifact_dir).map_err(db_error)?;
         Ok(Self { pool, artifact_dir })
@@ -179,6 +195,7 @@ impl Store {
             "manual"
         };
         let s = SessionInfo {
+            archived_at: None,
             id: new_id(),
             workspace_id: workspace.into(),
             title: title.into(),
@@ -199,7 +216,7 @@ impl Store {
         Ok(s)
     }
     pub async fn session(&self, id: &str) -> AppResult<SessionInfo> {
-        sqlx::query("SELECT id,workspace_id,title,created_at,updated_at FROM sessions WHERE id=?")
+        sqlx::query("SELECT id,workspace_id,title,created_at,updated_at,archived_at FROM sessions WHERE id=?")
             .bind(id)
             .fetch_optional(&self.pool)
             .await
@@ -217,6 +234,34 @@ impl Store {
         state
             .map(|state| state == "default")
             .ok_or_else(|| AppError::new("NOT_FOUND", "会话不存在"))
+    }
+    /// 归档会话：默认列表隐藏并记录归档时刻；重复归档保持原状态（幂等）。
+    pub async fn archive_session(&self, id: &str) -> AppResult<SessionInfo> {
+        let result =
+            sqlx::query("UPDATE sessions SET archived=1,archived_at=? WHERE id=? AND archived=0")
+                .bind(now())
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(db_error)?;
+        if result.rows_affected() == 0 {
+            return self.session(id).await;
+        }
+        self.session(id).await
+    }
+    /// 恢复归档会话：回到默认列表并清空归档时刻；不存在或未归档报 NOT_FOUND。
+    pub async fn restore_session(&self, id: &str) -> AppResult<SessionInfo> {
+        let result = sqlx::query(
+            "UPDATE sessions SET archived=0,archived_at=NULL WHERE id=? AND archived=1",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        if result.rows_affected() == 0 {
+            return Err(AppError::new("NOT_FOUND", "会话不存在或未归档"));
+        }
+        self.session(id).await
     }
     pub async fn rename_session(&self, id: &str, title: &str) -> AppResult<SessionInfo> {
         let title = title.trim();
@@ -258,13 +303,27 @@ impl Store {
         }
         self.session(id).await
     }
+    /// 全量会话列表（含归档）：保持既有查询语义不变，恢复/检索回退与子代理推导共用。
     pub async fn sessions(&self, workspace: Option<&str>) -> AppResult<Vec<SessionInfo>> {
+        self.sessions_filtered(workspace, Some(false)).await
+    }
+    /// 按归档状态过滤的会话列表：`workspace` 过滤工作区；`archived` 为 None=仅活跃，Some(true)=仅归档，Some(false)=全部。
+    pub async fn sessions_filtered(
+        &self,
+        workspace: Option<&str>,
+        archived: Option<bool>,
+    ) -> AppResult<Vec<SessionInfo>> {
         let rows = sqlx::query(
-            "SELECT id,workspace_id,title,created_at,updated_at FROM sessions \
-             WHERE (? IS NULL OR workspace_id=?) ORDER BY updated_at DESC",
+            "SELECT id,workspace_id,title,created_at,updated_at,archived_at FROM sessions \
+             WHERE (? IS NULL OR workspace_id=?)
+              AND ((? IS NULL AND archived=0) OR (? = 1 AND archived=1) OR (? = 0)) \
+             ORDER BY updated_at DESC",
         )
         .bind(workspace)
         .bind(workspace)
+        .bind(archived)
+        .bind(archived)
+        .bind(archived)
         .fetch_all(&self.pool)
         .await
         .map_err(db_error)?;
@@ -536,6 +595,7 @@ impl Store {
             }
         }
         let session = SessionInfo {
+            archived_at: None,
             id: new_id(),
             workspace_id: workspace_id.into(),
             title: header["session"]["title"]
@@ -641,6 +701,7 @@ fn session_row(r: &sqlx::sqlite::SqliteRow) -> SessionInfo {
         title: r.get("title"),
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
+        archived_at: r.get("archived_at"),
         parent_id: None,
     }
 }

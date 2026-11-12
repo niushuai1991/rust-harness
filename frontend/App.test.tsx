@@ -1517,3 +1517,53 @@ it('非 HTTP Markdown 链接保留原有地址与行为',async()=>{
  const link=await screen.findByRole('link',{name:'邮件'});
  expect(link).toHaveAttribute('href','mailto:hello@example.com');
 });
+
+describe('会话存档',()=>{
+ const session=(id:string,title:string,extra:Partial<import('./types').SessionInfo>={})=>({id,workspaceId:'w',title,createdAt:'2026-11-01T00:00:00Z',updatedAt:'2026-11-08T00:00:00Z',parentId:null,...extra});
+ it('右键菜单存档会话：调用 session_archive 并从任务列表移除',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_list')return args.archived?[]:[session('a','会话 A'),session('b','会话 B')];
+   if(name==='session_archive')return session('a','会话 A',{archivedAt:'2026-11-09T00:00:00Z'});
+   return original(name,args);
+  });
+  render(<App/>);await screen.findByText('内容 a');
+  const row=screen.getByRole('button',{name:/会话 A/});
+  fireEvent.contextMenu(row);
+  fireEvent.click(await screen.findByRole('menuitem',{name:'存档'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_archive',{sessionId:'a'}));
+  await waitFor(()=>expect(screen.queryByText('会话 A')).not.toBeInTheDocument());
+  expect(screen.getByText('已存档会话「会话 A」。')).toBeInTheDocument();
+ });
+ it('设置存档管理按项目显示归档会话并可恢复到列表',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_list')return args.archived?[session('old','已归档的旧会话',{archivedAt:'2026-11-09T00:00:00Z'})]:[session('a','会话 A'),session('b','会话 B')];
+   if(name==='session_restore')return session('old','已归档的旧会话');
+   return original(name,args);
+  });
+  render(<App/>);await screen.findByText('内容 a');
+  fireEvent.click(screen.getByRole('button',{name:'设置'}));
+  const page=await screen.findByRole('dialog',{name:'设置'});
+  fireEvent.click(within(page).getByRole('button',{name:'存档管理'}));
+  expect(await within(page).findByText('已归档的旧会话')).toBeInTheDocument();
+  expect(within(page).getByText(/归档于/)).toBeInTheDocument();
+  fireEvent.click(within(page).getByRole('button',{name:'恢复'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_restore',{sessionId:'old'}));
+  fireEvent.click(within(page).getByRole('button',{name:'关闭设置，返回工作台'}));
+  expect(await screen.findByText('已归档的旧会话')).toBeInTheDocument();
+  expect(screen.getByText('已恢复会话「已归档的旧会话」。')).toBeInTheDocument();
+ });
+ it('无归档数据时存档管理显示空态',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_list')return args.archived?[]:[session('a','会话 A'),session('b','会话 B')];
+   return original(name,args);
+  });
+  render(<App/>);await screen.findByText('内容 a');
+  fireEvent.click(screen.getByRole('button',{name:'设置'}));
+  const page=await screen.findByRole('dialog',{name:'设置'});
+  fireEvent.click(within(page).getByRole('button',{name:'存档管理'}));
+  expect(await within(page).findByText(/还没有归档的会话/)).toBeInTheDocument();
+ });
+});
