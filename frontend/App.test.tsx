@@ -1110,6 +1110,30 @@ describe('会话列表视图',()=>{
   await screen.findByText('写入失败');
   expect(screen.getByRole('button',{name:'置顶 alpha'})).toBeInTheDocument();
  });
+ it('项目视图下无会话的项目仍保留组头，搜索时才隐藏空项目',async()=>{
+  localStorage.clear();
+  mocks.command.mockImplementation(async(name:string,args:any)=>{
+   if(name==='workspace_list')return [
+    {id:'w',sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',name:'alpha',pinned:false},
+    {id:'empty',sourcePath:'D:/empty',replicaPath:'D:/copy-e',createdAt:'',name:'empty-proj',pinned:false}];
+   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A',createdAt:'',updatedAt:new Date().toISOString(),parentId:null}];
+   if(name==='session_timeline_page')return timeline(args.sessionId,[event(`e-${args.sessionId}`,args.sessionId,'1',`内容 ${args.sessionId}`)]);
+   return [];
+  });
+  render(<App/>);
+  await screen.findByText('内容 a');
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  // 无会话项目仍成组（计数 0），组头新建与置顶入口可用
+  expect(screen.getByRole('button',{name:/^empty-proj 0$/})).toBeInTheDocument();
+  expect(screen.getByRole('button',{name:'在 empty-proj 新建聊天'})).toBeInTheDocument();
+  expect(screen.getAllByRole('button',{name:/^(alpha|empty-proj) \d+$/})).toHaveLength(2);
+  fireEvent.click(screen.getByRole('button',{name:'置顶 empty-proj'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_set_pinned',{workspaceId:'empty',pinned:true}));
+  // 搜索按标题过滤时空项目组不出现，无匹配时显示空态
+  fireEvent.change(screen.getByLabelText('搜索会话'),{target:{value:'不存在'}});
+  expect(screen.getByText('无匹配会话。')).toBeInTheDocument();
+  expect(screen.queryByRole('button',{name:/^empty-proj 0$/})).not.toBeInTheDocument();
+ });
 });
 
 describe('项目命名',()=>{

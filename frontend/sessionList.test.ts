@@ -75,11 +75,25 @@ describe('groupByProject',()=>{
   expect(groups.map(g=>g.workspace.id)).toEqual(['ws-3','ws-1','ws-2']);
   expect(groups[0].sessions.map(s=>s.id)).toEqual(['c']);
  });
- it('无会话的工作区不出现；未知工作区的会话忽略',()=>{
+ it('缺省无会话的工作区不出现；未知工作区的会话忽略',()=>{
   const ws=[workspace({id:'ws-1'})];
   const list=[session({id:'a',workspaceId:'ws-1'}),session({id:'b',workspaceId:'ws-ghost'})];
   const groups=groupByProject(list,ws);
   expect(groups).toHaveLength(1);
   expect(groups[0].sessions.map(s=>s.id)).toEqual(['a']);
+ });
+ it('includeEmpty 时空项目也成组并排在有会话项目之后，空组间按名称排序',()=>{
+  const ws=[workspace({id:'ws-1'}),workspace({id:'ws-3',name:'zzz'}),workspace({id:'ws-2',name:'aaa'})];
+  const list=[session({id:'a',workspaceId:'ws-1',updatedAt:at(2026,11,8,10,0)})];
+  const groups=groupByProject(list,ws,true);
+  expect(groups.map(g=>g.workspace.id)).toEqual(['ws-1','ws-2','ws-3']);
+  expect(groups[1].sessions).toEqual([]);
+  expect(groups[2].sessions).toEqual([]);
+ });
+ it('includeEmpty 时置顶的空项目仍排在最前',()=>{
+  const ws=[workspace({id:'ws-1'}),workspace({id:'ws-2',pinned:true})];
+  const list=[session({id:'a',workspaceId:'ws-1'})];
+  const groups=groupByProject(list,ws,true);
+  expect(groups.map(g=>g.workspace.id)).toEqual(['ws-2','ws-1']);
  });
 });
