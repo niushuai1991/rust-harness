@@ -276,6 +276,25 @@ impl Installed {
         self.state.save_automations(&all).await?;
         Ok(updated)
     }
+    /// 项目移除：停用该工作区全部自动化并返回其 id（供挂回登记）；
+    /// 已暂停的保持暂停，其他工作区不受影响。
+    pub async fn automation_pause_workspace(&self, workspace: &str) -> AppResult<Vec<String>> {
+        self.runtime()?;
+        self.state.pause_workspace_automations(workspace).await
+    }
+    /// 重开项目挂回：自动化迁移到新工作区；`resume_ids` 恢复启用并重算过期触发点
+    /// （错过不补跑），手工暂停的保持暂停。返回迁移条数。
+    pub async fn automation_reassign_workspace(
+        &self,
+        from: &str,
+        to: &str,
+        resume_ids: &[String],
+    ) -> AppResult<u64> {
+        self.runtime()?;
+        self.state
+            .reassign_workspace_automations(from, to, resume_ids)
+            .await
+    }
     /// Human panel: dispatch one manual run immediately; never moves the planned schedule.
     pub async fn automation_run_now(&self, id: &str) -> AppResult<Automation> {
         let r = self.runtime()?;
@@ -1193,6 +1212,57 @@ impl State {
             .upgrade()
             .ok_or_else(|| AppError::new("SHUTDOWN", "应用已关闭"))?;
         r.store.set(AUTOMATION_KEY, &json!(a)).await
+    }
+    /// 项目移除：停用工作区全部自动化（active 一并转入 paused），返回涉及的 id。
+    async fn pause_workspace_automations(&self, workspace: &str) -> AppResult<Vec<String>> {
+        let _lock = self.schedules_lock.lock().await;
+        let mut all = self.automations().await?;
+        let mut ids = Vec::new();
+        for a in all.iter_mut() {
+            if a.workspace_id == workspace {
+                ids.push(a.id.clone());
+                a.enabled = false;
+                a.updated_at = now();
+                if a.status != "paused" {
+                    a.status = "paused".into();
+                }
+            }
+        }
+        if !ids.is_empty() {
+            self.save_automations(&all).await?;
+        }
+        Ok(ids)
+    }
+    /// 重开项目挂回：工作区自动化的 workspace_id 批量迁移；
+    /// `resume_ids` 恢复启用（paused 转 active）并重算下一触发点，其余保持原状态。
+    async fn reassign_workspace_automations(
+        &self,
+        from: &str,
+        to: &str,
+        resume_ids: &[String],
+    ) -> AppResult<u64> {
+        let _lock = self.schedules_lock.lock().await;
+        let mut all = self.automations().await?;
+        let mut moved = 0u64;
+        for a in all.iter_mut() {
+            if a.workspace_id == from {
+                a.workspace_id = to.to_owned();
+                a.updated_at = now();
+                if resume_ids.iter().any(|id| id == &a.id) {
+                    a.enabled = true;
+                    if a.status == "paused" {
+                        a.status = "active".into();
+                    }
+                    a.next_run_at =
+                        automation_next_run_at(&Local, a, Local::now()).map(|t| t.to_rfc3339());
+                }
+                moved += 1;
+            }
+        }
+        if moved > 0 {
+            self.save_automations(&all).await?;
+        }
+        Ok(moved)
     }
     /// Bound target session must exist; unbound automations get a fresh session in their workspace.
     async fn automation_session(&self, r: &Runtime, a: &Automation) -> AppResult<String> {

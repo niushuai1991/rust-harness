@@ -5,6 +5,9 @@ export type Effort=(typeof KNOWN_EFFORTS)[number];
 export type ExecutionMode='replica'|'worktree';
 export interface SessionWorktree {path:string;branch:string;createdAt:string}
 export interface WorkspaceInfo {id:string;sourcePath:string;replicaPath:string;createdAt:string;name:string;pinned:boolean;executionMode:ExecutionMode;worktrees:{[sessionId:string]:SessionWorktree}}
+// 项目移除汇总（workspace_remove）与重开挂回（workspace_reassign_removed）。
+export interface WorkspaceRemovalSummary {workspaceId:string;archivedSessions:number;pausedAutomations:number;stoppedSessions:number}
+export interface WorkspaceReassignment {workspaceId:string;sessions:number;automations:number}
 export interface SessionInfo {id:string;workspaceId:string;title:string;createdAt:string;updatedAt:string;parentId?:string|null;archivedAt?:string|null}
 export interface SessionEvent {id:string;sessionId:string;seq:string;kind:string;data:Record<string,unknown>;createdAt:string}
 export interface TimelinePage {sessionId:string;events:SessionEvent[];olderCursor:string|null;throughSeq:string;hasOlder:boolean}

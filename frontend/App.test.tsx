@@ -1591,3 +1591,81 @@ describe('会话存档',()=>{
   expect(await within(page).findByText(/还没有归档的会话/)).toBeInTheDocument();
  });
 });
+describe('项目移除',()=>{
+ it('组头右键打开项目菜单，确认后移除项目并提示归档数',async()=>{
+  localStorage.removeItem('sessionView');
+  localStorage.removeItem('sessionCollapsed');
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/project',replicaPath:'D:/copy',createdAt:'',name:'项目A',pinned:false},{id:'w2',sourcePath:'D:/project-2',replicaPath:'D:/copy2',createdAt:'',name:'项目B',pinned:false}];
+   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A'}];
+   if(name==='workspace_remove')return {workspaceId:'w2',archivedSessions:1,pausedAutomations:2,stoppedSessions:0};
+   return original(name,args);
+  });
+  render(<App/>);
+  await screen.findByRole('button',{name:/会话 A/});
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  // 「项目B」仅在项目组头出现（空项目保留组头），顶栏显示的是激活项目「项目A」。
+  fireEvent.contextMenu(screen.getByText('项目B'));
+  fireEvent.click(await screen.findByRole('menuitem',{name:'移除项目'}));
+  const dialog=await screen.findByRole('dialog',{name:'移除项目「项目B」'});
+  fireEvent.click(within(dialog).getByRole('button',{name:'移除项目'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_remove',{workspaceId:'w2',stopRunning:false}));
+  expect(await screen.findByText(/已移除项目「项目B」；1 个会话转入存档，2 个自动化停用/)).toBeInTheDocument();
+  await waitFor(()=>expect(screen.queryByText('项目B')).not.toBeInTheDocument());
+ });
+ it('有运行中会话时确认按钮为「移除并停止运行」并带 stopRunning',async()=>{
+  localStorage.removeItem('sessionView');
+  localStorage.removeItem('sessionCollapsed');
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/project',replicaPath:'D:/copy',createdAt:'',name:'运行项目',pinned:false}];
+   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A'}];
+   if(name==='session_active_list')return ['a'];
+   if(name==='workspace_remove')return {workspaceId:'w',archivedSessions:1,pausedAutomations:0,stoppedSessions:1};
+   return original(name,args);
+  });
+  render(<App/>);
+  await screen.findByRole('button',{name:/会话 A/});
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  const sessionNav=screen.getByRole('navigation',{name:'会话列表'});
+  fireEvent.contextMenu(within(sessionNav).getByText('运行项目'));
+  fireEvent.click(await screen.findByRole('menuitem',{name:'移除项目'}));
+  const dialog=await screen.findByRole('dialog',{name:'移除项目「运行项目」'});
+  expect(within(dialog).getByText(/该项目还有运行中的对话或 Agent/)).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole('button',{name:'移除项目（移除并停止运行）'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_remove',{workspaceId:'w',stopRunning:true}));
+ });
+ it('打开项目后自动挂回已移除登记的会话与自动化并提示',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='workspace_open')return {id:'new-w',sourcePath:'D:/project',replicaPath:'D:/copy',createdAt:'',name:'项目A',pinned:false,executionMode:'replica',worktrees:{}};
+   if(name==='workspace_reassign_removed')return {workspaceId:'new-w',sessions:3,automations:1};
+   if(name==='session_list')return [];
+   return original(name,args);
+  });
+  vi.mocked(open).mockResolvedValue('D:/project');
+  render(<App/>);
+  await screen.findByRole('button',{name:'新建聊天'});
+  fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
+  fireEvent.click(screen.getByRole('menuitem',{name:/新建项目/}));
+  await screen.findByRole('dialog',{name:'打开工作区'});
+  fireEvent.click(screen.getByRole('button',{name:'创建'}));
+  expect(await screen.findByText(/自动找回 3 个历史会话与 1 个自动化任务/)).toBeInTheDocument();
+  expect(mocks.command).toHaveBeenCalledWith('workspace_reassign_removed',{workspaceId:'new-w'});
+ });
+ it('存档管理对已移除项目显示占位名并禁用恢复',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_list'&&args.archived)return [{id:'arc',workspaceId:'gone',title:'已移除项目的会话',archivedAt:'2026-11-13T00:00:00Z'}];
+   if(name==='session_list')return [];
+   return original(name,args);
+  });
+  render(<App/>);
+  fireEvent.click(screen.getByRole('button',{name:'设置'}));
+  const page=await screen.findByRole('dialog',{name:'设置'});
+  fireEvent.click(within(page).getByRole('button',{name:'存档管理'}));
+  expect(await screen.findByText('已移除的项目')).toBeInTheDocument();
+  expect(screen.getByRole('button',{name:'恢复'})).toBeDisabled();
+ });
+});

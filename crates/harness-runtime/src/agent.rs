@@ -365,6 +365,26 @@ impl Runtime {
             .insert(config.id().into(), workspace.into());
         Ok(())
     }
+    /// 项目移除时回收工作区运行时：断开归属该工作区的全部 MCP 连接与 LSP server。
+    /// 单个连接断开失败不阻塞（对齐 zcode 释放语义：失败不回滚移除）。
+    pub async fn disconnect_workspace(&self, workspace_id: &str) {
+        let mcp_ids: Vec<String> = self
+            .mcp_scopes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, workspace)| workspace.as_str() == workspace_id)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in mcp_ids {
+            let _ = self.disconnect_mcp(&id).await;
+        }
+        for entry in self.lsp_status().await {
+            if entry.workspace_id == workspace_id {
+                let _ = self.lsp.disconnect(workspace_id, &entry.server_id).await;
+            }
+        }
+    }
     pub async fn disconnect_mcp(&self, id: &str) -> AppResult<()> {
         self.mcp.disconnect(id).await?;
         self.mcp_scopes.lock().unwrap().remove(id);

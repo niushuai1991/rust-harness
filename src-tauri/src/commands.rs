@@ -3,6 +3,7 @@ use harness_contracts::*;
 use harness_runtime::Runtime;
 use harness_runtime::chatgpt::LoginHandle;
 use harness_runtime::model::ModelMessage;
+use harness_storage::RemovedWorkspaceRecord;
 use serde::Deserialize;
 use std::{path::PathBuf, sync::Arc};
 use tauri::{State, ipc::Channel};
@@ -29,6 +30,163 @@ pub async fn workspace_list(state: Backend<'_>) -> AppResult<Vec<WorkspaceInfo>>
         info.pinned = pinned.iter().any(|id| id == &info.id);
     }
     Ok(list)
+}
+/// 项目移除结果汇总（前端提示与列表刷新用）。
+#[derive(Debug, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceRemovalSummary {
+    pub workspace_id: String,
+    pub archived_sessions: u64,
+    pub paused_automations: usize,
+    pub stopped_sessions: usize,
+}
+
+/// 移除项目：按需停止运行中回合 → 归档项目会话 → 停用自动化 → 清理置顶 →
+/// 写入重开挂回登记 → 删除宿主记录目录（隔离副本一并删除）。源项目目录与
+/// 会话事件永不触碰；同源路径重新打开项目时由 workspace_reassign_removed 挂回。
+#[tauri::command]
+#[specta::specta]
+pub async fn workspace_remove(
+    state: Backend<'_>,
+    orch: Orchestration<'_>,
+    workspace_id: String,
+    stop_running: bool,
+) -> AppResult<WorkspaceRemovalSummary> {
+    let info = state.workspaces.get(&workspace_id)?;
+    let running: Vec<String> = state
+        .list_sessions(Some(&workspace_id), None)
+        .await?
+        .into_iter()
+        .map(|s| s.id)
+        .filter(|id| state.is_active(id))
+        .collect();
+    if !running.is_empty() && !stop_running {
+        return Err(AppError::new(
+            "WORKSPACE_RUNNING",
+            format!("项目还有 {} 个会话正在运行", running.len()),
+        ));
+    }
+    for id in &running {
+        state.cancel(id);
+    }
+    // 取消是异步的：等待回合退出（排他锁在平台层 remove 兜底 BUSY）。
+    for _ in 0..200 {
+        if running.iter().all(|id| !state.is_active(id)) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let stopped_sessions = running.len();
+    // 挂回登记数据须在归档与停用之前收集。
+    let unarchived: Vec<String> = state
+        .list_sessions(Some(&workspace_id), None)
+        .await?
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    let enabled_automations: Vec<String> = orch
+        .automation_list(&workspace_id)
+        .await?
+        .into_iter()
+        .filter(|a| a.enabled)
+        .map(|a| a.id)
+        .collect();
+    let pinned = state
+        .store
+        .pinned_workspaces()
+        .await?
+        .iter()
+        .any(|id| id == &workspace_id);
+    let archived_sessions = state
+        .store
+        .archive_workspace_sessions(&workspace_id)
+        .await?;
+    let automation_ids = orch.automation_pause_workspace(&workspace_id).await?;
+    state
+        .store
+        .set_workspace_pinned(&workspace_id, false)
+        .await?;
+    state
+        .store
+        .push_removed_workspace(&RemovedWorkspaceRecord {
+            workspace_id: workspace_id.clone(),
+            source_path: info.source_path.clone(),
+            name: info.name.clone(),
+            pinned,
+            removed_at: now(),
+            unarchived_session_ids: unarchived,
+            automation_ids: automation_ids.clone(),
+            enabled_automation_ids: enabled_automations,
+        })
+        .await?;
+    state.disconnect_workspace(&workspace_id).await;
+    let manager = state.workspaces.clone();
+    let removed_id = workspace_id.clone();
+    tokio::task::spawn_blocking(move || manager.remove(&removed_id))
+        .await
+        .map_err(error)?
+        .map_err(error)?;
+    Ok(WorkspaceRemovalSummary {
+        workspace_id,
+        archived_sessions,
+        paused_automations: automation_ids.len(),
+        stopped_sessions,
+    })
+}
+
+/// 重开项目挂回结果。
+#[derive(Debug, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceReassignment {
+    pub workspace_id: String,
+    pub sessions: u64,
+    pub automations: u64,
+}
+
+/// 重开同源路径项目后挂回旧数据：无登记时返回零值；有登记时迁移会话与
+/// 自动化到新项目，移除前活跃的会话回到任务列表，移除时启用的自动化恢复
+/// 调度（重算触发点，错过不补跑），原置顶状态一并恢复。
+#[tauri::command]
+#[specta::specta]
+pub async fn workspace_reassign_removed(
+    state: Backend<'_>,
+    orch: Orchestration<'_>,
+    workspace_id: String,
+) -> AppResult<WorkspaceReassignment> {
+    let info = state.workspaces.get(&workspace_id)?;
+    let Some(record) = state.store.pop_removed_workspace(&info.source_path).await? else {
+        return Ok(WorkspaceReassignment {
+            workspace_id,
+            sessions: 0,
+            automations: 0,
+        });
+    };
+    let sessions = state
+        .store
+        .reassign_sessions(
+            &record.workspace_id,
+            &workspace_id,
+            &record.unarchived_session_ids,
+        )
+        .await?;
+    let automations = orch
+        .automation_reassign_workspace(
+            &record.workspace_id,
+            &workspace_id,
+            &record.enabled_automation_ids,
+        )
+        .await?;
+    if record.pinned {
+        state
+            .store
+            .set_workspace_pinned(&workspace_id, true)
+            .await?;
+    }
+    Ok(WorkspaceReassignment {
+        workspace_id,
+        sessions,
+        automations,
+    })
 }
 /// 会话列表「项目」视图的置顶切换；先校验工作区存在，返回更新后的工作区信息。
 #[tauri::command]
@@ -176,6 +334,13 @@ pub async fn session_archive(state: Backend<'_>, session_id: String) -> AppResul
 #[tauri::command]
 #[specta::specta]
 pub async fn session_restore(state: Backend<'_>, session_id: String) -> AppResult<SessionInfo> {
+    let archived = state.store.session(&session_id).await?;
+    if state.workspaces.get(&archived.workspace_id).is_err() {
+        return Err(AppError::new(
+            "WORKSPACE_GONE",
+            "项目已移除，无法恢复该会话；重新打开同一项目时会自动挂回",
+        ));
+    }
     let mut session = state.store.restore_session(&session_id).await?;
     session.parent_id = state.parent_of(&session_id);
     Ok(session)
@@ -987,6 +1152,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         crate::web_panel::web_panel_close,
         workspace_list,
         workspace_open,
+        workspace_remove,
+        workspace_reassign_removed,
         workspace_rename,
         workspace_set_pinned,
         workspace_diff,
