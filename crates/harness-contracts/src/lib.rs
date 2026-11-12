@@ -77,6 +77,10 @@ pub struct WorkspaceInfo {
     /// 会话列表「项目」视图置顶标记；工作区记录本身不落库，由桌面端从 settings KV 派生注入。
     #[serde(default)]
     pub pinned: bool,
+    /// 项目移除（隐藏）标记：仅从任务列表入口隐藏，工作区记录与会话原样保留；
+    /// 工作区记录本身不落库，由桌面端从 settings KV 派生注入。
+    #[serde(default)]
+    pub hidden: bool,
     /// 执行模式；旧记录缺省为隔离副本。
     #[serde(default)]
     pub execution_mode: ExecutionMode,

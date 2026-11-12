@@ -160,6 +160,7 @@ impl WorkspaceManager {
                     created_at: now(),
                     name: display_name(&source, name.as_deref()),
                     pinned: false,
+                    hidden: false,
                     execution_mode,
                     worktrees: BTreeMap::new(),
                 };
@@ -259,6 +260,7 @@ impl WorkspaceManager {
                 created_at: now(),
                 name: display_name(&source, name.as_deref()),
                 pinned: false,
+                hidden: false,
                 execution_mode,
                 worktrees: BTreeMap::new(),
             };

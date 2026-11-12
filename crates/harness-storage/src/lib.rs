@@ -15,6 +15,9 @@ use std::{
 const SCHEMA_VERSION: i64 = 4;
 /// 会话列表「项目」视图置顶工作区集合的 settings KV 键。
 pub const PINNED_WORKSPACES_KEY: &str = "workspace.pinned.v1";
+/// 已移除项目登记（重开同源路径时挂回旧会话与自动化）的 settings KV 键。
+/// 项目移除（隐藏）集合的 settings KV 键；隐藏只影响任务列表入口显示，记录与会话原样保留。
+pub const HIDDEN_WORKSPACES_KEY: &str = "workspace.hidden.v1";
 fn db_error(e: impl std::fmt::Display) -> AppError {
     AppError::new("STORAGE", e.to_string())
 }
@@ -262,6 +265,25 @@ impl Store {
             return Err(AppError::new("NOT_FOUND", "会话不存在或未归档"));
         }
         self.session(id).await
+    }
+    /// 项目移除（隐藏）集合（settings KV，跨重启保留）；与置顶同模式，只影响任务列表入口显示。
+    pub async fn hidden_workspaces(&self) -> AppResult<Vec<String>> {
+        Ok(self
+            .get(HIDDEN_WORKSPACES_KEY)
+            .await?
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default())
+    }
+    pub async fn set_workspace_hidden(&self, workspace: &str, hidden: bool) -> AppResult<()> {
+        let mut ids = self.hidden_workspaces().await?;
+        if hidden {
+            if !ids.iter().any(|id| id == workspace) {
+                ids.push(workspace.to_string());
+            }
+        } else {
+            ids.retain(|id| id != workspace);
+        }
+        self.set(HIDDEN_WORKSPACES_KEY, &json!(ids)).await
     }
     pub async fn rename_session(&self, id: &str, title: &str) -> AppResult<SessionInfo> {
         let title = title.trim();

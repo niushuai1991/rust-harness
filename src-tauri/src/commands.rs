@@ -25,10 +25,100 @@ fn parse_timeline_before(before_seq: Option<&str>) -> AppResult<Option<u64>> {
 pub async fn workspace_list(state: Backend<'_>) -> AppResult<Vec<WorkspaceInfo>> {
     let mut list = state.workspaces.list()?;
     let pinned = state.store.pinned_workspaces().await?;
+    let hidden = state.store.hidden_workspaces().await?;
     for info in &mut list {
         info.pinned = pinned.iter().any(|id| id == &info.id);
+        info.hidden = hidden.iter().any(|id| id == &info.id);
     }
     Ok(list)
+}
+/// 项目移除（隐藏）结果汇总（前端提示用）。
+#[derive(Debug, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceRemovalSummary {
+    pub workspace_id: String,
+    pub stopped_sessions: usize,
+}
+
+/// 移除项目：仅把项目从任务列表入口隐藏（KV 标记），工作区记录、隔离副本、
+/// 会话与自动化原样保留，磁盘源项目不受影响；按需停止运行中回合。
+#[tauri::command]
+#[specta::specta]
+pub async fn workspace_remove(
+    state: Backend<'_>,
+    workspace_id: String,
+    stop_running: bool,
+) -> AppResult<WorkspaceRemovalSummary> {
+    state.workspaces.get(&workspace_id)?;
+    let running: Vec<String> = state
+        .list_sessions(Some(&workspace_id), None)
+        .await?
+        .into_iter()
+        .map(|s| s.id)
+        .filter(|id| state.is_active(id))
+        .collect();
+    if !running.is_empty() && !stop_running {
+        return Err(AppError::new(
+            "WORKSPACE_RUNNING",
+            format!("项目还有 {} 个会话正在运行", running.len()),
+        ));
+    }
+    for id in &running {
+        state.cancel(id);
+    }
+    // 取消是异步的：等待回合退出，避免隐藏后回合继续写事件。
+    for _ in 0..200 {
+        if running.iter().all(|id| !state.is_active(id)) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let stopped_sessions = running.len();
+    state
+        .store
+        .set_workspace_hidden(&workspace_id, true)
+        .await?;
+    Ok(WorkspaceRemovalSummary {
+        workspace_id,
+        stopped_sessions,
+    })
+}
+
+/// 重新显示结果（重开同源路径项目时取消隐藏的旧项目数量）。
+#[derive(Debug, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceRevealSummary {
+    pub workspace_id: String,
+    pub revealed: usize,
+}
+
+/// 重新显示同源路径的隐藏项目：打开目录创建新项目后调用，同路径被隐藏的
+/// 旧项目全部取消隐藏（会话、归档与自动化原位保留，无需迁移）。
+#[tauri::command]
+#[specta::specta]
+pub async fn workspace_reveal_hidden(
+    state: Backend<'_>,
+    workspace_id: String,
+) -> AppResult<WorkspaceRevealSummary> {
+    let info = state.workspaces.get(&workspace_id)?;
+    let hidden = state.store.hidden_workspaces().await?;
+    let mut revealed = 0usize;
+    for candidate in state.workspaces.list()? {
+        if candidate.id != workspace_id
+            && candidate.source_path == info.source_path
+            && hidden.iter().any(|id| id == &candidate.id)
+        {
+            state
+                .store
+                .set_workspace_hidden(&candidate.id, false)
+                .await?;
+            revealed += 1;
+        }
+    }
+    Ok(WorkspaceRevealSummary {
+        workspace_id,
+        revealed,
+    })
 }
 /// 会话列表「项目」视图的置顶切换；先校验工作区存在，返回更新后的工作区信息。
 #[tauri::command]
@@ -987,6 +1077,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         crate::web_panel::web_panel_close,
         workspace_list,
         workspace_open,
+        workspace_remove,
+        workspace_reveal_hidden,
         workspace_rename,
         workspace_set_pinned,
         workspace_diff,

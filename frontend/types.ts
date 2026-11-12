@@ -4,7 +4,10 @@ export const KNOWN_EFFORTS=['disabled','minimal','low','medium','high','max'] as
 export type Effort=(typeof KNOWN_EFFORTS)[number];
 export type ExecutionMode='replica'|'worktree';
 export interface SessionWorktree {path:string;branch:string;createdAt:string}
-export interface WorkspaceInfo {id:string;sourcePath:string;replicaPath:string;createdAt:string;name:string;pinned:boolean;executionMode:ExecutionMode;worktrees:{[sessionId:string]:SessionWorktree}}
+export interface WorkspaceInfo {id:string;sourcePath:string;replicaPath:string;createdAt:string;name:string;pinned:boolean;hidden:boolean;executionMode:ExecutionMode;worktrees:{[sessionId:string]:SessionWorktree}}
+// 项目移除（隐藏）汇总（workspace_remove）与重开重新显示（workspace_reveal_hidden）。
+export interface WorkspaceRemovalSummary {workspaceId:string;stoppedSessions:number}
+export interface WorkspaceRevealSummary {workspaceId:string;revealed:number}
 export interface SessionInfo {id:string;workspaceId:string;title:string;createdAt:string;updatedAt:string;parentId?:string|null;archivedAt?:string|null}
 export interface SessionEvent {id:string;sessionId:string;seq:string;kind:string;data:Record<string,unknown>;createdAt:string}
 export interface TimelinePage {sessionId:string;events:SessionEvent[];olderCursor:string|null;throughSeq:string;hasOlder:boolean}

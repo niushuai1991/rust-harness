@@ -1,4 +1,4 @@
-# 能力状态（2026-11-10）
+# 能力状态（2026-11-13）
 
 状态说明：已实现表示存在实际执行代码；已验证另需对应测试或实际构建证据。不以计划或接口占位替代功能。
 
@@ -34,6 +34,7 @@
 |每回合 Token 预算（父子代理共享、UsageRing 可调）|已实现并接线|三协议用量归一化、上限工具跳过、缺失 usage 失败关闭、子代理共享预算与设置持久化集成覆盖；Rust 全工作区 all-features 测试、clippy、build、fmt 检查通过；前端全量 223 项测试与生产构建通过；自动标题一次性请求不计入回合预算，桌面 UI 抽查待用户，见[每回合 Token 预算规范](specs/token-usage-budget.md)|
 |权限模式（五档审批策略 ask/edit/auto/never/guarded）|已实现并接线|contracts 决策矩阵与危险命令规则 19 项单测、runtime 会话策略/默认档/子代理继承 6 项集成、CLI approval 6 项与 ACP modes 测试、前端模式选择器 2 项测试通过；四端接入（CLI --approval、预设字段、ACP modes、桌面选择器+KV 默认档）接线完成；真实会话各档行为与桌面 UI 抽查待用户，见[权限模式规范](specs/permission-modes.md)|
 |ask_user 提问工具（Agent 向用户提问）|已实现并接线|contracts serde 3 项、runtime 挂起/无人在场/子代理路由 3 项集成、CLI 输入解析 3 项与 console 渲染 4 项、前端提问 Modal/回放配对/隐藏思考 8 项测试通过；CLI chat 交互渲染、run 非 TTY unattended 结算、JSON-RPC ask.list/resolve、桌面 question_list/resolve 与时间线回放卡接线完成；ACP v1 以 unattended 自动结算（elicitation 转发未实现）；真实模型端到端与桌面 UI 抽查待用户，见[ask_user 提问工具规范](specs/ask-user.md)|
+|项目移除（隐藏入口）与重新显示|已实现并接线|storage 隐藏 KV 往返/去重/跨重启与隐藏不影响会话恢复 2 项测试先红后绿；`workspace_remove` 仅置隐藏标记（运行中确认停止）、`workspace_reveal_hidden` 重开同路径重新显示、`WorkspaceInfo.hidden` KV 派生注入；前端右键菜单/隐藏确认/停止运行参数/重新显示提示/存档管理隐藏项目可查看可恢复 4 项测试，npm test 272 项与生产构建通过；cargo fmt/clippy/build 通过，cargo test 仅既有环境性失败（真实浏览器导航、git 子进程 ×2，主工作区复验同失败）；真实桌面 UI 抽查待用户，见[项目移除规范](specs/project-removal.md)|
 |搜索provider/Office预览|未实现|不能计为P2/P3完成|
 |脚本工作流/签名插件市场|未实现|不能计为P3完成|
 

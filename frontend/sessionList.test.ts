@@ -9,7 +9,7 @@ function session(overrides:Partial<SessionInfo>&{id:string}):SessionInfo{
  return {workspaceId:'ws-1',title:`会话 ${overrides.id}`,createdAt:at(2026,1,1,0,0),updatedAt:at(2026,11,8,9,0),parentId:null,...overrides};
 }
 function workspace(overrides:Partial<WorkspaceInfo>&{id:string}):WorkspaceInfo{
- return {sourcePath:`D:\\code\\${overrides.id}`,replicaPath:`C:\\replica\\${overrides.id}`,createdAt:at(2026,1,1,0,0),name:overrides.id,pinned:false,executionMode:'replica',worktrees:{},...overrides};
+ return {sourcePath:`D:\\code\\${overrides.id}`,replicaPath:`C:\\replica\\${overrides.id}`,createdAt:at(2026,1,1,0,0),name:overrides.id,pinned:false,hidden:false,executionMode:'replica',worktrees:{},...overrides};
 }
 
 describe('timeGroupOf',()=>{
