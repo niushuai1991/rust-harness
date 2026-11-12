@@ -336,3 +336,8 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .tool-diff .diff-body{border-top:0}
 
 .web-panel{display:flex;flex-direction:column;height:100%;min-height:0}.web-panel-address{display:flex;align-items:center;gap:6px;padding:8px;border-bottom:1px solid var(--border)}.web-panel-address span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.web-panel-address button{font-size:11px;padding:5px}.web-panel-content{flex:1;min-height:0}.link-context-menu{width:190px;z-index:100}.link-context-menu button{width:100%;justify-content:flex-start}
+.ask-option{display:flex;gap:9px;align-items:center;padding:7px 9px;border:1px solid var(--border);border-radius:7px;margin:4px 0;font-size:12px;cursor:pointer}
+.ask-option:hover{background:var(--surface)}
+.ask-option input{accent-color:var(--accent);margin:0}
+.ask-options{margin:8px 0;padding-left:18px;font-size:11px}
+.ask-card textarea{width:100%;min-height:64px;resize:vertical;border:1px solid var(--border);border-radius:7px;background:var(--panel);color:var(--text);padding:9px 11px;font-size:12px;margin-top:8px}

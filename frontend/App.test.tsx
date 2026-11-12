@@ -21,6 +21,7 @@ beforeEach(()=>{useChat.setState({events:{},streams:{},statuses:{},timelines:{},
  if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A'},{id:'b',workspaceId:'w',title:'会话 B'}];
  if(name==='session_timeline_page')return timeline(args.sessionId,[event(`e-${args.sessionId}`,args.sessionId,'1',`内容 ${args.sessionId}`)]);
  if(name==='approval_list')return [];
+ if(name==='question_list')return [];
  if(name==='approval_mode_get')return 'ask';
  return [];
 })});
@@ -194,6 +195,40 @@ describe('聊天交互',()=>{
  it('审批通过传递真实请求id',async()=>{const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name,args)=>name==='approval_list'?[{id:'approval-1',sessionId:'a',tool:'shell',arguments:{command:'cargo test'},reason:'执行测试'}]:original(name,args));render(<App/>);await screen.findByRole('dialog',{name:'操作需要你的批准'});fireEvent.click(screen.getByRole('button',{name:'批准此次操作'}));await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('approval_resolve',{id:'approval-1',allow:true}))});
  it('权限模式选择器加载默认档并对当前会话保存切换',async()=>{render(<App/>);await screen.findByText('内容 a');const selector=screen.getByLabelText('权限模式');expect(selector).toHaveValue('ask');fireEvent.change(selector,{target:{value:'auto'}});await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('approval_mode_save',{mode:'auto',sessionId:'a'}));expect(screen.getByLabelText('权限模式')).toHaveValue('auto')});
  it('权限模式提供五档选项',async()=>{render(<App/>);await screen.findByText('内容 a');const selector=screen.getByLabelText('权限模式');const values=Array.from(selector.querySelectorAll('option')).map(o=>o.value);expect(values).toEqual(['ask','edit','guarded','auto','never'])});
+});
+describe('Agent 提问',()=>{
+ const askPending=()=>[{id:'q-1',sessionId:'a',question:'先改哪个文件？',options:[{label:'session.rs',description:'存储层'},{label:'auth.rs'}]}];
+ it('轮询到 pending 提问时弹出对话框',async()=>{const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name)=>name==='question_list'?askPending():original(name));render(<App/>);await screen.findByRole('dialog',{name:'Agent 需要你的输入'});expect(screen.getByText('先改哪个文件？')).toBeVisible();expect(screen.getByLabelText('选项 session.rs')).toBeInTheDocument()});
+ it('提交选项答复传递真实id与selected来源',async()=>{const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name)=>name==='question_list'?askPending():original(name));render(<App/>);await screen.findByRole('dialog',{name:'Agent 需要你的输入'});fireEvent.click(screen.getByLabelText('选项 session.rs'));fireEvent.click(screen.getByRole('button',{name:'提交答复'}));await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('question_resolve',{id:'q-1',answer:{text:'session.rs',source:'selected'}}))});
+ it('自由输入答复按text来源提交',async()=>{const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name)=>name==='question_list'?askPending():original(name));render(<App/>);await screen.findByRole('dialog',{name:'Agent 需要你的输入'});fireEvent.change(screen.getByLabelText('自由答复'),{target:{value:'都先放一放'}});fireEvent.click(screen.getByRole('button',{name:'提交答复'}));await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('question_resolve',{id:'q-1',answer:{text:'都先放一放',source:'text'}}))});
+ it('无法回答按钮按unattended提交',async()=>{const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name)=>name==='question_list'?askPending():original(name));render(<App/>);await screen.findByRole('dialog',{name:'Agent 需要你的输入'});fireEvent.click(screen.getByRole('button',{name:'无法回答'}));await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('question_resolve',{id:'q-1',answer:{text:'',source:'unattended'}}))});
+ it('无选项提问仅渲染自由输入并提交',async()=>{const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name)=>name==='question_list'?[{id:'q-2',sessionId:'a',question:'继续吗？',options:[]}]:original(name));render(<App/>);await screen.findByRole('dialog',{name:'Agent 需要你的输入'});expect(screen.queryByText('选项 session.rs')).not.toBeInTheDocument();fireEvent.change(screen.getByLabelText('自由答复'),{target:{value:'继续'}});fireEvent.click(screen.getByRole('button',{name:'提交答复'}));await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('question_resolve',{id:'q-2',answer:{text:'继续',source:'text'}}))});
+ it('当前会话等待提问时隐藏思考状态',async()=>{const original=mocks.command.getMockImplementation()!;let questionPending=false,release!:()=>void;mocks.command.mockImplementation(async(name,args)=>name==='question_list'&&questionPending?askPending():original(name,args));mocks.send.mockImplementation(async()=>new Promise<void>(resolve=>release=resolve));render(<App/>);await screen.findByText('内容 a');fireEvent.change(screen.getByLabelText('消息'),{target:{value:'请求'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));expect(await screen.findByRole('status',{name:'正在思考'})).toBeVisible();questionPending=true;await screen.findByRole('dialog',{name:'Agent 需要你的输入'},{timeout:3500});expect(screen.queryByRole('status',{name:'正在思考'})).not.toBeInTheDocument();await act(async()=>release())});
+ it('时间线回放按id配对显示提问与答复',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,[
+   {id:'start',sessionId:'a',seq:'1',kind:'turn.start',data:{runId:'r'},createdAt:''},
+   {id:'ask',sessionId:'a',seq:'2',kind:'ask.request',data:{id:'q-1',sessionId:'a',question:'先改哪个文件？',options:[{label:'session.rs'}]},createdAt:''},
+   {id:'resolved',sessionId:'a',seq:'3',kind:'ask.resolved',data:{id:'q-1',answer:'session.rs',source:'selected'},createdAt:''},
+   {id:'end',sessionId:'a',seq:'4',kind:'turn.end',data:{runId:'r',status:'completed'},createdAt:''},
+  ]):original(name,args));
+  render(<App/>);
+  await screen.findByText('先改哪个文件？');
+  expect(screen.getByText('session.rs')).toBeVisible();
+  expect(screen.getByText(/答复：session\.rs/)).toBeVisible();
+ });
+ it('时间线回放显示未获得答复的自动结算',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,[
+   {id:'start',sessionId:'a',seq:'1',kind:'turn.start',data:{runId:'r'},createdAt:''},
+   {id:'ask',sessionId:'a',seq:'2',kind:'ask.request',data:{id:'q-3',sessionId:'a',question:'继续吗？',options:[]},createdAt:''},
+   {id:'resolved',sessionId:'a',seq:'3',kind:'ask.resolved',data:{id:'q-3',answer:'当前无用户在场（未答复）',source:'unattended'},createdAt:''},
+   {id:'end',sessionId:'a',seq:'4',kind:'turn.end',data:{runId:'r',status:'completed'},createdAt:''},
+  ]):original(name,args));
+  render(<App/>);
+  await screen.findByText('继续吗？');
+  expect(screen.getByText(/未获得答复/)).toBeVisible();
+ });
 });
 describe('侧栏会话入口',()=>{
  it('多项目时不再显示工作区切换下拉框，新建聊天按钮可用',async()=>{

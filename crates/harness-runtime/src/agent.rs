@@ -44,6 +44,33 @@ impl Approvals {
     }
 }
 
+type PendingQuestion = (AskRequest, oneshot::Sender<AskAnswer>);
+/// ask_user 提问的挂起等待表；pending 全局共享，子代理提问按 `AskRequest.session_id` 路由到宿主。
+#[derive(Default)]
+pub struct Questions {
+    pending: Mutex<HashMap<String, PendingQuestion>>,
+}
+impl Questions {
+    pub fn list(&self) -> Vec<AskRequest> {
+        self.pending
+            .lock()
+            .unwrap()
+            .values()
+            .map(|(r, _)| r.clone())
+            .collect()
+    }
+    pub fn resolve(&self, id: &str, answer: AskAnswer) -> AppResult<()> {
+        let (_, tx) = self
+            .pending
+            .lock()
+            .unwrap()
+            .remove(id)
+            .ok_or_else(|| AppError::new("ASK_EXPIRED", "提问不存在或已过期"))?;
+        tx.send(answer)
+            .map_err(|_| AppError::new("ASK_EXPIRED", "调用已结束"))
+    }
+}
+
 pub struct Runtime {
     pub store: Store,
     pub models: crate::providers::ModelService,
@@ -52,6 +79,9 @@ pub struct Runtime {
     pub workspaces: WorkspaceManager,
     pub plugins: Arc<PluginManager>,
     pub approvals: Approvals,
+    pub questions: Questions,
+    /// 无人值守模式：ask_user 提问不经挂起，直接以「无人在场」自动结算（非交互宿主设置）。
+    unattended: std::sync::atomic::AtomicBool,
     approval_policies: Mutex<HashMap<String, ApprovalPolicy>>,
     default_approval_policy: Mutex<Option<ApprovalPolicy>>,
     pub mcp: harness_extensions::mcp::McpManager,
@@ -138,6 +168,8 @@ impl Runtime {
             workspaces,
             plugins,
             approvals: Approvals::default(),
+            questions: Questions::default(),
+            unattended: std::sync::atomic::AtomicBool::new(false),
             approval_policies: Mutex::new(HashMap::new()),
             default_approval_policy: Mutex::new(None),
             mcp: harness_extensions::mcp::McpManager::new(),
@@ -155,6 +187,15 @@ impl Runtime {
     }
     pub fn subscribe(&self) -> broadcast::Receiver<LiveEvent> {
         self.events.subscribe()
+    }
+    /// 设置无人值守模式：ask_user 提问不经挂起，直接以「无人在场」自动结算（非交互宿主设置）。
+    pub fn set_unattended(&self, unattended: bool) {
+        self.unattended
+            .store(unattended, std::sync::atomic::Ordering::Relaxed);
+    }
+    /// 无人值守模式当前状态。
+    pub fn unattended(&self) -> bool {
+        self.unattended.load(std::sync::atomic::Ordering::Relaxed)
     }
     pub fn active_count(&self) -> usize {
         self.active.lock().unwrap().len()
@@ -1062,9 +1103,11 @@ impl Runtime {
                         cancel: tool_cancel.clone(),
                     });
                     tokio::pin!(work);
+                    // ask_user 挂起等待用户答复，与审批同享 600 秒等待上限；其余工具维持 180 秒执行时限。
+                    let tool_limit = if call.name == "ask_user" { ASK_WAIT_SECS } else { 180 };
                     tokio::select!{
                         _ = cancel.cancelled()=>{tool_cancel.cancel();let _=work.await;Err(cancelled())},
-                        _ = tokio::time::sleep(std::time::Duration::from_secs(180))=>{tool_cancel.cancel();let _=work.await;Err(AppError::new("TOOL_TIMEOUT","工具超过180秒执行时限"))},
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(tool_limit))=>{tool_cancel.cancel();let _=work.await;Err(AppError::new("TOOL_TIMEOUT","工具超过执行时限"))},
                         r=&mut work=>r,
                     }
                 }.await;
@@ -1263,6 +1306,78 @@ impl Runtime {
                 "用户拒绝、取消或审批已过期",
             ))
         }
+    }
+    /// ask_user：向用户提问并挂起等待答复（免审批白名单工具）。
+    ///
+    /// 无人在场（[`Runtime::set_unattended`]）或超过 [`ASK_WAIT_SECS`] 秒自动结算，
+    /// 均返回「请自行决策」答复让回合继续；取消时落结算事件保持请求/结算配对完整。
+    async fn ask_user(
+        &self,
+        session: &str,
+        a: &Value,
+        cancel: &CancellationToken,
+    ) -> AppResult<String> {
+        let request = AskRequest {
+            id: new_id(),
+            session_id: session.into(),
+            question: a["question"].as_str().unwrap_or_default().into(),
+            options: a["options"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| {
+                            let label = item["label"].as_str()?;
+                            Some(AskOption {
+                                label: label.into(),
+                                description: item["description"].as_str().map(Into::into),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
+        let payload = serde_json::to_value(&request).map_err(internal)?;
+        // 无人在场：不经挂起直接结算，事件流仍完整记录请求与结算（同审批策略直结算路径）。
+        if self.unattended() {
+            let answer = unattended_answer();
+            self.append(session, "ask.request", payload).await?;
+            self.append(
+                session,
+                "ask.resolved",
+                resolved_value(&request.id, &answer),
+            )
+            .await?;
+            return Ok(answer_text(&answer, &request));
+        }
+        let (tx, rx) = oneshot::channel();
+        self.questions
+            .pending
+            .lock()
+            .unwrap()
+            .insert(request.id.clone(), (request.clone(), tx));
+        let logged = self.append(session, "ask.request", payload).await;
+        if logged.is_err() {
+            self.questions.pending.lock().unwrap().remove(&request.id);
+            logged.map(|_| ())?;
+        }
+        let answer = tokio::select! {
+            _ = cancel.cancelled() => {
+                // 回合取消：仍落结算事件保持配对完整；结果随回合取消收尾。
+                Some(AskAnswer { text: "回合已取消，未获得答复".into(), source: AskSource::Timeout })
+            }
+            r = rx => Some(r.unwrap_or_else(|_| AskAnswer { text: "用户未能答复".into(), source: AskSource::Timeout })),
+            _ = tokio::time::sleep(std::time::Duration::from_secs(ASK_WAIT_SECS)) => Some(unattended_answer()),
+        };
+        self.questions.pending.lock().unwrap().remove(&request.id);
+        let answer = answer.expect("select 分支均产出答复");
+        self.append(
+            session,
+            "ask.resolved",
+            resolved_value(&request.id, &answer),
+        )
+        .await?;
+        Ok(answer_text(&answer, &request))
     }
     async fn execute_tool(self: &Arc<Self>, input: ToolExecution<'_>) -> AppResult<ToolResult> {
         let ToolExecution {
@@ -1536,6 +1651,7 @@ impl Runtime {
                 self.cancel(id);
                 "已请求中断".into()
             }
+            "ask_user" => self.ask_user(session, a, &cancel).await?,
             name if name.starts_with("plugin__") => {
                 return self
                     .plugins
@@ -1632,6 +1748,34 @@ fn lsp_text(result: Value) -> AppResult<String> {
 fn internal(e: impl std::fmt::Display) -> AppError {
     AppError::new("RUNTIME", e.to_string())
 }
+/// ask_user 挂起等待上限（秒）：与审批 600 秒兜底一致。
+const ASK_WAIT_SECS: u64 = 600;
+/// 无人在场/超时的统一自动结算答复：提问失败不摧毁回合。
+fn unattended_answer() -> AskAnswer {
+    AskAnswer::unattended()
+}
+/// ask.resolved 事件 data。
+fn resolved_value(id: &str, answer: &AskAnswer) -> Value {
+    json!({"id":id,"answer":answer.text,"source":answer.source})
+}
+/// 给模型的 tool result 文本：区分选项选择、自由输入与无人在场结算。
+fn answer_text(answer: &AskAnswer, request: &AskRequest) -> String {
+    match answer.source {
+        AskSource::Selected => {
+            let description = request
+                .options
+                .iter()
+                .find(|o| o.label == answer.text)
+                .and_then(|o| o.description.as_deref())
+                .map(|d| format!("（{d}）"))
+                .unwrap_or_default();
+            format!("用户选择了「{}」{description}", answer.text)
+        }
+        AskSource::Text => format!("用户答复：{}", answer.text),
+        AskSource::Unattended => "当前无用户在场（未答复），请基于现有信息自行决策并继续。".into(),
+        AskSource::Timeout => "等待答复超时，请基于现有信息自行决策并继续。".into(),
+    }
+}
 fn requires_approval(name: &str) -> bool {
     !matches!(
         name,
@@ -1648,6 +1792,7 @@ fn requires_approval(name: &str) -> bool {
             | "plan_write"
             | "goal_write"
             | "agent_status"
+            | "ask_user"
     )
 }
 fn workspace_context(root: &Path, exec: &ExecContext, skills_catalog: &str) -> AppResult<String> {
@@ -1785,6 +1930,12 @@ pub fn builtin_tools() -> Vec<ToolDefinition> {
             "记录待办清单",
             json!({"items":{"type":"array","items":{"type":"object"}}}),
             &["items"],
+        ),
+        def(
+            "ask_user",
+            "向用户提问并等待答复。options 提供候选项时用户可选择其中之一或自由输入；省略 options 为纯自由文本提问。仅在缺少用户决策无法继续时使用，无人在场环境下会自动以「无人在场」结算",
+            json!({"question":s,"options":{"type":"array","items":{"type":"object","properties":{"label":s,"description":s},"required":["label"],"additionalProperties":false}}}),
+            &["question"],
         ),
         def("plan_write", "记录计划", json!({"content":s}), &["content"]),
         def("goal_write", "记录目标", json!({"content":s}), &["content"]),

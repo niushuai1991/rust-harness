@@ -25,6 +25,11 @@ export type ChatGptLoginStatus='idle'|'pending'|'completed'|'failed'|'cancelled'
 export interface ChatGptLoginState {status:ChatGptLoginStatus;email:string|null;planType:string|null;error:string|null}
 export interface ChatGptAccountInfo {loggedIn:boolean;email:string|null;planType:string|null;expiresAt:number|null}
 export interface ApprovalRequest {id:string;sessionId:string;tool:string;arguments:unknown;reason:string}
+// ask_user 提问（harness-contracts AskOption/AskRequest/AskSource/AskAnswer）。
+export interface AskOption {label:string;description?:string|null}
+export interface AskRequest {id:string;sessionId:string;question:string;options:AskOption[]}
+export type AskSource='selected'|'text'|'unattended'|'timeout';
+export interface AskAnswer {text:string;source:AskSource}
 export interface PluginInfo {id:string;name:string;version:string;kind:string;enabled:boolean;permissions:string[];status:string;description:string}
 export interface FileChange {path:string;kind:string;beforeHash:string|null;afterHash:string|null;sourceHash:string|null;conflict:boolean;beforeText:string|null;afterText:string|null}
 export interface WorkspaceFileDiff {path:string;unified:string|null}

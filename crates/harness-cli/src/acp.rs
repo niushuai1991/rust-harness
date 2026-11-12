@@ -60,7 +60,7 @@ fn tool_kind(name: &str) -> ToolKind {
         "write" | "edit" => ToolKind::Edit,
         "shell" => ToolKind::Execute,
         "web_fetch" => ToolKind::Fetch,
-        "todo_write" | "plan_write" | "goal_write" => ToolKind::Think,
+        "todo_write" | "plan_write" | "goal_write" | "ask_user" => ToolKind::Think,
         _ => ToolKind::Other,
     }
 }
@@ -75,6 +75,7 @@ fn tool_title(name: &str, args: &Value) -> String {
         "web_fetch" => format!("获取 {}", field("url")),
         "search" => format!("搜索 {}", field("query")),
         "read" | "read_artifact" | "list_files" => format!("读取 {}", field("path")),
+        "ask_user" => format!("提问 {}", field("question")),
         _ => String::new(),
     };
     if hint.is_empty() {
@@ -254,6 +255,9 @@ pub async fn serve_transport(
     options: AcpOptions,
     transport: impl ConnectTo<agent_client_protocol::Agent>,
 ) -> AppResult<()> {
+    // ACP v1 未实现 elicitation 交互转发（docs/specs/acp.md 非目标）：
+    // ask_user 提问以无人在场自动结算，避免编辑器客户端下回合无限挂起。
+    runtime.set_unattended(true);
     // 预设启动时解析一次，未知 ID 立即失败而不是在每个回合报错。
     let preset = crate::manage::resolve_preset(&runtime, options.preset.as_deref()).await?;
     let state = Arc::new(AcpState {

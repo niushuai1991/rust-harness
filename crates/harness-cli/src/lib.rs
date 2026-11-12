@@ -185,6 +185,15 @@ pub async fn dispatch(runtime: Arc<Runtime>, method: &str, p: Value) -> AppResul
             )?;
             Value::Null
         }
+        "ask.list" => json!(runtime.questions.list()),
+        "ask.resolve" => {
+            runtime.questions.resolve(
+                field(&p, "id")?,
+                serde_json::from_value(p["answer"].clone())
+                    .map_err(|_| AppError::new("INVALID_PARAMS", "answer"))?,
+            )?;
+            Value::Null
+        }
         "provider.list" => json!(runtime.models.list_providers().await?),
         "provider.save" => json!(
             runtime

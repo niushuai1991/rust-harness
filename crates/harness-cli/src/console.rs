@@ -1,6 +1,6 @@
 //! 事件流渲染器：human（正文 stdout、过程 stderr、request 关联去重）与 json（JSONL 契约）。
 use crate::diffview::ColorChoice;
-use harness_contracts::{ApprovalRequest, SessionEvent};
+use harness_contracts::{ApprovalRequest, AskRequest, SessionEvent};
 use serde_json::json;
 use std::{
     collections::HashMap,
@@ -166,6 +166,21 @@ impl Console {
             "inbox.cancelled" => {
                 writeln!(self.err, "{prefix}消息已在排队时取消")?;
             }
+            "ask.resolved" => {
+                let answer = event.data["answer"].as_str().unwrap_or_default();
+                let source = event.data["source"].as_str().unwrap_or_default();
+                match source {
+                    "selected" | "text" => {
+                        let origin = if source == "selected" {
+                            "选项"
+                        } else {
+                            "输入"
+                        };
+                        writeln!(self.err, "{prefix}✓ 提问已答复（{origin}）：{answer}")?;
+                    }
+                    _ => writeln!(self.err, "{prefix}⚠ 提问未获得答复（{source}）")?,
+                }
+            }
             "compaction.summary" => {
                 let content = event.data["content"].as_str().unwrap_or_default();
                 writeln!(self.err, "{prefix}[历史已压缩] {}", content.trim())?;
@@ -240,6 +255,33 @@ impl Console {
             request.tool, request.session_id, request.arguments
         )?;
         write!(self.err, "  允许执行？[y/N] ")?;
+        self.err.flush()
+    }
+
+    /// ask_user 提问提示（stderr，保证 stdout 纯净）：问题、编号选项与输入指引。
+    pub fn ask(&mut self, request: &AskRequest) -> std::io::Result<()> {
+        writeln!(
+            self.err,
+            "\n提问（会话 {}）：{}",
+            &request.session_id[..request.session_id.len().min(8)],
+            request.question
+        )?;
+        for (index, option) in request.options.iter().enumerate() {
+            match &option.description {
+                Some(description) => writeln!(
+                    self.err,
+                    "  [{}] {}（{description}）",
+                    index + 1,
+                    option.label
+                )?,
+                None => writeln!(self.err, "  [{}] {}", index + 1, option.label)?,
+            }
+        }
+        if request.options.is_empty() {
+            writeln!(self.err, "请输入答复文本：")?;
+        } else {
+            writeln!(self.err, "输入序号选择选项，或直接输入答复文本：")?;
+        }
         self.err.flush()
     }
 
@@ -480,5 +522,93 @@ mod tests {
         assert_eq!(result["exitCode"], 0);
         assert_eq!(result["changedFiles"], 2);
         assert!(err.string().is_empty(), "JSON 模式 stdout 必须纯净");
+    }
+
+    fn ask_request() -> AskRequest {
+        serde_json::from_value(json!({
+            "id":"q1","sessionId":"s1","question":"先改哪个文件？",
+            "options":[{"label":"session.rs","description":"存储层"},{"label":"auth.rs"}]
+        }))
+        .unwrap()
+    }
+
+    /// 提问交互提示渲染：问题、编号选项与输入指引全部落 stderr。
+    #[test]
+    fn ask_renders_question_and_options_to_stderr() {
+        let (mut console, out, err) = console();
+        console.ask(&ask_request()).unwrap();
+        assert!(out.string().is_empty(), "提问提示不得进入 stdout");
+        let text = err.string();
+        assert!(text.contains("先改哪个文件？"), "输出：{text}");
+        assert!(text.contains("[1] session.rs（存储层）"), "输出：{text}");
+        assert!(text.contains("[2] auth.rs"), "输出：{text}");
+        assert!(text.contains("序号"), "输出：{text}");
+    }
+
+    /// 无选项时仅渲染问题与自由输入指引。
+    #[test]
+    fn ask_without_options_prompts_free_text() {
+        let (mut console, _out, err) = console();
+        let request: AskRequest = serde_json::from_value(json!({
+            "id":"q1","sessionId":"s1","question":"继续吗？"
+        }))
+        .unwrap();
+        console.ask(&request).unwrap();
+        let text = err.string();
+        assert!(text.contains("继续吗？"), "输出：{text}");
+        assert!(!text.contains("[1]"), "无选项不得渲染编号：{text}");
+    }
+
+    /// ask.resolved 渲染答复结果；无人在场/超时渲染未答复提示。
+    #[test]
+    fn durable_renders_ask_resolved_verdict() {
+        let (mut console, _out, err) = console();
+        console
+            .durable(&event(
+                "s1",
+                "ask.resolved",
+                json!({"id":"q1","answer":"session.rs","source":"selected"}),
+            ))
+            .unwrap();
+        console
+            .durable(&event(
+                "s1",
+                "ask.resolved",
+                json!({"id":"q2","answer":"当前无用户在场（未答复）","source":"unattended"}),
+            ))
+            .unwrap();
+        let text = err.string();
+        assert!(text.contains("已答复"), "输出：{text}");
+        assert!(text.contains("session.rs"), "输出：{text}");
+        assert!(text.contains("未获得答复"), "输出：{text}");
+    }
+
+    /// JSON 模式下 ask 事件行照常落 stdout（stderr 是否渲染不影响 JSONL 契约）。
+    #[test]
+    fn json_mode_emits_ask_events_on_stdout() {
+        let out = SharedBuf::default();
+        let err = SharedBuf::default();
+        let mut console = Console::with_writers(
+            true,
+            "s1",
+            ColorChoice::Never,
+            Box::new(out.clone()),
+            Box::new(err.clone()),
+        );
+        console
+            .durable(&event(
+                "s1",
+                "ask.resolved",
+                json!({"id":"q1","answer":"session.rs","source":"selected"}),
+            ))
+            .unwrap();
+        let lines: Vec<serde_json::Value> = out
+            .string()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["event"]["kind"], "ask.resolved");
+        assert_eq!(lines[0]["event"]["data"]["source"], "selected");
     }
 }
