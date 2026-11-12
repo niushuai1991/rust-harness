@@ -7,6 +7,7 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -489,7 +490,28 @@ impl Store {
             json!({"format":"rust-harness.session","version":1,"session":self.session(id).await?})
                 .to_string(),
         ];
-        for e in self.events(id, 0).await? {
+        // Import requires contiguous sequence numbers; translate compaction boundaries too.
+        let mut exported_seq = 0usize;
+        let mut sequence_map = BTreeMap::new();
+        for mut e in self.events(id, 0).await? {
+            let original_seq = e.seq.parse::<u64>().map_err(db_error)?;
+            if e.kind == "request.snapshot" {
+                sequence_map.insert(original_seq, exported_seq);
+                continue;
+            }
+            if e.kind == "compaction.summary"
+                && let Some(through_seq) = e.data["throughSeq"].as_str()
+                && let Ok(through_seq) = through_seq.parse::<u64>()
+            {
+                let mapped = sequence_map
+                    .range(..=through_seq)
+                    .next_back()
+                    .map_or(0, |(_, seq)| *seq);
+                e.data["throughSeq"] = json!(mapped.to_string());
+            }
+            exported_seq += 1;
+            sequence_map.insert(original_seq, exported_seq);
+            e.seq = exported_seq.to_string();
             lines.push(serde_json::to_string(&e).map_err(db_error)?);
         }
         Ok(lines.join("\n") + "\n")
