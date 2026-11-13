@@ -129,6 +129,8 @@ export default function App(){
  const taskCount=useMemo(()=>{const open=new Set<string>();for(const e of events){const id=e.data?.id;if(typeof id!=='string')continue;if(e.kind==='job.started')open.add(id);else if(e.kind==='job.finished')open.delete(id)}return open.size},[events]);
  const generation=useRef(0),end=useRef<HTMLDivElement>(null),conversationRef=useRef<HTMLElement>(null),timelineRequest=useRef(0),autoFollow=useRef(true),activeWorkspaceId=useRef(workspaceId);
  const creatingSessions=useRef(new Map<string,Promise<SessionInfo>>());
+ // 启动判定：首个工作区加载后不再自动打开最近会话（含 StrictMode 对同一工作区的重复执行）。
+ const bootstrappedWorkspace=useRef<string|null>(null);
  activeWorkspaceId.current=workspaceId;
  async function attempt<T>(action:()=>Promise<T>):Promise<T|undefined>{setError('');try{return await action()}catch(e){setError(errorText(e));return undefined}}
  useEffect(()=>{if(!desktop())return;void attempt(async()=>{const [ws,ms,ps,sel,pset,amode]=await Promise.all([command<WorkspaceInfo[]>('workspace_list'),command<ModelConfig[]>('model_list'),command<ProviderInfo[]>('provider_list'),command<DefaultSelection|null>('default_selection_get'),command<PresetInfo[]>('preset_list'),command<string>('approval_mode_get')]);setWorkspaces(ws);setWorkspaceId(ws[0]?.id??'');setModels(ms);setProviders(ps);setPresets(pset);setApprovalMode((KNOWN_APPROVALS as readonly string[]).includes(amode)?amode as ApprovalPolicy:'ask');
@@ -142,6 +144,8 @@ export default function App(){
   setModelId(restored?.id??'');setEffort(restoredEffort)})},[]);
  useEffect(()=>{
   const token=++generation.current,targetWorkspaceId=workspaceId;
+  const firstWorkspaceLoad=!!targetWorkspaceId&&(bootstrappedWorkspace.current===null||bootstrappedWorkspace.current===targetWorkspaceId);
+  if(targetWorkspaceId)bootstrappedWorkspace.current=targetWorkspaceId;
   let disposed=false;
   const current=()=>!disposed&&token===generation.current&&activeWorkspaceId.current===targetWorkspaceId;
   setSessions([]);setSessionId('');setText('');setSessionBusy(false);setError('');
@@ -158,11 +162,11 @@ export default function App(){
      setDrafting(true);setDraftWorkspaceId(targetWorkspaceId);
      return;
     }
-    setDrafting(false);setDraftWorkspaceId(null);
     setSessions(list);
     const jump=pendingJump.current;
-    if(jump&&list.some(s=>s.id===jump)){pendingJump.current='';setSessionId(jump)}
-    else setSessionId(list[0]?.id??'');
+    if(jump&&list.some(s=>s.id===jump)){pendingJump.current='';setDrafting(false);setDraftWorkspaceId(null);setSessionId(jump)}
+    else if(firstWorkspaceLoad){setDrafting(true);setDraftWorkspaceId(targetWorkspaceId)}
+    else{setDrafting(false);setDraftWorkspaceId(null);setSessionId(list[0]?.id??'')}
    }catch(e){if(current())setError(errorText(e))}
   })();
   return()=>{disposed=true};
