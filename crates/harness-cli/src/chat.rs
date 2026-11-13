@@ -50,17 +50,12 @@ const INIT_PROMPT: &str = "请分析当前项目并在执行根目录生成 AGEN
 3. 协作约定（代码风格、提交与验证要求）\n\
 要求内容精炼并全部使用中文；若已存在 AGENTS.md 则读取后在原基础上修订补全。完成后简述你做了什么。";
 
-/// `/plan` 注入的预置提示词：模型只读探索后制定实施计划并经 plan_write 记录；未经确认不改动文件。
-/// 桌面端 `frontend/slashCommands.ts` 中的同名常量以此处为单一事实源。
-const PLAN_PROMPT: &str = "请为下面的任务制定实施计划：先阅读相关代码弄清现状，再给出分步骤、可验证的计划，\
-并用 plan_write 工具把计划记录下来；计划未经我确认前不要修改任何文件。";
-
 /// `/goal` 注入的预置提示词：模型用 goal_write 记录目标并说明推进方式；未经确认不改动文件。
 /// 桌面端 `frontend/slashCommands.ts` 中的同名常量以此处为单一事实源。
 const GOAL_PROMPT: &str = "请把下面的内容设定为本会话的目标：用 goal_write 工具记录目标，\
 并简要说明你打算如何推进；未经我确认前不要修改任何文件。";
 
-/// 把用户跟在 `/plan`、`/goal` 后的文本拼进预置提示词；格式与桌面端 expandSlashPrompt 保持镜像。
+/// 把用户跟在 `/goal` 后的文本拼进预置提示词。
 fn slash_prompt(prompt: &str, label: &str, body: &str) -> String {
     format!("{prompt}\n\n{label}：{body}")
 }
@@ -285,15 +280,26 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<()> {
                     eprintln!("提示：用 /diff 查看 AGENTS.md 改动，/apply 审阅后同步到原项目。");
                 }
             }
-            ChatCommand::Plan(None) => {
-                eprintln!("用法：/plan <任务描述>；发送后模型制定实施计划并经 plan_write 记录。");
-            }
-            ChatCommand::Plan(Some(task)) => {
-                let prompt = slash_prompt(PLAN_PROMPT, "任务", task);
-                if let Err(error) = run::turn_once(runtime.clone(), context, &prompt).await {
-                    eprintln!("回合发起失败：{error}");
-                } else {
-                    eprintln!("计划已发起；确认后可直接发送消息开始实施。");
+            ChatCommand::Plan(task) => {
+                let current = match runtime.session_plan_get(&session_id).await {
+                    Ok(enabled) => enabled,
+                    Err(error) => {
+                        eprintln!("读取计划模式失败：{error}");
+                        continue;
+                    }
+                };
+                let enabled = if task.is_some() { true } else { !current };
+                match runtime.session_plan_set(&session_id, enabled).await {
+                    Ok(()) => {
+                        eprintln!("计划模式已{}。", if enabled { "开启" } else { "退出" });
+                        if let Some(task) = task {
+                            if let Err(error) = run::turn_once(runtime.clone(), context, task).await
+                            {
+                                eprintln!("回合发起失败：{error}");
+                            }
+                        }
+                    }
+                    Err(error) => eprintln!("切换计划模式失败：{error}"),
                 }
             }
             ChatCommand::Goal(None) => {
@@ -569,14 +575,6 @@ mod tests {
     #[test]
     fn init_prompt_mentions_agents_md() {
         assert!(INIT_PROMPT.contains("AGENTS.md"));
-    }
-
-    #[test]
-    fn plan_prompt_embeds_task_and_tool_name() {
-        let prompt = slash_prompt(PLAN_PROMPT, "任务", "为导出功能制定计划");
-        assert!(prompt.contains("plan_write"));
-        assert!(prompt.contains("为导出功能制定计划"));
-        assert!(prompt.starts_with(PLAN_PROMPT));
     }
 
     #[test]

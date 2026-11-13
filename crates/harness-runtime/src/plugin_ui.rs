@@ -60,6 +60,12 @@ impl Runtime {
         arguments: Value,
     ) -> AppResult<ToolResult> {
         let _boundary = self.session_boundary(session).await;
+        if self.session_plan_get(session).await? {
+            return Err(AppError::new(
+                "PLAN_MODE_READ_ONLY",
+                "计划模式不允许运行插件命令",
+            ));
+        }
         let info = self.store.session(session).await?;
         let lease = self.workspaces.acquire(&info.workspace_id)?;
         let declared = self

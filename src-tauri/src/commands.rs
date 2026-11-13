@@ -254,6 +254,23 @@ pub async fn session_create(
     state.workspaces.get(&workspace_id)?;
     state.store.create_session(&workspace_id, &title).await
 }
+/// 查询指定会话的计划模式。
+#[tauri::command]
+#[specta::specta]
+pub async fn session_plan_get(state: Backend<'_>, session_id: String) -> AppResult<bool> {
+    state.session_plan_get(&session_id).await
+}
+
+/// 由用户切换指定会话的计划模式。
+#[tauri::command]
+#[specta::specta]
+pub async fn session_plan_set(
+    state: Backend<'_>,
+    session_id: String,
+    enabled: bool,
+) -> AppResult<()> {
+    state.session_plan_set(&session_id, enabled).await
+}
 /// 归档会话：从桌面任务列表隐藏（事件保留），返回更新后的会话信息。
 #[tauri::command]
 #[specta::specta]
@@ -1089,6 +1106,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         session_list,
         session_active_list,
         session_create,
+        session_plan_get,
+        session_plan_set,
         session_rename,
         session_archive,
         session_restore,

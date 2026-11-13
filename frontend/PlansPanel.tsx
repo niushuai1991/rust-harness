@@ -3,7 +3,7 @@ import {ListTodo,MessageSquare,RefreshCw,Target} from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {command,errorText} from './api';
-import {Modal,TodoList} from './App';
+import {TodoList} from './App';
 import type {PlanStateOverview,SessionEvent,TimelinePage} from './types';
 
 const STATE_KINDS=['todo.state','plan.state','goal.state'];
@@ -15,7 +15,7 @@ const isDone=(item:Record<string,unknown>)=>item.done===true||item.completed===t
 const todoSummary=(data:Record<string,unknown>)=>{const items=todoItems(data);return `${items.length} 项 · ${items.filter(isDone).length} 已完成`};
 const planSnippet=(data:Record<string,unknown>)=>{const text=String(data.content??'');return text.length>80?`${text.slice(0,80)}…`:text};
 
-export function PlansPanel({currentSessionId,onOpenSession,onClose}:{currentSessionId:string;onOpenSession:(sessionId:string,workspaceId:string)=>void;onClose:()=>void}) {
+export function PlansPanel({currentSessionId,onOpenSession}:{currentSessionId:string;onOpenSession:(sessionId:string,workspaceId:string)=>void}) {
  const [entries,setEntries]=useState<PlanStateOverview[]>([]),[error,setError]=useState(''),[loaded,setLoaded]=useState(false);
  const [expanded,setExpanded]=useState(''),[history,setHistory]=useState<Record<string,SessionEvent[]|null>>({});
  async function load(){setError('');try{setEntries(await command<PlanStateOverview[]>('plan_overview'));setLoaded(true)}catch(e){setError(errorText(e))}}
@@ -39,7 +39,7 @@ export function PlansPanel({currentSessionId,onOpenSession,onClose}:{currentSess
    }catch(e){setError(errorText(e));setHistory(old=>{const next={...old};delete next[sessionId];return next})}
   }
  }
- return <Modal wide title="计划与目标" onClose={onClose}>
+ return <div className="plans-panel">
   <div className="diff-intro"><p className="muted">所有会话的最新待办、计划与目标，由模型经工具写入，这里只读查看；事件流仍是事实来源。</p><button disabled={!loaded} onClick={load}><RefreshCw size={15}/>刷新</button></div>
   {error&&<p role="alert" className="inline-error">{error}</p>}
   {loaded&&!groups.length&&<div className="diff-empty"><Target size={28}/><h3>还没有任何计划或目标</h3><p className="muted">会话中让模型记录待办、计划或目标后，会在这里汇总。</p></div>}
@@ -62,5 +62,5 @@ export function PlansPanel({currentSessionId,onOpenSession,onClose}:{currentSess
      </section>)}
    </article>)}
   </div>
- </Modal>;
+ </div>;
 }

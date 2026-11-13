@@ -18,6 +18,17 @@ beforeEach(()=>{
 afterEach(cleanup);
 
 describe('右侧面板容器',()=>{
+ it('计划 tab 可切换且计划内容不再是弹窗',async()=>{
+  const onOpenSession=vi.fn();
+  render(<SidePanel workspaceId="w" currentSessionId="s1" onOpenSession={onOpenSession}/>);
+  act(()=>useSidePanel.getState().openChanges());
+  fireEvent.click(screen.getByRole('tab',{name:'计划'}));
+  expect(screen.getByRole('tab',{name:'计划'})).toHaveAttribute('aria-selected','true');
+  expect(await screen.findByText(/所有会话的最新待办/)).toBeInTheDocument();
+  expect(screen.queryByRole('dialog',{name:'计划与目标'})).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('tab',{name:'预览'}));
+  expect(screen.getByText('预览视图 空')).toBeInTheDocument();
+ });
  it('默认不渲染，openChanges 后显示更改 tab',()=>{
   render(<SidePanel workspaceId="w"/>);
   expect(screen.queryByRole('complementary',{name:'文件面板'})).not.toBeInTheDocument();

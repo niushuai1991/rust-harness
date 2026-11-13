@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {GOAL_PROMPT,INIT_PROMPT,PLAN_PROMPT,SLASH_COMMANDS,commandTokenUnderCursor,expandSlashPrompt,filterSlashCommands} from './slashCommands';
+import {GOAL_PROMPT,INIT_PROMPT,SLASH_COMMANDS,commandTokenUnderCursor,expandSlashPrompt,filterSlashCommands} from './slashCommands';
 
 describe('斜杠命令注册表',()=>{
  it('包含桌面端可执行子集且无重复',()=>{
@@ -31,26 +31,26 @@ describe('斜杠命令注册表',()=>{
   expect(INIT_PROMPT).toContain('项目概述');
   expect(INIT_PROMPT).toContain('协作约定');
  });
- it('plan/goal 提示词与 CLI 常量镜像一致',()=>{
-  expect(PLAN_PROMPT).toContain('plan_write');
-  expect(PLAN_PROMPT).toContain('未经我确认前不要修改任何文件');
+ it('goal 提示词与 CLI 常量镜像一致',()=>{
+
+
   expect(GOAL_PROMPT).toContain('goal_write');
   expect(GOAL_PROMPT).toContain('未经我确认前不要修改任何文件');
  });
 });
 
 describe('expandSlashPrompt',()=>{
- it('带参数的 /plan 展开为预置提示词并拼接任务',()=>{
+ it('/plan 不作为预置提示词展开',()=>{
   const expanded=expandSlashPrompt('/plan 为导出功能制定计划');
-  expect(expanded).toEqual({kind:'prompt',text:`${PLAN_PROMPT}\n\n任务：为导出功能制定计划`});
+  expect(expanded).toBeNull();
  });
  it('带参数的 /goal 展开为预置提示词并拼接目标，参数保留多行',()=>{
   const expanded=expandSlashPrompt('/goal  完成导出功能\n并通过全部测试 ');
   expect(expanded).toEqual({kind:'prompt',text:`${GOAL_PROMPT}\n\n目标：完成导出功能\n并通过全部测试`});
  });
  it('无参数时返回用法提示',()=>{
-  expect(expandSlashPrompt('/plan')).toEqual({kind:'usage',name:'plan'});
-  expect(expandSlashPrompt('/plan  ')).toEqual({kind:'usage',name:'plan'});
+  expect(expandSlashPrompt('/plan')).toBeNull();
+  expect(expandSlashPrompt('/plan  ')).toBeNull();
   expect(expandSlashPrompt('/goal')).toEqual({kind:'usage',name:'goal'});
  });
  it('其余输入原样放行',()=>{

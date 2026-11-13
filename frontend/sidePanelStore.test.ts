@@ -2,6 +2,16 @@ import {describe,expect,it} from 'vitest';
 import {useSidePanel} from './sidePanelStore';
 
 describe('右侧面板状态',()=>{
+ it('openPlans 打开计划视图，close 保留视图而 reset 清理全部状态',()=>{
+  useSidePanel.getState().reset();
+  useSidePanel.getState().openPreview('a.ts');
+  useSidePanel.getState().openPlans();
+  expect(useSidePanel.getState()).toMatchObject({open:true,view:'plans',previewPath:'a.ts'});
+  useSidePanel.getState().close();
+  expect(useSidePanel.getState()).toMatchObject({open:false,view:'plans'});
+  useSidePanel.getState().reset();
+  expect(useSidePanel.getState()).toMatchObject({open:false,view:'changes',previewPath:null,webUrl:null});
+ });
  it('openPreview 打开面板、切到预览并记录文件路径',()=>{
   useSidePanel.getState().reset();
   useSidePanel.getState().openPreview('src/app.ts');
