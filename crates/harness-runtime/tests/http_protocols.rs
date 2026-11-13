@@ -298,14 +298,9 @@ async fn all_protocols_execute_approved_tools_and_replay_after_restart() {
                 .unwrap()
                 .contains("fixture-secret")
         );
-        assert_eq!(
-            events
-                .iter()
-                .find(|e| e.kind == "request.snapshot")
-                .unwrap()
-                .data["route"]["apiMode"],
-            json!(mode)
-        );
+        // request.snapshot 曾在每轮请求前全量落库对话历史，现已移除（膨胀源，payload 无消费方）；
+        // 请求路由与模式覆盖由上方 captured HTTP 请求断言承担。
+        assert!(events.iter().all(|e| e.kind != "request.snapshot"));
         drop(runtime);
         let runtime = Runtime::open(data).await.unwrap();
         runtime

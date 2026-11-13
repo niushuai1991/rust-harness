@@ -3,7 +3,7 @@ use harness_contracts::*;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{
-    Row, SqlitePool,
+    Connection, Row, SqliteConnection, SqlitePool,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
 use std::{
@@ -498,6 +498,54 @@ impl Store {
             }
         }
         Ok(recovered)
+    }
+    /// 统计现存 `request.snapshot` 事件的行数与字节占用（dry-run 预览用），不执行删除。
+    pub async fn request_snapshot_usage(&self) -> AppResult<PurgeSummary> {
+        let (rows, bytes): (i64, Option<i64>) = sqlx::query_as(
+            "SELECT COUNT(*), COALESCE(SUM(LENGTH(data)),0) FROM events WHERE kind='request.snapshot'",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(PurgeSummary {
+            rows: u64::try_from(rows).unwrap_or_default(),
+            bytes: u64::try_from(bytes.unwrap_or_default()).unwrap_or_default(),
+        })
+    }
+    /// 删除全部会话的历史 `request.snapshot` 事件：该 kind 曾在每轮模型请求前把
+    /// 全量对话历史与 tools 整体落库（事件本身无消费方），是 events 表膨胀的主因。
+    /// 只动 events 表；FTS 索引仅含消息事件，无需同步。
+    pub async fn purge_request_snapshots(&self) -> AppResult<PurgeSummary> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        let (rows, bytes): (i64, Option<i64>) = sqlx::query_as(
+            "SELECT COUNT(*), COALESCE(SUM(LENGTH(data)),0) FROM events WHERE kind='request.snapshot'",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        sqlx::query("DELETE FROM events WHERE kind='request.snapshot'")
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
+        tx.commit().await.map_err(db_error)?;
+        Ok(PurgeSummary {
+            rows: u64::try_from(rows).unwrap_or_default(),
+            bytes: u64::try_from(bytes.unwrap_or_default()).unwrap_or_default(),
+        })
+    }
+    /// 执行 `VACUUM` 把已删除页归还操作系统；不能在事务中运行，且要求无并发读锁，
+    /// 因此用独立连接执行（池内连接可能残留未 drain 的语句游标导致 SQLITE_BUSY）。
+    pub async fn vacuum(&self) -> AppResult<()> {
+        let options = self.pool.connect_options().clone();
+        let mut conn = SqliteConnection::connect_with(&options)
+            .await
+            .map_err(db_error)?;
+        sqlx::raw_sql("VACUUM")
+            .execute(&mut conn)
+            .await
+            .map_err(db_error)?;
+        conn.close().await.map_err(db_error)?;
+        Ok(())
     }
     /// Latest todo/plan/goal entry per session for the desktop overview panel; derived view.
     pub async fn latest_states(&self) -> AppResult<Vec<PlanStateOverview>> {

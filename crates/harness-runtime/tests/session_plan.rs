@@ -166,6 +166,7 @@ async fn plan_exit_requires_explicit_selected_approval_and_rejects_switch_while_
         .unwrap();
     runtime.set_approval_policy(&session.id, Some(ApprovalPolicy::Auto));
     runtime.session_plan_set(&session.id, true).await.unwrap();
+    let captured = Arc::new(Mutex::new(Vec::new()));
     for (n, label, source, expected) in [
         (0, "拒绝", AskSource::Selected, true),
         (1, "批准", AskSource::Text, true),
@@ -190,7 +191,10 @@ async fn plan_exit_requires_explicit_selected_approval_and_rejects_switch_while_
         let task = tokio::spawn(runtime.clone().run_session(
             session.id.clone(),
             "plan".into(),
-            Arc::new(Provider(Mutex::new(Some(answer)))),
+            Arc::new(CapturingProvider(
+                Mutex::new(Some(answer)),
+                captured.clone(),
+            )),
         ));
         let request = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
@@ -231,9 +235,17 @@ async fn plan_exit_requires_explicit_selected_approval_and_rejects_switch_while_
             !expected
         );
     }
+    // 计划模式提示词必须注入模型请求（覆盖由 CapturingProvider 承担）；
+    // request.snapshot 已不再落库（写入膨胀源，payload 无消费方）。
+    assert!(
+        captured
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| c.contains("当前处于计划模式"))
+    );
     let events = runtime.store.events(&session.id, 0).await.unwrap();
-    assert!(events.iter().any(|e| e.kind == "request.snapshot"
-        && e.data["messages"].to_string().contains("当前处于计划模式")));
+    assert!(events.iter().all(|e| e.kind != "request.snapshot"));
     assert_eq!(
         events.iter().filter(|e| e.kind == "session.plan").count(),
         2
@@ -373,6 +385,36 @@ impl ModelProvider for Provider {
         _: CancellationToken,
         _: DeltaSink,
     ) -> AppResult<ModelAnswer> {
+        Ok(self
+            .0
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_else(|| ModelAnswer {
+                usage: json!({"prompt_tokens": 0, "completion_tokens": 0}),
+                ..Default::default()
+            }))
+    }
+}
+
+/// 记录每轮收到的消息内容拼接，供断言提示词注入（替代已移除的 request.snapshot 落库）。
+struct CapturingProvider(Mutex<Option<ModelAnswer>>, Arc<Mutex<Vec<String>>>);
+#[async_trait]
+impl ModelProvider for CapturingProvider {
+    async fn complete(
+        &self,
+        messages: Vec<ModelMessage>,
+        _: Vec<ToolDefinition>,
+        _: CancellationToken,
+        _: DeltaSink,
+    ) -> AppResult<ModelAnswer> {
+        self.1.lock().unwrap().push(
+            messages
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
         Ok(self
             .0
             .lock()

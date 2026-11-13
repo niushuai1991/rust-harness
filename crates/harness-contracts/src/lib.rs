@@ -153,6 +153,14 @@ pub struct SessionEvent {
 pub const DEFAULT_TIMELINE_PAGE_SIZE: u16 = 80;
 pub const MAX_TIMELINE_PAGE_SIZE: u16 = 200;
 
+/// `purge_request_snapshots` 的结果：删除的事件行数与释放字节估算（按 `LENGTH(data)` 计）。
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PurgeSummary {
+    pub rows: u64,
+    pub bytes: u64,
+}
+
 /// A bounded, cursor-addressable window into one session's durable event log.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]

@@ -28,8 +28,6 @@ impl SharedBuf {
 
 #[derive(Default, Clone)]
 struct StreamState {
-    /// 当前 request.snapshot 的 id
-    current_request: Option<String>,
     /// 当前请求是否流出过正文 Delta（reasoning=false）
     streamed_content: bool,
 }
@@ -112,13 +110,6 @@ impl Console {
             writeln!(self.out, "{line}")?;
             self.out.flush()?;
         }
-        if event.kind == "request.snapshot" {
-            let id = event.data["id"].as_str().unwrap_or_default().to_owned();
-            let state = self.state(&event.session_id);
-            state.current_request = Some(id);
-            state.streamed_content = false;
-            return Ok(());
-        }
         if event.kind == "assistant.message" {
             let content = event.data["content"].as_str().unwrap_or_default();
             if event.session_id == self.parent {
@@ -126,7 +117,6 @@ impl Console {
                 let suppress = {
                     let state = self.state(&event.session_id);
                     let suppress = state.streamed_content && !force_full;
-                    state.current_request = None;
                     state.streamed_content = false;
                     suppress
                 };
@@ -208,10 +198,8 @@ impl Console {
             self.out.flush()?;
         }
         if !reasoning {
-            let state = self.state(session);
-            if state.current_request.as_deref() == Some(request_id) {
-                state.streamed_content = true;
-            }
+            // 收到正文增量即视为已流式输出，完整正文到达时不再重复打印。
+            self.state(session).streamed_content = true;
         }
         if session != self.parent {
             if !self.json {
@@ -387,13 +375,6 @@ mod tests {
     #[test]
     fn human_suppresses_assistant_message_after_streamed_content_delta() {
         let (mut console, out, _err) = console();
-        console
-            .durable(&event(
-                "s1",
-                "request.snapshot",
-                json!({"id":"r1","step":1}),
-            ))
-            .unwrap();
         console.delta("s1", "r1", 0, "你", false).unwrap();
         console.delta("s1", "r1", 1, "好", false).unwrap();
         assert_eq!(out.string(), "你好");
@@ -407,13 +388,6 @@ mod tests {
     #[test]
     fn human_prints_full_message_when_only_reasoning_delta_seen() {
         let (mut console, out, _err) = console();
-        console
-            .durable(&event(
-                "s1",
-                "request.snapshot",
-                json!({"id":"r1","step":1}),
-            ))
-            .unwrap();
         console.delta("s1", "r1", 0, "思考中", true).unwrap();
         console
             .durable(&event(
@@ -428,13 +402,6 @@ mod tests {
     #[test]
     fn gap_forces_next_assistant_message_full_text() {
         let (mut console, out, err) = console();
-        console
-            .durable(&event(
-                "s1",
-                "request.snapshot",
-                json!({"id":"r1","step":1}),
-            ))
-            .unwrap();
         console.delta("s1", "r1", 0, "部", false).unwrap();
         console.gap("s1", 5, 9).unwrap();
         console
@@ -451,13 +418,6 @@ mod tests {
     #[test]
     fn child_output_goes_to_stderr_with_prefix_once() {
         let (mut console, out, err) = console();
-        console
-            .durable(&event(
-                "c1",
-                "request.snapshot",
-                json!({"id":"r1","step":1}),
-            ))
-            .unwrap();
         console.delta("c1", "r1", 0, "子代理", false).unwrap();
         console.delta("c1", "r1", 1, "输出", false).unwrap();
         console
