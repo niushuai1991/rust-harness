@@ -2,7 +2,7 @@
 
 - 日期：2026-11-08（计划批准）；2026-11-13（浮层卡片上下文窗口段新增缓存命中率行）修订
 - 范围：桌面端会话输入区新增用量环形指示器；模型目录补充上下文窗口元数据；ChatGPT 订阅用量查询接入。
-- 参考：zcode Composer 的用量环形与双段悬停面板；codex `last_token_usage` 口径与 `/wham/usage` 端点；zcode `mainTurnCacheHitAggregate` 的缓存命中率口径。
+- 参考：codex `last_token_usage` 口径与 `/wham/usage` 端点。
 
 ## 交互形态
 
@@ -26,14 +26,14 @@
 
 ## 缓存命中率
 
-- **命中率 = Σ缓存读取 token ÷ Σ完整输入 token**，会话累计（对齐 zcode `mainTurnCacheHitAggregate`：分母用 total input，不把缓存字段重复叠加到分母）。
+- **命中率 = Σ缓存读取 token ÷ Σ完整输入 token**，会话累计；分母用完整输入（total input），不把缓存字段重复叠加到分母。
 - 三协议字段口径：
   - Anthropic：分子 `cache_read_input_tokens`；分母 `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`（Anthropic 的 `input_tokens` 不含缓存拆分）；cache_creation 只进分母不进分子；
   - ChatCompletions：分子 `prompt_tokens_details.cached_tokens`；分母 `prompt_tokens`（已含 cached）；
   - Responses：分子 `input_tokens_details.cached_tokens`；分母 `input_tokens`（已含 cached）。
 - 累计范围与上下文占用一致：`compaction.summary` 之前的历史作废（压缩点止步）；逐条累加压缩点之后每条带有效 usage 的 `assistant.message`。
 - 缺缓存字段的 usage 整条跳过（不进分子分母，避免不支持缓存的供应商把命中率拉成 0）；`cache_read` 字段存在但为 0（冷缓存）如实计入 0 命中。
-- 无有效数据或分母为 0 → 命中率整行隐藏；有数据即显示，不设低命中率隐藏阈值（zcode 生产环境 <78% 隐藏的取舍不采纳）。
+- 无有效数据或分母为 0 → 命中率整行隐藏；有数据即显示，不设低命中率隐藏阈值。
 - 纯前端派生值（`contextUsage.ts` 的 `cacheHitFromEvents`），不落库不进契约。
 
 ## 上下文窗口元数据
