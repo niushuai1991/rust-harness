@@ -1,7 +1,7 @@
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {RefreshCw} from 'lucide-react';
 import {command,errorText} from './api';
-import {contextTokensFromEvents,formatResetTime,formatTokens,USAGE_CARD_LABELS} from './contextUsage';
+import {cacheHitFromEvents,contextTokensFromEvents,formatHitRate,formatResetTime,formatTokens,USAGE_CARD_LABELS} from './contextUsage';
 import {tokenBudgetFromEvents} from './tokenBudget';
 import {useChat} from './store';
 import type {ModelConfig,ProviderInfo,ProviderUsageSnapshot,UsageCardKind} from './types';
@@ -30,11 +30,12 @@ function ringSvg(percent:number):string{
 }
 
 /// 会话输入区的用量环形：本体显示当前会话上下文占用；悬停/点击弹出双段明细
-/// （上段上下文窗口，下段供应商套餐额度；按量计费的供应商只有上段）。
+/// （上段上下文窗口含缓存命中率，下段供应商套餐额度；按量计费的供应商只有上段）。
 export function UsageRing({models,providers,modelId,sessionId}:{models:ModelConfig[];providers:ProviderInfo[];modelId:string|null;sessionId:string|null}){
  const events=useChat(state=>sessionId?state.events[sessionId]??EMPTY_EVENTS:EMPTY_EVENTS);
  const tokens=useMemo(()=>contextTokensFromEvents(events),[events]);
  const budget=useMemo(()=>tokenBudgetFromEvents(events),[events]);
+ const cacheHit=useMemo(()=>cacheHitFromEvents(events),[events]);
  const model=models.find(item=>item.id===modelId)??null;
  const windowSize=model?.contextWindow??null;
  const provider=providers.find(item=>item.id===model?.providerId)??null;
@@ -129,6 +130,7 @@ export function UsageRing({models,providers,modelId,sessionId}:{models:ModelConf
     <p className="usage-ring-title">上下文窗口</p>
     <div className="usage-ring-line"><strong>{formatTokens(used)} / {formatTokens(windowSize)}</strong><span>{Math.round(usedPercent(used,windowSize))}%</span></div>
     <div className="usage-bar usage-ring-bar" role="progressbar" aria-valuenow={Math.round(usedPercent(used,windowSize))} aria-valuemin={0} aria-valuemax={100} aria-label="上下文占用百分比"><i className={usedPercent(used,windowSize)>=70?'warn':''} style={{width:`${usedPercent(used,windowSize)}%`}}/></div>
+    {cacheHit&&<div className="usage-ring-line usage-ring-hitrate"><span>缓存命中率</span><strong>{formatHitRate(cacheHit.cacheRead,cacheHit.totalInput)}</strong></div>}
    </>}
    <p className="usage-ring-title usage-ring-gap">本轮 Token 预算</p>
    <div className="usage-ring-line"><strong>{formatTokens(budgetUsed)} / {formatTokens(displayedBudgetLimit)}</strong><span>{Math.round(budgetPercent)}%</span></div>

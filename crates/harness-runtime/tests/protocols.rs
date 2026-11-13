@@ -277,7 +277,7 @@ fn effort_levels_map_to_protocol_specific_request_fields() {
     let body = with_effort(ApiMode::Anthropic, Some("disabled"));
     assert_eq!(body["thinking"], json!({"type":"disabled"}));
     assert!(body.get("output_config").is_none());
-    // ChatCompletions：多字段方言，enabled 归一化为 high（对齐 zcode 通用映射）。
+    // ChatCompletions：多字段方言，enabled 归一化为 high（通用映射）。
     let body = with_effort(ApiMode::ChatCompletions, Some("high"));
     assert_eq!(body["thinking"], json!({"type":"enabled"}));
     assert_eq!(body["enable_thinking"], true);

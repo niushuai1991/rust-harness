@@ -23,14 +23,14 @@
 | [配置预设分层](specs/config-presets.md) | 2026-11-07（计划拟制） | P2 项「预设」：命名会话能力配置包（模型/effort/审批策略），解析按显式参数>预设>宿主缺省三层；内置合成与用户自定义两层目录，CLI/JSON-RPC/ACP/桌面四端接入。 |
 | [模型选择方式优化](specs/model-selection.md) | 2026-11-07（计划拟制） | CLI `/model` `/effort` 内联面板与不退出 REPL；桌面浮层卡片选择器（搜索/分组/档位滑块/管理模型入口）；默认档位=最高档语义；切换静默持久化与会话流临时切换标记；`session_compact` 传档位。 |
 | [右侧面板（文件预览、改动审阅与网页浏览）](specs/side-panel.md) | 2026-11-07（计划拟制）；2026-11-12 修订 | 桌面右侧面板承载更改审阅、工作副本文件预览和会话链接网页浏览。 |
-| [自动化任务（周期调度）](specs/automation.md) | 2026-11-07（计划拟制） | 桌面端用户可管理的周期自动化任务：单次/每天/每周/每月/每年五类周期（24 小时制、单次含秒）、可选绑定会话或自动新建会话投递回合；缺日跳过、错过不补跑；独立管理面板（列表/启停/编辑/删除/立即执行/运行历史）；参考 zcode 自动化取舍。 |
+| [自动化任务（周期调度）](specs/automation.md) | 2026-11-07（计划拟制） | 桌面端用户可管理的周期自动化任务：单次/每天/每周/每月/每年五类周期（24 小时制、单次含秒）、可选绑定会话或自动新建会话投递回合；缺日跳过、错过不补跑；独立管理面板（列表/启停/编辑/删除/立即执行/运行历史）。 |
 | [Skills（技能）支持](specs/skills.md) | 2026-11-07（计划批准） | 技能目录（项目级 `.agents/skills/` + 用户级 `~/.agents/skills/` + 兜底扫描）、frontmatter 解析、catalog 注入系统提示、`$name` 显式提及全文注入、禁用名单落库；CLI 管理子命令/`/skills`/`$` 补全与桌面面板/composer 补全；参考 codex skills 体系。 |
-| [会话列表「最近 / 项目」视图](specs/session-list.md) | 2026-11-08（计划拟制）；2026-11-09 / 2026-11-12 / 2026-11-13（含启动默认草稿态）修订 | 桌面侧栏任务列表按最近（时间分组跨工作区）/ 按项目（分组折叠）两种视图、项目置顶（`workspace_set_pinned`）、标题搜索与跨工作区跳转、「新建聊天」草稿态、启动默认进入草稿态、首问自动生成标题、右键重命名、会话存档（`session_archive`/`session_restore`，schema v4）与设置页存档管理；参考 zcode 会话历史取舍。 |
-| [会话用量环形指示器与上下文窗口](specs/context-usage-indicator.md) | 2026-11-08（计划批准） | 会话输入区用量环形（本体显示当前上下文占用）+ 双段悬停明细卡（上下文窗口/套餐额度）；模型目录 `context_window` 元数据；ChatGPT `/wham/usage` 订阅用量接入；参考 zcode/codex 用量设计。 |
+| [会话列表「最近 / 项目」视图](specs/session-list.md) | 2026-11-08（计划拟制）；2026-11-09 / 2026-11-12 / 2026-11-13（含启动默认草稿态）修订 | 桌面侧栏任务列表按最近（时间分组跨工作区）/ 按项目（分组折叠）两种视图、项目置顶（`workspace_set_pinned`）、标题搜索与跨工作区跳转、「新建聊天」草稿态、启动默认进入草稿态、首问自动生成标题、右键重命名、会话存档（`session_archive`/`session_restore`，schema v4）与设置页存档管理。 |
+| [会话用量环形指示器与上下文窗口](specs/context-usage-indicator.md) | 2026-11-08（计划批准）；2026-11-13（上下文窗口段新增缓存命中率行）修订 | 会话输入区用量环形（本体显示当前上下文占用）+ 双段悬停明细卡（上下文窗口含缓存命中率/套餐额度）；模型目录 `context_window` 元数据；ChatGPT `/wham/usage` 订阅用量接入；参考 codex 用量设计。 |
 | [每回合 Token 预算](specs/token-usage-budget.md) | 2026-11-09（计划批准） | 每条用户消息独立累计输出与未缓存输入 token，父子代理共享额度，默认 1M 且可调；UsageRing 进度展示与设置。 |
-| [权限模式（五档审批策略）](specs/permission-modes.md) | 2026-11-09（计划批准） | 五档权限模式统一定义（ask/edit/auto/never/guarded）与四端接入：CLI `--approval`、预设 approval 字段、ACP modes、桌面发送框权限模式选择器（KV 默认档）；guarded 档危险 shell 命令识别规则；参考 codex approval presets 与 zcode permissionMode。 |
+| [权限模式（五档审批策略）](specs/permission-modes.md) | 2026-11-09（计划批准） | 五档权限模式统一定义（ask/edit/auto/never/guarded）与四端接入：CLI `--approval`、预设 approval 字段、ACP modes、桌面发送框权限模式选择器（KV 默认档）；guarded 档危险 shell 命令识别规则；参考 codex approval presets。 |
 | [工作区（项目）命名](specs/workspace-naming.md) | 2026-11-09（计划批准） | 工作区显示名落 `record.json`（非可选 String，创建未填/空白归一化为源目录名，旧记录加载归一化）；桌面创建命名弹窗与「按项目」组头重命名按钮；各显示点统一消费名称字段；CLI 不提供命名参数。 |
-| [宿主代建 worktree 执行模式与沙箱提权重跑](specs/worktree-execution.md) | 2026-11-10（计划拟制） | 工作区「worktree 执行模式」：宿主在真实项目 `.worktrees/` 代建会话 worktree、执行根切换、编辑直落真实分支工作区；shell 沙箱提权重跑（审批后无沙箱重跑一次，与五档权限模式组合矩阵）；主仓 `.git` 保持对 agent 只读。设计参考 codex escalation 与 zcode worktree 隔离契约。 |
+| [宿主代建 worktree 执行模式与沙箱提权重跑](specs/worktree-execution.md) | 2026-11-10（计划拟制） | 工作区「worktree 执行模式」：宿主在真实项目 `.worktrees/` 代建会话 worktree、执行根切换、编辑直落真实分支工作区；shell 沙箱提权重跑（审批后无沙箱重跑一次，与五档权限模式组合矩阵）；主仓 `.git` 保持对 agent 只读。设计参考 codex escalation。 |
 | [长会话时间线性能与有界渲染](specs/long-session-timeline.md) | 2026-11-10（设计草案） | 桌面长会话的事件分页、正文惰性读取、缓存上限、可变高度虚拟时间线和流式渲染节流；作为现有 Tauri 与后续 GPUI 共用的时间线契约。 |
 | [ask_user 提问工具](specs/ask-user.md) | 2026-11-12（计划批准） | 会话中模型向用户提问的 `ask_user` 内置工具：挂起等待与无人在场/超时自动结算、`ask.request`/`ask.resolved` 事件对、CLI/JSON-RPC/桌面接入与时间线回放；ACP 端 v1 自动结算，elicitation 转发留待后续。 |
 | [项目移除（隐藏入口）与重新显示](specs/project-removal.md) | 2026-11-13（计划批准，同日修订） | 桌面「按项目」组头右键移除项目=仅隐藏入口（KV 标记，记录/会话/自动化原样保留，源项目不受影响）：运行中确认停止；重开同源路径项目自动重新显示同目录隐藏项目；归档会话恢复不受隐藏影响。 |

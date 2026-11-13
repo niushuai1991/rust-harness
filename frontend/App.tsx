@@ -529,7 +529,7 @@ export default function App(){
   {settingsOpen&&createPortal(<SettingsPage onClose={()=>setSettingsOpen(false)} onOpenPanel={next=>{setPanel(next);setSettingsOpen(false)}} archivedSessions={archivedSessions} projectName={projectName} onRestore={restoreSession}/>,document.body)}
  </div>
 }
-// ask_user 提问浮层：锚定在输入框上方（参考 zcode，非阻塞）；自定义答复是选项列表的「其他」一项，「忽略」按 unattended 结算。
+// ask_user 提问浮层：锚定在输入框上方（非阻塞）；自定义答复是选项列表的「其他」一项，「忽略」按 unattended 结算。
 function QuestionCard({question,sessionTitle,onSubmit}:{question:AskRequest;sessionTitle:string;onSubmit:(answer:AskAnswer)=>void}) {
  const [choice,setChoice]=useState<number|null>(null),[freeText,setFreeText]=useState('');
  const hasOptions=question.options.length>0,otherIndex=question.options.length;
@@ -583,7 +583,7 @@ export function EventCard({event,...extras}:{event:SessionEvent}&EventCardExtras
   const toolName=String(data.name);
   // 调用事件从 arguments 取路径；结果事件无 arguments，由后端在 data.path 补充。
   const toolPath=(toolName==='write'||toolName==='edit')?(typeof args?.path==='string'?args.path:typeof data.path==='string'?data.path:null):null;
-  // edit/write 收敛为文件工具行（对齐 zcode）：调用只留一行，结果卡展开行级差异；旧事件无 diff 回退 JSON。
+  // edit/write 收敛为文件工具行：调用只留一行，结果卡展开行级差异；旧事件无 diff 回退 JSON。
   if(toolPath){
    const isEdit=toolName==='edit';
    const head=<>

@@ -148,7 +148,7 @@ pub fn encode_request(
         }
     }
     // 推理档位按协议方言注入；None（跟随默认）不发送任何字段。
-    // 映射与 zcode 内置 modelApiRules 保持一致。
+    // 映射与内置 modelApiRules 保持一致。
     if let Some(effort) = config.effort.as_deref() {
         match config.api_mode {
             ApiMode::Anthropic => {

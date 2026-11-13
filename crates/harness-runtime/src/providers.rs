@@ -7,7 +7,7 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// 内置供应商目录（deepseek、bigmodel）及其只读模型清单，与 zcode 内置目录对齐。
+/// 内置供应商目录（deepseek、bigmodel）及其只读模型清单。
 /// 目录身份在升级间保持稳定；用户只能通过个人覆盖层启用/禁用，不能改写。
 /// 内置模型目录条目：id、显示名、effort 档位、上下文窗口（tokens）、最大输出（tokens）。
 type BuiltinCatalogEntry<'a> = (&'a str, &'a str, &'a [&'a str], u32, Option<u32>);
@@ -440,7 +440,7 @@ fn map_usage_quota(value: serde_json::Value) -> AppResult<ProviderUsageSnapshot>
         .and_then(|d| d.get("limits"))
         .and_then(|v| v.as_array())
     {
-        // 按固定顺序匹配三张卡（与 zcode 的 type/unit 约定一致），未知条目忽略。
+        // 按固定顺序匹配三张卡（type/unit 约定一致），未知条目忽略。
         for (kind, quota_type, unit) in [
             (UsageCardKind::FiveHour, "TOKENS_LIMIT", 3),
             (UsageCardKind::Weekly, "TOKENS_LIMIT", 6),

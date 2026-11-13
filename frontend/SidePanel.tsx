@@ -7,7 +7,7 @@ import {WebPanel} from './WebPanel';
 const WIDTH_KEY='side-panel-width';
 const MIN_WIDTH=280;
 function savedWidth(){const value=Number(localStorage.getItem(WIDTH_KEY));return Number.isFinite(value)&&value>=MIN_WIDTH?value:430}
-// 右侧面板容器：更改审阅 + 文件预览；宽度手写 pointer 拖拽并记忆（参考 zcode，避免整树重渲染）。
+// 右侧面板容器：更改审阅 + 文件预览；宽度手写 pointer 拖拽并记忆（避免整树重渲染）。
 export function SidePanel({workspaceId,executionMode}:{workspaceId:string;executionMode?:'replica'|'worktree'}) {
  const open=useSidePanel(s=>s.open),view=useSidePanel(s=>s.view),previewPath=useSidePanel(s=>s.previewPath),webUrl=useSidePanel(s=>s.webUrl),setView=useSidePanel(s=>s.setView),close=useSidePanel(s=>s.close);
  const [width,setWidth]=useState(savedWidth);

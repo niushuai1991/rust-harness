@@ -1,6 +1,6 @@
 //! 定位并启动系统 Edge/Chrome headless 实例；轮询 `DevToolsActivePort` 等待就绪。
 //!
-//! 不自动下载浏览器：显式指定 > 环境变量 > 标准安装路径（对齐 ZCode executable.ts 策略）。
+//! 不自动下载浏览器：显式指定 > 环境变量 > 标准安装路径。
 //! Edge/Chrome 在 Windows 上会由 launcher 进程转交真正的浏览器进程后自行退出，
 //! 因此 stderr 的 `DevTools listening` 不可依赖：就绪检测改读 user-data-dir 下的
 //! `DevToolsActivePort`，进程树清理改用 Job Object（KILL_ON_JOB_CLOSE）。

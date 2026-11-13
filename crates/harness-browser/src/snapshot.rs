@@ -1,6 +1,6 @@
 //! 页面元素收集与重定位脚本。
 //!
-//! ref → CSS 定位映射保存在 Rust 侧（对齐 ZCode snapshot.ts 的做法），
+//! ref → CSS 定位映射保存在 Rust 侧，
 //! 注入脚本为一次性 IIFE，不向页面 `globalThis` 写入任何状态，防止不可信页面篡改映射。
 use serde::Deserialize;
 

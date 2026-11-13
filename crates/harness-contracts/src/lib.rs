@@ -1315,7 +1315,7 @@ mod approval_policy_tests {
         assert_eq!(
             dangerous_shell_rule("rm -rf build"),
             None,
-            "单字面操作数不拦（zcode 语义）"
+            "单字面操作数不拦"
         );
         assert_eq!(
             dangerous_shell_rule("rd /s /q temp"),
@@ -1357,7 +1357,7 @@ mod approval_policy_tests {
         );
         assert_eq!(dangerous_shell_rule("reg query HKLM\\\\X"), None);
         assert_eq!(dangerous_shell_rule("cipher /w:C"), Some("system-storage"));
-        // 路径形式不干扰识别；`-h` 豁免覆盖 `shutdown -h`（zcode 同语义，已知局限）。
+        // 路径形式不干扰识别；`-h` 豁免覆盖 `shutdown -h`（已知局限）。
         assert_eq!(
             dangerous_shell_rule("/sbin/shutdown /r"),
             Some("system-storage")

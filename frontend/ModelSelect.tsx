@@ -17,7 +17,7 @@ export type ModelSelectProps = {
 
 type Row = { model: ModelConfig; provider: ProviderInfo };
 
-// 浮层卡片选择器：模型分组列表 + 档位滑块（参考 zcode/ChatGPT 的选择器形态）。
+// 浮层卡片选择器：模型分组列表 + 档位滑块（参考 ChatGPT 的选择器形态）。
 // 卡片在切换模型后保持展开，供连续调整档位；Esc 或点击外部关闭。
 export default function ModelSelect({
   models,
