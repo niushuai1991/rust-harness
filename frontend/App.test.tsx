@@ -1324,6 +1324,31 @@ describe('会话列表视图',()=>{
   fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
   expect(getComputedStyle(screen.getByRole('button',{name:/会话 A/})).textAlign).toBe('left');
  });
+ it.each(['最近','项目'])('%s视图会话行不再显示行内日期',async view=>{
+  localStorage.clear();installSessionMocks();
+  await renderOpenA();
+  if(view==='项目')fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  expect(document.querySelector('.session-time')).toBeNull();
+ });
+ it.each(['最近','项目'])('%s视图悬停会话行浮现完整标题与时间，移出后收起',async view=>{
+  localStorage.clear();
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name:string,args:any)=>{
+   if(name==='session_list')return [
+    {id:'a',workspaceId:'w',title:'会话 A',createdAt:'',updatedAt:'2026-11-08T09:05:00',parentId:null},
+    {id:'b',workspaceId:'other',title:'B 的会话',createdAt:'',updatedAt:'2026-11-07T18:24:00',parentId:null}];
+   return original(name,args);
+  });
+  await renderOpenA();
+  if(view==='项目')fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  const row=screen.getByRole('button',{name:/会话 A/});
+  fireEvent.mouseEnter(row);
+  const pop=await screen.findByRole('tooltip');
+  expect(pop.textContent).toContain('会话 A');
+  expect(pop.textContent).toContain('2026年11月8日 09:05');
+  fireEvent.mouseLeave(row);
+  await waitFor(()=>expect(screen.queryByRole('tooltip')).not.toBeInTheDocument());
+ });
  it('项目组可置顶并调用 workspace_set_pinned，搜索按标题过滤',async()=>{
   localStorage.clear();installSessionMocks();
   await renderOpenA();

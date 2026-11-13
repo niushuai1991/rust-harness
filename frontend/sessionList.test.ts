@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {filterByTitle,groupByProject,groupByTime,relativeLabel,timeGroupOf} from './sessionList';
+import {filterByTitle,formatFullTime,groupByProject,groupByTime,relativeLabel,timeGroupOf} from './sessionList';
 import type {SessionInfo,WorkspaceInfo} from './types';
 
 // 固定"现在"：本地时区 2026-11-08（周日）12:00，避免测试随真实时间漂移。
@@ -36,6 +36,16 @@ describe('relativeLabel',()=>{
  });
  it('非法时间戳返回空串',()=>{
   expect(relativeLabel('not-a-date',NOW)).toBe('');
+ });
+});
+
+describe('formatFullTime',()=>{
+ it('输出本地时区的完整日期与时刻，分钟补零',()=>{
+  expect(formatFullTime(at(2026,11,8,9,5))).toBe('2026年11月8日 09:05');
+  expect(formatFullTime(at(2025,1,13,21,47))).toBe('2025年1月13日 21:47');
+ });
+ it('非法时间戳返回空串',()=>{
+  expect(formatFullTime('not-a-date')).toBe('');
  });
 });
 
