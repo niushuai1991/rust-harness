@@ -15,7 +15,7 @@
 |MCP HTTP/stdio、资源、取消|已实现并接线|官方SDK本地HTTP和stdio fixtures；自动后台重连未实现|
 |后台Shell、子代理spawn/fork/send/wait/interrupt|已实现并接线|协作与后台任务测试；桌面端事件卡片与会话级任务面板（查询/取消/删除定时）见[P2后台任务规范](specs/p2-background-tasks.md)，桌面 UI 抽查待用户|
 |子代理可视化与spawn模型选择|已实现并接线|父子关系重建与modelId校验3项测试、前端3项测试通过；会话列表子任务徽标、事件卡片跳转、运行状态live-dot；ACP透传与管理面板未实现|
-|会话列表「最近 / 项目」视图与项目置顶|已实现并接线|storage 置顶 KV 3 项、sessionList 纯函数 8 项、App 视图/置顶/搜索 3 项新增测试通过；fmt/clippy/build 与 npm test（161 项）全量通过，cargo test 仅 `chatgpt_models_require_login_before_build` 失败（main 既有，与本能力无关）；2026-11-09 侧栏会话入口重整（移除工作区下拉框与标题行 +，新增「新建聊天」按钮与项目组头新建，App 测试 51 项全通过）；见[会话列表视图规范](specs/session-list.md)；桌面 UI 抽查待用户|
+|会话列表「最近 / 项目」视图与项目置顶|已实现并接线|storage 置顶 KV 3 项、sessionList 纯函数 8 项、App 视图/置顶/搜索 3 项新增测试通过；fmt/clippy/build 与 npm test（161 项）全量通过，cargo test 仅 `chatgpt_models_require_login_before_build` 失败（main 既有，与本能力无关）；2026-11-09 侧栏会话入口重整（移除工作区下拉框与标题行 +，新增「新建聊天」按钮与项目组头新建，App 测试 51 项全通过）；2026-11-13 启动默认进入新会话草稿态（不自动打开最近会话），前端全量 274 项测试与生产构建通过；见[会话列表视图规范](specs/session-list.md)；桌面 UI 抽查待用户|
 |Todo/Plan/Goal|事件与模型工具已实现，会话流渲染清单/计划/目标卡片；桌面「计划与目标」面板已实现并接线（跨会话只读汇总、演变历史、跳转会话，见[面板规范](specs/plan-goal-panel.md)）|storage 派生查询 2 项与前端 6 项新增测试通过；面板为只读派生视图，UI 手动写入不在范围，桌面 UI 抽查待用户|
 |调度、会话压缩|应用存活期间单次调度、显式压缩服务已实现；桌面端周期自动化任务（五类周期、绑定会话投递、管理面板）已实现并接线，见[自动化任务规范](specs/automation.md)|missed不补跑、缺模型failed和原日志保留测试；自动化任务桌面 UI 抽查待用户|
 |headless/stdio JSON-RPC|已实现|真实子进程协议错误恢复和请求测试通过|
