@@ -38,8 +38,22 @@ beforeEach(()=>{reset();mocks.command.mockReset();mocks.command.mockImplementati
  return [];
 })});
 afterEach(cleanup);
-async function openPanel(){render(<App/>);fireEvent.click(screen.getByRole('button',{name:'设置'}));const page=await screen.findByRole('dialog',{name:'设置'});fireEvent.click(within(page).getByRole('button',{name:'模型设置'}));fireEvent.click(within(page).getByRole('button',{name:'打开现有面板'}));await screen.findByRole('button',{name:'添加自定义供应商'})}
+async function openPanel(){render(<App/>);fireEvent.click(screen.getByRole('button',{name:'设置'}));const page=await screen.findByRole('dialog',{name:'设置'});fireEvent.click(within(page).getByRole('button',{name:'模型设置'}));await screen.findByRole('button',{name:'添加自定义供应商'})}
 async function chooseZhipu(){fireEvent.click(screen.getByRole('button',{name:/智谱 Coding Plan/}));await screen.findByText('GLM Coding Pro')}
+
+it('自定义模型视觉能力可设置并保存，旧配置默认未知',async()=>{
+ await openPanel();
+ fireEvent.click(screen.getByRole('button',{name:'添加模型'}));
+ expect(screen.getByLabelText('图片输入能力')).toHaveValue('unknown');
+ fireEvent.change(screen.getByLabelText('显示名称'),{target:{value:'视觉模型'}});
+ fireEvent.change(screen.getByLabelText('模型标识'),{target:{value:'vision'}});
+ fireEvent.change(screen.getByLabelText('图片输入能力'),{target:{value:'true'}});
+ fireEvent.click(screen.getByRole('button',{name:'保存模型'}));
+ await screen.findByText('已保存模型。');
+ expect(mocks.command).toHaveBeenCalledWith('model_save',{config:expect.objectContaining({supportsVision:true})});
+ fireEvent.click(screen.getByRole('button',{name:'编辑 视觉模型'}));
+ expect(screen.getByLabelText('图片输入能力')).toHaveValue('true');
+});
 
 it('内置供应商展示内置徽标与启停开关，启停写入个人覆盖',async()=>{
  await openPanel();

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Check, ChevronDown, RotateCcw, Search, Settings2, Zap } from 'lucide-react';
 import type { ModelConfig, ProviderInfo } from './types';
+import { visionLabel } from './VisionBadge';
 
 export type ModelSelectProps = {
   models: ModelConfig[];
@@ -169,7 +170,7 @@ export default function ModelSelect({
                     >
                       <span className="mm-check">{model.id === modelId && <Check size={13} aria-hidden />}</span>
                       <span className="mm-name">{model.name || model.model}</span>
-                      <span className="mm-meta">{enabled ? '' : '已停用'}</span>
+                      <span className="mm-meta" title="模型能力参考；当前应用不支持原生图片输入">{visionLabel(model.supportsVision)}{enabled ? '' : ' · 已停用'}</span>
                     </button>
                   );
                 })}

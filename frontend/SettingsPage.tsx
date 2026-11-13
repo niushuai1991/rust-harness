@@ -12,7 +12,7 @@ const ITEMS:SettingsItem[]=[
  {id:'skills',title:'技能',description:'管理项目与用户技能，让助手按需加载专用工作指引。',summary:'2 个示例技能',group:'工作方式',icon:Sparkles,legacyPanel:'skills'},
  {id:'archive',title:'存档管理',description:'集中查看各项目的已归档会话，随时恢复到任务列表。',summary:'按项目分组 · 可恢复',group:'会话',icon:Archive},
  {id:'plugins',title:'插件与权限',description:'查看扩展、连接与权限策略，了解每项能力的授权范围。',summary:'扩展与安全策略',group:'扩展与安全',icon:Plug,legacyPanel:'plugins'},
- {id:'models',title:'模型设置',description:'管理模型供应商、API 连接与可用模型。',summary:'2 家供应商 · 4 个示例模型',group:'扩展与安全',icon:Cpu,legacyPanel:'models'},
+ {id:'models',title:'模型设置',description:'管理模型供应商、API 连接与可用模型。',summary:'管理供应商与模型',group:'扩展与安全',icon:Cpu,legacyPanel:'models'},
 ];
 const GROUPS=['工作方式','会话','扩展与安全'];
 const INTRO:Record<SettingsPanelId|'archive',string>={
@@ -44,6 +44,7 @@ export function SettingsPage({onClose,onOpenPanel,archivedSessions,projectName,o
   return()=>{document.removeEventListener('keydown',onKeyDown);previous?.focus()};
  },[]);
  const openPanel=(panel:SettingsPanelId)=>onOpenPanel(panel);
+ const selectSection=(section:SettingsSectionId)=>section==='models'?onOpenPanel('models'):setActive(section);
  const selected=active==='overview'?null:ITEMS.find(item=>item.id===active)!;
  return <div ref={dialogRef} className="settings-screen" role="dialog" aria-modal="true" aria-label="设置" tabIndex={-1}>
   <aside className="settings-sidebar">
@@ -52,7 +53,7 @@ export function SettingsPage({onClose,onOpenPanel,archivedSessions,projectName,o
     <button type="button" className={`settings-nav-item${active==='overview'?' active':''}`} aria-current={active==='overview'?'page':undefined} data-settings-initial-focus onClick={()=>setActive('overview')}><Settings size={17}/><span>设置概览</span></button>
     {GROUPS.map(group=><div className="settings-nav-group" key={group}>
      <div className="settings-nav-heading">{group}</div>
-     {ITEMS.filter(item=>item.group===group).map(({id,title,icon:Icon})=><button type="button" key={id} className={`settings-nav-item${active===id?' active':''}`} aria-current={active===id?'page':undefined} onClick={()=>setActive(id)}><Icon size={17}/><span>{title}</span>{active===id&&<ChevronRight size={14} className="settings-nav-chevron"/>}</button>)}
+     {ITEMS.filter(item=>item.group===group).map(({id,title,icon:Icon})=><button type="button" key={id} className={`settings-nav-item${active===id?' active':''}`} aria-current={active===id?'page':undefined} onClick={()=>selectSection(id)}><Icon size={17}/><span>{title}</span>{active===id&&<ChevronRight size={14} className="settings-nav-chevron"/>}</button>)}
     </div>)}
    </nav>
    <div className="settings-sidebar-foot"><div className="settings-local-note"><ShieldCheck size={16}/><span><strong>本地优先</strong><small>配置仅保存在本机</small></span></div><button type="button" className="settings-back-button" onClick={onClose}><ArrowRight size={16}/><span>返回工作台</span></button></div>
@@ -60,7 +61,7 @@ export function SettingsPage({onClose,onOpenPanel,archivedSessions,projectName,o
   <section className="settings-main" aria-label="设置内容">
    <header className="settings-topbar"><div className="settings-breadcrumb"><span>设置</span>{selected&&<><ChevronRight size={14}/><strong>{selected.title}</strong></>}</div><div className="settings-top-actions"><span className="settings-preview-badge"><Sparkles size={13}/>布局预览</span><button type="button" className="settings-close" aria-label="关闭设置，返回工作台" title="关闭设置" onClick={onClose}><X size={18}/></button></div></header>
    <div className="settings-scroll">
-    {selected?<SettingsCategory item={selected} onOpenPanel={openPanel} archivedSessions={archivedSessions} projectName={projectName} onRestore={onRestore}/>:<SettingsOverview onSelect={setActive}/>}
+    {selected?<SettingsCategory item={selected} onOpenPanel={openPanel} archivedSessions={archivedSessions} projectName={projectName} onRestore={onRestore}/>:<SettingsOverview onSelect={selectSection}/>}
    </div>
   </section>
  </div>;
@@ -91,7 +92,6 @@ function SettingsCategory({item,onOpenPanel,archivedSessions,projectName,onResto
   {item.id==='skills'&&<SkillsPreview/>}
   {item.id==='archive'&&<ArchivePreview archived={archivedSessions} projectName={projectName} onRestore={onRestore}/>}
   {item.id==='plugins'&&<PluginsPreview/>}
-  {item.id==='models'&&<ModelsPreview/>}
   {item.legacyPanel&&<div className="settings-existing-action"><div><strong>继续使用当前管理功能</strong><p>此版先展示设置页的导航与布局；原有配置面板暂时保持不变。</p></div><button type="button" className="settings-manage-button" onClick={()=>onOpenPanel(item.legacyPanel!)}>打开现有面板<ArrowRight size={15}/></button></div>}
  </div>;
 }
@@ -116,15 +116,6 @@ function PluginsPreview(){
   <div className="settings-example-list settings-plugin-examples"><PreviewItem icon={<Plug size={16}/>} title="本地插件" description="声明权限与授权范围相交后才可使用" badge="已启用"/><PreviewItem icon={<KeyRound size={16}/>} title="MCP 连接" description="按工作区管理连接状态与授权" badge="按需连接"/></div>
  </>;
 }
-function ModelsPreview(){
- return <div className="settings-model-preview">
-  <div className="settings-provider-card"><div className="settings-provider-heading"><span className="settings-provider-avatar">D</span><div><strong>DeepSeek</strong><small>Anthropic API · 已连接</small></div><span className="settings-provider-status">● 已启用</span></div><div className="settings-model-row"><span><strong>DeepSeek V4 Pro</strong><small>推理档位：disabled / enabled</small></span><span className="settings-model-chip">内置模型</span></div><div className="settings-model-row"><span><strong>deepseek-chat</strong><small>自定义模型 · Chat Completions</small></span><span className="settings-model-chip muted">自定义</span></div></div>
-  <div className="settings-provider-card"><div className="settings-provider-heading"><span className="settings-provider-avatar alternate">智</span><div><strong>智谱 Coding Plan</strong><small>Anthropic API · 密钥已保存</small></div><span className="settings-provider-status">● 已启用</span></div><div className="settings-model-row"><span><strong>GLM-5.3</strong><small>推理档位：low / high / max</small></span><span className="settings-model-chip">内置模型</span></div></div>
-  <div className="settings-key-note"><KeyRound size={15}/><span>API 密钥由系统凭据管理器保管，模型列表不会读取或显示密钥。</span></div>
- </div>;
-}
-
-
 function ArchivePreview({archived,projectName,onRestore}:{archived:SessionInfo[];projectName:(id:string)=>string;onRestore:(id:string)=>void}){
  // 按项目分组：组内按最后更新倒序，组间按组内最新会话倒序。
  const byWorkspace=new Map<string,SessionInfo[]>();

@@ -825,7 +825,7 @@ describe('模型选择',()=>{
   // 停用模型灰显展示并标注原因，点击不产生任何选择
   const disabledRow=within(menu).getByText('GLM-5.3').closest('button')!;
   expect(disabledRow.className).toContain('disabled');
-  expect(within(disabledRow).getByText('已停用')).toBeInTheDocument();
+  expect(within(disabledRow).getByText(/已停用/)).toBeInTheDocument();
   fireEvent.click(disabledRow);
   expect(mocks.command).not.toHaveBeenCalledWith('default_selection_save',expect.anything());
   // 档位滑块存在，当前档位为最高档
