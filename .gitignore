@@ -5,7 +5,6 @@ node_modules/
 /.cargo/config.toml
 /.superpowers/
 /.worktrees/
-/.zcode/
 *.log
 *.local
 .env

@@ -65,7 +65,7 @@ describe('formatTokens',()=>{
  });
 });
 
-// 缓存命中率（口径对齐 zcode mainTurnCacheHitAggregate：Σcache_read / Σtotal input，
+// 缓存命中率（口径：Σcache_read / Σtotal input，
 // 分母为完整输入含 cached 与 cache_creation；累计范围与上下文占用一致，压缩点止步）。
 describe('cacheHitFromEvents',()=>{
  it('Anthropic：累加多条，cache_creation 进分母不进分子',()=>{

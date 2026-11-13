@@ -110,7 +110,7 @@
 .toolbar .soft[aria-expanded="true"]{background:var(--surface);border-color:var(--border);color:var(--text);font-weight:550}
 @media(max-width:700px){.task-popover{right:-10px}}
 
-/* 右侧面板：更改审阅（行级 diff）+ 文件预览（参考 zcode，克制联动不自动弹出） */
+/* 右侧面板：更改审阅（行级 diff）+ 文件预览（克制联动不自动弹出） */
 .side-panel{position:relative;flex-shrink:0;background:var(--panel);border-left:1px solid var(--border);display:flex;flex-direction:column;min-width:0}
 .side-panel-resizer{position:absolute;left:-3px;top:0;bottom:0;width:6px;cursor:col-resize;z-index:6}
 .side-panel-resizer:hover,.side-panel-resizer:active{background:var(--selected);border-radius:3px}
@@ -323,7 +323,7 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 
 .thinking-line{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;line-height:1.7}.thinking-dots{display:inline-flex;align-items:center;gap:4px;height:14px}.thinking-dots i{width:5px;height:5px;border-radius:50%;background:var(--muted);animation:thinking-bounce 1.2s ease-in-out infinite}.thinking-dots i:nth-child(2){animation-delay:.15s}.thinking-dots i:nth-child(3){animation-delay:.3s}@keyframes thinking-bounce{0%,60%,100%{opacity:.38;transform:translateY(0)}30%{opacity:1;transform:translateY(-3px)}}
 
-/* edit/write 文件工具行（对齐 zcode）：调用一行；结果卡展开行级差异 */
+/* edit/write 文件工具行：调用一行；结果卡展开行级差异 */
 .tool-row{display:flex;align-items:center;gap:9px;margin:12px 0 12px 46px;padding:8px 14px;border:1px solid var(--border);border-radius:8px;background:var(--panel);color:var(--muted);font-size:11px;overflow:hidden}
 .tool-row svg{flex-shrink:0;color:var(--muted)}
 .turn-details .tool-row{margin-left:0}
@@ -363,7 +363,7 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .ask-popover .ask-textarea{display:block;width:100%;min-height:66px;resize:vertical;border:1px solid var(--border);border-radius:8px;background:var(--panel);color:var(--text);padding:9px 12px;font-size:12.5px;line-height:1.7;margin:6px 0 0}
 .ask-badge{font-style:normal;font-size:9px;color:#8b7946;background:#f2efdf;border-radius:4px;padding:1px 6px;flex-shrink:0}
 
-/* 全屏设置页：参考 zcode 的独立页面与固定分类侧栏。 */
+/* 全屏设置页：独立页面与固定分类侧栏。 */
 .settings-screen{position:fixed;inset:0;z-index:100;display:grid;grid-template-columns:252px minmax(0,1fr);background:var(--bg);color:var(--text);font-size:13px}
 .settings-sidebar{display:flex;flex-direction:column;min-width:0;padding:24px 15px 14px;background:#f5f6f3;border-right:1px solid var(--border)}
 .settings-brand{display:flex;align-items:center;gap:10px;padding:2px 9px 28px;font-size:14px;font-weight:650;letter-spacing:-.2px}

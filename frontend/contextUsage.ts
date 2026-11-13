@@ -1,7 +1,7 @@
 // 会话上下文用量的纯计算（数据口径见 docs/specs/context-usage-indicator.md）。
 // 「当前上下文」= 最近一次服务端报告的输入+输出 token 之和（与 codex last_token_usage 同口径）；
 // compaction.summary 之前的历史已被清空，其 usage 全部作废。
-// 缓存命中率 = Σ缓存读取 / Σ完整输入（对齐 zcode mainTurnCacheHitAggregate：分母用 total input，
+// 缓存命中率 = Σ缓存读取 / Σ完整输入（分母用 total input，
 // 不重复叠加缓存字段；累计范围与上下文占用一致，压缩点止步）。
 import type {SessionEvent,UsageCardKind} from './types';
 
@@ -80,7 +80,7 @@ function cacheTokensFromUsage(usage:unknown):[number,number]|null{
 }
 
 /// 从事件流（按 seq 升序）累计缓存命中：压缩点之后每条带有效 usage 的 assistant.message
-/// 逐条累加（同 zcode mainTurnCacheHitAggregate 的会话累计口径）；缺缓存字段的 usage 整条
+/// 逐条累加（会话累计口径）；缺缓存字段的 usage 整条
 /// 跳过（不进分子分母）。无有效数据或分母为 0 → null（前端隐藏该行）。
 export function cacheHitFromEvents(events:SessionEvent[]):{cacheRead:number;totalInput:number}|null{
  let cacheRead=0,totalInput=0;

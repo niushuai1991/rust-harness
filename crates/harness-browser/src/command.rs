@@ -1,4 +1,4 @@
-//! 浏览器命令契约：所有后端共享的唯一命令面（对齐 ZCode BrowserCommand 的分层思路）。
+//! 浏览器命令契约：所有后端共享的唯一命令面。
 use serde::{Deserialize, Serialize};
 
 /// 后端唯一认识的命令集合；新增后端（如 WebView2 可视后端）只需实现同一契约。
