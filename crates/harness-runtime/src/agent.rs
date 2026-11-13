@@ -1012,13 +1012,7 @@ impl Runtime {
                 messages[0].content.push_str("\n\n当前处于计划模式：只能只读调查，不得产生项目或外部副作用。shell 工具仅允许只读命令（git 查询、文件查看与列表、搜索、系统信息、--version/--help），写文件、重定向、安装、构建、提权命令会被拒绝。请使用 plan_write 记录计划。若需要开始执行，请调用 plan_exit 并等待用户明确批准；用户拒绝或无人在场时继续只读。");
             }
             let request_id = new_id();
-            self.append(
-                session,
-                "request.snapshot",
-                json!({"id":request_id,"step":step,"messages":messages,"tools":tools,"route":provider.route(),"request":provider.request_snapshot(&messages,&tools)?}),
-            )
-            .await?;
-            // Tool discovery, hooks, history reads and snapshot persistence can await while a
+            // Tool discovery, hooks and history reads can await while a
             // sibling consumes the shared budget. Recheck at the provider-call boundary.
             token_budget.check_available()?;
             let sender = self.events.clone();

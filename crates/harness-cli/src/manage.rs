@@ -88,6 +88,61 @@ pub enum LoginCmd {
     Status,
 }
 
+#[derive(Debug, clap::Args)]
+pub struct DbArgs {
+    #[command(subcommand)]
+    pub cmd: DbCmd,
+}
+
+#[derive(Debug, clap::Subcommand)]
+pub enum DbCmd {
+    /// 删除全部 request.snapshot 历史事件并 VACUUM 回收磁盘空间
+    Compact {
+        /// 仅统计将删除的规模，不执行删除
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+/// 字节数的人读格式（KB/MB/GB，向上取整到 0.1）。
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// `harness db compact`：清理历史 request.snapshot 事件并 VACUUM。
+/// 执行前需退出桌面端（单实例锁会拒绝并发打开）。
+pub async fn db(runtime: Arc<Runtime>, args: DbArgs) -> AppResult<()> {
+    let DbCmd::Compact { dry_run } = args.cmd;
+    if dry_run {
+        let usage = runtime.store.request_snapshot_usage().await?;
+        println!(
+            "将删除 {} 条 request.snapshot 事件，约 {}（dry-run，未执行）",
+            usage.rows,
+            format_bytes(usage.bytes)
+        );
+        return Ok(());
+    }
+    let summary = runtime.store.purge_request_snapshots().await?;
+    runtime.store.vacuum().await?;
+    println!(
+        "已删除 {} 条 request.snapshot 事件，释放约 {}，VACUUM 完成",
+        summary.rows,
+        format_bytes(summary.bytes)
+    );
+    Ok(())
+}
+
 /// ChatGPT 登录相关实现使用的内置供应商 id。
 pub const CHATGPT_PROVIDER_ID: &str = "chatgpt";
 

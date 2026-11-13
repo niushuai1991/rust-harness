@@ -102,13 +102,6 @@ pub trait ModelProvider: Send + Sync {
     fn route(&self) -> Option<ModelRoute> {
         None
     }
-    fn request_snapshot(
-        &self,
-        messages: &[ModelMessage],
-        tools: &[ToolDefinition],
-    ) -> AppResult<Value> {
-        Ok(serde_json::json!({"messages":messages,"tools":tools}))
-    }
     async fn complete(
         &self,
         messages: Vec<ModelMessage>,
@@ -264,14 +257,6 @@ impl HttpModel {
 impl ModelProvider for HttpModel {
     fn route(&self) -> Option<ModelRoute> {
         Some(ModelRoute::from(&self.config))
-    }
-    fn request_snapshot(
-        &self,
-        messages: &[ModelMessage],
-        tools: &[ToolDefinition],
-    ) -> AppResult<Value> {
-        let (url, body) = encode_request(&self.config, messages, tools)?;
-        Ok(serde_json::json!({"url":url,"body":body}))
     }
     async fn complete(
         &self,
