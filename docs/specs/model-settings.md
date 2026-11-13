@@ -1,8 +1,8 @@
 # 模型设置：厂商→模型两级选择与 effort 档位规范
 
-- 日期：2026-11-06（计划批准）
+- 日期：2026-11-06（计划批准）；2026-11-13（模型图片输入能力元数据）修订
 - 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
-- 范围：模型设置两级结构（供应商→模型）、内置供应商与内置模型目录、reasoning effort 档位、按 API 自动检测模型列表、发送框级联选择、卸载"清理用户数据"勾选行为。
+- 范围：模型设置两级结构（供应商→模型）、内置供应商与内置模型目录、reasoning effort 档位、按 API 自动检测模型列表、发送框级联选择、卸载"清理用户数据"勾选行为、模型图片输入能力三态元数据（内置目录官方核实、自定义模型可配置、设置与选择器展示）。
 
 ## 背景与目标
 
@@ -37,7 +37,7 @@
 - `harness-contracts`：新增 `BuiltinModel`、`KNOWN_EFFORTS`（disabled/minimal/low/medium/high/max，有序）、`DefaultSelection`；`ProviderInfo` 增 `enabled`（默认 true）、`builtin_models`、`disabled_models`；`ModelConfig` 增 `efforts`、`effort`（None=跟随供应商默认）、`enabled`、`builtin`。全部 `#[serde(default)]`，旧 JSON 原样读入，SCHEMA_VERSION 保持 2，无需迁移。
 - 内置供应商的个人覆盖只允许 `proxy`、`enabled`、`disabled_models` 三个字段变化；`builtin_models` 不落库，始终以程序内置为准。
 - `ModelConfig.builtin=true` 的条目由服务层合成（id 形如 `builtin:bigmodel:glm-5.3`），拒绝经 `model.save` 修改。
-- 停用语义：条目 `enabled=false` 或所属供应商停用时，`build_model` 报 `MODEL_DISABLED`；内置供应商缺密钥仍报 `MODEL_CREDENTIAL`。
+- `BuiltinModel` 与 `ModelConfig` 增 `supports_vision: Option<bool>`（true=支持图片输入、false=不支持、None/缺省=未知），serde default，旧配置原样读入，无需迁移。条目 `enabled=false` 或所属供应商停用时，`build_model` 报 `MODEL_DISABLED`；内置供应商缺密钥仍报 `MODEL_CREDENTIAL`。
 
 ### effort 请求编码（对齐 zcode modelApiRules）
 
@@ -49,7 +49,20 @@
 
 `ModelRoute` 指纹不含 effort，同模型换档位可复用协议回放。
 
-### 模型列表自动检测
+### 模型图片输入能力元数据
+
+`BuiltinModel` 与 `ModelConfig` 均带 `supports_vision: Option<bool>`：`true`=支持图片输入、`false`=不支持、`None`/缺省=未知；serde default，旧配置原样读入，SCHEMA_VERSION 保持 2。内置目录逐项对照供应商官方文档（2026-11-13 核实）预填：
+
+| 供应商 | 模型 | 图片输入 | 依据 |
+|---|---|---|---|
+| deepseek | deepseek-flash | 支持 | 官方 Models & Pricing：Vision ✓ |
+| deepseek | deepseek-v4-pro | 不支持 | 官方 Models & Pricing：Vision "Not supported" |
+| bigmodel | glm-5.3 / glm-5.2 / glm-5-turbo | 不支持 | 官方模型页：输入模态为文本 |
+| bigmodel | glm-5.3-flash | 支持 | 官方 VLM 页：输入含图像 |
+| chatgpt | 全部 9 个目录模型 | 支持 | OpenAI 官方模型页：Image（Input）徽标 |
+
+未核实的条目必须保持未知，不按模型名称或协议推断；自动检测仅返回模型 ID，不推断能力。自定义模型在添加/编辑弹窗提供「未知 / 支持图片输入 / 不支持图片输入」三态并随配置持久化，缺省未知；内置模型只读展示。展示点：模型设置列表行、内置模型只读弹窗、添加/编辑弹窗与发送框 `ModelSelect` 行内 meta；标注使用文字（不只靠颜色），并注明「模型能力参考；当前应用不支持原生图片输入」。该字段仅是展示元数据，不改变运行时请求——附件仍以文本元数据 + `read_artifact` 提供，不代表原生图像理解。
+
 
 `model_fetch_available`（桌面）/`model.fetchAvailable`（JSON-RPC）：按供应商已存密钥请求模型列表——ChatCompletions/Responses 用 `GET {base}/models`（Bearer），Anthropic 用 `GET {base}/v1/models`（`x-api-key` + `anthropic-version`），解析 `data[].id` 去重排序；带供应商代理。端点不支持时错误透传，设置页保留手动录入。
 

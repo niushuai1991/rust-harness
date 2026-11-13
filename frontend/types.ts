@@ -16,9 +16,9 @@ export type ApiMode='chatCompletions'|'responses'|'anthropic';
 export type ProviderCompatibility='standard'|'deepSeek'|'bigModel';
 export type ProviderAuth='apiKey'|'chatGptOAuth';
 export interface ProtocolEndpoint {apiMode:ApiMode;baseUrl:string}
-export interface BuiltinModel {id:string;name:string;efforts:string[];contextWindow?:number|null}
+export interface BuiltinModel {id:string;name:string;efforts:string[];contextWindow?:number|null;supportsVision?:boolean|null}
 export interface ProviderInfo {id:string;name:string;builtin:boolean;compatibility:ProviderCompatibility;auth:ProviderAuth;endpoints:ProtocolEndpoint[];defaultModel:string;credentialRef:string;proxy:string|null;enabled:boolean;builtinModels:BuiltinModel[];disabledModels:string[]}
-export interface ModelConfig {id:string;name:string;baseUrl:string;model:string;credentialRef:string;proxy:string|null;providerId:string;compatibility:ProviderCompatibility;auth:ProviderAuth;apiMode:ApiMode;maxOutputTokens:number|null;contextWindow?:number|null;efforts:string[];effort:string|null;enabled:boolean;builtin:boolean}
+export interface ModelConfig {id:string;name:string;baseUrl:string;model:string;credentialRef:string;proxy:string|null;providerId:string;compatibility:ProviderCompatibility;auth:ProviderAuth;apiMode:ApiMode;maxOutputTokens:number|null;contextWindow?:number|null;efforts:string[];effort:string|null;enabled:boolean;builtin:boolean;supportsVision?:boolean|null}
 export interface DefaultSelection {modelId:string;effort:string|null}
 export type UsageCardKind='fiveHour'|'weekly'|'tools';
 export interface ProviderUsageCard {kind:UsageCardKind;remainingPercent:number|null;resetAt:number|null}

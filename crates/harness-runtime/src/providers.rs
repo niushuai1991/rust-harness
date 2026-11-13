@@ -9,8 +9,15 @@ use tokio::sync::Mutex;
 
 /// 内置供应商目录（deepseek、bigmodel）及其只读模型清单。
 /// 目录身份在升级间保持稳定；用户只能通过个人覆盖层启用/禁用，不能改写。
-/// 内置模型目录条目：id、显示名、effort 档位、上下文窗口（tokens）、最大输出（tokens）。
-type BuiltinCatalogEntry<'a> = (&'a str, &'a str, &'a [&'a str], u32, Option<u32>);
+/// 内置模型目录条目：id、显示名、effort 档位、上下文窗口（tokens）、最大输出（tokens）；第 6 项为图片输入能力（Some=官方文档已核实，None=未知）。
+type BuiltinCatalogEntry<'a> = (
+    &'a str,
+    &'a str,
+    &'a [&'a str],
+    u32,
+    Option<u32>,
+    Option<bool>,
+);
 
 pub fn builtin_providers() -> Vec<ProviderInfo> {
     // 模型上下文窗口与最大输出为公开规格预填值（tokens），集中在此便于校正。
@@ -22,6 +29,7 @@ pub fn builtin_providers() -> Vec<ProviderInfo> {
             &["disabled", "enabled"],
             128_000,
             Some(393_216),
+            Some(true),
         ),
         (
             "deepseek-v4-pro",
@@ -29,6 +37,7 @@ pub fn builtin_providers() -> Vec<ProviderInfo> {
             &["disabled", "enabled"],
             128_000,
             Some(393_216),
+            Some(false),
         ),
     ];
     // 上下文窗口按官方模型页公开规格：glm-5.2/5.3/5.3-flash 为 1M，5-turbo 沿用 200k。
@@ -39,6 +48,7 @@ pub fn builtin_providers() -> Vec<ProviderInfo> {
             &["low", "high", "max"],
             1_000_000,
             Some(131_072),
+            Some(false),
         ),
         (
             "glm-5.3-flash",
@@ -46,6 +56,7 @@ pub fn builtin_providers() -> Vec<ProviderInfo> {
             &["low", "high", "max"],
             1_000_000,
             Some(131_072),
+            Some(true),
         ),
         (
             "glm-5.2",
@@ -53,6 +64,7 @@ pub fn builtin_providers() -> Vec<ProviderInfo> {
             &["disabled", "high", "max"],
             1_000_000,
             Some(131_072),
+            Some(false),
         ),
         (
             "glm-5-turbo",
@@ -60,6 +72,7 @@ pub fn builtin_providers() -> Vec<ProviderInfo> {
             &["disabled", "enabled"],
             200_000,
             Some(131_072),
+            Some(false),
         ),
     ];
     let mut providers: Vec<ProviderInfo> = [
@@ -115,13 +128,16 @@ pub fn builtin_providers() -> Vec<ProviderInfo> {
         enabled: true,
         builtin_models: models
             .iter()
-            .map(|(id, name, efforts, window, max_output)| BuiltinModel {
-                id: (*id).into(),
-                name: (*name).into(),
-                efforts: efforts.iter().map(|e| (*e).into()).collect(),
-                context_window: Some(*window),
-                max_output_tokens: *max_output,
-            })
+            .map(
+                |(id, name, efforts, window, max_output, vision)| BuiltinModel {
+                    id: (*id).into(),
+                    name: (*name).into(),
+                    efforts: efforts.iter().map(|e| (*e).into()).collect(),
+                    context_window: Some(*window),
+                    max_output_tokens: *max_output,
+                    supports_vision: *vision,
+                },
+            )
             .collect(),
         disabled_models: Vec::new(),
     })
@@ -142,6 +158,7 @@ fn chatgpt_provider() -> ProviderInfo {
             &["low", "medium", "high", "xhigh", "max"],
             272_000,
             None,
+            Some(true),
         ),
         (
             "gpt-6-astra",
@@ -149,6 +166,7 @@ fn chatgpt_provider() -> ProviderInfo {
             &["low", "medium", "high", "xhigh", "max"],
             272_000,
             None,
+            Some(true),
         ),
         (
             "gpt-6-sol",
@@ -156,6 +174,7 @@ fn chatgpt_provider() -> ProviderInfo {
             &["low", "medium", "high", "xhigh", "max"],
             272_000,
             None,
+            Some(true),
         ),
         (
             "gpt-6-luna",
@@ -163,6 +182,7 @@ fn chatgpt_provider() -> ProviderInfo {
             &["low", "medium", "high", "xhigh", "max"],
             272_000,
             None,
+            Some(true),
         ),
         (
             "gpt-5.6-sol",
@@ -170,6 +190,7 @@ fn chatgpt_provider() -> ProviderInfo {
             &["low", "medium", "high", "xhigh", "max"],
             272_000,
             None,
+            Some(true),
         ),
         (
             "gpt-6.1-terra",
@@ -177,6 +198,7 @@ fn chatgpt_provider() -> ProviderInfo {
             &["low", "medium", "high", "xhigh", "max"],
             500_000,
             None,
+            Some(true),
         ),
         (
             "gpt-5.6-terra",
@@ -184,6 +206,7 @@ fn chatgpt_provider() -> ProviderInfo {
             &["low", "medium", "high", "xhigh", "max"],
             272_000,
             None,
+            Some(true),
         ),
         (
             "gpt-5.6-luna",
@@ -191,6 +214,7 @@ fn chatgpt_provider() -> ProviderInfo {
             &["low", "medium", "high", "xhigh", "max"],
             272_000,
             None,
+            Some(true),
         ),
         (
             "gpt-5.5",
@@ -198,6 +222,7 @@ fn chatgpt_provider() -> ProviderInfo {
             &["low", "medium", "high", "xhigh"],
             272_000,
             None,
+            Some(true),
         ),
     ];
     ProviderInfo {
@@ -216,13 +241,16 @@ fn chatgpt_provider() -> ProviderInfo {
         }],
         builtin_models: models
             .iter()
-            .map(|(id, name, efforts, window, max_output)| BuiltinModel {
-                id: (*id).into(),
-                name: (*name).into(),
-                efforts: efforts.iter().map(|e| (*e).into()).collect(),
-                context_window: Some(*window),
-                max_output_tokens: *max_output,
-            })
+            .map(
+                |(id, name, efforts, window, max_output, vision)| BuiltinModel {
+                    id: (*id).into(),
+                    name: (*name).into(),
+                    efforts: efforts.iter().map(|e| (*e).into()).collect(),
+                    context_window: Some(*window),
+                    max_output_tokens: *max_output,
+                    supports_vision: *vision,
+                },
+            )
             .collect(),
         disabled_models: Vec::new(),
     }
@@ -249,6 +277,7 @@ fn builtin_model_config(provider: &ProviderInfo, model: &BuiltinModel) -> Option
         api_mode: endpoint.api_mode,
         max_output_tokens: model.max_output_tokens,
         context_window: model.context_window,
+        supports_vision: model.supports_vision,
         efforts: model.efforts.clone(),
         effort: None,
         enabled: !provider.disabled_models.contains(&model.id),
@@ -1058,6 +1087,48 @@ mod tests {
         let store = Store::open(&dir.path().join("config.db")).await.unwrap();
         (dir, ModelService::new(store))
     }
+    /// 内置目录的图片输入能力逐项对照官方文档（2026-11-13 核实）；未核实的模型保持 None（未知）。
+    #[test]
+    fn builtin_catalog_declares_verified_vision_flags() {
+        let providers = builtin_providers();
+        let vision = |provider: &str, model: &str| -> Option<bool> {
+            providers
+                .iter()
+                .find(|p| p.id == provider)
+                .unwrap()
+                .builtin_models
+                .iter()
+                .find(|m| m.id == model)
+                .unwrap()
+                .supports_vision
+        };
+        // DeepSeek 官方 Models & Pricing：Flash 支持 Vision，V4-Pro 不支持。
+        assert_eq!(vision("deepseek", "deepseek-flash"), Some(true));
+        assert_eq!(vision("deepseek", "deepseek-v4-pro"), Some(false));
+        // 智谱官方模型页：5.3/5.2/5-Turbo 输入为文本；5.3-Flash 属 VLM（输入含图像）。
+        assert_eq!(vision("bigmodel", "glm-5.3"), Some(false));
+        assert_eq!(vision("bigmodel", "glm-5.3-flash"), Some(true));
+        assert_eq!(vision("bigmodel", "glm-5.2"), Some(false));
+        assert_eq!(vision("bigmodel", "glm-5-turbo"), Some(false));
+        // OpenAI 官方模型页：9 个目录模型均带 Image（Input）徽标。
+        for model in providers
+            .iter()
+            .find(|p| p.id == "chatgpt")
+            .unwrap()
+            .builtin_models
+            .iter()
+        {
+            assert_eq!(model.supports_vision, Some(true), "{}", model.id);
+        }
+        // 合成条目继承目录元数据。
+        let flash = builtin_model_config(
+            &builtin_providers()[1],
+            &builtin_providers()[1].builtin_models[1],
+        )
+        .unwrap();
+        assert_eq!(flash.supports_vision, Some(true));
+    }
+
     #[test]
     fn builtin_catalog_is_exact_and_protocol_specific() {
         let p = builtin_providers();

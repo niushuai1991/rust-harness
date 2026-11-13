@@ -714,6 +714,9 @@ fn remove_item_rule(args: &[String]) -> Option<&'static str> {
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct BuiltinModel {
+    /// 模型图片输入能力，None 表示未知；不代表宿主支持原生图片输入。
+    #[serde(default)]
+    pub supports_vision: Option<bool>,
     pub id: String,
     pub name: String,
     pub efforts: Vec<String>,
@@ -777,6 +780,9 @@ pub struct ModelConfig {
     pub effort: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// 模型是否支持图片输入；None 表示未知。
+    #[serde(default)]
+    pub supports_vision: Option<bool>,
     /// 由内置目录合成的条目；不可编辑或删除，只能启用/禁用。
     #[serde(default)]
     pub builtin: bool,
@@ -800,6 +806,7 @@ impl Default for ModelConfig {
             efforts: Vec::new(),
             effort: None,
             enabled: true,
+            supports_vision: None,
             builtin: false,
         }
     }
@@ -1417,6 +1424,22 @@ mod approval_policy_tests {
 #[cfg(test)]
 mod model_settings_tests {
     use super::*;
+
+    #[test]
+    fn vision_metadata_defaults_and_roundtrips() {
+        let legacy: BuiltinModel =
+            serde_json::from_str(r#"{"id":"m","name":"M","efforts":[]}"#).unwrap();
+        assert_eq!(legacy.supports_vision, None);
+        for value in [None, Some(true), Some(false)] {
+            let model = ModelConfig {
+                supports_vision: value,
+                ..Default::default()
+            };
+            let json = serde_json::to_string(&model).unwrap();
+            let restored: ModelConfig = serde_json::from_str(&json).unwrap();
+            assert_eq!(restored.supports_vision, value);
+        }
+    }
 
     /// 升级兼容：v2 存储中的旧供应商/模型 JSON 不含新增字段，必须原样读入并取默认值。
     #[test]
