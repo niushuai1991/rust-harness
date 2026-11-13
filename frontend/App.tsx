@@ -1,4 +1,4 @@
-import {Fragment,useEffect,useMemo,useRef,useState,type FormEvent,type MouseEvent as ReactMouseEvent,type ReactNode} from 'react';
+import {Fragment,useEffect,useLayoutEffect,useMemo,useRef,useState,type FormEvent,type MouseEvent as ReactMouseEvent,type ReactNode} from 'react';
 import {open,save} from '@tauri-apps/plugin-dialog';
 import {createPortal} from 'react-dom';
 import {Archive,ArrowUp,Bot,CalendarClock,Check,ChevronDown,ChevronRight,FileCode,FilePlus,Folder,FolderOpen,GitCompareArrows,ListTodo,MessageSquare,Paperclip,Pencil,Pin,Plus,Search,Send,Settings,ShieldCheck,Square,Sparkles,Target,Terminal,Timer,Trash2,Unplug,X,Download} from 'lucide-react';
@@ -7,7 +7,7 @@ import {command,desktop,errorText,send} from './api';
 import {KNOWN_APPROVALS} from './types';
 import {INIT_PROMPT,SLASH_COMMANDS,commandTokenUnderCursor,expandSlashPrompt,filterSlashCommands,type SlashSpec} from './slashCommands';
 import {filterSkillRows,skillRowsFrom,skillTokenUnderCursor,type SkillRow,type SkillToken} from './skills';
-import {GROUP_LABELS,filterByTitle,groupByProject,groupByTime,relativeLabel,type ViewMode} from './sessionList';
+import {GROUP_LABELS,filterByTitle,formatFullTime,groupByProject,groupByTime,relativeLabel,type ViewMode} from './sessionList';
 import {useChat} from './store';
 import {DiffView,diffStats,parseUnifiedDiff} from './DiffView';
 import {ModelPanel} from './ModelPanel';
@@ -44,6 +44,23 @@ const GOAL_USAGE='用法：/goal <目标描述>，发送后模型经 goal_write 
 const basename=(path:string)=>path.split(/[\\/]/).filter(Boolean).at(-1)??path;
 const dirOf=(path:string)=>{const parts=path.split(/[\\/]/).filter(Boolean);return parts.length>1?parts.slice(0,-1).join('/'):''};
 const printable=(value:unknown)=>typeof value==='string'?value:JSON.stringify(value,null,2);
+type SessionPopState={title:string;time:string;rect:{left:number;top:number;right:number}};
+/// 会话行悬停浮层：完整会话名 + 更新时间。fixed 定位脱离侧栏滚动容器避免被裁剪；
+/// 渲染后按实际尺寸校正到视口内（右侧放不下换到行左侧），纯展示不拦截鼠标。
+function SessionPopCard({title,time,rect}:{title:string;time:string;rect:SessionPopState['rect']}){
+ const ref=useRef<HTMLDivElement|null>(null);
+ const [pos,setPos]=useState<{left:number;top:number}|null>(null);
+ useLayoutEffect(()=>{
+  const el=ref.current;if(!el)return;
+  let left=rect.right+10;
+  if(left+el.offsetWidth>window.innerWidth-8)left=Math.max(8,rect.left-el.offsetWidth-10);
+  setPos({left,top:Math.min(Math.max(8,rect.top-6),Math.max(8,window.innerHeight-el.offsetHeight-8))});
+ },[rect]);
+ return <div ref={ref} className="session-pop" role="tooltip" style={pos?{left:pos.left,top:pos.top}:undefined}>
+  <div className="pop-title">{title}</div>
+  {time&&<div className="pop-time">{time}</div>}
+ </div>;
+}
 export default function App(){
  const [workspaces,setWorkspaces]=useState<WorkspaceInfo[]>([]),[workspaceId,setWorkspaceId]=useState('');
  const [sessions,setSessions]=useState<SessionInfo[]>([]),[sessionId,setSessionId]=useState(''),[sessionBusy,setSessionBusy]=useState(false);
@@ -80,6 +97,22 @@ export default function App(){
  const [wsContextMenu,setWsContextMenu]=useState<{workspaceId:string;x:number;y:number}|null>(null);
  const [wsRemove,setWsRemove]=useState<{id:string;name:string;running:boolean}|null>(null);
  const [sessionRenameSavingIds,setSessionRenameSavingIds]=useState<Set<string>>(()=>new Set());
+ // 会话行悬停浮层：行内去掉日期后，完整标题与时间移到 hover 卡片；延迟显示/关闭避免快速扫过闪烁。
+ const [sessionPop,setSessionPop]=useState<SessionPopState|null>(null);
+ const sessionPopTimers=useRef({show:0,hide:0});
+ function openSessionPop(s:SessionInfo,node:HTMLButtonElement){
+  window.clearTimeout(sessionPopTimers.current.hide);window.clearTimeout(sessionPopTimers.current.show);
+  sessionPopTimers.current.show=window.setTimeout(()=>{
+   const rect=node.getBoundingClientRect();
+   setSessionPop({title:s.title,time:[formatFullTime(s.updatedAt),relativeLabel(s.updatedAt,new Date())].filter(Boolean).join(' · '),rect:{left:rect.left,top:rect.top,right:rect.right}});
+  },350);
+ }
+ function scheduleSessionPopClose(){
+  window.clearTimeout(sessionPopTimers.current.show);window.clearTimeout(sessionPopTimers.current.hide);
+  sessionPopTimers.current.hide=window.setTimeout(()=>setSessionPop(null),120);
+ }
+ function dismissSessionPop(){window.clearTimeout(sessionPopTimers.current.show);window.clearTimeout(sessionPopTimers.current.hide);setSessionPop(null)}
+ useEffect(()=>{const onResize=()=>dismissSessionPop();window.addEventListener('resize',onResize);return()=>{window.removeEventListener('resize',onResize);window.clearTimeout(sessionPopTimers.current.show);window.clearTimeout(sessionPopTimers.current.hide)}},[]);
  const sessionRenameDialogId=useRef(0),sessionRenameSaving=useRef(new Set<string>());
  const [pluginRevision,setPluginRevision]=useState(0);
  const [attachments,setAttachments]=useState<ArtifactMetadata[]>([]),[importing,setImporting]=useState(false);
@@ -530,10 +563,10 @@ export default function App(){
    <button className="new-chat" title="新建聊天" onClick={newSession} disabled={sessionBusy}><Plus size={16}/><span>新建聊天</span></button>
    <div className="session-search"><Search size={14} aria-hidden="true"/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="搜索会话…" aria-label="搜索会话"/></div>
    <div className="section-label"><span>项目列表</span><span className="label-spacer"/><button type="button" role="switch" aria-checked={viewMode==='project'} aria-label="切换视图：最近 / 项目" className="view-switch" onClick={()=>chooseView(viewMode==='recent'?'project':'recent')}><span className="knob" aria-hidden="true"/><span className="sw-label a" aria-hidden="true">最近</span><span className="sw-label b" aria-hidden="true">项目</span></button></div>
-   <nav className="sessions session-scrollbar" aria-label="会话列表">
+   <nav className="sessions session-scrollbar" aria-label="会话列表" onScrollCapture={dismissSessionPop}>
     {viewMode==='recent'?groupByTime(visibleSessions,new Date()).map(group=><Fragment key={group.group}>
      <div className="group-head">{GROUP_LABELS[group.group]}</div>
-     {group.sessions.map(s=>{const ws=workspaces.find(w=>w.id===s.workspaceId);return <button key={s.id} className={`session-row${sessionId===s.id?' active':''}${s.parentId?' child':''}`} title={s.parentId?'子代理会话':undefined} onClick={()=>openFromSidebar(s)} onContextMenu={event=>showSessionContextMenu(event,s)}><MessageSquare size={16}/><span className="session-lines"><span className="session-l1"><span className="session-title">{s.title}</span>{s.parentId&&<em className="subagent-badge">子任务</em>}{pendingAskIds.has(s.id)&&<em className="ask-badge">待答复</em>}<span className="session-time">{relativeLabel(s.updatedAt,new Date())}</span><span role="button" tabIndex={0} className="session-archive" aria-label="存档会话" title="存档会话" onClick={event=>{event.stopPropagation();archiveSession(s)}}><Archive size={13}/></span></span><span className="session-l2">{ws&&<span>{projectName(s.workspaceId)}</span>}{ws?.pinned&&<Pin size={10} aria-hidden="true"/>}{(running[s.id]||activeIds.has(s.id))&&<i className="live-dot" aria-label="运行中"/>}</span></span></button>})}
+     {group.sessions.map(s=>{const ws=workspaces.find(w=>w.id===s.workspaceId);return <button key={s.id} className={`session-row${sessionId===s.id?' active':''}${s.parentId?' child':''}`} title={s.parentId?'子代理会话':undefined} onClick={()=>openFromSidebar(s)} onContextMenu={event=>showSessionContextMenu(event,s)} onMouseEnter={event=>openSessionPop(s,event.currentTarget)} onMouseLeave={scheduleSessionPopClose}><MessageSquare size={16}/><span className="session-lines"><span className="session-l1"><span className="session-title">{s.title}</span>{s.parentId&&<em className="subagent-badge">子任务</em>}{pendingAskIds.has(s.id)&&<em className="ask-badge">待答复</em>}<span role="button" tabIndex={0} className="session-archive" aria-label="存档会话" title="存档会话" onClick={event=>{event.stopPropagation();archiveSession(s)}}><Archive size={13}/></span></span><span className="session-l2">{ws&&<span>{projectName(s.workspaceId)}</span>}{ws?.pinned&&<Pin size={10} aria-hidden="true"/>}{(running[s.id]||activeIds.has(s.id))&&<i className="live-dot" aria-label="运行中"/>}</span></span></button>})}
     </Fragment>):groupByProject(visibleSessions,visibleWorkspaces,!query).map(({workspace:ws,sessions:list})=>{
      const open=!collapsed.includes(ws.id);
      return <div key={ws.id} className="ws-group">
@@ -543,7 +576,7 @@ export default function App(){
        <button type="button" className="ws-rename" aria-label={`重命名 ${ws.name}`} title="重命名项目" onClick={()=>setWsDialog({mode:'rename',id:ws.id,name:ws.name})}><Pencil size={13}/></button>
        <button type="button" className={`ws-pin${ws.pinned?' on':''}`} aria-label={`${ws.pinned?'取消置顶':'置顶'} ${ws.name}`} title={ws.pinned?'取消置顶':'置顶项目'} onClick={()=>void togglePinned(ws)}><Pin size={13}/></button>
       </div>
-      {open&&list.map(s=><button key={s.id} className={`session-row one${sessionId===s.id?' active':''}${s.parentId?' child':''}`} title={s.parentId?'子代理会话':undefined} onClick={()=>openFromSidebar(s)} onContextMenu={event=>showSessionContextMenu(event,s)}><MessageSquare size={16}/><span className="session-title">{s.title}</span>{s.parentId&&<em className="subagent-badge">子任务</em>}{pendingAskIds.has(s.id)&&<em className="ask-badge">待答复</em>}{(running[s.id]||activeIds.has(s.id))&&<i className="live-dot" aria-label="运行中"/>}<span className="session-time">{relativeLabel(s.updatedAt,new Date())}</span><span role="button" tabIndex={0} className="session-archive" aria-label="存档会话" title="存档会话" onClick={event=>{event.stopPropagation();archiveSession(s)}}><Archive size={13}/></span></button>)}
+      {open&&list.map(s=><button key={s.id} className={`session-row one${sessionId===s.id?' active':''}${s.parentId?' child':''}`} title={s.parentId?'子代理会话':undefined} onClick={()=>openFromSidebar(s)} onContextMenu={event=>showSessionContextMenu(event,s)} onMouseEnter={event=>openSessionPop(s,event.currentTarget)} onMouseLeave={scheduleSessionPopClose}><MessageSquare size={16}/><span className="session-title">{s.title}</span>{s.parentId&&<em className="subagent-badge">子任务</em>}{pendingAskIds.has(s.id)&&<em className="ask-badge">待答复</em>}{(running[s.id]||activeIds.has(s.id))&&<i className="live-dot" aria-label="运行中"/>}<span role="button" tabIndex={0} className="session-archive" aria-label="存档会话" title="存档会话" onClick={event=>{event.stopPropagation();archiveSession(s)}}><Archive size={13}/></span></button>)}
      </div>;
     })}
     {(!visibleSessions.length&&!(viewMode==='project'&&!query&&workspaces.length))&&<p className="muted empty-small">{query?'无匹配会话。':workspaceId?'还没有会话，点击「新建聊天」开始':'打开工作区后，会话将保存在本机。'}</p>}
@@ -551,6 +584,7 @@ export default function App(){
    </nav>
    <div className="sidebar-bottom"><div className="local-badge"><i className="live-dot"/> 本地优先 · 无遥测</div><button onClick={()=>useSidePanel.getState().openPlans()}><Target size={17}/>计划与目标</button><button onClick={()=>setPanel('automations')}><Timer size={17}/>自动化{automationCount!==null&&<span className="count">{automationCount}</span>}</button><button aria-label="设置" onClick={openSettings}><Settings size={17}/>设置</button></div>
   </aside>
+  {sessionPop&&createPortal(<SessionPopCard title={sessionPop.title} time={sessionPop.time} rect={sessionPop.rect}/>,document.body)}
   <main className="main"><header className="topbar"><div className="breadcrumb"><strong className="topbar-session-title">{session?.title??(drafting?'新会话':'新的可能，从这里开始')}</strong><span className="workspace-context"><Folder size={15}/><span className="workspace-name">{workspace?workspace.name:'工作台'}</span></span></div><div className="toolbar"><button className="icon-button" title="导出会话" aria-label="导出会话" disabled={!sessionId} onClick={exportSession}><Download size={17}/></button><button className="soft" aria-expanded={panel==='tasks'} aria-controls="task-popover" onClick={()=>setPanel(p=>p==='tasks'?null:'tasks')} disabled={!sessionId}><ListTodo size={16}/>后台任务{taskCount>0&&<span className="count">{taskCount}</span>}</button><button className="soft" aria-expanded={sideOpen} onClick={()=>useSidePanel.getState().toggle()} disabled={!workspaceId}><GitCompareArrows size={16}/>查看更改</button><button className="archive-button" type="button" title="存档会话" aria-label="存档会话" disabled={!sessionId} onClick={()=>{if(session)archiveSession(session)}}><Archive size={16}/>存档</button>{panel==='tasks'&&sessionId&&<BackgroundTasksPanel sessionId={sessionId} onClose={()=>setPanel(null)}/>}</div></header>
    {!desktop()&&<div className="host-banner"><Terminal size={16}/>当前为界面预览，需要桌面宿主才能访问工作区和模型。</div>}
    {error&&<div role="alert" className="alert"><span>{error}</span><button aria-label="关闭错误" onClick={()=>setError('')}><X size={16}/></button></div>}

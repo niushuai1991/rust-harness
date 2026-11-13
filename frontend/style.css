@@ -246,9 +246,10 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .sessions .session-row{align-items:flex-start;gap:8px;text-align:left}
 .session-lines{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
 .session-l1{display:flex;align-items:baseline;gap:6px;min-width:0}
-.session-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 会话标题：末端 20px 渐隐收尾（mask 作用于盒子末端，未溢出时无文字经过渐变区故无视觉影响）；
+   显式 text-overflow:clip 并用高特异性选择器覆盖上方 `.sessions .session-row span` 的兜底 ellipsis，避免「…+渐隐」叠加。 */
+.sessions .session-row .session-title{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:clip;-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 20px),transparent 100%);mask-image:linear-gradient(to right,#000 calc(100% - 20px),transparent 100%)}
 .session-row .subagent-badge{margin-left:0}
-.session-time{flex-shrink:0;font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums}
 .session-l2{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--muted);min-width:0}
 .session-l2>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .session-l2 svg{flex-shrink:0;color:var(--accent)}
@@ -272,7 +273,6 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .ws-pin.on{color:var(--accent)}
 .ws-pin:hover{background:var(--surface);color:var(--accent)}
 .sessions .session-row.one{align-items:center}
-.sessions .session-row.one .session-title{flex:1}
 .session-context-menu{position:fixed;z-index:25;min-width:156px;padding:5px;background:var(--panel);border:1px solid var(--border);border-radius:9px;box-shadow:0 10px 28px rgba(32,33,36,.18)}
 .session-context-menu button{width:100%;justify-content:flex-start;border:0;background:transparent;padding:8px 10px;font-size:12px}
 .session-context-menu button:hover{background:var(--surface)}
@@ -280,6 +280,12 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .session-archive{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;opacity:0;flex-shrink:0;align-self:center;transition:opacity .12s,color .12s}
 .sessions .session-row:hover .session-archive,.session-archive:focus-visible{opacity:1}
 .session-archive:hover{background:var(--surface);color:var(--accent)}
+/* 会话行悬停浮层：完整会话名 + 更新时间。fixed 定位脱离侧栏滚动容器避免被 overflow 裁剪；
+   纯展示不拦截鼠标（pointer-events:none），portal 到 body 渲染。 */
+.session-pop{position:fixed;z-index:60;width:max-content;max-width:320px;background:var(--panel);border:1px solid var(--border);border-radius:11px;box-shadow:0 8px 24px rgba(32,33,36,.16);padding:11px 13px;pointer-events:none;animation:session-pop-in .13s ease-out}
+@keyframes session-pop-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.session-pop .pop-title{font-size:12.5px;font-weight:550;line-height:1.6;overflow-wrap:anywhere}
+.session-pop .pop-time{margin-top:5px;font-size:10.5px;color:var(--muted);font-variant-numeric:tabular-nums}
 /* 设置页「存档管理」：项目分组标题与条目恢复按钮 */
 .archive-group-title{display:flex;align-items:center;gap:6px;margin:20px 0 2px;font-size:11px;font-weight:600;color:var(--text)}
 .archive-group-title svg{color:var(--muted);flex-shrink:0}
