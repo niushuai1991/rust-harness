@@ -564,15 +564,7 @@ fn unwrap_wrapper(tokens: &[String]) -> Option<String> {
 
 /// 识别一条命令的规则；`tokens` 为去引号 token。
 fn rule_for(tokens: &[String]) -> Option<&'static str> {
-    let program = tokens[0].rsplit(['/', '\\']).next().unwrap_or(&tokens[0]);
-    let program = program
-        .strip_suffix(".exe")
-        .or_else(|| program.strip_suffix(".cmd"))
-        .or_else(|| program.strip_suffix(".bat"))
-        .or_else(|| program.strip_suffix(".com"))
-        .or_else(|| program.strip_suffix(".ps1"))
-        .unwrap_or(program)
-        .to_ascii_lowercase();
+    let program = shell_program(&tokens[0]);
     let args = &tokens[1..];
     match program.as_str() {
         "git" => git_rule(args),
@@ -708,6 +700,191 @@ fn remove_item_rule(args: &[String]) -> Option<&'static str> {
     args.iter()
         .any(|t| t.eq_ignore_ascii_case("-recurse") || t.eq_ignore_ascii_case("-r"))
         .then_some("remove-critical-path")
+}
+
+/// 计划模式只读 shell 判定：引号感知分段后，每一段都必须是已知只读命令。
+/// 与审批免检和危险命令黑名单相互独立：这里采用正向白名单，
+/// 无法静态证明只读（动态展开、重定向落盘、未知程序）一律拒绝。
+pub fn read_only_shell_command(command: &str) -> bool {
+    !command.trim().is_empty()
+        && command.len() <= 4096
+        && split_segments(&strip_stderr_merge(command))
+            .iter()
+            .all(|segment| read_only_segment(segment, 0))
+}
+
+/// 引号外剔除 `2>&1`（stderr 并入 stdout，不落盘）。分段器会把其中的
+/// `|`/`&` 当分段符切开，评估前先摘除；`2>&1 > file` 的落盘部分仍会拒绝。
+fn strip_stderr_merge(command: &str) -> String {
+    let mut result = String::with_capacity(command.len());
+    let mut quote: Option<char> = None;
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some(q) => {
+                result.push(c);
+                if c == q {
+                    quote = None;
+                }
+            }
+            None => {
+                if c == '\'' || c == '"' {
+                    quote = Some(c);
+                    result.push(c);
+                } else if c == '2' && chars.peek() == Some(&'>') {
+                    // 延迟判断：不匹配完整 `2>&1` 时按原样补回已读字符。
+                    let mut lookahead = String::from("2");
+                    while lookahead.len() < 4
+                        && let Some(&next) = chars.peek()
+                    {
+                        lookahead.push(next);
+                        chars.next();
+                    }
+                    if lookahead != "2>&1" {
+                        result.push_str(&lookahead);
+                    }
+                } else {
+                    result.push(c);
+                }
+            }
+        }
+    }
+    result
+}
+
+fn read_only_segment(segment: &str, depth: u8) -> bool {
+    if depth >= MAX_UNWRAP_DEPTH {
+        return false;
+    }
+    let tokens = tokenize(segment);
+    if tokens.is_empty() {
+        return true;
+    }
+    // 重定向落盘拒绝；仅 `2>&1`（stderr 并入 stdout）不落盘可放行。`<` 亦不放行。
+    if tokens
+        .iter()
+        .any(|t| (t.contains('>') && t != "2>&1") || t.contains('<'))
+    {
+        return false;
+    }
+    // 引号外动态展开无法静态求值，保守拒绝。
+    if has_dynamic_expansion(segment) {
+        return false;
+    }
+    // 包装命令（cmd /c …、powershell -Command …）剥壳后评估内层。
+    if let Some(inner) = unwrap_wrapper(&tokens) {
+        return read_only_segment(&inner, depth + 1);
+    }
+    read_only_rule(&tokens)
+}
+
+/// 帮助/版本查询旗标：任意程序仅带这些参数视为只读。`-v` 不在内（部分程序是 verbose 执行）。
+fn is_info_flag(token: &str) -> bool {
+    matches!(token, "--help" | "-h" | "/?" | "--version" | "-V")
+}
+
+/// 识别一条只读命令；`tokens` 为去引号 token。
+fn read_only_rule(tokens: &[String]) -> bool {
+    let program = shell_program(&tokens[0]);
+    let args = &tokens[1..];
+    if !args.is_empty() && args.iter().all(|t| is_info_flag(t)) {
+        return true;
+    }
+    match program.as_str() {
+        "git" => read_only_git_rule(args),
+        "ls" | "dir" | "tree" | "du" | "df" | "cat" | "type" | "head" | "tail" | "wc" | "stat"
+        | "file" | "get-content" | "gc" | "get-childitem" | "gci" | "get-item" | "gi" => true,
+        "rg" | "grep" | "findstr" | "fd" | "where" | "which" | "get-command" | "gcm" => true,
+        "ps" | "tasklist" | "whoami" | "hostname" | "uname" | "systeminfo" | "env" | "printenv"
+        | "get-date" => true,
+        // Unix date 的 -s/--set 会改系统时间。
+        "date" => !args.iter().any(|t| t == "-s" || t == "--set"),
+        // Unix find 的 -delete/-exec 系列会写删。
+        "find" => !args.iter().any(|t| {
+            matches!(
+                t.as_str(),
+                "-delete"
+                    | "-exec"
+                    | "-execdir"
+                    | "-ok"
+                    | "-okdir"
+                    | "-fprint"
+                    | "-fprintf"
+                    | "-fls"
+            )
+        }),
+        _ => false,
+    }
+}
+
+/// git 只读子命令：跳过全局选项（含取值选项）后判定。
+fn read_only_git_rule(args: &[String]) -> bool {
+    let mut index = 0;
+    while index < args.len() {
+        let token = args[index].as_str();
+        if matches!(
+            token,
+            "-C" | "--git-dir" | "--work-tree" | "--namespace" | "-c"
+        ) {
+            index += 2;
+        } else if token.starts_with('-') {
+            index += 1;
+        } else {
+            break;
+        }
+    }
+    let Some(sub) = args.get(index) else {
+        return false;
+    };
+    let rest = &args[index + 1..];
+    match sub.as_str() {
+        // 任意参数均只读；--output 是 git 自带的重定向落盘，排除。
+        "status" | "log" | "diff" | "show" | "blame" | "rev-parse" | "describe" | "ls-files"
+        | "shortlog" | "cat-file" | "grep" | "ls-remote" | "merge-base" | "cherry" => !rest
+            .iter()
+            .any(|t| t == "--output" || t.starts_with("--output=")),
+        "branch" => {
+            rest.is_empty()
+                || rest.iter().all(|t| {
+                    matches!(
+                        t.as_str(),
+                        "-a" | "--all" | "-l" | "--list" | "-v" | "-vv" | "--show-current"
+                    )
+                })
+        }
+        // tag 列出可带匹配模式（-l v1.*）；混入其他旗标（如 -d 删除）即拒绝。
+        "tag" => {
+            rest.is_empty()
+                || (matches!(
+                    rest.first().map(String::as_str),
+                    Some("-l") | Some("--list")
+                ) && rest[1..].iter().all(|t| !t.starts_with('-')))
+        }
+        "remote" => rest.is_empty() || rest.iter().all(|t| t == "-v" || t == "--verbose"),
+        "stash" => matches!(
+            rest.first().map(String::as_str),
+            Some("list") | Some("show")
+        ),
+        "worktree" => matches!(rest.first().map(String::as_str), None | Some("list")),
+        "reflog" => matches!(rest.first().map(String::as_str), None | Some("show")),
+        "config" => rest
+            .first()
+            .is_some_and(|t| t == "--list" || t == "-l" || t.starts_with("--get")),
+        _ => false,
+    }
+}
+
+/// 程序名归一化：剥目录路径与可执行后缀，转小写。
+fn shell_program(token: &str) -> String {
+    let program = token.rsplit(['/', '\\']).next().unwrap_or(token);
+    let program = program
+        .strip_suffix(".exe")
+        .or_else(|| program.strip_suffix(".cmd"))
+        .or_else(|| program.strip_suffix(".bat"))
+        .or_else(|| program.strip_suffix(".com"))
+        .or_else(|| program.strip_suffix(".ps1"))
+        .unwrap_or(program);
+    program.to_ascii_lowercase()
 }
 
 /// 内置供应商随程序分发的只读模型条目；启用状态由个人层的 `disabled_models` 覆盖。
@@ -1614,5 +1791,210 @@ mod ask_request_tests {
                 source: AskSource::Unattended,
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod read_only_shell_tests {
+    use super::*;
+
+    #[test]
+    fn allows_readonly_git_queries_with_any_arguments() {
+        for command in [
+            "git status",
+            "git status --porcelain -b",
+            "git log --oneline -20",
+            "git diff HEAD~1",
+            "git show abc123",
+            "git blame src/main.rs",
+            "git rev-parse HEAD",
+            "git ls-files",
+            "git cat-file -p HEAD",
+            "git grep TODO",
+            "git ls-remote origin",
+            "git merge-base main feat/x",
+            "git -C sub log --oneline",
+        ] {
+            assert!(read_only_shell_command(command), "应放行：{command}");
+        }
+    }
+
+    #[test]
+    fn restricts_git_subcommands_with_write_forms() {
+        assert!(read_only_shell_command("git branch"));
+        assert!(read_only_shell_command("git branch -a -v"));
+        assert!(
+            !read_only_shell_command("git branch -D tmp"),
+            "git branch -D 是删除"
+        );
+        assert!(read_only_shell_command("git tag"));
+        assert!(read_only_shell_command("git tag -l v1.*"));
+        assert!(
+            !read_only_shell_command("git tag v1.0.0"),
+            "git tag 带名是创建"
+        );
+        assert!(read_only_shell_command("git remote -v"));
+        assert!(
+            !read_only_shell_command("git remote add origin url"),
+            "remote add 是写"
+        );
+        assert!(read_only_shell_command("git stash list"));
+        assert!(
+            !read_only_shell_command("git stash"),
+            "裸 git stash 等价于 push，是写操作"
+        );
+        assert!(
+            !read_only_shell_command("git stash drop"),
+            "stash drop 是删除"
+        );
+        assert!(read_only_shell_command("git worktree list"));
+        assert!(
+            !read_only_shell_command("git worktree add ../x"),
+            "worktree add 是写"
+        );
+        assert!(read_only_shell_command("git reflog"));
+        assert!(
+            !read_only_shell_command("git reflog expire --expire=now"),
+            "reflog expire 是删除"
+        );
+        assert!(read_only_shell_command("git config --get user.name"));
+        assert!(read_only_shell_command("git config --list"));
+        assert!(
+            !read_only_shell_command("git config user.name foo"),
+            "git config 写入"
+        );
+        assert!(!read_only_shell_command("git commit -m x"));
+        assert!(!read_only_shell_command("git push origin main"));
+        assert!(!read_only_shell_command("git checkout main"));
+        assert!(!read_only_shell_command("git reset --hard HEAD"));
+        assert!(!read_only_shell_command("git format-patch -1"));
+        assert!(!read_only_shell_command("git"), "裸 git 不放行");
+        // log/diff/show 的 --output 是 git 自带重定向落盘。
+        assert!(!read_only_shell_command("git diff --output=x.patch"));
+    }
+
+    #[test]
+    fn allows_file_read_search_and_system_commands() {
+        for command in [
+            "ls",
+            "ls -la src",
+            "dir /b",
+            "tree src",
+            "cat README.md",
+            "type package.json",
+            "head -5 lib.rs",
+            "tail -n 20 log.txt",
+            "wc -l src/lib.rs",
+            "stat README.md",
+            "rg \"plan_safe\" crates",
+            "grep -rn TODO src",
+            "findstr /s plan src",
+            "fd plan",
+            "where cargo",
+            "which git",
+            "ps",
+            "tasklist",
+            "whoami",
+            "hostname",
+            "Get-Content a.txt",
+            "Get-ChildItem src",
+            "Get-Date",
+            "git log | head -5",
+            "rg foo src | wc -l",
+        ] {
+            assert!(read_only_shell_command(command), "应放行：{command}");
+        }
+    }
+
+    #[test]
+    fn rejects_write_build_and_unknown_commands() {
+        for command in [
+            "rm x",
+            "rm -rf build",
+            "del x.txt",
+            "Remove-Item x",
+            "New-Item a.txt",
+            "Set-Content a.txt hi",
+            "Out-File a.txt",
+            "mkdir build",
+            "cargo test",
+            "cargo build",
+            "npm install",
+            "npm run build",
+            "curl https://example.com",
+            "echo hi",
+            "tee out.txt",
+            "find . -name x -delete",
+            "find . -name x -exec rm {} \\;",
+            "not-a-program",
+            "",
+            "   ",
+        ] {
+            assert!(!read_only_shell_command(command), "应拒绝：{command}");
+        }
+    }
+
+    #[test]
+    fn allows_help_and_version_queries_for_any_program() {
+        for command in [
+            "cargo --version",
+            "git --help",
+            "rg --version",
+            "not-a-program --help",
+            "python3 -V",
+            "anything /?",
+        ] {
+            assert!(read_only_shell_command(command), "应放行：{command}");
+        }
+        assert!(
+            !read_only_shell_command("cargo test --version"),
+            "混合参数不豁免"
+        );
+        // -v 在部分程序中是 verbose 执行而非版本查询，不进豁免集合。
+        assert!(!read_only_shell_command("node -v"));
+        assert!(
+            !read_only_shell_command("node -v --eval evil"),
+            "混合参数不豁免"
+        );
+    }
+
+    #[test]
+    fn rejects_redirection_and_dynamic_expansion() {
+        assert!(!read_only_shell_command("git log > out.txt"));
+        assert!(!read_only_shell_command("git log >> out.txt"));
+        assert!(!read_only_shell_command("rg foo > out.txt"));
+        assert!(!read_only_shell_command("git log 2> err.txt"));
+        assert!(!read_only_shell_command("git log 2>&1 > out.txt"));
+        assert!(
+            read_only_shell_command("git log 2>&1"),
+            "stderr 并入 stdout 不落盘"
+        );
+        assert!(read_only_shell_command("rg foo 2>&1 | head -5"));
+        assert!(!read_only_shell_command("git log $(git rev-parse HEAD)"));
+        assert!(!read_only_shell_command("git log %BRANCH%"));
+        assert!(!read_only_shell_command("ls `whoami`"));
+        assert!(!read_only_shell_command("git log < input.txt"));
+        assert!(
+            read_only_shell_command("git log 'master..%x'"),
+            "单引号内展开可静态豁免"
+        );
+    }
+
+    #[test]
+    fn evaluates_wrapped_inner_commands() {
+        assert!(read_only_shell_command(
+            "powershell -Command \"git status\""
+        ));
+        assert!(read_only_shell_command("cmd /c \"git log --oneline\""));
+        assert!(read_only_shell_command("bash -c \"rg foo src\""));
+        assert!(!read_only_shell_command("powershell -Command \"rm x\""));
+        assert!(!read_only_shell_command("bash -c \"git push\""));
+        assert!(!read_only_shell_command("cmd /c git push origin main"));
+    }
+
+    #[test]
+    fn rejects_commands_over_length_limit() {
+        let long = format!("git log --oneline {}", "x".repeat(4200));
+        assert!(!read_only_shell_command(&long));
     }
 }

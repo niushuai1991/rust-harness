@@ -547,3 +547,200 @@ async fn plan_denies_auto_write_and_untrusted_approval_exempt_tool_but_allows_re
             .exists()
     );
 }
+
+async fn plan_session_fixture(temp: &tempfile::TempDir) -> (Arc<Runtime>, String) {
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let runtime = Runtime::open(temp.path().join("data")).await.unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "plan")
+        .await
+        .unwrap();
+    (runtime, session.id)
+}
+
+#[tokio::test]
+async fn plan_mode_allows_readonly_shell_without_approval() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, session_id) = plan_session_fixture(&temp).await;
+    runtime.set_approval_policy(&session_id, Some(ApprovalPolicy::Auto));
+    runtime.session_plan_set(&session_id, true).await.unwrap();
+    let calls = [
+        ("host", "shell", json!({"command":"hostname"})),
+        ("pipe", "shell", json!({"command":"hostname | head -1"})),
+    ]
+    .into_iter()
+    .map(|(id, name, arguments)| ToolCall {
+        id: id.into(),
+        name: name.into(),
+        arguments,
+    })
+    .collect();
+    let provider = Arc::new(Provider(Mutex::new(Some(ModelAnswer {
+        calls,
+        usage: json!({"prompt_tokens": 0, "completion_tokens": 0}),
+        ..Default::default()
+    }))));
+    runtime
+        .clone()
+        .run_session(session_id.clone(), "investigate".into(), provider)
+        .await
+        .unwrap();
+    let events = runtime.store.events(&session_id, 0).await.unwrap();
+    for id in ["host", "pipe"] {
+        assert!(events.iter().any(|event| event.kind == "tool.result"
+            && event.data["callId"] == id
+            && event.data["isError"] == false
+            && event.data["status"] == "completed"
+            && event.data["escalated"] == false));
+    }
+    assert!(
+        events.iter().all(|event| event.kind != "approval.request"),
+        "计划模式只读 shell 不应产生任何审批"
+    );
+}
+
+#[tokio::test]
+async fn plan_mode_denies_writing_shell_and_redirection() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("x.txt"), "keep").unwrap();
+    let runtime = Runtime::open(temp.path().join("data")).await.unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "plan")
+        .await
+        .unwrap();
+    let session_id = session.id;
+    runtime.set_approval_policy(&session_id, Some(ApprovalPolicy::Auto));
+    runtime.session_plan_set(&session_id, true).await.unwrap();
+    let calls = [
+        ("del", "shell", json!({"command":"rm x.txt"})),
+        ("redir", "shell", json!({"command":"git log > out.txt"})),
+    ]
+    .into_iter()
+    .map(|(id, name, arguments)| ToolCall {
+        id: id.into(),
+        name: name.into(),
+        arguments,
+    })
+    .collect();
+    let provider = Arc::new(Provider(Mutex::new(Some(ModelAnswer {
+        calls,
+        usage: json!({"prompt_tokens": 0, "completion_tokens": 0}),
+        ..Default::default()
+    }))));
+    runtime
+        .clone()
+        .run_session(session_id.clone(), "investigate".into(), provider)
+        .await
+        .unwrap();
+    let events = runtime.store.events(&session_id, 0).await.unwrap();
+    for id in ["del", "redir"] {
+        assert!(
+            events.iter().any(|event| event.kind == "tool.result"
+                && event.data["callId"] == id
+                && event.data["status"] == "denied"),
+            "写命令与重定向均应拒绝：{id}"
+        );
+    }
+    assert!(
+        std::path::Path::new(&workspace.replica_path)
+            .join("x.txt")
+            .exists()
+    );
+    assert!(
+        !std::path::Path::new(&workspace.replica_path)
+            .join("out.txt")
+            .exists()
+    );
+    assert!(events.iter().all(|event| event.kind != "approval.request"));
+}
+
+#[tokio::test]
+async fn plan_mode_denies_shell_escalate_requests() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, session_id) = plan_session_fixture(&temp).await;
+    runtime.set_approval_policy(&session_id, Some(ApprovalPolicy::Auto));
+    runtime.session_plan_set(&session_id, true).await.unwrap();
+    let calls = [(
+        "esc",
+        "shell",
+        json!({"command":"hostname","escalate":true}),
+    )]
+    .into_iter()
+    .map(|(id, name, arguments)| ToolCall {
+        id: id.into(),
+        name: name.into(),
+        arguments,
+    })
+    .collect();
+    let provider = Arc::new(Provider(Mutex::new(Some(ModelAnswer {
+        calls,
+        usage: json!({"prompt_tokens": 0, "completion_tokens": 0}),
+        ..Default::default()
+    }))));
+    runtime
+        .clone()
+        .run_session(session_id.clone(), "investigate".into(), provider)
+        .await
+        .unwrap();
+    let events = runtime.store.events(&session_id, 0).await.unwrap();
+    assert!(events.iter().any(|event| event.kind == "tool.result"
+        && event.data["callId"] == "esc"
+        && event.data["status"] == "denied"));
+    assert!(events.iter().all(|event| event.kind != "approval.request"));
+}
+
+#[tokio::test]
+async fn plan_mode_shell_never_escalates_on_sandbox_denial() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, session_id) = plan_session_fixture(&temp).await;
+    runtime.set_approval_policy(&session_id, Some(ApprovalPolicy::Auto));
+    runtime.session_plan_set(&session_id, true).await.unwrap();
+    // 读取受 ACL 保护的文件：沙箱内外均失败且命中拒绝关键词，计划模式下不得触发提权重跑审批。
+    let calls = [(
+        "sam",
+        "shell",
+        json!({"command":"type C:\\Windows\\System32\\config\\SAM"}),
+    )]
+    .into_iter()
+    .map(|(id, name, arguments)| ToolCall {
+        id: id.into(),
+        name: name.into(),
+        arguments,
+    })
+    .collect();
+    let provider = Arc::new(Provider(Mutex::new(Some(ModelAnswer {
+        calls,
+        usage: json!({"prompt_tokens": 0, "completion_tokens": 0}),
+        ..Default::default()
+    }))));
+    runtime
+        .clone()
+        .run_session(session_id.clone(), "investigate".into(), provider)
+        .await
+        .unwrap();
+    let events = runtime.store.events(&session_id, 0).await.unwrap();
+    let result = events
+        .iter()
+        .find(|event| event.kind == "tool.result" && event.data["callId"] == "sam")
+        .expect("应产生 shell 结果事件");
+    assert_eq!(
+        result.data["status"], "completed",
+        "命令被执行（只是失败）而非拒绝"
+    );
+    assert_eq!(result.data["isError"], true);
+    assert_eq!(result.data["escalated"], false, "计划模式不提权重跑");
+    assert!(events.iter().all(|event| event.kind != "approval.request"));
+}

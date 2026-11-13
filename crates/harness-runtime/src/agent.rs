@@ -1009,7 +1009,7 @@ impl Runtime {
             let history = self.store.events(session, 0).await?;
             let mut messages = project_messages(&history);
             if self.session_plan_get(session).await? {
-                messages[0].content.push_str("\n\n当前处于计划模式：只能只读调查，不得产生项目或外部副作用。请使用 plan_write 记录计划。若需要开始执行，请调用 plan_exit 并等待用户明确批准；用户拒绝或无人在场时继续只读。");
+                messages[0].content.push_str("\n\n当前处于计划模式：只能只读调查，不得产生项目或外部副作用。shell 工具仅允许只读命令（git 查询、文件查看与列表、搜索、系统信息、--version/--help），写文件、重定向、安装、构建、提权命令会被拒绝。请使用 plan_write 记录计划。若需要开始执行，请调用 plan_exit 并等待用户明确批准；用户拒绝或无人在场时继续只读。");
             }
             let request_id = new_id();
             self.append(
@@ -1171,10 +1171,13 @@ impl Runtime {
                     if original!=serde_json::to_value(&call).map_err(internal)?{self.append(session,"tool.rewrite",json!({"callId":call.id,"original":original,"effective":call})).await?;}
                     let effective=tools.iter().find(|t|t.name==call.name).ok_or_else(||AppError::new("TOOL_UNAVAILABLE",&call.name))?;
                     if !jsonschema::validator_for(&effective.parameters).map_err(internal)?.is_valid(&call.arguments){return Err(AppError::new("TOOL_ARGUMENTS","钩子修改后的工具参数无效"));}
-                    if self.session_plan_get(session).await? && !plan_safe_tool(&call.name) {
-                        return Err(AppError::new("PLAN_MODE_READ_ONLY", "计划模式只允许安全读取和记录计划"));
+                    let plan_mode=self.session_plan_get(session).await?;
+                    if plan_mode && !plan_tool_allowed(&call.name,&call.arguments) {
+                        return Err(AppError::new("PLAN_MODE_READ_ONLY", plan_denial_reason(&call.name,&call.arguments)));
                     }
-                    let needs_approval=self.custom.lock().unwrap().get(&call.name).map(|t|t.requires_approval()).unwrap_or_else(||requires_approval(&call.name));
+                    // 计划模式走到这里的工具都已被白名单判定为只读（内置只读清单或只读 shell 命令），
+                    // 无需再走审批；提权请求已在白名单处拒绝，不存在待批事项。
+                    let needs_approval=!plan_mode&&self.custom.lock().unwrap().get(&call.name).map(|t|t.requires_approval()).unwrap_or_else(||requires_approval(&call.name));
                     if needs_approval{self.approve(session,&call,&cancel,false,None).await?;}
                     let tool_cancel=cancel.child_token();
                     let work = self.execute_tool(ToolExecution {
@@ -1621,8 +1624,13 @@ impl Runtime {
             }
             "shell" => {
                 let command = arg(a, "command")?;
+                let plan_mode = self.session_plan_get(session).await?;
                 let mut escalated = false;
-                let output = if a["escalate"].as_bool().unwrap_or(false) {
+                let output = if plan_mode {
+                    // 计划模式只读命令：单次沙箱内执行，失败按普通失败呈现，不申请提权重跑。
+                    ShellService::run_in(root, &exec.capability_id, command, cancel.clone(), true)
+                        .await?
+                } else if a["escalate"].as_bool().unwrap_or(false) {
                     // 主动提权：首次即审批，批准后无沙箱执行。
                     self.approve(session, call, &cancel, true, None).await?;
                     escalated = true;
@@ -1927,6 +1935,26 @@ fn plan_safe_tool(name: &str) -> bool {
             | "plan_write"
             | "plan_exit"
     )
+}
+/// 计划模式工具准入：内置只读白名单之外，shell 仅放行可静态证明只读的命令。
+/// 提权请求（escalate）一律拒绝；这是独立于审批档位的硬边界。
+fn plan_tool_allowed(name: &str, arguments: &Value) -> bool {
+    if plan_safe_tool(name) {
+        return true;
+    }
+    name == "shell"
+        && arguments["escalate"].as_bool() != Some(true)
+        && read_only_shell_command(arguments["command"].as_str().unwrap_or_default())
+}
+/// 拒绝文案按原因区分，帮助模型理解下一步可做什么。
+fn plan_denial_reason(name: &str, arguments: &Value) -> &'static str {
+    if name == "shell" && arguments["escalate"].as_bool() == Some(true) {
+        "计划模式不允许提权执行 shell 命令"
+    } else if name == "shell" {
+        "计划模式 shell 仅允许只读命令（git 查询、文件查看与列表、搜索、系统信息），写文件、重定向、安装、构建均被拒绝"
+    } else {
+        "计划模式只允许安全读取和记录计划"
+    }
 }
 fn requires_approval(name: &str) -> bool {
     !matches!(
