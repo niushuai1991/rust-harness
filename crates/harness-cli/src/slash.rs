@@ -69,7 +69,7 @@ pub static SLASH_COMMANDS: &[SlashSpec] = &[
     SlashSpec {
         name: "plan",
         aliases: &[],
-        description: "制定实施计划",
+        description: "切换计划模式",
         arg_hint: Some("[任务]"),
     },
     SlashSpec {

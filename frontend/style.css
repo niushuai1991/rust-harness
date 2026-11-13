@@ -17,11 +17,13 @@
 .todo-list li{padding:4px 0;color:var(--text)}
 .todo-list li.done{color:var(--muted);text-decoration:line-through}
 
+.plan-mode-chip{padding:4px 7px;font-size:11px;white-space:nowrap}.plan-mode-chip[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:var(--panel)}
 .plan-groups{display:flex;flex-direction:column;gap:12px;margin-top:12px}
 .plan-group{border:1px solid var(--border);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:10px;background:var(--panel)}
-.plan-group-heading{display:flex;align-items:center;gap:8px}
+.plans-panel{padding:16px;min-width:0;font-size:12px;line-height:1.7}
+.plan-group-heading{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0;overflow-wrap:anywhere}
 .plan-group-heading strong{font-size:14px}
-.plan-group-actions{margin-left:auto;display:flex;gap:8px}
+.plan-group-actions{margin-left:auto;display:flex;flex-wrap:wrap;gap:8px}
 .plan-group-actions button{border:1px solid var(--border);background:transparent;color:var(--text);border-radius:8px;padding:4px 10px;font-size:12px;cursor:pointer}
 .plan-group-actions button:hover{border-color:var(--accent);color:var(--accent)}
 .plan-entry{display:flex;flex-direction:column;gap:6px}
@@ -355,7 +357,7 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .ask-textarea::placeholder{color:var(--muted)}
 .ask-popover{position:absolute;bottom:calc(100% + 10px);left:30px;right:30px;background:var(--panel);border:1px solid var(--border);border-radius:12px;box-shadow:0 12px 36px rgba(32,33,36,.18);padding:14px 16px 12px;z-index:30;font-size:12px}
 .ask-popover-head{display:flex;align-items:center;gap:8px;color:var(--text);font-size:13.5px;margin-bottom:2px}
-.ask-popover-head strong{flex:1;min-width:0;font-weight:550;overflow-wrap:anywhere}
+.ask-popover-head strong{flex:1;min-width:0;max-height:40vh;overflow:auto;font-weight:550;overflow-wrap:anywhere;white-space:pre-wrap}
 .ask-popover-head svg{color:var(--muted);flex-shrink:0}
 .ask-popover-head button{border:0;background:transparent;padding:3px;color:var(--muted)}
 .ask-popover-head button:hover{background:var(--surface);color:var(--text)}
