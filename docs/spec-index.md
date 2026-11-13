@@ -9,30 +9,31 @@
 | [总体规范](specs/overall.md) | 2026-11-03（设计确认） | 全局架构、模块职责、安全不变量、交付阶段划分与阶段验收要求。 |
 | [双供应商、多协议接入](specs/multi-protocol.md) | 2026-11-04（计划批准） | 固定供应商目录、三协议适配、配置迁移及桌面和 CLI 接入。 |
 | [P1 验收与缺口补齐](specs/p1-acceptance.md) | 2026-11-04（验收启动） | P1 验收范围、附件及插件缺口、安装清理和完成门槛。 |
-| [CLI 命令行 Agent 调用](specs/cli.md) | 2026-11-05（计划拟制） | `harness` 命令行 run/chat/diff/apply/models/sessions 能力，参考 codex CLI 设计。 |
+| [CLI 命令行 Agent 调用](specs/cli.md) | 2026-11-05（计划拟制） | `harness` 命令行 run/chat/diff/apply/models/sessions 能力，提供命令行调用入口。 |
 | [ACP 协议接口](specs/acp.md) | 2026-11-06（计划拟制） | `harness acp` 子命令：Agent Client Protocol v1 agent 端，官方 Rust SDK，供编辑器客户端接入。 |
 | [LSP 语言服务集成](specs/lsp.md) | 2026-11-06（计划拟制） | P3 提前项：只读五件套 LSP 工具（诊断/悬停/定义/引用/符号），通用 server 配置，默认 rust-analyzer。 |
 | [内置浏览器集成](specs/browser.md) | 2026-11-06（计划批准） | Agent 会话 browser_* 工具组：系统 Edge/Chrome headless + 自研轻量 CDP，DevToolsActivePort 就绪检测与 Job Object 进程树清理。 |
 | [子代理可视化与 spawn 模型选择](specs/subagent-visibility.md) | 2026-11-06（计划拟制） | 子代理父子关系与运行状态可视化，`agent_spawn` 可选 modelId；ACP 透传与管理面板留待后续。 |
 | [P2 后台任务桌面可视化](specs/p2-background-tasks.md) | 2026-11-06（计划拟制） | P2 项：后台 Shell/子代理/定时任务事件卡片渲染与会话级任务面板，宿主查询/取消/删除命令。 |
-| [计划/目标管理面板](specs/plan-goal-panel.md) | 2026-11-06（计划拟制） | P2「计划/目标」收尾：跨会话只读汇总面板，`plan_overview` 命令与状态演变历史；不做 UI 写入通道。 |
+| [计划/目标管理面板](specs/plan-goal-panel.md) | 2026-11-06（计划拟制） | 右侧只读抽屉汇总跨会话计划、目标与待办，提供 `plan_overview`、历史查看与会话跳转。 |
 | [模型设置两级选择与 effort](specs/model-settings.md) | 2026-11-06（计划批准）；2026-11-13（图片输入能力元数据）修订 | 模型设置供应商→模型两级结构、内置模型目录与启停、effort 档位按协议编码、API 自动检测模型列表、发送框级联选择与选择持久化、卸载清理勾选行为、模型图片输入能力三态元数据（官方核实 + 自定义配置）。 |
 | [输入框斜杠快捷指令](specs/slash-commands.md) | 2026-11-06（计划批准）；2026-11-07 扩展 | CLI chat 斜杠命令注册表、crossterm 行编辑与 `/` 补全弹窗、新增命令；桌面端 composer 菜单、加号添加菜单与 `session_compact`。 |
 | [PTY 执行世界（本地沙箱终端）](specs/pty-execution-world.md) | 2026-11-06（计划拟制） | P2 项：沙箱内 ConPTY 持久终端，`terminal_open/write/read/close` 工具组；自研 ConPTY + 受限 token spawn；SSH 远端仅留 trait seam。 |
 | [智谱 Coding Plan 剩余额度与模型设置布局](specs/coding-plan-usage.md) | 2026-11-07（计划批准） | 智谱套餐名与三张剩余额度卡（quota/limit 接口）、模型设置左栏分组导航/右栏详情/模型编辑弹窗化。 |
 | [配置预设分层](specs/config-presets.md) | 2026-11-07（计划拟制） | P2 项「预设」：命名会话能力配置包（模型/effort/审批策略），解析按显式参数>预设>宿主缺省三层；内置合成与用户自定义两层目录，CLI/JSON-RPC/ACP/桌面四端接入。 |
 | [模型选择方式优化](specs/model-selection.md) | 2026-11-07（计划拟制）；2026-11-13（模型行展示图片输入能力标注）修订 | CLI `/model` `/effort` 内联面板与不退出 REPL；桌面浮层卡片选择器（搜索/分组/档位滑块/管理模型入口）；默认档位=最高档语义；切换静默持久化与会话流临时切换标记；`session_compact` 传档位；桌面模型行展示图片输入能力标注。 |
-| [右侧面板（文件预览、改动审阅与网页浏览）](specs/side-panel.md) | 2026-11-07（计划拟制）；2026-11-12 修订 | 桌面右侧面板承载更改审阅、工作副本文件预览和会话链接网页浏览。 |
+| [右侧面板（文件预览、改动审阅、网页浏览与计划抽屉）](specs/side-panel.md) | 2026-11-07（计划拟制）；2026-11-12 修订 | 桌面右侧面板承载更改审阅、工作副本文件预览、会话链接网页浏览和只读计划抽屉。 |
 | [自动化任务（周期调度）](specs/automation.md) | 2026-11-07（计划拟制） | 桌面端用户可管理的周期自动化任务：单次/每天/每周/每月/每年五类周期（24 小时制、单次含秒）、可选绑定会话或自动新建会话投递回合；缺日跳过、错过不补跑；独立管理面板（列表/启停/编辑/删除/立即执行/运行历史）。 |
-| [Skills（技能）支持](specs/skills.md) | 2026-11-07（计划批准） | 技能目录（项目级 `.agents/skills/` + 用户级 `~/.agents/skills/` + 兜底扫描）、frontmatter 解析、catalog 注入系统提示、`$name` 显式提及全文注入、禁用名单落库；CLI 管理子命令/`/skills`/`$` 补全与桌面面板/composer 补全；参考 codex skills 体系。 |
+| [Skills（技能）支持](specs/skills.md) | 2026-11-07（计划批准） | 技能目录（项目级 `.agents/skills/` + 用户级 `~/.agents/skills/` + 兜底扫描）、frontmatter 解析、catalog 注入系统提示、`$name` 显式提及全文注入、禁用名单落库；CLI 管理子命令/`/skills`/`$` 补全与桌面面板/composer 补全。 |
 | [会话列表「最近 / 项目」视图](specs/session-list.md) | 2026-11-08（计划拟制）；2026-11-09 / 2026-11-12 / 2026-11-13（含启动默认草稿态）修订 | 桌面侧栏任务列表按最近（时间分组跨工作区）/ 按项目（分组折叠）两种视图、项目置顶（`workspace_set_pinned`）、标题搜索与跨工作区跳转、「新建聊天」草稿态、启动默认进入草稿态、首问自动生成标题、右键重命名、会话存档（`session_archive`/`session_restore`，schema v4）与设置页存档管理。 |
-| [会话用量环形指示器与上下文窗口](specs/context-usage-indicator.md) | 2026-11-08（计划批准）；2026-11-13（上下文窗口段新增缓存命中率行）修订 | 会话输入区用量环形（本体显示当前上下文占用）+ 双段悬停明细卡（上下文窗口含缓存命中率/套餐额度）；模型目录 `context_window` 元数据；ChatGPT `/wham/usage` 订阅用量接入；参考 codex 用量设计。 |
+| [会话用量环形指示器与上下文窗口](specs/context-usage-indicator.md) | 2026-11-08（计划批准）；2026-11-13（上下文窗口段新增缓存命中率行）修订 | 会话输入区用量环形（本体显示当前上下文占用）+ 双段悬停明细卡（上下文窗口含缓存命中率/套餐额度）；模型目录 `context_window` 元数据；ChatGPT `/wham/usage` 订阅用量接入。 |
 | [每回合 Token 预算](specs/token-usage-budget.md) | 2026-11-09（计划批准） | 每条用户消息独立累计输出与未缓存输入 token，父子代理共享额度，默认 1M 且可调；UsageRing 进度展示与设置。 |
-| [权限模式（五档审批策略）](specs/permission-modes.md) | 2026-11-09（计划批准） | 五档权限模式统一定义（ask/edit/auto/never/guarded）与四端接入：CLI `--approval`、预设 approval 字段、ACP modes、桌面发送框权限模式选择器（KV 默认档）；guarded 档危险 shell 命令识别规则；参考 codex approval presets。 |
+| [权限模式（五档审批策略）](specs/permission-modes.md) | 2026-11-09（计划批准） | 五档权限模式统一定义（ask/edit/auto/never/guarded）与四端接入：CLI `--approval`、预设 approval 字段、ACP modes、桌面发送框权限模式选择器（KV 默认档）；guarded 档危险 shell 命令识别规则。 |
 | [工作区（项目）命名](specs/workspace-naming.md) | 2026-11-09（计划批准） | 工作区显示名落 `record.json`（非可选 String，创建未填/空白归一化为源目录名，旧记录加载归一化）；桌面创建命名弹窗与「按项目」组头重命名按钮；各显示点统一消费名称字段；CLI 不提供命名参数。 |
-| [宿主代建 worktree 执行模式与沙箱提权重跑](specs/worktree-execution.md) | 2026-11-10（计划拟制） | 工作区「worktree 执行模式」：宿主在真实项目 `.worktrees/` 代建会话 worktree、执行根切换、编辑直落真实分支工作区；shell 沙箱提权重跑（审批后无沙箱重跑一次，与五档权限模式组合矩阵）；主仓 `.git` 保持对 agent 只读。设计参考 codex escalation。 |
+| [宿主代建 worktree 执行模式与沙箱提权重跑](specs/worktree-execution.md) | 2026-11-10（计划拟制） | 工作区「worktree 执行模式」：宿主在真实项目 `.worktrees/` 代建会话 worktree、执行根切换、编辑直落真实分支工作区；shell 沙箱提权重跑（审批后无沙箱重跑一次，与五档权限模式组合矩阵）；主仓 `.git` 保持对 agent 只读。 |
 | [长会话时间线性能与有界渲染](specs/long-session-timeline.md) | 2026-11-10（设计草案） | 桌面长会话的事件分页、正文惰性读取、缓存上限、可变高度虚拟时间线和流式渲染节流；作为现有 Tauri 与后续 GPUI 共用的时间线契约。 |
 | [ask_user 提问工具](specs/ask-user.md) | 2026-11-12（计划批准） | 会话中模型向用户提问的 `ask_user` 内置工具：挂起等待与无人在场/超时自动结算、`ask.request`/`ask.resolved` 事件对、CLI/JSON-RPC/桌面接入与时间线回放；ACP 端 v1 自动结算，elicitation 转发留待后续。 |
+| [会话计划模式](specs/plan-mode.md) | 2026-11-13（计划拟制） | 会话级计划模式、明确审批与拒绝反馈、右侧只读计划和目标抽屉；实现与验证进行中。 |
 | [项目移除（隐藏入口）与重新显示](specs/project-removal.md) | 2026-11-13（计划批准，同日修订） | 桌面「按项目」组头右键移除项目=仅隐藏入口（KV 标记，记录/会话/自动化原样保留，源项目不受影响）：运行中确认停止；重开同源路径项目自动重新显示同目录隐藏项目；归档会话恢复不受隐藏影响。 |
 
 ## 关系说明
@@ -44,16 +45,16 @@
 - 内置浏览器集成规范为模型工具能力专项规范，与 LSP 规范并列；工具默认审批，页面内容视为不可信。
 - 子代理可视化规范为协作能力专项规范，`SessionInfo.parentId` 为运行时推导字段，存储层不落库。
 - P2 后台任务桌面可视化规范为 P2 验收项专项规范，只补齐人机可见性，不改变 orchestration 工具语义与审批策略。
-- 计划/目标管理面板规范为 P2「计划/目标」收尾专项，面板为只读派生视图，事件流仍是唯一事实来源，不新增 UI 写入通道。
+- 计划/目标管理面板规范定义右侧只读派生抽屉，事件流仍是事实来源，不新增计划、目标或待办的直接修改通道。
 - 模型设置规范为模型接入专项规范，替代多协议规范中"模型标识手动录入"的单层模型形态；内置目录只读、个人覆盖可写，升级语义与多协议规范一致。
-- 输入框斜杠快捷指令规范落地 CLI 规范预留的 REPL 体验升级，仍不做全屏 TUI；两端 `/init` `/plan` `/goal` 提示词以 CLI 常量为单一事实源；加号添加菜单只插入斜杠命令，计划/目标仍由模型经工具写入，面板保持只读派生视图。
+- 输入框斜杠快捷指令规范落地 CLI 的 REPL 体验升级；`/init`、`/goal` 提示词以 CLI 常量为准，`/plan` 和桌面加号「计划」改为会话模式入口，具体语义以会话计划模式规范为准。
 - PTY 执行世界规范为 P2 验收项专项规范，自研 ConPTY 与受限 token 沙箱配对构成单一本地执行世界；`PtyWorld` trait 为 P3 SSH 远端执行的接入 seam，终端打开一次审批覆盖后续输入。
 - 智谱 Coding Plan 额度规范依附模型设置规范的两级结构，属展示层扩展；额度快照即查即返不落库，不改变内置供应商个人覆盖语义。
 - 配置预设分层规范为 P2 验收项专项规范，预设为命名的能力配置包（模型/effort/审批策略），解析优先级为显式参数>预设>宿主缺省；目录与模型设置规范同构（内置合成只读、用户自定义可写），预设 approval 仅 CLI/JSON-RPC/ACP 生效（2026-11-09 权限模式规范落地桌面端独立权限模式后修订）。
 - 模型选择方式优化规范依附模型设置规范的两级目录，只改选择交互与档位语义（默认=最高档），不改存储结构；CLI 与桌面默认选择 KV 各自保留，切换标记为会话流临时展示不落库。
-- 右侧面板规范为桌面可视化专项规范，unified diff 渲染语义与 CLI diff 契约共享自 harness-platform；文件预览与审阅均为只读展示，会话链接可在独立网页视图中打开，文件写入仍走既有 `workspace_apply` 审阅快照校验，agent 写文件不自动弹面板。
+- 右侧面板规范为桌面可视化专项规范，涵盖更改审阅、文件预览、网页和只读计划抽屉；文件同步仍走既有 `workspace_apply` 审阅快照校验，agent 写文件不自动弹面板。
 - 自动化任务规范与 P2 后台任务规范同属 orchestration 调度域：复用 `run_owned` 回合通道、250ms ticker 与 `schedules_lock`，KV 键独立（`orchestration.automations.v1`）；面向用户桌面管理而非模型工具，错过不补跑语义与既有单次调度基线一致。
-- Skills 支持规范闭环配置预设规范列为「另行立项」的 skills 启停项，并落地斜杠快捷指令规范当时列为非目标的 codex `$` skill 体系；catalog 注入不改变 `context.snapshot` 事件结构，技能读取走现有免审批 `read` 工具，不新增模型工具。
+- Skills 支持规范闭环配置预设规范列为「另行立项」的 skills 启停项，并落地斜杠快捷指令规范当时列为非目标的 `$` 技能体系；catalog 注入不改变 `context.snapshot` 事件结构，技能读取走现有免审批 `read` 工具，不新增模型工具。
 - 会话列表视图规范为桌面可视化专项规范：置顶集合与视图偏好属桌面用户偏好，不进入 CLI / JSON-RPC 契约；`session_list` 的 `all_workspaces` 与 `archived` 仅扩展桌面查询参数，缺省过滤语义不变。会话存档为 SQLite `sessions` 表状态列（schema v4）加 `archivedAt` 可选契约字段，事件流不感知存档；CLI / JSON-RPC / ACP 不暴露存档命令。
 - 会话用量环形指示器规范依附模型设置规范的两级目录（窗口值来自模型条目）与智谱额度规范的快照语义；上下文占用为前端派生值（事件流最近 usage），不落库不进契约；ChatGPT 用量复用智谱额度规范的 `fetch_usage` 分发与 `ProviderUsageSnapshot` 结构。
 - 每回合 Token 预算规范依附会话用量环形界面，但使用独立的共享 Runtime 累计状态和 `token.budget` 事件；不改变上下文窗口统计与压缩语义。
@@ -63,6 +64,7 @@
 - 长会话时间线性能规范为桌面查询与渲染专项：SQLite 原始事件仍为唯一事实来源，既有 `session_events(after)` 保持 CLI/ACP 增量补拉兼容；桌面新增受限页查询与详情惰性读取，不改变 `/compact` 保留原始事件的语义。该契约先服务 Tauri 前端，后续 GPUI 仅复用它，不以迁移渲染器替代有界数据策略。
 - ask_user 提问工具规范为模型工具能力专项规范：挂起通道与审批同构（pending 表 + oneshot 宿主回传），免审批白名单成员；不改变权限模式五档决策矩阵、副本 + apply 边界与 Windows 沙箱；ACP 端 elicitation 转发维持该规范非目标，提问以无人在场自动结算。
 - 项目移除规范为工作区生命周期专项规范：移除即隐藏入口（`workspace.hidden.v1` KV + `WorkspaceInfo.hidden` 派生注入，与置顶同模式），工作区记录、会话与自动化原样保留，重开同源路径项目自动重新显示；会话列表视图规范的存档恢复语义不受隐藏影响，存档管理对隐藏项目照常展示与恢复。
+- 会话计划模式规范定义会话级只读保护与明确用户批准、拒绝或反馈；与权限档位独立，取消、超时或无人值守不视为批准，计划内容由事件流承载、右侧抽屉只读。相关实现与验证进行中。
 - 当前完成情况以 [能力状态矩阵](capability-matrix.md) 为准，具体执行与验证证据见 [交付记录](delivery.md)。
 - 后续发布仅构建使用系统已有 WebView2 的单一 NSIS 包（历史双安装包仅对应 0.1.2 当次交付）。
 

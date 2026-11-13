@@ -27,7 +27,8 @@ function SessionLink({href,children}:{href?:string;children?:ReactNode}) {
   {menu&&<div className="session-context-menu link-context-menu" role="menu" aria-label="链接操作" style={{left:menu.x,top:menu.y}} onMouseDown={event=>event.stopPropagation()}><button type="button" role="menuitem" onClick={()=>void perform('copy')}>复制链接</button><button type="button" role="menuitem" onClick={()=>void perform('open')}>在默认浏览器中打开</button></div>}
   {error&&<span role="alert" className="inline-error">{error}</span>}</>;
 }
-export function SessionMarkdown({content}:{content:string}) {return <ReactMarkdown remarkPlugins={[remarkGfm]} components={{a:({href,children})=><SessionLink href={href}>{children}</SessionLink>}}>{content}</ReactMarkdown>}
+const markdownComponents={a:({href,children}:{href?:string;children?:ReactNode})=><SessionLink href={href}>{children}</SessionLink>};
+export function SessionMarkdown({content}:{content:string}) {return <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{content}</ReactMarkdown>}
 export function LinkedText({content}:{content:string}) {
  const parts=content.split(/(https?:\/\/[^\s<>"'，。！？、；：）】]+)/gi);
  return <>{parts.map((part,index)=>{

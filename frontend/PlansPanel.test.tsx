@@ -13,7 +13,7 @@ describe('计划与目标面板',()=>{
    entry({kind:'todo.state',data:{items:[{text:'已完成项',done:true},{text:'进行中项'}]}}),
    entry({kind:'goal.state',data:{content:'本周目标'}}),
   ]);
-  const {container}=render(<PlansPanel currentSessionId="s1" onOpenSession={vi.fn()} onClose={vi.fn()}/>);
+  const {container}=render(<PlansPanel currentSessionId="s1" onOpenSession={vi.fn()}/>);
   expect(await screen.findByText('会话一')).toBeInTheDocument();
   expect(container.querySelector('.todo-list li.done')?.textContent).toContain('已完成项');
   expect(container.querySelector('.todo-list li:not(.done)')?.textContent).toContain('进行中项');
@@ -22,7 +22,7 @@ describe('计划与目标面板',()=>{
  it('查看会话回调携带会话与工作区标识',async()=>{
   mocks.command.mockResolvedValue([entry({sessionTitle:'跨工作区会话',workspaceId:'w2'})]);
   const onOpenSession=vi.fn();
-  render(<PlansPanel currentSessionId="s9" onOpenSession={onOpenSession} onClose={vi.fn()}/>);
+  render(<PlansPanel currentSessionId="s9" onOpenSession={onOpenSession}/>);
   await screen.findByText('跨工作区会话');
   fireEvent.click(screen.getByRole('button',{name:'查看会话'}));
   expect(onOpenSession).toHaveBeenCalledWith('s1','w2');
@@ -37,7 +37,7 @@ describe('计划与目标面板',()=>{
     ],olderCursor:null,throughSeq:'3',hasOlder:false};
    return [];
   });
-  render(<PlansPanel currentSessionId="s1" onOpenSession={vi.fn()} onClose={vi.fn()}/>);
+  render(<PlansPanel currentSessionId="s1" onOpenSession={vi.fn()}/>);
   await screen.findByText('会话一');
   expect(screen.queryByText('旧计划')).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button',{name:'演变历史'}));
@@ -48,14 +48,28 @@ describe('计划与目标面板',()=>{
   fireEvent.click(screen.getByRole('button',{name:'收起历史'}));
   expect(screen.queryByText('旧计划')).not.toBeInTheDocument();
  });
+ it('历史最多加载三页，手动刷新重新读取汇总',async()=>{
+  mocks.command.mockImplementation(async(name:string,args:any)=>{
+   if(name==='plan_overview')return [entry()];
+   if(name==='session_timeline_page')return {events:[],olderCursor:args.beforeSeq==='2'?'1':'2',hasOlder:true};
+   return [];
+  });
+  render(<PlansPanel currentSessionId="s1" onOpenSession={vi.fn()}/>);
+  await screen.findByText('会话一');
+  fireEvent.click(screen.getByRole('button',{name:'演变历史'}));
+  await screen.findByText('该会话暂无状态记录。');
+  expect(mocks.command.mock.calls.filter(([name])=>name==='session_timeline_page')).toHaveLength(3);
+  fireEvent.click(screen.getByRole('button',{name:'刷新'}));
+  expect(mocks.command.mock.calls.filter(([name])=>name==='plan_overview')).toHaveLength(2);
+ });
  it('无任何状态时显示空态',async()=>{
   mocks.command.mockResolvedValue([]);
-  render(<PlansPanel currentSessionId="" onOpenSession={vi.fn()} onClose={vi.fn()}/>);
+  render(<PlansPanel currentSessionId="" onOpenSession={vi.fn()}/>);
   expect(await screen.findByText('还没有任何计划或目标')).toBeInTheDocument();
  });
  it('加载失败显示错误且不假装成功',async()=>{
   mocks.command.mockRejectedValue(new Error('查询失败'));
-  render(<PlansPanel currentSessionId="" onOpenSession={vi.fn()} onClose={vi.fn()}/>);
+  render(<PlansPanel currentSessionId="" onOpenSession={vi.fn()}/>);
   expect(await screen.findByText('查询失败')).toBeInTheDocument();
  });
 });

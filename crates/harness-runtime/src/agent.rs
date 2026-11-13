@@ -285,15 +285,83 @@ impl Runtime {
             .insert(child.into(), parent.into());
         Ok(())
     }
-    pub async fn session_boundary(&self, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
-        let queue = self
-            .queues
+    fn session_queue(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.queues
             .lock()
             .unwrap()
             .entry(id.into())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone();
-        queue.lock_owned().await
+            .clone()
+    }
+    pub async fn session_boundary(&self, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        self.session_queue(id).lock_owned().await
+    }
+    /// Return the durable mode, including for archived, forked and imported sessions.
+    pub async fn session_plan_get(&self, session: &str) -> AppResult<bool> {
+        self.store.session(session).await?;
+        let events = self.store.events(session, 0).await?;
+        Ok(events
+            .iter()
+            .rev()
+            .find(|e| e.kind == "session.plan")
+            .map(|e| e.data["enabled"].as_bool().unwrap_or(true))
+            .unwrap_or(false))
+    }
+    /// Refuse to enter while the session is busy or has unverified previous work.
+    pub async fn session_plan_set(&self, session: &str, enabled: bool) -> AppResult<()> {
+        let _boundary = self
+            .session_queue(session)
+            .try_lock_owned()
+            .map_err(|_| AppError::new("PLAN_MODE_BUSY", "会话正在运行，不能切换计划模式"))?;
+        let info = self.store.session(session).await?;
+        if self.session_plan_get(session).await? == enabled {
+            return Ok(());
+        }
+        if enabled {
+            let workspace = self.workspaces.get(&info.workspace_id)?;
+            if workspace.execution_mode == ExecutionMode::Worktree
+                && !workspace.worktrees.contains_key(session)
+            {
+                return Err(AppError::new(
+                    "PLAN_MODE_WORKTREE",
+                    "只读模式不能创建会话 worktree",
+                ));
+            }
+            // Older turns have no proof their hooks and external tools left no detached work.
+            let mut verified_plan = false;
+            for event in self.store.events(session, 0).await? {
+                if event.kind == "session.plan" {
+                    verified_plan = event.data["enabled"].as_bool().unwrap_or(true);
+                } else if !verified_plan
+                    && matches!(
+                        event.kind.as_str(),
+                        "turn.start"
+                            | "tool.call"
+                            | "tool.result"
+                            | "job.started"
+                            | "terminal.opened"
+                            | "schedule.created"
+                            | "subagent.created"
+                            | "plugin.command.started"
+                            | "plugin.command.result"
+                    )
+                {
+                    return Err(AppError::new(
+                        "PLAN_MODE_UNVERIFIED",
+                        "已有回合可能遗留后台工作，请使用新会话",
+                    ));
+                }
+            }
+            if !self.children_of(session).is_empty() {
+                return Err(AppError::new(
+                    "PLAN_MODE_UNVERIFIED",
+                    "存在既有子代理，请使用新会话",
+                ));
+            }
+        }
+        self.append(session, "session.plan", json!({"enabled":enabled}))
+            .await?;
+        Ok(())
     }
     pub fn register_tool(
         &self,
@@ -898,33 +966,38 @@ impl Runtime {
             }
             token_budget.check_available()?;
             let mut tools = builtin_tools();
-            tools.extend(self.plugins.tool_definitions(workspace)?);
-            tools.extend(self.custom.lock().unwrap().values().map(|t| t.definition()));
-            let scoped_servers = self
-                .mcp_scopes
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|(_, w)| w.as_str() == workspace)
-                .map(|(id, _)| format!("mcp__{id}__"))
-                .collect::<Vec<_>>();
-            tools.extend(
-                self.mcp
-                    .tool_definitions()
-                    .await
-                    .into_iter()
-                    .filter(|t| scoped_servers.iter().any(|p| t.name.starts_with(p))),
-            );
-            let context_hooks = self
-                .plugins
-                .run_hook(
-                    workspace,
-                    root,
-                    "before_request",
-                    json!({"sessionId":session,"step":step}),
-                    cancel.clone(),
-                )
-                .await?;
+            if !self.session_plan_get(session).await? {
+                tools.extend(self.plugins.tool_definitions(workspace)?);
+                tools.extend(self.custom.lock().unwrap().values().map(|t| t.definition()));
+                let scoped_servers = self
+                    .mcp_scopes
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(_, w)| w.as_str() == workspace)
+                    .map(|(id, _)| format!("mcp__{id}__"))
+                    .collect::<Vec<_>>();
+                tools.extend(
+                    self.mcp
+                        .tool_definitions()
+                        .await
+                        .into_iter()
+                        .filter(|t| scoped_servers.iter().any(|p| t.name.starts_with(p))),
+                );
+            }
+            let context_hooks = if self.session_plan_get(session).await? {
+                Vec::new()
+            } else {
+                self.plugins
+                    .run_hook(
+                        workspace,
+                        root,
+                        "before_request",
+                        json!({"sessionId":session,"step":step}),
+                        cancel.clone(),
+                    )
+                    .await?
+            };
             for context in context_hooks {
                 self.append(
                     session,
@@ -934,7 +1007,10 @@ impl Runtime {
                 .await?;
             }
             let history = self.store.events(session, 0).await?;
-            let messages = project_messages(&history);
+            let mut messages = project_messages(&history);
+            if self.session_plan_get(session).await? {
+                messages[0].content.push_str("\n\n当前处于计划模式：只能只读调查，不得产生项目或外部副作用。请使用 plan_write 记录计划。若需要开始执行，请调用 plan_exit 并等待用户明确批准；用户拒绝或无人在场时继续只读。");
+            }
             let request_id = new_id();
             self.append(
                 session,
@@ -1087,12 +1163,17 @@ impl Runtime {
                     if !schema.is_valid(&call.arguments){return Err(AppError::new("TOOL_ARGUMENTS","工具参数不符合JSON Schema"));}
                     if cancel.is_cancelled(){return Err(cancelled());}
                     let original=serde_json::to_value(&call).map_err(internal)?;
-                    for rewrite in self.plugins.run_hook(workspace,root,"before_tool",original.clone(),cancel.clone()).await?{
-                        call.name=rewrite["name"].as_str().ok_or_else(||AppError::new("PLUGIN_HOOK","缺少工具名称"))?.into();call.arguments=rewrite["arguments"].clone();
+                    if !self.session_plan_get(session).await? {
+                        for rewrite in self.plugins.run_hook(workspace,root,"before_tool",original.clone(),cancel.clone()).await?{
+                            call.name=rewrite["name"].as_str().ok_or_else(||AppError::new("PLUGIN_HOOK","缺少工具名称"))?.into();call.arguments=rewrite["arguments"].clone();
+                        }
                     }
                     if original!=serde_json::to_value(&call).map_err(internal)?{self.append(session,"tool.rewrite",json!({"callId":call.id,"original":original,"effective":call})).await?;}
                     let effective=tools.iter().find(|t|t.name==call.name).ok_or_else(||AppError::new("TOOL_UNAVAILABLE",&call.name))?;
                     if !jsonschema::validator_for(&effective.parameters).map_err(internal)?.is_valid(&call.arguments){return Err(AppError::new("TOOL_ARGUMENTS","钩子修改后的工具参数无效"));}
+                    if self.session_plan_get(session).await? && !plan_safe_tool(&call.name) {
+                        return Err(AppError::new("PLAN_MODE_READ_ONLY", "计划模式只允许安全读取和记录计划"));
+                    }
                     let needs_approval=self.custom.lock().unwrap().get(&call.name).map(|t|t.requires_approval()).unwrap_or_else(||requires_approval(&call.name));
                     if needs_approval{self.approve(session,&call,&cancel,false,None).await?;}
                     let tool_cancel=cancel.child_token();
@@ -1119,7 +1200,14 @@ impl Runtime {
                 let status = match &result {
                     Ok(_) => "completed",
                     Err(e) if matches!(e.code.as_str(), "CANCELLED" | "TOOL_TIMEOUT") => "unknown",
-                    Err(e) if e.code == "APPROVAL_DENIED" => "denied",
+                    Err(e)
+                        if matches!(
+                            e.code.as_str(),
+                            "APPROVAL_DENIED" | "PLAN_MODE_READ_ONLY" | "PLAN_NOT_APPROVED"
+                        ) =>
+                    {
+                        "denied"
+                    }
                     Err(_) => "error",
                 };
                 let protected_failure = result.is_err();
@@ -1136,7 +1224,7 @@ impl Runtime {
                         escalated: false,
                     },
                 };
-                if !cancel.is_cancelled() {
+                if !cancel.is_cancelled() && !self.session_plan_get(session).await? {
                     match self
                         .plugins
                         .run_hook(
@@ -1197,6 +1285,15 @@ impl Runtime {
         session_id: &str,
     ) -> AppResult<ExecContext> {
         let info = self.workspaces.get(workspace_id)?;
+        if info.execution_mode == ExecutionMode::Worktree
+            && self.session_plan_get(session_id).await?
+            && !info.worktrees.contains_key(session_id)
+        {
+            return Err(AppError::new(
+                "PLAN_MODE_WORKTREE",
+                "只读模式不能创建会话 worktree",
+            ));
+        }
         if info.execution_mode == ExecutionMode::Replica {
             return Ok(ExecContext {
                 root: PathBuf::from(&info.replica_path),
@@ -1316,12 +1413,22 @@ impl Runtime {
     ///
     /// 无人在场（[`Runtime::set_unattended`]）或超过 [`ASK_WAIT_SECS`] 秒自动结算，
     /// 均返回「请自行决策」答复让回合继续；取消时落结算事件保持请求/结算配对完整。
+    /// ask_user：向用户提问并挂起等待答复，返回面向模型的文本结果。
     async fn ask_user(
         &self,
         session: &str,
         a: &Value,
         cancel: &CancellationToken,
     ) -> AppResult<String> {
+        let (request, answer) = self.ask_user_answer(session, a, cancel).await?;
+        Ok(answer_text(&answer, &request))
+    }
+    async fn ask_user_answer(
+        &self,
+        session: &str,
+        a: &Value,
+        cancel: &CancellationToken,
+    ) -> AppResult<(AskRequest, AskAnswer)> {
         let request = AskRequest {
             id: new_id(),
             session_id: session.into(),
@@ -1353,7 +1460,7 @@ impl Runtime {
                 resolved_value(&request.id, &answer),
             )
             .await?;
-            return Ok(answer_text(&answer, &request));
+            return Ok((request, answer));
         }
         let (tx, rx) = oneshot::channel();
         self.questions
@@ -1382,7 +1489,7 @@ impl Runtime {
             resolved_value(&request.id, &answer),
         )
         .await?;
-        Ok(answer_text(&answer, &request))
+        Ok((request, answer))
     }
     async fn execute_tool(self: &Arc<Self>, input: ToolExecution<'_>) -> AppResult<ToolResult> {
         let ToolExecution {
@@ -1657,6 +1764,32 @@ impl Runtime {
                 "已请求中断".into()
             }
             "ask_user" => self.ask_user(session, a, &cancel).await?,
+            "plan_exit" => {
+                if !self.session_plan_get(session).await? {
+                    return Err(AppError::new("PLAN_MODE_INACTIVE", "当前不在计划模式"));
+                }
+                let question = json!({
+                    "question": format!("是否批准以下计划并退出只读模式？\n\n{}", arg(a, "content")?),
+                    "options": [{"label":"批准"},{"label":"拒绝"}]
+                });
+                let (request, answer) = self.ask_user_answer(session, &question, &cancel).await?;
+                if cancel.is_cancelled() {
+                    return Err(cancelled());
+                }
+                // 只有「选项选择 + 精确等于批准」才算批准；自由输入、无人值守、超时均不算。
+                let approved =
+                    matches!(answer.source, AskSource::Selected) && answer.text == "批准";
+                if !approved {
+                    return Err(AppError::new(
+                        "PLAN_NOT_APPROVED",
+                        format!("计划未获明确批准；{}", answer_text(&answer, &request)),
+                    ));
+                }
+                // The turn owns session_boundary, so no external mode transition can race this commit.
+                self.append(session, "session.plan", json!({"enabled":false}))
+                    .await?;
+                "用户已批准计划并退出计划模式。".into()
+            }
             name if name.starts_with("plugin__") => {
                 return self
                     .plugins
@@ -1781,6 +1914,20 @@ fn answer_text(answer: &AskAnswer, request: &AskRequest) -> String {
         AskSource::Timeout => "等待答复超时，请基于现有信息自行决策并继续。".into(),
     }
 }
+// This is intentionally independent of approval exemption. Unknown and third-party
+// tools, even those declaring no approval, cannot execute in plan mode.
+fn plan_safe_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "read"
+            | "read_artifact"
+            | "list_files"
+            | "search"
+            | "ask_user"
+            | "plan_write"
+            | "plan_exit"
+    )
+}
 fn requires_approval(name: &str) -> bool {
     !matches!(
         name,
@@ -1795,6 +1942,7 @@ fn requires_approval(name: &str) -> bool {
             | "lsp_symbols"
             | "todo_write"
             | "plan_write"
+            | "plan_exit"
             | "goal_write"
             | "agent_status"
             | "ask_user"
@@ -1943,6 +2091,12 @@ pub fn builtin_tools() -> Vec<ToolDefinition> {
             &["question"],
         ),
         def("plan_write", "记录计划", json!({"content":s}), &["content"]),
+        def(
+            "plan_exit",
+            "提交计划并请求用户明确批准；无人答复或拒绝时继续只读",
+            json!({"content":s}),
+            &["content"],
+        ),
         def("goal_write", "记录目标", json!({"content":s}), &["content"]),
         def(
             "agent_spawn",

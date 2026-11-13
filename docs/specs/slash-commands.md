@@ -1,18 +1,18 @@
 # 输入框斜杠快捷指令规范
 
 - 日期：2026-11-06（计划批准）；2026-11-07 扩展 /plan /goal 命令与桌面端加号添加菜单
-- 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
-- 范围：CLI `harness chat` 的 `/` 斜杠命令注册表、crossterm 行编辑与实时补全弹窗、新增命令；桌面端 composer 命令菜单、加号添加菜单与 `session_compact`。设计参考 codex CLI（`tui/src/slash_command.rs`、`bottom_pane/command_popup.rs`）。
+- 状态：现行规范；计划模式升级及验证仍在进行，能力状态见[能力状态矩阵](../capability-matrix.md)
+- 范围：CLI `harness chat` 的 `/` 斜杠命令注册表、crossterm 行编辑与实时补全弹窗、新增命令；桌面端 composer 命令菜单、加号添加菜单与 `session_compact`。`/plan` 的会话模式语义以[会话计划模式规范](plan-mode.md)为准。
 
 ## 背景与目标
 
 `chat` REPL 已有 7 个斜杠命令（手写 match，`chat.rs`），但输入 `/` 时无补全提示，且 [CLI 命令行规范](cli.md) 将 REPL 体验升级预留为"后续计划"。本规范落地该预留项：输入 `/` 实时弹出命令候选菜单（↑↓ 选择、Tab 补全、Esc 关闭），同时补齐常用命令，并同步给桌面端输入框。
 
-**非目标**：不引入 ratatui 全屏 TUI（维持 cli-plan 决策）；不做自定义命令（codex `$` skill 体系后由 [Skills 规范](skills.md)承接落地）；不做历史持久化（会话内存历史即可）。
+**非目标**：不引入 ratatui 全屏 TUI（维持 cli-plan 决策）；不做自定义命令（`$` 技能体系由 [Skills 规范](skills.md)承接）；不做历史持久化（会话内存历史即可）。
 
 ## CLI 设计
 
-### 四层结构（对齐 codex）
+### 四层结构
 
 1. **注册表**（`crates/harness-cli/src/slash.rs`）：`SlashSpec{name, aliases, description, arg_hint}` 静态表 `SLASH_COMMANDS`，数组顺序即弹窗展示顺序；`find_spec` 按规范名或别名查找；`filter_slash_commands(query)` exact > prefix 过滤（各自保持注册顺序，容忍前导 `/`，空查询返回全量）；`ChatCommand` 枚举 + `parse_command` 查表解析。
 2. **行编辑器**（`crates/harness-cli/src/line_editor.rs`）：逻辑状态机 `Editor`（缓冲/光标/历史/弹窗，可单测）+ crossterm 渲染薄层（`map_event`/`redraw`/`read_line`）。
@@ -47,7 +47,7 @@
 | /clear | /new | 重开新会话 | - |
 | /compact | - | 压缩历史为摘要 | - |
 | /init | - | 在项目根生成 AGENTS.md | - |
-| /plan | - | 生成或更新计划 | [任务] |
+| /plan | - | 切换会话计划模式；可带任务进入 | [任务] |
 | /goal | - | 设置或更新目标 | [目标] |
 | /resume | - | 切换到已有会话 | [id] |
 | /sessions | - | 列出会话 | - |
@@ -61,7 +61,8 @@
 - `/clear`：`store.create_session(workspace_id, "新会话")` 后重绑本地 `session_id`；原会话保留，提示可用 `/resume` 切回。runtime 无会话删除 API，语义为"重开"。
 - `/compact`：调用 `harness_orchestration::compact_session`（与 JSON-RPC `session.compact` 同路径），拿会话边界锁与回合串行；`console.rs` 补 `compaction.summary` durable 渲染（`[历史已压缩] <摘要>`）。
 - `/init`：以预置 `INIT_PROMPT`（chat.rs 常量）走 `turn_once` 发起回合，模型在隔离副本生成 AGENTS.md；完成后提示 `/diff` 查看、`/apply` 审阅同步到原项目。不直接写原项目，遵守副本约束。
-- `/plan`、`/goal`：预置提示词 `PLAN_PROMPT` / `GOAL_PROMPT` 以 CLI `chat.rs` 常量为单一事实源；带参数发送时拼接任务/目标文本，无参数打印用法提示。执行层复用模型既有 `plan_write` / `goal_write` 工具，事件流仍是事实来源，[计划/目标管理面板](plan-goal-panel.md)保持只读派生视图，不新增 UI 直写通道。
+- `/plan`：切换会话计划模式；带任务时先进入模式，成功后提交任务，失败不发送。模式与权限档位独立，须遵守只读保护及在途、后台工作安全检查。计划须经用户明确批准才可转入执行；拒绝、取消、超时或无人值守均非批准，用户可提出修改意见。完整契约与验证范围见[会话计划模式规范](plan-mode.md)。
+- `/goal`：继续使用预置 `GOAL_PROMPT`，带参数提交目标，无参数提示用法。计划、目标仍由模型经工具记录到事件流，[计划/目标抽屉](plan-goal-panel.md)只读，不新增直接修改通道。
 - `/status`：本地打印会话 id、工作区 `source_path`/副本 `replica_path`（`runtime.workspaces.get`）、当前模型、审批策略。
 - `/resume`：无参列出本工作区最近 10 个非子代理会话（`updated_at` 倒序，标记当前）；带 id 校验属于该工作区后重绑 `session_id`。
 
@@ -71,11 +72,11 @@
 
 - **注册表**（`frontend/slashCommands.ts`）：桌面端可执行子集镜像 CLI 命令（`/clear /compact /init /model /diff /status /help /plan /goal` 等），同名过滤函数（exact > prefix）。
 - **菜单**：`text` 以 `/` 开头且光标在首 token 内时，在 `form.composer` 上方渲染候选菜单（composer 加 `position:relative`）；↑↓ 选择、Tab 补全、Esc 关闭、Enter 执行选中，全部 `preventDefault` 且绕过 IME 组合；点击菜单项同样执行。
-- **加号添加菜单**：「添加附件」文本按钮改为 + 号图标按钮，弹出"添加内容"菜单：附件（沿用 `addAttachment` 文件选择导入）、计划（插入 `/plan `）、目标（插入 `/goal `）；发送时由 `expandSlashPrompt` 把首命令展开为预置提示词。计划/目标仍由模型经工具写入。
-- **执行映射**（复用现有动作）：`/clear`→`createSessionFor`；`/model`→打开模型选择浮层卡片（见[模型选择方式优化规范](model-selection.md)）；`/diff`→打开右侧面板更改视图（见[右侧面板规范](side-panel.md)）；`/init`→以预置 prompt 走 `send()`（文本与 CLI `INIT_PROMPT` 保持一致，以 CLI 为准）；`/plan` `/goal`→插入斜杠命令经 `expandSlashPrompt` 展开；`/status` `/help`→本地提示信息；`/compact`→Tauri 命令。
+- **加号添加菜单**：「添加附件」文本按钮改为 + 号图标按钮，弹出"添加内容"菜单：附件（沿用 `addAttachment` 文件选择导入）、计划（进入或切换会话计划模式）、目标（插入 `/goal `）。带任务的 `/plan` 先进入模式再发送，切换失败不发送任务；应显示模式状态并提供退出方式。目标命令仍可展开为预置提示词。
+- **执行映射**（复用现有动作）：`/clear`→`createSessionFor`；`/model`→打开模型选择浮层卡片（见[模型选择方式优化规范](model-selection.md)）；`/diff`→打开右侧面板更改视图（见[右侧面板规范](side-panel.md)）；`/init`→以预置 prompt 走 `send()`（文本与 CLI `INIT_PROMPT` 保持一致，以 CLI 为准）；`/plan`→切换会话计划模式（带任务时成功切换后提交）；`/goal`→经 `expandSlashPrompt` 展开；`/status` `/help`→本地提示信息；`/compact`→Tauri 命令。
 - **`session_compact`**：`src-tauri/src/commands.rs` 新增（`sessionId` + `modelId` + `effort`），调用 `harness_orchestration::compact_session`，注册进 `collect_commands!` 并重新导出 specta bindings；前端完成后重拉 `session_events`。
 
 ## 风险与边界
 
 - crossterm raw mode 依赖 Windows Terminal/ConPTY 兼容性；弹窗绘制在终端底部最后一行时可能随终端滚动产生错位，属已知边界，编辑异常不影响提交链路。
-- 桌面端 bindings 为 specta 生成物，不手改；`/init` `/plan` `/goal` prompt 文本两处维护，以 CLI 常量为单一事实源。
+- 桌面端 bindings 为 specta 生成物，不手改；`/init` 与 `/goal` 的提示词文本以 CLI 常量为单一事实源；`/plan` 以会话模式契约为准，不再以提示词展开替代模式。实现与验证仍在进行。

@@ -3,7 +3,8 @@ import {act,cleanup,fireEvent,render,screen,waitFor,within} from '@testing-libra
 import App from './App';
 import './style.css';
 import {ChangesView} from './ChangesView';
-import {GOAL_PROMPT,INIT_PROMPT,PLAN_PROMPT} from './slashCommands';
+
+import {GOAL_PROMPT,INIT_PROMPT} from './slashCommands';
 import {useChat} from './store';
 import {useSidePanel} from './sidePanelStore';
 import {open,save} from '@tauri-apps/plugin-dialog';
@@ -27,9 +28,178 @@ beforeEach(()=>{useChat.setState({events:{},streams:{},statuses:{},timelines:{},
  if(name==='approval_list')return [];
  if(name==='question_list')return [];
  if(name==='approval_mode_get')return 'ask';
+ if(name==='session_plan_get')return false;
  return [];
 })});
 afterEach(()=>{cleanup();vi.useRealTimers()});
+describe('计划模式 composer 入口',()=>{
+ it('+ 号立即进入计划模式，chip 可明确退出',async()=>{
+  await renderOpenA();
+  const chip=await screen.findByRole('button',{name:'计划模式'});
+  await waitFor(()=>expect(chip).toHaveAttribute('aria-pressed','false'));
+  fireEvent.click(screen.getByRole('button',{name:'添加内容'}));
+  fireEvent.click(screen.getByRole('menuitem',{name:/进入计划模式/}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_plan_set',{sessionId:'a',enabled:true}));
+  await waitFor(()=>expect(chip).toHaveAttribute('aria-pressed','true'));
+  expect(mocks.send).not.toHaveBeenCalled();
+  fireEvent.click(chip);
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_plan_set',{sessionId:'a',enabled:false}));
+  await waitFor(()=>expect(chip).toHaveAttribute('aria-pressed','false'));
+ });
+ it('/plan 带任务先启用再发送原文，无参数切换且不发送',async()=>{
+  mocks.send.mockResolvedValue(undefined);
+  await renderOpenA();
+  await waitFor(()=>expect(screen.getByRole('button',{name:'计划模式'})).toHaveAttribute('aria-pressed','false'));
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'/plan 调查导出'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','调查导出','m',expect.any(Function),undefined,'high'));
+  const setCall=mocks.command.mock.invocationCallOrder[mocks.command.mock.calls.findIndex(([name])=>name==='session_plan_set')];
+  expect(setCall).toBeLessThan(mocks.send.mock.invocationCallOrder[0]);
+  fireEvent.change(input,{target:{value:'/plan'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_plan_set',{sessionId:'a',enabled:false}));
+  expect(mocks.send).toHaveBeenCalledTimes(1);
+ });
+ it('启用失败保留任务并显示错误，不发送',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_plan_set'?Promise.reject(new Error('计划模式不可用')):original(name,args));
+  await renderOpenA();
+  await waitFor(()=>expect(screen.getByRole('button',{name:'计划模式'})).toHaveAttribute('aria-pressed','false'));
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'/plan 调查导出'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await screen.findByText('计划模式不可用');
+  expect(input).toHaveValue('/plan 调查导出');
+  expect(mocks.send).not.toHaveBeenCalled();
+ });
+ it('切换会话后读取对应状态，丢弃旧会话迟到结果',async()=>{
+  let resolveA!:(value:boolean)=>void;
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_plan_get'?(args.sessionId==='a'?new Promise(resolve=>{resolveA=resolve}):true):original(name,args));
+  await renderOpenA();
+  await waitFor(()=>expect(resolveA).toBeTypeOf('function'));
+  fireEvent.click(screen.getByRole('button',{name:/会话 B/}));
+  await screen.findByText('内容 b');
+  const chip=screen.getByRole('button',{name:'计划模式'});
+  await waitFor(()=>expect(chip).toHaveAttribute('aria-pressed','true'));
+  await act(async()=>resolveA(false));
+  expect(chip).toHaveAttribute('aria-pressed','true');
+ });
+});
+describe('计划提交审批',()=>{
+ for(const decision of ['批准','拒绝'])it(`计划审批可选择${decision}且不抢先改变模式`,async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_plan_get'?true:name==='question_list'?[{id:'plan-q',sessionId:'a',question:'是否批准以下计划并退出只读模式？\n\n第一步：检查',options:[{label:'批准'},{label:'拒绝'}]}]:original(name,args));
+  await renderOpenA();
+  await screen.findByText(/第一步：检查/);
+  await waitFor(()=>expect(screen.getByRole('button',{name:'计划模式'})).toHaveAttribute('aria-pressed','true'));
+  fireEvent.click(screen.getByLabelText(`选项 ${decision}`));
+  fireEvent.click(screen.getByRole('button',{name:'提交答复'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('question_resolve',{id:'plan-q',answer:{text:decision,source:'selected'}}));
+  expect(screen.getByRole('button',{name:'计划模式'})).toHaveAttribute('aria-pressed','true');
+  expect(mocks.command.mock.calls.some(([name])=>name==='session_plan_set')).toBe(false);
+ });
+});
+describe('计划审批状态隔离',()=>{
+ it('新提问不复用上一个提问的选中项',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_plan_get'?true:name==='question_list'?[{id:'one',sessionId:'a',question:'计划一',options:[{label:'批准'},{label:'拒绝'}]},{id:'two',sessionId:'a',question:'计划二',options:[{label:'批准'},{label:'拒绝'}]}]:original(name,args));
+  await renderOpenA();
+  await screen.findByText('计划一');
+  fireEvent.click(screen.getByLabelText('选项 批准'));
+  fireEvent.click(screen.getByRole('button',{name:'提交答复'}));
+  await screen.findByText('计划二');
+  expect(screen.getByRole('button',{name:'提交答复'})).toBeDisabled();
+ });
+});
+describe('计划批准后状态同步',()=>{
+ it('收到运行时退出事件才显示关闭',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_plan_get'?true:original(name,args));
+  mocks.send.mockImplementation(async(_id,_text,_model,receive)=>receive({type:'durable',event:{id:'exit',sessionId:'a',seq:'2',kind:'session.plan',data:{enabled:false},createdAt:''}}));
+  await renderOpenA();
+  await waitFor(()=>expect(screen.getByRole('button',{name:'计划模式'})).toHaveAttribute('aria-pressed','true'));
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'请提交计划'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(screen.getByRole('button',{name:'计划模式'})).toHaveAttribute('aria-pressed','false'));
+ });
+});
+describe('计划模式安全边界',()=>{
+ it('读取失败时状态未知且禁止切换和发送计划任务',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_plan_get'?Promise.reject(new Error('读取失败')):original(name,args));
+  await renderOpenA();
+  await screen.findByText('读取失败');
+  expect(screen.getByRole('button',{name:'计划模式'})).toBeDisabled();
+  expect(screen.getByRole('button',{name:'计划模式'})).toHaveTextContent('未知');
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'/plan 任务'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  expect(mocks.send).not.toHaveBeenCalled();
+  expect(mocks.command.mock.calls.some(([name])=>name==='session_plan_set')).toBe(false);
+ });
+ it('启用请求期间切走会话，迟到成功不会发送任务或污染新会话',async()=>{
+  let resolveSet!:()=>void;
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_plan_set'?new Promise<void>(resolve=>{resolveSet=resolve}):original(name,args));
+  await renderOpenA();
+  await waitFor(()=>expect(screen.getByRole('button',{name:'计划模式'})).toBeEnabled());
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'/plan 任务'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(resolveSet).toBeTypeOf('function'));
+  fireEvent.click(screen.getByRole('button',{name:/会话 B/}));
+  await screen.findByText('内容 b');
+  await act(async()=>resolveSet());
+  expect(mocks.send).not.toHaveBeenCalled();
+  expect(screen.getByRole('button',{name:'计划模式'})).toHaveAttribute('aria-pressed','false');
+ });
+ it('接收实时模式事件后更新当前会话状态',async()=>{
+  mocks.send.mockImplementation(async(_id,_text,_model,receive)=>receive({type:'durable',event:{id:'plan-event',sessionId:'a',seq:'2',kind:'session.plan',data:{enabled:true},createdAt:''}}));
+  await renderOpenA();
+  await waitFor(()=>expect(screen.getByRole('button',{name:'计划模式'})).toBeEnabled());
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'你好'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(screen.getByRole('button',{name:'计划模式'})).toHaveAttribute('aria-pressed','true'));
+ });
+});
+describe('计划模式草稿安全',()=>{
+ it('草稿的计划入口只标记待启用，发送时真实启用',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_create'?{id:'new-plan',workspaceId:'w',title:'新会话'}:original(name,args));
+  mocks.send.mockResolvedValue(undefined);
+  render(<App/>);
+  await screen.findByRole('heading',{name:/你想在/});
+  fireEvent.click(screen.getByRole('button',{name:'添加内容'}));
+  fireEvent.click(screen.getByRole('menuitem',{name:/进入计划模式/}));
+  expect(screen.getByRole('button',{name:'计划模式'})).toHaveTextContent('草稿待启用');
+  expect(mocks.command.mock.calls.some(([name])=>name==='session_plan_set')).toBe(false);
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'规划草稿'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_plan_set',{sessionId:'new-plan',enabled:true}));
+  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('new-plan','规划草稿','m',expect.any(Function),undefined,'high'));
+ });
+ it('草稿计划任务创建会话并成功启用模式之后才发送',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_create'?{id:'new-plan',workspaceId:'w',title:'新会话'}:original(name,args));
+  mocks.send.mockResolvedValue(undefined);
+  render(<App/>);
+  await screen.findByRole('heading',{name:/你想在/});
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'/plan 草稿任务'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_plan_set',{sessionId:'new-plan',enabled:true}));
+  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('new-plan','草稿任务','m',expect.any(Function),undefined,'high'));
+ });
+ it('草稿模式启用失败不发送任务',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_create'?{id:'new-plan',workspaceId:'w',title:'新会话'}:name==='session_plan_set'?Promise.reject(new Error('模式设置失败')):original(name,args));
+  render(<App/>);
+  await screen.findByRole('heading',{name:/你想在/});
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'/plan 草稿任务'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await screen.findByText('模式设置失败');
+  expect(mocks.send).not.toHaveBeenCalled();
+ });
+});
 describe('设置入口',()=>{
  it('从侧栏打开全屏设置页，可切换分类并返回工作台',async()=>{
   await renderOpenA();
@@ -786,13 +956,60 @@ describe('计划与目标面板',()=>{
   ]:original(name,args));
   const {container}=await renderOpenA();
   fireEvent.click(screen.getByRole('button',{name:'计划与目标'}));
-  const dialog=await screen.findByRole('dialog',{name:'计划与目标'});
-  expect(within(dialog).getByText('会话 A')).toBeInTheDocument();
+  const dialog=await screen.findByRole('complementary',{name:'文件面板'});
+  expect(await within(dialog).findByText('会话 A')).toBeInTheDocument();
+  expect(within(dialog).getByRole('tab',{name:'计划'})).toHaveAttribute('aria-selected','true');
+  expect(screen.queryByRole('dialog',{name:'计划与目标'})).not.toBeInTheDocument();
   expect(container.querySelector('.todo-list li.done')?.textContent).toContain('修复登录');
   expect(container.querySelector('.todo-list li:not(.done)')?.textContent).toContain('补充测试');
   expect(within(dialog).getByRole('heading',{name:'先写测试',level:2})).toBeInTheDocument();
   fireEvent.click(within(dialog).getByRole('button',{name:'当前会话'}));
-  await waitFor(()=>expect(screen.queryByRole('dialog',{name:'计划与目标'})).not.toBeInTheDocument());
+  await waitFor(()=>expect(screen.queryByRole('complementary',{name:'文件面板'})).not.toBeInTheDocument());
+ });
+});
+describe('计划抽屉跨工作区',()=>{
+ it('跳转同工作区的其他会话后关闭抽屉',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='plan_overview'?[{sessionId:'b',sessionTitle:'B 的计划',workspaceId:'w',kind:'plan.state',data:{content:'计划'},updatedAt:''}]:original(name,args));
+  await renderOpenA();
+  fireEvent.click(screen.getByRole('button',{name:'计划与目标'}));
+  const panel=screen.getByRole('complementary',{name:'文件面板'});
+  await within(panel).findByText('B 的计划');
+  fireEvent.click(within(panel).getByRole('button',{name:'查看会话'}));
+  await screen.findByText('内容 b');
+  expect(screen.queryByRole('complementary',{name:'文件面板'})).not.toBeInTheDocument();
+ });
+ it('跨工作区跳转等待目标列表并重置抽屉',async()=>{
+  let resolveList!:(value:unknown)=>void;
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='workspace_list')return [{id:'w',name:'A'},{id:'other',name:'B'}];
+   if(name==='session_list'&&args.workspaceId==='other')return new Promise(resolve=>{resolveList=resolve});
+   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A'},{id:'other-session',workspaceId:'other',title:'跨区会话'}];
+   if(name==='plan_overview')return [{sessionId:'other-session',sessionTitle:'跨区计划',workspaceId:'other',kind:'plan.state',data:{content:'跨区内容'},updatedAt:''}];
+   return original(name,args);
+  });
+  await renderOpenA();
+  fireEvent.click(screen.getByRole('button',{name:'计划与目标'}));
+  const panel=screen.getByRole('complementary',{name:'文件面板'});
+  await within(panel).findByText('跨区计划');
+  fireEvent.click(within(panel).getByRole('button',{name:'查看会话'}));
+  await waitFor(()=>expect(resolveList).toBeTypeOf('function'));
+  expect(useSidePanel.getState()).toMatchObject({open:false,view:'changes',previewPath:null,webUrl:null});
+  await act(async()=>resolveList([{id:'a',workspaceId:'w',title:'会话 A'},{id:'other-session',workspaceId:'other',title:'跨区会话'}]));
+  await screen.findByText('内容 other-session');
+ });
+ it('没有工作区也能打开全局计划抽屉',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='workspace_list'?[]:name==='plan_overview'?[]:original(name,args));
+  render(<App/>);
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_list'));
+  fireEvent.click(screen.getByRole('button',{name:'计划与目标'}));
+  const panel=screen.getByRole('complementary',{name:'文件面板'});
+  expect(await within(panel).findByText('还没有任何计划或目标')).toBeInTheDocument();
+  expect(within(panel).getByRole('tab',{name:'计划'})).toHaveAttribute('aria-selected','true');
+  expect(within(panel).getByRole('tab',{name:'更改'})).toBeDisabled();
+  expect(within(panel).getByRole('tab',{name:'预览'})).toBeDisabled();
  });
 });
 describe('模型选择',()=>{
@@ -976,7 +1193,7 @@ describe('补全弹层滚动跟随',()=>{
 });
 
 describe('加号添加菜单',()=>{
- it('点 + 弹出菜单，计划/目标插入斜杠命令并关闭菜单',async()=>{
+ it('点 + 弹出菜单，计划启用模式而目标插入斜杠命令',async()=>{
   await renderOpenA();
   const plus=screen.getByRole('button',{name:'添加内容'});
   expect(screen.queryByRole('menu',{name:'添加内容'})).not.toBeInTheDocument();
@@ -984,10 +1201,11 @@ describe('加号添加菜单',()=>{
   const menu=screen.getByRole('menu',{name:'添加内容'});
   expect(plus).toHaveAttribute('aria-expanded','true');
   expect(within(menu).getByRole('menuitem',{name:/^附件/})).toBeInTheDocument();
-  fireEvent.click(within(menu).getByRole('menuitem',{name:/^计划/}));
-  expect(screen.getByLabelText('消息')).toHaveValue('/plan ');
+  fireEvent.click(within(menu).getByRole('menuitem',{name:/^进入计划模式/}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_plan_set',{sessionId:'a',enabled:true}));
+  expect(screen.getByLabelText('消息')).toHaveValue('');
   expect(screen.queryByRole('menu',{name:'添加内容'})).not.toBeInTheDocument();
-  expect(screen.getByLabelText('消息')).toHaveFocus();
+  expect(mocks.send).not.toHaveBeenCalled();
   fireEvent.click(plus);
   fireEvent.click(screen.getByRole('menuitem',{name:/^目标/}));
   expect(screen.getByLabelText('消息')).toHaveValue('/goal ');
@@ -1002,16 +1220,16 @@ describe('加号添加菜单',()=>{
   fireEvent.mouseDown(screen.getByRole('button',{name:'新建聊天'}));
   expect(screen.queryByRole('menu',{name:'添加内容'})).not.toBeInTheDocument();
  });
- it('/plan 带参数发送展开为预置提示词，无参数提示用法且不发送',async()=>{
+ it('/plan 带参数发送任务原文，无参数退出且不再发送',async()=>{
   mocks.send.mockResolvedValue(undefined);
   await renderOpenA();
   const input=screen.getByLabelText('消息');
   fireEvent.change(input,{target:{value:'/plan 为导出制定计划'}});
   fireEvent.keyDown(input,{key:'Enter'});
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a',`${PLAN_PROMPT}\n\n任务：为导出制定计划`,'m',expect.any(Function),undefined,'high'));
+  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','为导出制定计划','m',expect.any(Function),undefined,'high'));
   fireEvent.change(input,{target:{value:'/plan'}});
   fireEvent.keyDown(input,{key:'Enter'});
-  await screen.findByText('用法：/plan <任务描述>，发送后模型制定实施计划并经 plan_write 记录。');
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_plan_set',{sessionId:'a',enabled:false}));
   expect(mocks.send).toHaveBeenCalledTimes(1);
  });
  it('/goal 带参数发送展开为预置提示词',async()=>{
@@ -1532,7 +1750,9 @@ it('会话中的助手链接和用户网址打开网页抽屉',async()=>{
  ]):original(name,args));
  render(<App/>);
  await openSidebarSession(/会话 A/);
+
  const link=await screen.findByRole('link',{name:'站点'});
+ expect(link.isConnected).toBe(true);
  fireEvent.click(link);
  expect(useSidePanel.getState()).toMatchObject({view:'web',webUrl:'https://example.com/path'});
  const userLink=screen.getByRole('link',{name:'https://example.org/test'});
