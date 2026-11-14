@@ -562,7 +562,7 @@ export default function App(){
   <aside className="sidebar">
    <button className="new-chat" title="新建聊天" onClick={newSession} disabled={sessionBusy}><Plus size={16}/><span>新建聊天</span></button>
    <div className="session-search"><Search size={14} aria-hidden="true"/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="搜索会话…" aria-label="搜索会话"/></div>
-   <div className="section-label"><span>项目列表</span><span className="label-spacer"/><button type="button" role="switch" aria-checked={viewMode==='project'} aria-label="切换视图：最近 / 项目" className="view-switch" onClick={()=>chooseView(viewMode==='recent'?'project':'recent')}><span className="knob" aria-hidden="true"/><span className="sw-label a" aria-hidden="true">最近</span><span className="sw-label b" aria-hidden="true">项目</span></button></div>
+   <div className="section-label"><span>项目列表</span><span className="label-spacer"/><button type="button" role="switch" aria-checked={viewMode==='project'} aria-label="切换视图：项目 / 最近" className="view-switch" onClick={()=>chooseView(viewMode==='recent'?'project':'recent')}><span className="knob" aria-hidden="true"/><span className="sw-label a" aria-hidden="true">项目</span><span className="sw-label b" aria-hidden="true">最近</span></button></div>
    <nav className="sessions session-scrollbar" aria-label="会话列表" onScrollCapture={dismissSessionPop}>
     {viewMode==='recent'?groupByTime(visibleSessions,new Date()).map(group=><Fragment key={group.group}>
      <div className="group-head">{GROUP_LABELS[group.group]}</div>

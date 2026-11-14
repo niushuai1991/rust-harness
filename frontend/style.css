@@ -203,19 +203,19 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .pair-row label{flex:1}
 .form-label-inline{font-size:11px;color:var(--muted);margin-bottom:5px}
 
-/* ---- 会话列表「最近 / 项目」视图：搜索框、任务列表标题行、圆角方块 switch ---- */
+/* ---- 会话列表「项目 / 最近」视图：搜索框、任务列表标题行、圆角方块 switch ---- */
 .session-search{display:flex;align-items:center;gap:7px;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:0 10px;height:33px;margin-top:12px;color:var(--muted);flex-shrink:0}
 .session-search input{flex:1;min-width:0;border:0;outline:0;background:transparent;padding:0;font-size:12.5px;color:var(--text)}
 .session-search input::placeholder{color:var(--muted)}
 .section-label .label-spacer{flex:1}
 .view-switch{position:relative;width:72px;height:22px;flex:0 0 72px;border:0;border-radius:6px;background:var(--accent);padding:0;overflow:hidden}
-.view-switch .knob{position:absolute;top:2px;left:2px;width:34px;height:18px;border-radius:4px;background:var(--panel);box-shadow:0 1px 2px rgba(32,33,36,.25);transition:transform .15s}
+.view-switch .knob{position:absolute;top:2px;left:2px;width:34px;height:18px;border-radius:4px;background:var(--panel);box-shadow:0 1px 2px rgba(32,33,36,.25);transition:transform .15s;transform:translateX(34px)}
 .view-switch .sw-label{position:absolute;top:0;height:100%;width:34px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500;pointer-events:none;transition:color .15s}
-.view-switch .sw-label.a{left:2px;color:var(--accent)}
-.view-switch .sw-label.b{right:2px;color:#fff}
-.view-switch[aria-checked="true"] .knob{transform:translateX(34px)}
-.view-switch[aria-checked="true"] .sw-label.a{color:#fff}
-.view-switch[aria-checked="true"] .sw-label.b{color:var(--accent)}
+.view-switch .sw-label.a{left:2px;color:#fff}
+.view-switch .sw-label.b{right:2px;color:var(--accent)}
+.view-switch[aria-checked="true"] .knob{transform:translateX(0)}
+.view-switch[aria-checked="true"] .sw-label.a{color:var(--accent)}
+.view-switch[aria-checked="true"] .sw-label.b{color:#fff}
 @media(prefers-reduced-motion:reduce){.view-switch .knob,.view-switch .sw-label{transition:none}}
 
 /* 标题栏：会话名从左侧开始，工作区上下文紧随其后，操作入口固定在右侧。 */
@@ -230,10 +230,10 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 /* switch 的选中项使用主色文字，滑块保持白色，和规范中的视觉层级一致。 */
 .section-label button.view-switch{padding:0;border:0;background:var(--accent)}
 .view-switch .knob{background:#fff}
-.view-switch .sw-label.a{color:var(--accent)}
-.view-switch .sw-label.b{color:#fff}
-.view-switch[aria-checked="true"] .sw-label.a{color:#fff}
-.view-switch[aria-checked="true"] .sw-label.b{color:var(--accent)}
+.view-switch .sw-label.a{color:#fff}
+.view-switch .sw-label.b{color:var(--accent)}
+.view-switch[aria-checked="true"] .sw-label.a{color:var(--accent)}
+.view-switch[aria-checked="true"] .sw-label.b{color:#fff}
 
 /* 「最近」视图：时间分组头 + 双行条目（标题/子任务 + 项目/置顶/运行中） */
 .sessions .group-head{position:sticky;top:0;z-index:2;background:var(--sidebar);font-size:10.5px;color:var(--muted);padding:9px 4px 5px}
