@@ -13,7 +13,7 @@
 | [ACP 协议接口](specs/acp.md) | 2026-11-06（计划拟制） | `harness acp` 子命令：Agent Client Protocol v1 agent 端，官方 Rust SDK，供编辑器客户端接入。 |
 | [LSP 语言服务集成](specs/lsp.md) | 2026-11-06（计划拟制） | P3 提前项：只读五件套 LSP 工具（诊断/悬停/定义/引用/符号），通用 server 配置，默认 rust-analyzer。 |
 | [内置浏览器集成](specs/browser.md) | 2026-11-06（计划批准） | Agent 会话 browser_* 工具组：系统 Edge/Chrome headless + 自研轻量 CDP，DevToolsActivePort 就绪检测与 Job Object 进程树清理。 |
-| [子代理可视化与 spawn 模型选择](specs/subagent-visibility.md) | 2026-11-06（计划拟制） | 子代理父子关系与运行状态可视化，`agent_spawn` 可选 modelId；ACP 透传与管理面板留待后续。 |
+| [子代理可视化与 spawn 模型选择](specs/subagent-visibility.md) | 2026-11-06（计划拟制）；2026-11-15（入口收敛至输入框下方面板）修订 | 子代理父子关系与运行状态可视化，`agent_spawn` 可选 modelId；侧栏列表隐藏子代理，入口收敛为输入框下方 Bot 图标面板（当前工作区、停止与跳转）；ACP 透传与管理面板留待后续。 |
 | [P2 后台任务桌面可视化](specs/p2-background-tasks.md) | 2026-11-06（计划拟制） | P2 项：后台 Shell/子代理/定时任务事件卡片渲染与会话级任务面板，宿主查询/取消/删除命令。 |
 | [计划/目标管理面板](specs/plan-goal-panel.md) | 2026-11-06（计划拟制） | 右侧只读抽屉汇总跨会话计划、目标与待办，提供 `plan_overview`、历史查看与会话跳转。 |
 | [模型设置两级选择与 effort](specs/model-settings.md) | 2026-11-06（计划批准）；2026-11-13（图片输入能力元数据）修订 | 模型设置供应商→模型两级结构、内置模型目录与启停、effort 档位按协议编码、API 自动检测模型列表、发送框级联选择与选择持久化、卸载清理勾选行为、模型图片输入能力三态元数据（官方核实 + 自定义配置）。 |

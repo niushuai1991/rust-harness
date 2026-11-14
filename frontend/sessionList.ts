@@ -46,6 +46,11 @@ export function filterByTitle(sessions:SessionInfo[],query:string):SessionInfo[]
  return sessions.filter(s=>s.title.toLowerCase().includes(q));
 }
 
+/// 侧栏列表只展示主会话；子代理会话（parentId 非空）由输入框下方的子代理面板承载。
+export function withoutSubagents(sessions:SessionInfo[]):SessionInfo[]{
+ return sessions.filter(s=>!s.parentId);
+}
+
 export interface RecentGroup{group:TimeGroup;sessions:SessionInfo[];}
 /** 输入需已按 updatedAt 倒序（后端保证）；相邻同组合并，避免打乱组内顺序。 */
 export function groupByTime(sessions:SessionInfo[],now:Date):RecentGroup[]{

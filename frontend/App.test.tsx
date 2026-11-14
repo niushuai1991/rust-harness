@@ -902,7 +902,7 @@ describe('附件与完整输出',()=>{
 });
 
 describe('子代理与任务状态可视化',()=>{
- it('子代理事件渲染卡片，跳转子会话并显示运行状态与子任务徽标',async()=>{
+ it('子代理事件渲染卡片并跳转子会话；列表隐藏子代理，由输入框下方面板承载',async()=>{
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
    if(name==='session_list')return [{id:'a',workspaceId:'w',title:'父会话'},{id:'child',workspaceId:'w',title:'依赖梳理子任务',parentId:'a'}];
@@ -919,7 +919,14 @@ describe('子代理与任务状态可视化',()=>{
   expect(screen.getByText('已向子代理投递任务')).toBeInTheDocument();
   expect(screen.getByText('梳理依赖')).toBeInTheDocument();
   expect(screen.getAllByLabelText('子代理运行中').length).toBeGreaterThan(0);
-  expect(screen.getByText('子任务')).toBeInTheDocument();
+  // 列表不再显示子代理会话（无「子任务」徽标、无子代理行）；入口收敛到输入框下方的 Bot 图标。
+  expect(screen.queryByText('子任务')).not.toBeInTheDocument();
+  expect(screen.queryByText('依赖梳理子任务')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button',{name:'子代理'}));
+  await screen.findByText('依赖梳理子任务');
+  expect(screen.getAllByLabelText('子代理运行中').length).toBeGreaterThan(0);
+  fireEvent.click(screen.getByRole('button',{name:'停止子代理'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_cancel',{sessionId:'child'}));
   fireEvent.click(screen.getAllByRole('button',{name:'查看会话'})[0]);
   await screen.findByText('内容 child');
  });
@@ -1522,25 +1529,6 @@ describe('会话命名',()=>{
   expect(await screen.findAllByText('首问自动标题')).toHaveLength(2);
   const titles=screen.getAllByRole('button').filter(button=>button.classList.contains('session-row')).map(button=>button.querySelector('.session-title')?.textContent);
   expect(titles).toEqual(['首问自动标题','较新的会话']);
- });
- it('重命名子代理会话后保留子任务标记',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_list')return [
-    {id:'parent',workspaceId:'w',title:'父会话',createdAt:'',updatedAt:'2026-11-09T11:00:00Z',parentId:null},
-    {id:'child',workspaceId:'w',title:'子会话',createdAt:'',updatedAt:'2026-11-09T10:00:00Z',parentId:'parent'}];
-   if(name==='session_timeline_page')return timeline(args.sessionId,args.sessionId==='parent'?[event('e-parent','parent','1','父消息')]:[]);
-   if(name==='session_rename')return {id:'child',workspaceId:'w',title:args.title,createdAt:'',updatedAt:'2026-11-09T10:00:00Z',parentId:null};
-   return original(name,args);
-  });
-  render(<App/>);await openSidebarSession(/父会话/);await screen.findByText('父消息');
-  fireEvent.contextMenu(screen.getByRole('button',{name:/子会话/}));
-  fireEvent.click(await screen.findByRole('menuitem',{name:'重命名'}));
-  const dialog=await screen.findByRole('dialog',{name:'重命名会话'});
-  fireEvent.change(screen.getByLabelText('会话名称'),{target:{value:'已改名子会话'}});
-  fireEvent.click(within(dialog).getByRole('button',{name:'保存'}));
-  expect(await screen.findByText('已改名子会话')).toBeInTheDocument();
-  expect(screen.getByText('子任务')).toBeInTheDocument();
  });
  it.each(['最近','项目'])('在%s视图右键会话可重命名并更新列表和面包屑',async view=>{
   const original=mocks.command.getMockImplementation()!;
