@@ -7,8 +7,6 @@
 
 .primary,.send{background:var(--accent);border-color:var(--accent)}.muted{color:var(--muted)}.topbar,.modal,.composer{background:var(--panel)}
 .prose{white-space:normal}.prose>:first-child{margin-top:0}.prose>:last-child{margin-bottom:0}.prose p{margin:0 0 12px}.prose h1,.prose h2,.prose h3,.prose h4{color:var(--text);font-weight:600;line-height:1.45;margin:22px 0 10px}.prose h1{font-size:23px}.prose h2{font-size:19px}.prose h3{font-size:16px}.prose ul,.prose ol{margin:0 0 12px;padding-left:23px}.prose li{margin:3px 0}.prose li::marker{color:var(--muted)}.prose a{color:var(--text);text-decoration-thickness:1px;text-underline-offset:2px}.prose :not(pre)>code{font-family:"Cascadia Code",Consolas,monospace;font-size:.9em;background:var(--surface);border-radius:4px;padding:2px 5px}.prose pre{margin:12px 0;padding:13px 15px;max-width:100%;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:8px;white-space:pre}.prose pre code{font-size:12px;background:transparent;padding:0}.prose blockquote{margin:12px 0;padding:3px 0 3px 13px;border-left:3px solid var(--border);color:var(--text)}.prose table{border-collapse:collapse;display:block;max-width:100%;overflow:auto;margin:12px 0}.prose th,.prose td{border:1px solid var(--border);padding:6px 9px;text-align:left}.prose th{background:var(--surface);font-weight:600}.prose input[type=checkbox]{accent-color:var(--accent);margin-right:7px}.turn-details{margin:8px 0 18px}.turn-details>summary{display:flex;align-items:center;gap:5px;list-style:none;cursor:pointer;color:var(--muted);font-size:11px}.turn-details>summary::-webkit-details-marker{display:none}.turn-details>summary svg{transition:transform .15s}.turn-details[open]>summary svg{transform:rotate(180deg)}.turn-details .message{margin:15px 0}.turn-details .tool-card{margin-left:0}
-.sessions .session-row.child{padding-left:26px}
-.subagent-badge{font-style:normal;font-size:9px;color:var(--text);background:var(--surface);border-radius:4px;padding:1px 6px;flex-shrink:0;margin-left:auto}
 .subagent-row{display:flex;align-items:center;gap:8px;padding:11px 14px 0;color:var(--text)}
 .subagent-row strong{font-weight:600}
 .subagent-row button{padding:3px 9px;font-size:10px;margin-left:auto}
@@ -42,6 +40,25 @@
 .composer-plus{width:34px;height:34px;padding:0;border:0;background:transparent;color:var(--muted);border-radius:8px}
 .composer-plus:hover{background:var(--surface);color:var(--text)}
 .composer-plus[aria-expanded="true"]{background:var(--surface);color:var(--accent)}
+/* 子代理入口：+号旁的 Bot 图标，运行中数量以右上角小徽标提示；面板向上弹出同 plus-menu。 */
+.composer-subagent-wrap{position:relative}
+.composer-subagent{position:relative;width:34px;height:34px;padding:0;border:0;background:transparent;color:var(--muted);border-radius:8px}
+.composer-subagent:hover{background:var(--surface);color:var(--text)}
+.composer-subagent[aria-expanded="true"]{background:var(--surface);color:var(--accent)}
+.composer-subagent .subagent-count{position:absolute;top:2px;right:2px;min-width:13px;height:13px;padding:0 3px;border-radius:7px;background:var(--accent);color:var(--panel);font-size:9px;font-weight:600;line-height:13px;text-align:center}
+.subagent-panel{position:absolute;bottom:calc(100% + 10px);left:0;width:300px;max-width:78vw;background:var(--panel);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(32,33,36,.14);padding:5px;display:flex;flex-direction:column;gap:3px;z-index:15;transform-origin:bottom left;animation:plus-menu-in .13s ease-out}
+@media(prefers-reduced-motion:reduce){.subagent-panel{animation:none}}
+.subagent-panel-head{display:flex;align-items:center;gap:6px;padding:7px 9px 5px;font-size:12px;color:var(--text)}
+.subagent-panel-head strong{display:flex;align-items:center;gap:6px;font-weight:600}
+.subagent-panel-head .icon-button{margin-left:auto;width:22px;height:22px}
+.subagent-panel-list{display:flex;flex-direction:column}
+.subagent-item{display:flex;align-items:center;gap:4px;border-radius:8px}
+.subagent-item:hover{background:var(--surface)}
+.subagent-open{flex:1;min-width:0;display:flex;align-items:center;gap:6px;border:0;background:transparent;padding:8px 10px;text-align:left;font-size:12px;color:var(--text)}
+.subagent-open .session-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.subagent-stop{flex-shrink:0;width:24px;height:24px;padding:0;margin-right:5px;border:0;background:transparent;color:var(--muted);border-radius:6px}
+.subagent-stop:hover{background:var(--surface);color:var(--text)}
+.subagent-panel .empty-small{padding:4px 10px 8px}
 .plus-menu{position:absolute;bottom:calc(100% + 10px);left:0;width:300px;max-width:78vw;background:var(--panel);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(32,33,36,.14);padding:5px;display:flex;flex-direction:column;z-index:15;transform-origin:bottom left;animation:plus-menu-in .13s ease-out}
 @keyframes plus-menu-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 @media(prefers-reduced-motion:reduce){.plus-menu{animation:none}}
@@ -249,7 +266,6 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 /* 会话标题：末端 20px 渐隐收尾（mask 作用于盒子末端，未溢出时无文字经过渐变区故无视觉影响）；
    显式 text-overflow:clip 并用高特异性选择器覆盖上方 `.sessions .session-row span` 的兜底 ellipsis，避免「…+渐隐」叠加。 */
 .sessions .session-row .session-title{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:clip;-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 20px),transparent 100%);mask-image:linear-gradient(to right,#000 calc(100% - 20px),transparent 100%)}
-.session-row .subagent-badge{margin-left:0}
 .session-l2{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--muted);min-width:0}
 .session-l2>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .session-l2 svg{flex-shrink:0;color:var(--accent)}
