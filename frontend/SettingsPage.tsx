@@ -7,7 +7,8 @@ import {PerformancePanel} from './PerformancePanel';
 export type SettingsPanelId='presets'|'skills'|'plugins'|'models';
 type SettingsSectionId='overview'|SettingsPanelId|'archive'|'performance';
 
-type SettingsItem={id:SettingsSectionId;title:string;description:string;summary:string;group:string;icon:LucideIcon;legacyPanel?:SettingsPanelId};
+type SettingsCategoryId=Exclude<SettingsSectionId,'overview'>;
+type SettingsItem={id:SettingsCategoryId;title:string;description:string;summary:string;group:string;icon:LucideIcon;legacyPanel?:SettingsPanelId};
 const ITEMS:SettingsItem[]=[
  {id:'presets',title:'能力预设',description:'组合模型、推理档位与审批策略，快速切换常用工作方式。',summary:'3 个示例预设',group:'工作方式',icon:Bookmark,legacyPanel:'presets'},
  {id:'skills',title:'技能',description:'管理项目与用户技能，让助手按需加载专用工作指引。',summary:'2 个示例技能',group:'工作方式',icon:Sparkles,legacyPanel:'skills'},
@@ -17,7 +18,7 @@ const ITEMS:SettingsItem[]=[
  {id:'models',title:'模型设置',description:'管理模型供应商、API 连接与可用模型。',summary:'管理供应商与模型',group:'扩展与安全',icon:Cpu,legacyPanel:'models'},
 ];
 const GROUPS=['工作方式','会话','扩展与安全'];
-const INTRO:Record<SettingsSectionId,string>={
+const INTRO:Record<SettingsCategoryId,string>={
  presets:'把常用模型、推理档位和审批方式保存为一组配置，之后可以在发送框快速切换。',
  skills:'查看当前工作区和用户目录中的技能，并管理它们是否参与助手的技能目录。',
  performance:'工具并发调度、上下文自动压缩与 HTTP 连接复用均可独立开关；调整立即生效，下一回合起生效。',
