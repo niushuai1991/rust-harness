@@ -7,7 +7,10 @@ use futures::StreamExt;
 use harness_contracts::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 pub use streaming::SseDecoder;
 use tokio_util::sync::CancellationToken;
 
@@ -102,6 +105,10 @@ pub trait ModelProvider: Send + Sync {
     fn route(&self) -> Option<ModelRoute> {
         None
     }
+    /// 模型上下文窗口（token）：请求前自动压缩的阈值检查用；未知时为 None（不自动压缩）。
+    fn context_window(&self) -> Option<u32> {
+        None
+    }
     async fn complete(
         &self,
         messages: Vec<ModelMessage>,
@@ -128,6 +135,53 @@ pub struct HttpModel {
     /// 流式空闲超时：等待响应头、以及相邻两个数据块之间的最长静默时长；
     /// 只在没有数据到达时计时，持续输出的长流不受总时长限制。
     pub stream_idle_timeout: Duration,
+    /// 进程级连接复用开关：开启时按传输配置共享 `reqwest::Client`（keep-alive 连接池），
+    /// 关闭时保持既有行为（每次调用新建客户端）。
+    pub connection_reuse: bool,
+}
+/// 影响 HTTP 传输的完整配置面：代理与 OAuth User-Agent。
+/// redirect 策略与连接超时全局固定；密钥、x-api-key、anthropic-version 与
+/// 会话专属 header 均按请求注入（`RequestBuilder`），不参与 key、不跨配置泄漏。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct HttpClientKey {
+    proxy: Option<String>,
+    oauth_user_agent: bool,
+}
+/// 进程级共享客户端缓存：同配置复用连接池，配置变化即新客户端；
+/// 进行中的请求持有 Arc 快照按原配置完成。上限有界，淘汰最旧。
+static HTTP_CLIENTS: std::sync::OnceLock<Mutex<Vec<(HttpClientKey, reqwest::Client)>>> =
+    std::sync::OnceLock::new();
+const HTTP_CLIENT_CACHE_LIMIT: usize = 8;
+fn shared_http_client(key: &HttpClientKey) -> AppResult<reqwest::Client> {
+    let cache = HTTP_CLIENTS.get_or_init(|| Mutex::new(Vec::new()));
+    let mut cache = cache.lock().unwrap();
+    if let Some((_, client)) = cache.iter().find(|(k, _)| k == key) {
+        return Ok(client.clone());
+    }
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none());
+    if let Some(proxy) = &key.proxy {
+        builder = builder.proxy(
+            reqwest::Proxy::all(proxy).map_err(|_| AppError::new("MODEL_PROXY", "代理地址无效"))?,
+        );
+    }
+    if key.oauth_user_agent {
+        // ChatGPT 后端按客户端身份识别请求；与 codex CLI 的 User-Agent 形态保持一致。
+        builder = builder.user_agent(format!(
+            "{}/{} ({}; {})",
+            crate::chatgpt::ORIGINATOR,
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        ));
+    }
+    let client = builder.build().map_err(transport_error)?;
+    cache.push((key.clone(), client.clone()));
+    if cache.len() > HTTP_CLIENT_CACHE_LIMIT {
+        cache.remove(0);
+    }
+    Ok(client)
 }
 impl HttpModel {
     /// 对齐 codex 参考实现的 5 分钟空闲窗口。
@@ -141,26 +195,33 @@ impl HttpModel {
         sink: DeltaSink,
         partial_usage: Option<PartialUsageSink>,
     ) -> AppResult<ModelAnswer> {
-        let mut builder = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(20))
-            .redirect(reqwest::redirect::Policy::none());
-        if let Some(proxy) = self.config.proxy.as_ref().filter(|p| !p.is_empty()) {
-            builder = builder.proxy(
-                reqwest::Proxy::all(proxy)
-                    .map_err(|_| AppError::new("MODEL_PROXY", "代理地址无效"))?,
-            );
-        }
-        if self.config.auth == ProviderAuth::ChatGptOAuth {
-            // ChatGPT 后端按客户端身份识别请求；与 codex CLI 的 User-Agent 形态保持一致。
-            builder = builder.user_agent(format!(
-                "{}/{} ({}; {})",
-                crate::chatgpt::ORIGINATOR,
-                env!("CARGO_PKG_VERSION"),
-                std::env::consts::OS,
-                std::env::consts::ARCH
-            ));
-        }
-        let client = builder.build().map_err(transport_error)?;
+        let client = if self.connection_reuse {
+            shared_http_client(&HttpClientKey {
+                proxy: self.config.proxy.clone().filter(|p| !p.is_empty()),
+                oauth_user_agent: self.config.auth == ProviderAuth::ChatGptOAuth,
+            })?
+        } else {
+            let mut builder = reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(20))
+                .redirect(reqwest::redirect::Policy::none());
+            if let Some(proxy) = self.config.proxy.as_ref().filter(|p| !p.is_empty()) {
+                builder = builder.proxy(
+                    reqwest::Proxy::all(proxy)
+                        .map_err(|_| AppError::new("MODEL_PROXY", "代理地址无效"))?,
+                );
+            }
+            if self.config.auth == ProviderAuth::ChatGptOAuth {
+                // ChatGPT 后端按客户端身份识别请求；与 codex CLI 的 User-Agent 形态保持一致。
+                builder = builder.user_agent(format!(
+                    "{}/{} ({}; {})",
+                    crate::chatgpt::ORIGINATOR,
+                    env!("CARGO_PKG_VERSION"),
+                    std::env::consts::OS,
+                    std::env::consts::ARCH
+                ));
+            }
+            builder.build().map_err(transport_error)?
+        };
         let (url, body) = encode_request(&self.config, &messages, &tools)?;
         let mut request = client.post(url).json(&body);
         if self.config.auth == ProviderAuth::ChatGptOAuth {
@@ -257,6 +318,9 @@ impl HttpModel {
 impl ModelProvider for HttpModel {
     fn route(&self) -> Option<ModelRoute> {
         Some(ModelRoute::from(&self.config))
+    }
+    fn context_window(&self) -> Option<u32> {
+        self.config.context_window
     }
     async fn complete(
         &self,

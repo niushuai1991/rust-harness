@@ -1,23 +1,26 @@
 import {useEffect,useRef,useState,type ReactNode} from 'react';
-import {ArrowRight,Archive,Bookmark,Check,ChevronRight,Cpu,Folder,KeyRound,Layers,Plug,Settings,ShieldCheck,Sparkles,Terminal,Undo2,X,type LucideIcon} from 'lucide-react';
+import {ArrowRight,Archive,Bookmark,Check,ChevronRight,Cpu,Folder,Gauge,KeyRound,Layers,Plug,Settings,ShieldCheck,Sparkles,Terminal,Undo2,X,type LucideIcon} from 'lucide-react';
 import {relativeLabel} from './sessionList';
 import type {SessionInfo} from './types';
+import {PerformancePanel} from './PerformancePanel';
 
 export type SettingsPanelId='presets'|'skills'|'plugins'|'models';
-type SettingsSectionId='overview'|SettingsPanelId|'archive';
+type SettingsSectionId='overview'|SettingsPanelId|'archive'|'performance';
 
-type SettingsItem={id:SettingsPanelId|'archive';title:string;description:string;summary:string;group:string;icon:LucideIcon;legacyPanel?:SettingsPanelId};
+type SettingsItem={id:SettingsSectionId;title:string;description:string;summary:string;group:string;icon:LucideIcon;legacyPanel?:SettingsPanelId};
 const ITEMS:SettingsItem[]=[
  {id:'presets',title:'能力预设',description:'组合模型、推理档位与审批策略，快速切换常用工作方式。',summary:'3 个示例预设',group:'工作方式',icon:Bookmark,legacyPanel:'presets'},
  {id:'skills',title:'技能',description:'管理项目与用户技能，让助手按需加载专用工作指引。',summary:'2 个示例技能',group:'工作方式',icon:Sparkles,legacyPanel:'skills'},
+ {id:'performance',title:'性能',description:'调整工具并发调度与上限、上下文自动压缩、HTTP 连接复用。',summary:'默认全部开启',group:'工作方式',icon:Gauge},
  {id:'archive',title:'存档管理',description:'集中查看各项目的已归档会话，随时恢复到任务列表。',summary:'按项目分组 · 可恢复',group:'会话',icon:Archive},
  {id:'plugins',title:'插件与权限',description:'查看扩展、连接与权限策略，了解每项能力的授权范围。',summary:'扩展与安全策略',group:'扩展与安全',icon:Plug,legacyPanel:'plugins'},
  {id:'models',title:'模型设置',description:'管理模型供应商、API 连接与可用模型。',summary:'管理供应商与模型',group:'扩展与安全',icon:Cpu,legacyPanel:'models'},
 ];
 const GROUPS=['工作方式','会话','扩展与安全'];
-const INTRO:Record<SettingsPanelId|'archive',string>={
+const INTRO:Record<SettingsSectionId,string>={
  presets:'把常用模型、推理档位和审批方式保存为一组配置，之后可以在发送框快速切换。',
  skills:'查看当前工作区和用户目录中的技能，并管理它们是否参与助手的技能目录。',
+ performance:'工具并发调度、上下文自动压缩与 HTTP 连接复用均可独立开关；调整立即生效，下一回合起生效。',
  plugins:'集中查看本地插件、MCP 连接及其声明与授权的权限范围。',
  models:'管理模型供应商、凭据和模型目录；API 密钥只保存在系统凭据管理器中。',
  archive:'归档后的会话不会出现在任务列表里，但仍保留在本机；在这里按项目查看并恢复。',
@@ -67,7 +70,7 @@ export function SettingsPage({onClose,onOpenPanel,archivedSessions,projectName,o
  </div>;
 }
 
-function SettingsOverview({onSelect}:{onSelect:(section:SettingsPanelId|'archive')=>void}){
+function SettingsOverview({onSelect}:{onSelect:(section:SettingsSectionId)=>void}){
  return <div className="settings-content">
   <div className="settings-eyebrow">PREFERENCES</div>
   <h1>设置</h1>
@@ -87,11 +90,12 @@ function SettingsCategory({item,onOpenPanel,archivedSessions,projectName,onResto
  return <div className="settings-content settings-category-content">
   <div className="settings-eyebrow">{item.group.toUpperCase()}</div>
   <div className="settings-category-heading"><div><h1>{item.title}</h1><p className="settings-lead">{INTRO[item.id]}</p></div><span className="settings-category-icon"><Icon size={21}/></span></div>
-  {item.id!=='archive'&&<div className="settings-preview-notice"><Sparkles size={15}/><span>页面布局预览 · 下方为示例内容，不会修改真实设置</span></div>}
-  {item.id==='presets'&&<PresetPreview/>}
-  {item.id==='skills'&&<SkillsPreview/>}
-  {item.id==='archive'&&<ArchivePreview archived={archivedSessions} projectName={projectName} onRestore={onRestore}/>}
-  {item.id==='plugins'&&<PluginsPreview/>}
+ {item.id!=='archive'&&item.id!=='performance'&&<div className="settings-preview-notice"><Sparkles size={15}/><span>页面布局预览 · 下方为示例内容，不会修改真实设置</span></div>}
+ {item.id==='presets'&&<PresetPreview/>}
+ {item.id==='skills'&&<SkillsPreview/>}
+ {item.id==='archive'&&<ArchivePreview archived={archivedSessions} projectName={projectName} onRestore={onRestore}/>}
+ {item.id==='performance'&&<PerformancePanel/>}
+ {item.id==='plugins'&&<PluginsPreview/>}
   {item.legacyPanel&&<div className="settings-existing-action"><div><strong>继续使用当前管理功能</strong><p>此版先展示设置页的导航与布局；原有配置面板暂时保持不变。</p></div><button type="button" className="settings-manage-button" onClick={()=>onOpenPanel(item.legacyPanel!)}>打开现有面板<ArrowRight size={15}/></button></div>}
  </div>;
 }

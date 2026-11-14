@@ -649,6 +649,50 @@ pub async fn token_budget_limit_set(state: Backend<'_>, limit_tokens: f64) -> Ap
     state.set_token_budget_limit(limit_tokens as u64).await
 }
 
+/// 性能优化设置：工具并发调度、并发上限、请求前自动压缩与 HTTP 连接复用。
+#[derive(Debug, Clone, serde::Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PerfSettings {
+    /// 工具批次并发调度开关（关闭时整批次串行）。
+    pub tool_concurrency: bool,
+    /// 工具并发上限（1–16）。
+    pub tool_concurrency_limit: u32,
+    /// 请求前自动压缩开关。
+    pub auto_compaction: bool,
+    /// HTTP 连接复用开关。
+    pub http_connection_reuse: bool,
+}
+
+/// 读取性能优化设置（缺省全部开启、并发上限 8）。
+#[tauri::command]
+#[specta::specta]
+pub async fn perf_settings_get(state: Backend<'_>) -> AppResult<PerfSettings> {
+    Ok(PerfSettings {
+        tool_concurrency: state.tool_concurrency_enabled().await?,
+        tool_concurrency_limit: state.tool_concurrency_limit().await?,
+        auto_compaction: state.auto_compaction_enabled().await?,
+        http_connection_reuse: state.models.http_connection_reuse().await,
+    })
+}
+
+/// 保存性能优化设置；并发上限校验 1–16，下一回合起生效。
+#[tauri::command]
+#[specta::specta]
+pub async fn perf_settings_set(state: Backend<'_>, settings: PerfSettings) -> AppResult<()> {
+    state
+        .set_tool_concurrency_limit(settings.tool_concurrency_limit)
+        .await?;
+    state
+        .set_tool_concurrency(settings.tool_concurrency)
+        .await?;
+    state.set_auto_compaction(settings.auto_compaction).await?;
+    state
+        .models
+        .set_http_connection_reuse(settings.http_connection_reuse)
+        .await?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // ChatGPT 账号 OAuth 登录（浏览器授权 + 本地回环回调）；token 永不回传前端。
 // ---------------------------------------------------------------------------
@@ -1137,6 +1181,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         approval_mode_save,
         token_budget_limit_get,
         token_budget_limit_set,
+        perf_settings_get,
+        perf_settings_set,
         chatgpt_login_start,
         chatgpt_login_status,
         chatgpt_login_cancel,

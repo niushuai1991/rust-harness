@@ -477,3 +477,11 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 @media(max-width:850px){.settings-screen{grid-template-columns:74px minmax(0,1fr)}.settings-sidebar{align-items:center;padding:18px 8px 10px}.settings-brand{justify-content:center;padding:2px 0 22px}.settings-brand>span:last-child,.settings-nav-heading,.settings-nav-item>span,.settings-nav-chevron,.settings-sidebar-foot{display:none}.settings-nav{width:100%;padding:0}.settings-nav-group{width:100%;margin-top:15px}.settings-nav-item{width:42px;height:42px;justify-content:center;padding:0;margin:2px auto}.settings-nav-item svg{width:18px;height:18px}.settings-content{padding:34px 28px 40px}}
 @media(max-width:560px){.settings-screen{grid-template-columns:62px minmax(0,1fr)}.settings-sidebar{padding:14px 4px}.settings-brand-mark{width:31px;height:31px}.settings-topbar{height:55px;flex-basis:55px;padding:0 14px}.settings-preview-badge{font-size:9px}.settings-content{padding:27px 17px 32px}.settings-content h1{font-size:24px}.settings-overview-banner{padding:15px 13px}.settings-banner-sparkle{display:none}.settings-card-grid{grid-template-columns:1fr;gap:9px}.settings-category-card{min-height:148px}.settings-existing-action{align-items:flex-start;flex-direction:column}.settings-manage-button{width:100%;justify-content:center}.settings-example-item{gap:8px;padding:10px}.settings-example-badge{font-size:8px;padding:3px 5px}}
 @media(prefers-reduced-motion:reduce){.settings-category-card,.settings-card-arrow{transition:none}}
+/* 性能设置面板：开关与数字输入 */
+.perf-toggle{position:relative;flex-shrink:0;width:38px;height:21px;border-radius:11px;border:1px solid #d4dad2;background:#e8ece6;transition:background .15s,border-color .15s;cursor:pointer;padding:0}
+.perf-toggle.on{background:#4a7c46;border-color:#4a7c46}
+.perf-toggle-knob{position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:#fff;transition:left .15s}
+.perf-toggle.on .perf-toggle-knob{left:19px}
+.perf-toggle:focus-visible{outline:2px solid #4a7c46;outline-offset:1px}
+.settings-performance-list input[type="number"]{flex-shrink:0;width:74px;border:1px solid #e4e8e2;border-radius:7px;padding:7px 9px;font-size:13px;text-align:center}
+.settings-performance-list input[type="number"]:disabled{background:#f3f5f1;color:#a5aca4}
