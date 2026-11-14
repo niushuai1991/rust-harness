@@ -37,6 +37,7 @@
 |项目移除（隐藏入口）与重新显示|已实现并接线|storage 隐藏 KV 往返/去重/跨重启与隐藏不影响会话恢复 2 项测试先红后绿；`workspace_remove` 仅置隐藏标记（运行中确认停止）、`workspace_reveal_hidden` 重开同路径重新显示、`WorkspaceInfo.hidden` KV 派生注入；前端右键菜单/隐藏确认/停止运行参数/重新显示提示/存档管理隐藏项目可查看可恢复 4 项测试，npm test 272 项与生产构建通过；cargo fmt/clippy/build 通过，cargo test 仅既有环境性失败（真实浏览器导航、git 子进程 ×2，主工作区复验同失败）；真实桌面 UI 抽查待用户，见[项目移除规范](specs/project-removal.md)|
 |搜索provider/Office预览|未实现|不能计为P2/P3完成|
 |脚本工作流/签名插件市场|未实现|不能计为P3完成|
+|Agent 执行性能优化（工具批次并发调度、请求前自动压缩、HTTP 连接复用）|已实现并接线|并发段重叠/上限/屏障/取消 unknown 结算/read-before-edit（6 项）、自动压缩阈值触发/投影重置/失败语义/预算记账（4 项）、连接 keep-alive 复用与传输配置隔离（3 项）集成测试通过；桌面设置「性能」选项卡 5 项前端测试通过；真实模型收益基准对照待用户；流式提前执行未实施（待预算规范修订），见[Agent 执行性能优化规范](specs/agent-execution-performance.md)|
 
 数据目录为宿主独占，桌面打开时headless需使用独立数据目录，避免另一个进程执行恢复时破坏活动会话。WASM采用每次调用独立Store，activate→execute/hook→deactivate，KV成功后提交；不承诺长期驻留实例状态。
 

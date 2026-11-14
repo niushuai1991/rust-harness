@@ -23,6 +23,11 @@ pub trait ExternalTool: Send + Sync {
     fn requires_approval(&self) -> bool {
         true
     }
+    /// 显式并发能力声明：仅限已证明只读、无外部副作用、无交互、不依赖批次内
+    /// 其他调用结果的工具返回 true；缺省 false（默认串行）。
+    fn concurrency_safe(&self) -> bool {
+        false
+    }
     async fn execute(
         &self,
         context: ToolContext,

@@ -1557,6 +1557,8 @@ async fn run_owned(
     }
 }
 /// Human command only: serializes with turns and retains every raw event.
+/// 压缩核心位于 [`Runtime::compact_projection`]（自动压缩共用同一实现）；
+/// 此处仅提供与回合串行的边界与宿主入口语义。
 pub async fn compact_session(
     runtime: Arc<Runtime>,
     session: &str,
@@ -1565,35 +1567,12 @@ pub async fn compact_session(
 ) -> AppResult<()> {
     let _boundary = runtime.session_boundary(session).await;
     runtime.store.session(session).await?;
-    let events = runtime.store.events(session, 0).await?;
-    let mut messages = harness_runtime::agent::project_messages(&events);
-    for message in &mut messages {
-        message.replay = None;
-        message.reasoning.clear();
-    }
-    let request = vec![
-        ModelMessage::system(
-            "请用中文总结会话目标、已完成工作、关键事实、未完成事项和工具执行结果。保留继续任务所需信息，不编造。",
-        ),
-        ModelMessage::user(serde_json::to_string(&messages).map_err(error)?),
-    ];
-    let answer = provider
-        .complete(request, vec![], cancel.clone(), Arc::new(|_| {}))
-        .await?;
-    if cancel.is_cancelled() {
-        return Err(harness_runtime::model::cancelled());
-    }
-    if answer.content.trim().is_empty() || !answer.calls.is_empty() {
-        return Err(AppError::new(
-            "COMPACTION_INVALID",
-            "模型没有返回有效纯文本摘要",
-        ));
-    }
     runtime
-        .append(
+        .compact_projection(
             session,
-            "compaction.summary",
-            json!({"content":answer.content,"throughSeq":events.last().map(|e|e.seq.clone())}),
+            provider,
+            cancel,
+            harness_runtime::agent::CompactionTrigger::Manual,
         )
         .await?;
     Ok(())

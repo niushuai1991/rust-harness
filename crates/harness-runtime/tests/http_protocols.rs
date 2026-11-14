@@ -170,6 +170,7 @@ async fn malformed_tool_arguments_still_report_completed_usage() {
         config,
         secret: "fixture-secret".into(),
         stream_idle_timeout: HttpModel::DEFAULT_STREAM_IDLE_TIMEOUT,
+        connection_reuse: true,
     };
     let observed = Arc::new(Mutex::new(None));
     let observed_by_sink = observed.clone();
@@ -211,6 +212,7 @@ async fn responses_eof_frame_usage_survives_tool_argument_decode_error() {
         config,
         secret: "fixture-secret".into(),
         stream_idle_timeout: HttpModel::DEFAULT_STREAM_IDLE_TIMEOUT,
+        connection_reuse: true,
     };
     let observed = Arc::new(Mutex::new(None));
     let observed_by_sink = observed.clone();
@@ -248,6 +250,7 @@ async fn all_protocols_execute_approved_tools_and_replay_after_restart() {
             config,
             secret: "fixture-secret".into(),
             stream_idle_timeout: HttpModel::DEFAULT_STREAM_IDLE_TIMEOUT,
+            connection_reuse: true,
         });
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("source");
@@ -361,6 +364,7 @@ async fn complete_with_idle(idle: std::time::Duration, base: String) -> AppResul
         config,
         secret: String::new(),
         stream_idle_timeout: idle,
+        connection_reuse: true,
     }
     .complete(
         vec![ModelMessage::user("hi")],
@@ -473,6 +477,7 @@ async fn waiting_for_a_stream_can_be_cancelled() {
             config,
             secret: String::new(),
             stream_idle_timeout: HttpModel::DEFAULT_STREAM_IDLE_TIMEOUT,
+            connection_reuse: true,
         }
         .complete(
             vec![ModelMessage::user("hi")],
@@ -530,6 +535,7 @@ async fn provider_errors_are_classified_without_exposing_echoed_keys() {
             config,
             secret: "echoed-secret".into(),
             stream_idle_timeout: HttpModel::DEFAULT_STREAM_IDLE_TIMEOUT,
+            connection_reuse: true,
         }
         .complete(
             vec![ModelMessage::user("hi")],

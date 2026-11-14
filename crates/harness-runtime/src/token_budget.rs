@@ -71,6 +71,41 @@ pub(crate) fn consumed_tokens(usage: &Value) -> AppResult<u64> {
     Ok((input - cached).saturating_add(output))
 }
 
+/// 会话上下文占用的总输入 token（含缓存读取）：请求前自动压缩的阈值检查口径。
+/// 与 [`consumed_tokens`] 的预算口径不同——预算排除缓存命中，而占用上下文的正是全部输入。
+pub(crate) fn total_input_tokens(usage: &Value) -> AppResult<u64> {
+    let unavailable = || AppError::new("TOKEN_USAGE_UNAVAILABLE", "模型未返回可识别的 token 用量");
+    let record = usage.as_object().ok_or_else(unavailable)?;
+    let count = |value: Option<&Value>| -> AppResult<Option<u64>> {
+        value
+            .map(|value| value.as_u64().ok_or_else(unavailable))
+            .transpose()
+    };
+    let nested_count = |object: Option<&Value>, key: &str| -> AppResult<Option<u64>> {
+        match object {
+            Some(Value::Object(object)) => count(object.get(key)),
+            None | Some(Value::Null) => Ok(None),
+            Some(_) => Err(unavailable()),
+        }
+    };
+    if record.contains_key("prompt_tokens") {
+        // ChatCompletions：prompt_tokens 已包含缓存读取部分。
+        return count(record.get("prompt_tokens"))?.ok_or_else(unavailable);
+    }
+    let input = count(record.get("input_tokens"))?.ok_or_else(unavailable)?;
+    if record.contains_key("cache_read_input_tokens")
+        || record.contains_key("cache_creation_input_tokens")
+    {
+        // Anthropic：input_tokens 不含缓存读取；写缓存与读缓存的内容都在本次请求上下文中。
+        let cache_read = count(record.get("cache_read_input_tokens"))?.unwrap_or_default();
+        let cache_write = count(record.get("cache_creation_input_tokens"))?.unwrap_or_default();
+        return Ok(input.saturating_add(cache_read).saturating_add(cache_write));
+    }
+    // OpenAI Responses：input_tokens 为总输入，cached_tokens 是其中命中部分，不重复相加。
+    let _ = nested_count(record.get("input_tokens_details"), "cached_tokens")?;
+    Ok(input)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BudgetStop {
     LimitReached,

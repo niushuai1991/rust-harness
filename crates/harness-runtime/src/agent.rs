@@ -1,8 +1,8 @@
 //! Scoped agent ownership, durable tool settlements, and human approvals.
-use crate::model::{MessageRole, ModelMessage, ModelProvider, StreamDelta, cancelled};
+use crate::model::{MessageRole, ModelAnswer, ModelMessage, ModelProvider, StreamDelta, cancelled};
 use crate::token_budget::{
     BudgetSnapshot, BudgetStop, DEFAULT_LIMIT_TOKENS, LIMIT_SETTING_KEY, TurnBudget,
-    consumed_tokens, validate_limit,
+    consumed_tokens, total_input_tokens, validate_limit,
 };
 use harness_contracts::*;
 use harness_extensions::{HostPolicy, PluginManager};
@@ -10,7 +10,7 @@ use harness_platform::{ShellService, WorkspaceManager};
 use harness_storage::Store;
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -19,6 +19,29 @@ use tokio_util::sync::CancellationToken;
 
 type PendingApproval = (ApprovalRequest, oneshot::Sender<bool>);
 static FILE_MUTATION: Mutex<()> = Mutex::new(());
+/// 工具批次并发调度开关（KV，缺省开启）。
+const TOOL_CONCURRENCY_KEY: &str = "app.tool_concurrency";
+/// 工具批次并发上限（KV，缺省 8，允许 1–16）。
+const TOOL_CONCURRENCY_LIMIT_KEY: &str = "app.tool_concurrency_limit";
+const DEFAULT_TOOL_CONCURRENCY_LIMIT: u32 = 8;
+/// 请求前自动压缩开关（KV，缺省开启）。
+const AUTO_COMPACTION_KEY: &str = "app.auto_compaction";
+/// 自动压缩触发阈值：总输入 token 达到窗口的 80% 时在下一次请求前压缩。
+/// 预留隐含在 20% 余量中；该默认值未经基准验证，规范要求后续测量后调整。
+const AUTO_COMPACTION_THRESHOLD_RATIO: f64 = 0.8;
+/// 计划模式 system 追加提示（投影重建时重复使用）。
+const PLAN_MODE_HINT: &str = "\n\n当前处于计划模式：只能只读调查，不得产生项目或外部副作用。shell 工具仅允许只读命令（git 查询、文件查看与列表、搜索、系统信息、--version/--help），写文件、重定向、安装、构建、提权命令会被拒绝。请使用 plan_write 记录计划。若需要开始执行，请调用 plan_exit 并等待用户明确批准；用户拒绝或无人在场时继续只读。";
+
+/// 工具并发上限合法性：必须有界（规范要求并发上限受控），上限 16 足够覆盖本地开发场景。
+fn validate_concurrency_limit(limit: u64) -> AppResult<u32> {
+    if !(1..=16).contains(&limit) {
+        return Err(AppError::new(
+            "TOOL_CONCURRENCY_LIMIT",
+            "工具并发上限必须在 1–16 之间",
+        ));
+    }
+    Ok(limit as u32)
+}
 #[derive(Default)]
 pub struct Approvals {
     pending: Mutex<HashMap<String, PendingApproval>>,
@@ -104,16 +127,26 @@ struct ExecContext {
     capability_id: String,
     branch: Option<String>,
 }
-struct ToolExecution<'a> {
-    session: &'a str,
-    workspace: &'a str,
-    root: &'a Path,
-    exec: &'a ExecContext,
-    call: &'a ToolCall,
-    reads: &'a mut HashMap<String, String>,
+/// 单个工具调用的执行输入；owned 结构使并发段成员可独立 `tokio::spawn`。
+struct ToolExecution {
+    session: String,
+    workspace: String,
+    exec: Arc<ExecContext>,
+    call: ToolCall,
+    reads: Arc<Mutex<HashMap<String, String>>>,
     provider: Arc<dyn ModelProvider>,
     token_budget: Arc<TurnBudget>,
     cancel: CancellationToken,
+}
+/// 批次执行上下文：steps 循环内共享的借用集合，避免长参数列表。
+struct CallCtx<'a> {
+    session: &'a str,
+    workspace: &'a str,
+    exec: &'a ExecContext,
+    reads: &'a Arc<Mutex<HashMap<String, String>>>,
+    provider: &'a Arc<dyn ModelProvider>,
+    token_budget: &'a Arc<TurnBudget>,
+    cancel: &'a CancellationToken,
 }
 impl Runtime {
     pub async fn open(data_dir: PathBuf) -> AppResult<Arc<Self>> {
@@ -689,6 +722,52 @@ impl Runtime {
         let limit = validate_limit(limit)?;
         self.store.set(LIMIT_SETTING_KEY, &json!(limit)).await
     }
+    /// 工具批次并发调度开关（缺省开启；关闭时整批次回退串行）。
+    pub async fn tool_concurrency_enabled(&self) -> AppResult<bool> {
+        Ok(self
+            .store
+            .get(TOOL_CONCURRENCY_KEY)
+            .await?
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true))
+    }
+    pub async fn set_tool_concurrency(&self, enabled: bool) -> AppResult<()> {
+        self.store.set(TOOL_CONCURRENCY_KEY, &json!(enabled)).await
+    }
+    /// 工具批次并发上限（缺省 8，允许 1–16）。
+    pub async fn tool_concurrency_limit(&self) -> AppResult<u32> {
+        let stored = self.store.get(TOOL_CONCURRENCY_LIMIT_KEY).await?;
+        match stored {
+            None => Ok(DEFAULT_TOOL_CONCURRENCY_LIMIT),
+            Some(value) => {
+                let limit = value.as_u64().ok_or_else(|| {
+                    AppError::new(
+                        "TOOL_CONCURRENCY_LIMIT",
+                        "已保存的工具并发上限无效，请重新设置",
+                    )
+                })?;
+                validate_concurrency_limit(limit)
+            }
+        }
+    }
+    pub async fn set_tool_concurrency_limit(&self, limit: u32) -> AppResult<()> {
+        let limit = validate_concurrency_limit(u64::from(limit))?;
+        self.store
+            .set(TOOL_CONCURRENCY_LIMIT_KEY, &json!(limit))
+            .await
+    }
+    /// 请求前自动压缩开关（缺省开启）。
+    pub async fn auto_compaction_enabled(&self) -> AppResult<bool> {
+        Ok(self
+            .store
+            .get(AUTO_COMPACTION_KEY)
+            .await?
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true))
+    }
+    pub async fn set_auto_compaction(&self, enabled: bool) -> AppResult<()> {
+        self.store.set(AUTO_COMPACTION_KEY, &json!(enabled)).await
+    }
     async fn publish_token_budget(
         &self,
         session: &str,
@@ -958,8 +1037,11 @@ impl Runtime {
         let context = workspace_context(root, exec, &skills_catalog)?;
         self.append(session, "context.snapshot", json!({"content":context}))
             .await?;
-        let mut reads = HashMap::new();
+        // read-before-edit 状态：并发段成员共享（read 登记为良性竞争），写类工具只在串行屏障执行。
+        let reads = Arc::new(Mutex::new(HashMap::new()));
         let mut step = 0usize;
+        // 请求前自动压缩每回合最多尝试一次：失败不无限重试，避免反复请求溢出。
+        let mut auto_compaction_tried = false;
         loop {
             if cancel.is_cancelled() {
                 return Err(token_budget.error().unwrap_or_else(cancelled));
@@ -1006,12 +1088,68 @@ impl Runtime {
                 )
                 .await?;
             }
-            let history = self.store.events(session, 0).await?;
+            let mut history = self.store.events(session, 0).await?;
             let mut messages = project_messages(&history);
-            if self.session_plan_get(session).await? {
-                messages[0].content.push_str("\n\n当前处于计划模式：只能只读调查，不得产生项目或外部副作用。shell 工具仅允许只读命令（git 查询、文件查看与列表、搜索、系统信息、--version/--help），写文件、重定向、安装、构建、提权命令会被拒绝。请使用 plan_write 记录计划。若需要开始执行，请调用 plan_exit 并等待用户明确批准；用户拒绝或无人在场时继续只读。");
+            let plan_mode = self.session_plan_get(session).await?;
+            if plan_mode {
+                messages[0].content.push_str(PLAN_MODE_HINT);
             }
             let request_id = new_id();
+            // —— 请求前自动压缩：输入接近窗口阈值时，先压缩投影再继续原请求 ——
+            if !auto_compaction_tried
+                && self.auto_compaction_enabled().await?
+                && let Some(window) = provider.context_window()
+                && let Some(input) = last_input_tokens(&history)?
+            {
+                auto_compaction_tried = true;
+                let threshold = (f64::from(window) * AUTO_COMPACTION_THRESHOLD_RATIO) as u64;
+                if input >= threshold {
+                    match self
+                        .compact_projection(
+                            session,
+                            provider.clone(),
+                            cancel.clone(),
+                            CompactionTrigger::Auto,
+                        )
+                        .await
+                    {
+                        Ok(answer) => {
+                            // 压缩请求的 usage 计入回合共享预算（不得通过压缩绕过预算）。
+                            self.record_token_usage(session, &token_budget, &answer.usage)
+                                .await?;
+                            token_budget.check_available()?;
+                            // 基于摘要重建投影后继续原请求。
+                            history = self.store.events(session, 0).await?;
+                            messages = project_messages(&history);
+                            if plan_mode {
+                                messages[0].content.push_str(PLAN_MODE_HINT);
+                            }
+                        }
+                        Err(error) => {
+                            if input >= u64::from(window) {
+                                // 压缩失败且继续请求必然溢出：给出明确可诊断结果。
+                                self.append(
+                                    session,
+                                    "assistant.attempt",
+                                    json!({"requestId":request_id,"error":error}),
+                                )
+                                .await?;
+                                return Err(AppError::new(
+                                    "CONTEXT_WINDOW_EXCEEDED",
+                                    format!("上下文已达模型窗口上限且自动压缩失败：{error}"),
+                                ));
+                            }
+                            // 仍有余量：不替换有效投影，本回合不再重试。
+                            self.append(
+                                session,
+                                "assistant.attempt",
+                                json!({"requestId":request_id,"error":format!("自动压缩失败：{error}")}),
+                            )
+                            .await?;
+                        }
+                    }
+                }
+            }
             // Tool discovery, hooks and history reads can await while a
             // sibling consumes the shared budget. Recheck at the provider-call boundary.
             token_budget.check_available()?;
@@ -1150,126 +1288,119 @@ impl Runtime {
                 }
                 return Err(error);
             }
-            for mut call in answer.calls {
-                let result=async{
-                    let definition=tools.iter().find(|t|t.name==call.name).ok_or_else(||AppError::new("TOOL_UNAVAILABLE",&call.name))?;
-                    let schema=jsonschema::validator_for(&definition.parameters).map_err(internal)?;
-                    if !schema.is_valid(&call.arguments){return Err(AppError::new("TOOL_ARGUMENTS","工具参数不符合JSON Schema"));}
-                    if cancel.is_cancelled(){return Err(cancelled());}
-                    let original=serde_json::to_value(&call).map_err(internal)?;
-                    if !self.session_plan_get(session).await? {
-                        for rewrite in self.plugins.run_hook(workspace,root,"before_tool",original.clone(),cancel.clone()).await?{
-                            call.name=rewrite["name"].as_str().ok_or_else(||AppError::new("PLUGIN_HOOK","缺少工具名称"))?.into();call.arguments=rewrite["arguments"].clone();
-                        }
-                    }
-                    if original!=serde_json::to_value(&call).map_err(internal)?{self.append(session,"tool.rewrite",json!({"callId":call.id,"original":original,"effective":call})).await?;}
-                    let effective=tools.iter().find(|t|t.name==call.name).ok_or_else(||AppError::new("TOOL_UNAVAILABLE",&call.name))?;
-                    if !jsonschema::validator_for(&effective.parameters).map_err(internal)?.is_valid(&call.arguments){return Err(AppError::new("TOOL_ARGUMENTS","钩子修改后的工具参数无效"));}
-                    let plan_mode=self.session_plan_get(session).await?;
-                    if plan_mode && !plan_tool_allowed(&call.name,&call.arguments) {
-                        return Err(AppError::new("PLAN_MODE_READ_ONLY", plan_denial_reason(&call.name,&call.arguments)));
-                    }
-                    // 计划模式走到这里的工具都已被白名单判定为只读（内置只读清单或只读 shell 命令），
-                    // 无需再走审批；提权请求已在白名单处拒绝，不存在待批事项。
-                    let needs_approval=!plan_mode&&self.custom.lock().unwrap().get(&call.name).map(|t|t.requires_approval()).unwrap_or_else(||requires_approval(&call.name));
-                    if needs_approval{self.approve(session,&call,&cancel,false,None).await?;}
-                    let tool_cancel=cancel.child_token();
-                    let work = self.execute_tool(ToolExecution {
-                        session,
-                        workspace,
-                        root,
-                        exec,
-                        call: &call,
-                        reads: &mut reads,
-                        provider: provider.clone(),
-                        token_budget: token_budget.clone(),
-                        cancel: tool_cancel.clone(),
-                    });
-                    tokio::pin!(work);
-                    // ask_user 挂起等待用户答复，与审批同享 600 秒等待上限；其余工具维持 180 秒执行时限。
-                    let tool_limit = if call.name == "ask_user" { ASK_WAIT_SECS } else { 180 };
-                    tokio::select!{
-                        _ = cancel.cancelled()=>{tool_cancel.cancel();let _=work.await;Err(cancelled())},
-                        _ = tokio::time::sleep(std::time::Duration::from_secs(tool_limit))=>{tool_cancel.cancel();let _=work.await;Err(AppError::new("TOOL_TIMEOUT","工具超过执行时限"))},
-                        r=&mut work=>r,
-                    }
-                }.await;
-                let status = match &result {
-                    Ok(_) => "completed",
-                    Err(e) if matches!(e.code.as_str(), "CANCELLED" | "TOOL_TIMEOUT") => "unknown",
-                    Err(e)
-                        if matches!(
-                            e.code.as_str(),
-                            "APPROVAL_DENIED" | "PLAN_MODE_READ_ONLY" | "PLAN_NOT_APPROVED"
-                        ) =>
-                    {
-                        "denied"
-                    }
-                    Err(_) => "error",
-                };
-                let protected_failure = result.is_err();
-                let mut result = match result {
-                    Ok(r) => r,
-                    Err(e) => ToolResult {
-                        content: if status == "unknown" {
-                            format!("{e}；操作可能已产生副作用，结果未知，未自动重试。")
+            // 工具批次执行：白名单成员的连续段并发执行（上限受控），其余保持串行。
+            // 段内 prepare（校验/钩子）保持串行语义；结果按声明顺序结算，保证事件回放一致。
+            let concurrency = self.tool_concurrency_enabled().await?;
+            let concurrency_limit = self.tool_concurrency_limit().await? as usize;
+            let ctx = CallCtx {
+                session,
+                workspace,
+                exec,
+                reads: &reads,
+                provider: &provider,
+                token_budget: &token_budget,
+                cancel: &cancel,
+            };
+            let mut queue: VecDeque<ToolCall> = answer.calls.into_iter().collect();
+            while let Some(first) = queue.pop_front() {
+                let first_groupable = concurrency
+                    && self.batch_concurrency_ok(&first.name)
+                    && self.batch_approval_free(&first.name);
+                if first_groupable {
+                    // 收集连续白名单段；非白名单成员即屏障，不跨越重排。
+                    let mut segment = vec![first];
+                    while let Some(next) = queue.front() {
+                        if self.batch_concurrency_ok(&next.name)
+                            && self.batch_approval_free(&next.name)
+                        {
+                            segment.push(queue.pop_front().expect("front 已确认非空"));
                         } else {
-                            e.to_string()
-                        },
-                        is_error: true,
-                        diff: None,
-                        escalated: false,
-                    },
-                };
-                if !cancel.is_cancelled() && !self.session_plan_get(session).await? {
-                    match self
-                        .plugins
-                        .run_hook(
-                            workspace,
-                            root,
-                            "after_tool",
-                            json!({"call":call,"result":result}),
-                            cancel.clone(),
-                        )
-                        .await
-                    {
-                        Ok(rewrites) => {
-                            for rewrite in rewrites {
-                                result = serde_json::from_value(rewrite).map_err(internal)?;
-                            }
-                        }
-                        Err(error) => {
-                            result.content.push_str(&format!("\n后置钩子失败：{error}"));
-                            result.is_error = true;
+                            break;
                         }
                     }
-                }
-                if protected_failure {
-                    result.is_error = true;
-                }
-                let mut content = result.content;
-                let result_diff = result.diff;
-                // edit/write 结果事件带上文件路径（结果事件无 arguments，前端展示行级差异卡需要）。
-                let result_path = if call.name.as_str() == "edit" || call.name.as_str() == "write" {
-                    call.arguments.get("path").cloned().unwrap_or(Value::Null)
+                    // 段内逐个串行 prepare（钩子可变状态安全），全部完成后统一执行与结算。
+                    let mut prepared = Vec::with_capacity(segment.len());
+                    let mut broken = false;
+                    for call in segment {
+                        let prepared_call = self
+                            .prepare_call(call, &tools, session, workspace, root, &cancel)
+                            .await?;
+                        if prepared_call.failure.is_none()
+                            && (prepared_call.needs_approval
+                                || !self.batch_concurrency_ok(&prepared_call.call.name))
+                        {
+                            // 钩子改写或改写后需审批：整段退回串行（复用已完成的 prepare，不重复钩子）。
+                            broken = true;
+                        }
+                        prepared.push(prepared_call);
+                    }
+                    if broken || prepared.len() < 2 {
+                        for prepared_call in prepared {
+                            let (call, result) = self.execute_prepared(prepared_call, &ctx).await;
+                            self.settle_call(&call, result, session, workspace, root, &cancel)
+                                .await?;
+                        }
+                    } else {
+                        // 并发执行：Semaphore 限流；全部完成后按声明顺序结算。
+                        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency_limit));
+                        let mut handles = Vec::with_capacity(prepared.len());
+                        for (index, prepared_call) in prepared.iter().enumerate() {
+                            if prepared_call.failure.is_some() {
+                                continue; // 准备期已失败的成员不执行，结算时直接落错误结果。
+                            }
+                            let runtime = self.clone();
+                            let semaphore = semaphore.clone();
+                            let input = ToolExecution {
+                                session: ctx.session.to_owned(),
+                                workspace: ctx.workspace.to_owned(),
+                                exec: Arc::new(ctx.exec.clone()),
+                                call: prepared_call.call.clone(),
+                                reads: ctx.reads.clone(),
+                                provider: ctx.provider.clone(),
+                                token_budget: ctx.token_budget.clone(),
+                                cancel: ctx.cancel.clone(),
+                            };
+                            handles.push((
+                                index,
+                                tokio::spawn(async move {
+                                    let _permit =
+                                        semaphore.acquire().await.expect("并发上限信号量不会关闭");
+                                    run_tool_guarded(runtime, input).await
+                                }),
+                            ));
+                        }
+                        let mut outcomes: HashMap<usize, AppResult<ToolResult>> = HashMap::new();
+                        for (index, handle) in handles {
+                            outcomes.insert(index, handle.await.map_err(internal)?);
+                        }
+                        for (index, prepared_call) in prepared.into_iter().enumerate() {
+                            let result = match outcomes.remove(&index) {
+                                Some(result) => result,
+                                None => Err(prepared_call
+                                    .failure
+                                    .clone()
+                                    .expect("未执行成员必有准备期失败")),
+                            };
+                            self.settle_call(
+                                &prepared_call.call,
+                                result,
+                                session,
+                                workspace,
+                                root,
+                                &cancel,
+                            )
+                            .await?;
+                        }
+                    }
                 } else {
-                    Value::Null
-                };
-                let mut artifact = None;
-                if content.len() > 64 * 1024 {
-                    let hash = self.store.put_blob(content.as_bytes()).await?;
-                    artifact = Some(ArtifactMetadata {
-                        hash: hash.clone(),
-                        name: format!("{}-output.txt", call.name),
-                        media_type: "text/plain; charset=utf-8".into(),
-                        size: content.len() as u32,
-                    });
-                    let preview = content.chars().take(12000).collect::<String>();
-                    content = format!(
-                        "{preview}\n\n[完整输出 artifact:{hash}；使用 read_artifact 分块读取]"
-                    );
+                    // 串行完整路径：prepare → execute（含审批发起）→ settle，与既有行为一致。
+                    let prepared_call = self
+                        .prepare_call(first, &tools, session, workspace, root, &cancel)
+                        .await?;
+                    let (call, result) = self.execute_prepared(prepared_call, &ctx).await;
+                    self.settle_call(&call, result, session, workspace, root, &cancel)
+                        .await?;
                 }
-                self.append(session,"tool.result",json!({"callId":call.id,"name":call.name,"content":content,"isError":result.is_error,"status":status,"artifact":artifact,"diff":result_diff,"path":result_path,"escalated":result.escalated})).await?;
             }
             step = step.saturating_add(1);
         }
@@ -1488,11 +1619,10 @@ impl Runtime {
         .await?;
         Ok((request, answer))
     }
-    async fn execute_tool(self: &Arc<Self>, input: ToolExecution<'_>) -> AppResult<ToolResult> {
+    async fn execute_tool(self: &Arc<Self>, input: ToolExecution) -> AppResult<ToolResult> {
         let ToolExecution {
             session,
             workspace,
-            root,
             exec,
             call,
             reads,
@@ -1500,6 +1630,7 @@ impl Runtime {
             token_budget,
             cancel,
         } = input;
+        let root = exec.root.as_path();
         let a = &call.arguments;
         // edit/write 的 unified diff（tool.result 事件展示用）；其余工具保持 None。
         let mut diff: Option<String> = None;
@@ -1515,110 +1646,132 @@ impl Runtime {
                     .ok_or_else(|| AppError::new("TOOL_ARGUMENTS", "无效长度"))?;
                 serde_json::to_string(
                     &self
-                        .artifact_read(session, arg(a, "hash")?, offset, length)
+                        .artifact_read(&session, arg(a, "hash")?, offset, length)
                         .await?,
                 )
                 .map_err(internal)?
             }
             "read" => {
                 let path = arg(a, "path")?;
-                let value = harness_platform::read_file(root, path)?;
-                reads.insert(path.into(), value.clone());
+                let root = root.to_path_buf();
+                let path_for_io = path.to_owned();
+                let value =
+                    blocking_io(move || harness_platform::read_file(&root, &path_for_io)).await?;
+                reads.lock().unwrap().insert(path.into(), value.clone());
                 value
             }
             "write" => {
-                let _mutation = FILE_MUTATION.lock().unwrap();
-                let path = arg(a, "path")?;
-                let existing = harness_platform::resolve_path(root, path, false)?;
-                let before = if existing.exists() {
-                    let current = harness_platform::read_file(root, path)?;
-                    if reads.get(path) != Some(&current) {
-                        return Err(AppError::new(
-                            "READ_BEFORE_EDIT",
-                            "修改已有文件前必须读取当前版本",
-                        ));
-                    }
-                    Some(current)
-                } else {
-                    None
-                };
-                let content = arg(a, "content")?;
-                harness_platform::write_file(root, path, content)?;
-                reads.insert(path.into(), content.into());
-                diff = harness_platform::diffview::from_texts(path, before.as_deref(), content);
-                format!(
-                    "已写入{} {path}",
-                    if exec.mode == ExecutionMode::Worktree {
-                        ""
+                let path = arg(a, "path")?.to_owned();
+                let content = arg(a, "content")?.to_owned();
+                let root = root.to_path_buf();
+                let reads = reads.clone();
+                let worktree = exec.mode == ExecutionMode::Worktree;
+                let (text, write_diff) = blocking_io(move || {
+                    // 文件写入互斥：与并发段隔离（写类工具只在串行屏障执行）。
+                    let _mutation = FILE_MUTATION.lock().unwrap();
+                    let existing = harness_platform::resolve_path(&root, &path, false)?;
+                    let before = if existing.exists() {
+                        let current = harness_platform::read_file(&root, &path)?;
+                        if reads.lock().unwrap().get(&path) != Some(&current) {
+                            return Err(AppError::new(
+                                "READ_BEFORE_EDIT",
+                                "修改已有文件前必须读取当前版本",
+                            ));
+                        }
+                        Some(current)
                     } else {
-                        "副本"
-                    }
-                )
+                        None
+                    };
+                    harness_platform::write_file(&root, &path, &content)?;
+                    reads.lock().unwrap().insert(path.clone(), content.clone());
+                    let write_diff =
+                        harness_platform::diffview::from_texts(&path, before.as_deref(), &content);
+                    Ok::<_, AppError>((
+                        format!("已写入{} {path}", if worktree { "" } else { "副本" }),
+                        write_diff,
+                    ))
+                })
+                .await?;
+                diff = write_diff;
+                text
             }
             "edit" => {
-                let _mutation = FILE_MUTATION.lock().unwrap();
-                let path = arg(a, "path")?;
-                if !reads.contains_key(path) {
-                    return Err(AppError::new("READ_BEFORE_EDIT", "edit前必须read"));
-                }
-                let old = arg(a, "oldText")?;
-                let new = arg(a, "newText")?;
-                let content = harness_platform::read_file(root, path)?;
-                if reads.get(path) != Some(&content) {
-                    return Err(AppError::new(
-                        "EDIT_CONFLICT",
-                        "读取后文件已改变，请重新read",
-                    ));
-                }
-                if old.is_empty() || content.matches(old).count() != 1 {
-                    return Err(AppError::new(
-                        "EDIT_CONFLICT",
-                        "待替换文本必须在当前文件中恰好出现一次",
-                    ));
-                }
-                let updated = content.replacen(old, new, 1);
-                harness_platform::write_file(root, path, &updated)?;
-                diff = harness_platform::diffview::from_texts(path, Some(&content), &updated);
-                reads.insert(path.into(), updated);
-                format!(
-                    "已修改{} {path}",
-                    if exec.mode == ExecutionMode::Worktree {
-                        ""
-                    } else {
-                        "副本"
+                let path = arg(a, "path")?.to_owned();
+                let old = arg(a, "oldText")?.to_owned();
+                let new = arg(a, "newText")?.to_owned();
+                let root = root.to_path_buf();
+                let reads = reads.clone();
+                let worktree = exec.mode == ExecutionMode::Worktree;
+                let (text, edit_diff) = blocking_io(move || {
+                    let _mutation = FILE_MUTATION.lock().unwrap();
+                    if !reads.lock().unwrap().contains_key(&path) {
+                        return Err(AppError::new("READ_BEFORE_EDIT", "edit前必须read"));
                     }
-                )
+                    let content = harness_platform::read_file(&root, &path)?;
+                    if reads.lock().unwrap().get(&path) != Some(&content) {
+                        return Err(AppError::new(
+                            "EDIT_CONFLICT",
+                            "读取后文件已改变，请重新read",
+                        ));
+                    }
+                    if old.is_empty() || content.matches(&old).count() != 1 {
+                        return Err(AppError::new(
+                            "EDIT_CONFLICT",
+                            "待替换文本必须在当前文件中恰好出现一次",
+                        ));
+                    }
+                    let updated = content.replacen(&old, &new, 1);
+                    harness_platform::write_file(&root, &path, &updated)?;
+                    reads.lock().unwrap().insert(path.clone(), updated.clone());
+                    let edit_diff =
+                        harness_platform::diffview::from_texts(&path, Some(&content), &updated);
+                    Ok::<_, AppError>((
+                        format!("已修改{} {path}", if worktree { "" } else { "副本" }),
+                        edit_diff,
+                    ))
+                })
+                .await?;
+                diff = edit_diff;
+                text
             }
             "list_files" => {
-                serde_json::to_string(&harness_platform::list_files(root)?).map_err(internal)?
+                let root = root.to_path_buf();
+                serde_json::to_string(
+                    &blocking_io(move || harness_platform::list_files(&root)).await?,
+                )
+                .map_err(internal)?
             }
             "search" => {
-                let query = arg(a, "query")?;
-                let mut found = Vec::new();
-                for path in harness_platform::list_files(root)?.into_iter().take(10000) {
-                    if let Ok(text) = harness_platform::read_file(root, &path) {
-                        for (i, line) in text.lines().enumerate() {
-                            if line.contains(query) {
-                                found.push(format!(
-                                    "{path}:{}:{}",
-                                    i + 1,
-                                    line.chars().take(300).collect::<String>()
-                                ));
-                                if found.len() >= 200 {
-                                    break;
+                let query = arg(a, "query")?.to_owned();
+                let root = root.to_path_buf();
+                blocking_io(move || {
+                    let mut found = Vec::new();
+                    for path in harness_platform::list_files(&root)?.into_iter().take(10000) {
+                        if let Ok(text) = harness_platform::read_file(&root, &path) {
+                            for (i, line) in text.lines().enumerate() {
+                                if line.contains(&query) {
+                                    found.push(format!(
+                                        "{path}:{}:{}",
+                                        i + 1,
+                                        line.chars().take(300).collect::<String>()
+                                    ));
+                                    if found.len() >= 200 {
+                                        break;
+                                    }
                                 }
                             }
                         }
+                        if found.len() >= 200 {
+                            break;
+                        }
                     }
-                    if found.len() >= 200 {
-                        break;
-                    }
-                }
-                found.join("\n")
+                    Ok::<_, AppError>(found.join("\n"))
+                })
+                .await?
             }
             "shell" => {
                 let command = arg(a, "command")?;
-                let plan_mode = self.session_plan_get(session).await?;
+                let plan_mode = self.session_plan_get(&session).await?;
                 let mut escalated = false;
                 let output = if plan_mode {
                     // 计划模式只读命令：单次沙箱内执行，失败按普通失败呈现，不申请提权重跑。
@@ -1626,7 +1779,7 @@ impl Runtime {
                         .await?
                 } else if a["escalate"].as_bool().unwrap_or(false) {
                     // 主动提权：首次即审批，批准后无沙箱执行。
-                    self.approve(session, call, &cancel, true, None).await?;
+                    self.approve(&session, &call, &cancel, true, None).await?;
                     escalated = true;
                     ShellService::run_in(root, &exec.capability_id, command, cancel.clone(), false)
                         .await?
@@ -1643,7 +1796,7 @@ impl Runtime {
                     if first.exit_code != 0
                         && let Some(rule) = harness_platform::classify_sandbox_denial(&first)
                     {
-                        self.approve(session, call, &cancel, true, Some(rule))
+                        self.approve(&session, &call, &cancel, true, Some(rule))
                             .await?;
                         escalated = true;
                         ShellService::run_in(
@@ -1668,7 +1821,7 @@ impl Runtime {
             "web_fetch" => fetch(arg(a, "url")?, cancel).await?,
             "todo_write" | "plan_write" | "goal_write" => {
                 self.append(
-                    session,
+                    &session,
                     &format!("{}.state", call.name.trim_end_matches("_write")),
                     a.clone(),
                 )
@@ -1699,29 +1852,29 @@ impl Runtime {
                 let child = self
                     .store
                     .create_session(
-                        workspace,
+                        &workspace,
                         a.get("title").and_then(Value::as_str).unwrap_or("子任务"),
                     )
                     .await?;
                 self.children
                     .lock()
                     .unwrap()
-                    .entry(session.into())
+                    .entry(session.clone())
                     .or_default()
                     .push(child.id.clone());
                 self.parents
                     .lock()
                     .unwrap()
-                    .insert(child.id.clone(), session.to_owned());
+                    .insert(child.id.clone(), session.clone());
                 // 子代理继承发起会话的审批策略，避免策略在子代理处失效。
-                if let Some(policy) = self.approval_policy(session) {
+                if let Some(policy) = self.approval_policy(&session) {
                     self.set_approval_policy(&child.id, Some(policy));
                 }
                 let mut created = json!({"sessionId":child.id});
                 if let Some(id) = model_id {
                     created["modelId"] = json!(id);
                 }
-                self.append(session, "subagent.created", created).await?;
+                self.append(&session, "subagent.created", created).await?;
                 let runtime = self.clone();
                 let id = child.id.clone();
                 let task = arg(a, "task")?.to_owned();
@@ -1740,7 +1893,7 @@ impl Runtime {
                     .children
                     .lock()
                     .unwrap()
-                    .get(session)
+                    .get(&session)
                     .cloned()
                     .unwrap_or_default();
                 let active = self.active.lock().unwrap();
@@ -1757,7 +1910,7 @@ impl Runtime {
                     .children
                     .lock()
                     .unwrap()
-                    .get(session)
+                    .get(&session)
                     .is_some_and(|ids| ids.iter().any(|x| x == id))
                 {
                     return Err(AppError::new("AGENT_SCOPE", "只能控制本会话创建的子代理"));
@@ -1765,16 +1918,16 @@ impl Runtime {
                 self.cancel(id);
                 "已请求中断".into()
             }
-            "ask_user" => self.ask_user(session, a, &cancel).await?,
+            "ask_user" => self.ask_user(&session, a, &cancel).await?,
             "plan_exit" => {
-                if !self.session_plan_get(session).await? {
+                if !self.session_plan_get(&session).await? {
                     return Err(AppError::new("PLAN_MODE_INACTIVE", "当前不在计划模式"));
                 }
                 let question = json!({
                     "question": format!("是否批准以下计划并退出只读模式？\n\n{}", arg(a, "content")?),
                     "options": [{"label":"批准"},{"label":"拒绝"}]
                 });
-                let (request, answer) = self.ask_user_answer(session, &question, &cancel).await?;
+                let (request, answer) = self.ask_user_answer(&session, &question, &cancel).await?;
                 if cancel.is_cancelled() {
                     return Err(cancelled());
                 }
@@ -1788,14 +1941,14 @@ impl Runtime {
                     ));
                 }
                 // The turn owns session_boundary, so no external mode transition can race this commit.
-                self.append(session, "session.plan", json!({"enabled":false}))
+                self.append(&session, "session.plan", json!({"enabled":false}))
                     .await?;
                 "用户已批准计划并退出计划模式。".into()
             }
             name if name.starts_with("plugin__") => {
                 return self
                     .plugins
-                    .execute_tool(workspace, root, name, a.clone(), cancel)
+                    .execute_tool(&workspace, root, name, a.clone(), cancel)
                     .await;
             }
             name if name.starts_with("mcp__") => {
@@ -1804,7 +1957,7 @@ impl Runtime {
             name if name.starts_with("lsp_") => {
                 return Ok(ToolResult {
                     content: self
-                        .execute_lsp_tool(name, workspace, root, a, cancel)
+                        .execute_lsp_tool(name, &workspace, root, a, cancel)
                         .await?,
                     is_error: false,
                     diff: None,
@@ -1822,8 +1975,8 @@ impl Runtime {
                 return tool
                     .execute(
                         crate::ToolContext {
-                            session_id: session.into(),
-                            workspace_id: workspace.into(),
+                            session_id: session.clone(),
+                            workspace_id: workspace.clone(),
                             root: root.into(),
                             provider,
                         },
@@ -1839,6 +1992,307 @@ impl Runtime {
             diff,
             escalated: false,
         })
+    }
+    /// 批次并发安全判定：内置白名单或外部工具的显式并发能力声明。
+    fn batch_concurrency_ok(&self, name: &str) -> bool {
+        concurrency_safe_tool(name)
+            || self
+                .custom
+                .lock()
+                .unwrap()
+                .get(name)
+                .is_some_and(|t| t.concurrency_safe())
+    }
+    /// 审批豁免判定（与执行点判定同源）：并发段成员必须免审批。
+    fn batch_approval_free(&self, name: &str) -> bool {
+        !self
+            .custom
+            .lock()
+            .unwrap()
+            .get(name)
+            .map(|t| t.requires_approval())
+            .unwrap_or_else(|| requires_approval(name))
+    }
+    /// 批次执行前的准备：定义查找、schema 校验、before_tool 钩子（含 rewrite 落库）、
+    /// 计划模式判定与审批需求判定（不发起审批）。校验类错误记入 `failure`，
+    /// 在结算阶段按既有错误语义落 tool.result；钩子可变状态操作保持串行调用。
+    async fn prepare_call(
+        &self,
+        mut call: ToolCall,
+        tools: &[ToolDefinition],
+        session: &str,
+        workspace: &str,
+        root: &Path,
+        cancel: &CancellationToken,
+    ) -> AppResult<PreparedCall> {
+        let outcome = async {
+            let definition = tools
+                .iter()
+                .find(|t| t.name == call.name)
+                .ok_or_else(|| AppError::new("TOOL_UNAVAILABLE", &call.name))?;
+            let schema = jsonschema::validator_for(&definition.parameters).map_err(internal)?;
+            if !schema.is_valid(&call.arguments) {
+                return Err(AppError::new("TOOL_ARGUMENTS", "工具参数不符合JSON Schema"));
+            }
+            if cancel.is_cancelled() {
+                return Err(cancelled());
+            }
+            let original = serde_json::to_value(&call).map_err(internal)?;
+            if !self.session_plan_get(session).await? {
+                for rewrite in self
+                    .plugins
+                    .run_hook(
+                        workspace,
+                        root,
+                        "before_tool",
+                        original.clone(),
+                        cancel.clone(),
+                    )
+                    .await?
+                {
+                    call.name = rewrite["name"]
+                        .as_str()
+                        .ok_or_else(|| AppError::new("PLUGIN_HOOK", "缺少工具名称"))?
+                        .into();
+                    call.arguments = rewrite["arguments"].clone();
+                }
+            }
+            if original != serde_json::to_value(&call).map_err(internal)? {
+                self.append(
+                    session,
+                    "tool.rewrite",
+                    json!({"callId": call.id, "original": original, "effective": call}),
+                )
+                .await?;
+            }
+            let effective = tools
+                .iter()
+                .find(|t| t.name == call.name)
+                .ok_or_else(|| AppError::new("TOOL_UNAVAILABLE", &call.name))?;
+            if !jsonschema::validator_for(&effective.parameters)
+                .map_err(internal)?
+                .is_valid(&call.arguments)
+            {
+                return Err(AppError::new("TOOL_ARGUMENTS", "钩子修改后的工具参数无效"));
+            }
+            let plan_mode = self.session_plan_get(session).await?;
+            if plan_mode && !plan_tool_allowed(&call.name, &call.arguments) {
+                return Err(AppError::new(
+                    "PLAN_MODE_READ_ONLY",
+                    plan_denial_reason(&call.name, &call.arguments),
+                ));
+            }
+            // 计划模式走到这里的工具都已被白名单判定为只读（内置只读清单或只读 shell 命令），
+            // 无需再走审批；提权请求已在白名单处拒绝，不存在待批事项。
+            let needs_approval = !plan_mode
+                && self
+                    .custom
+                    .lock()
+                    .unwrap()
+                    .get(&call.name)
+                    .map(|t| t.requires_approval())
+                    .unwrap_or_else(|| requires_approval(&call.name));
+            Ok(needs_approval)
+        }
+        .await;
+        match outcome {
+            Ok(needs_approval) => Ok(PreparedCall {
+                call,
+                needs_approval,
+                failure: None,
+            }),
+            Err(error) => Ok(PreparedCall {
+                call,
+                needs_approval: false,
+                failure: Some(error),
+            }),
+        }
+    }
+    /// 执行已准备的调用：审批发起（若需要）→ 子 token 取消/超时守卫下的工具执行。
+    /// 返回调用本体（结算需要 id/name/arguments）与执行结果。
+    async fn execute_prepared(
+        self: &Arc<Self>,
+        prepared: PreparedCall,
+        ctx: &CallCtx<'_>,
+    ) -> (ToolCall, AppResult<ToolResult>) {
+        let PreparedCall {
+            call,
+            needs_approval,
+            failure,
+        } = prepared;
+        if let Some(error) = failure {
+            return (call, Err(error));
+        }
+        if needs_approval
+            && let Err(error) = self
+                .approve(ctx.session, &call, ctx.cancel, false, None)
+                .await
+        {
+            return (call, Err(error));
+        }
+        let result = run_tool_guarded(
+            self.clone(),
+            ToolExecution {
+                session: ctx.session.to_owned(),
+                workspace: ctx.workspace.to_owned(),
+                exec: Arc::new(ctx.exec.clone()),
+                call: call.clone(),
+                reads: ctx.reads.clone(),
+                provider: ctx.provider.clone(),
+                token_budget: ctx.token_budget.clone(),
+                cancel: ctx.cancel.clone(),
+            },
+        )
+        .await;
+        (call, result)
+    }
+    /// 结果结算：状态判定、后置钩子、溢出 blob 与 tool.result 事件落库（语义与既有串行路径一致）。
+    async fn settle_call(
+        &self,
+        call: &ToolCall,
+        result: AppResult<ToolResult>,
+        session: &str,
+        workspace: &str,
+        root: &Path,
+        cancel: &CancellationToken,
+    ) -> AppResult<()> {
+        let status = match &result {
+            Ok(_) => "completed",
+            Err(e) if matches!(e.code.as_str(), "CANCELLED" | "TOOL_TIMEOUT") => "unknown",
+            Err(e)
+                if matches!(
+                    e.code.as_str(),
+                    "APPROVAL_DENIED" | "PLAN_MODE_READ_ONLY" | "PLAN_NOT_APPROVED"
+                ) =>
+            {
+                "denied"
+            }
+            Err(_) => "error",
+        };
+        let protected_failure = result.is_err();
+        let mut result = match result {
+            Ok(r) => r,
+            Err(e) => ToolResult {
+                content: if status == "unknown" {
+                    format!("{e}；操作可能已产生副作用，结果未知，未自动重试。")
+                } else {
+                    e.to_string()
+                },
+                is_error: true,
+                diff: None,
+                escalated: false,
+            },
+        };
+        if !cancel.is_cancelled() && !self.session_plan_get(session).await? {
+            match self
+                .plugins
+                .run_hook(
+                    workspace,
+                    root,
+                    "after_tool",
+                    json!({"call": call, "result": result}),
+                    cancel.clone(),
+                )
+                .await
+            {
+                Ok(rewrites) => {
+                    for rewrite in rewrites {
+                        result = serde_json::from_value(rewrite).map_err(internal)?;
+                    }
+                }
+                Err(error) => {
+                    result.content.push_str(&format!("\n后置钩子失败：{error}"));
+                    result.is_error = true;
+                }
+            }
+        }
+        if protected_failure {
+            result.is_error = true;
+        }
+        let mut content = result.content;
+        let result_diff = result.diff;
+        // edit/write 结果事件带上文件路径（结果事件无 arguments，前端展示行级差异卡需要）。
+        let result_path = if call.name.as_str() == "edit" || call.name.as_str() == "write" {
+            call.arguments.get("path").cloned().unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        };
+        let mut artifact = None;
+        if content.len() > 64 * 1024 {
+            let hash = self.store.put_blob(content.as_bytes()).await?;
+            artifact = Some(ArtifactMetadata {
+                hash: hash.clone(),
+                name: format!("{}-output.txt", call.name),
+                media_type: "text/plain; charset=utf-8".into(),
+                size: content.len() as u32,
+            });
+            let preview = content.chars().take(12000).collect::<String>();
+            content =
+                format!("{preview}\n\n[完整输出 artifact:{hash}；使用 read_artifact 分块读取]");
+        }
+        self.append(
+            session,
+            "tool.result",
+            json!({
+                "callId": call.id,
+                "name": call.name,
+                "content": content,
+                "isError": result.is_error,
+                "status": status,
+                "artifact": artifact,
+                "diff": result_diff,
+                "path": result_path,
+                "escalated": result.escalated,
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+    /// 压缩会话投影：清洗 replay/reasoning → 摘要请求 → 校验 → 落 `compaction.summary`。
+    /// 原始事件保留；投影在 compaction.summary 处重置（见 [`project_messages`]）。
+    /// 返回原始回答供调用方记账（自动压缩计入回合预算，手动压缩由宿主决定语义）。
+    pub async fn compact_projection(
+        &self,
+        session: &str,
+        provider: Arc<dyn ModelProvider>,
+        cancel: CancellationToken,
+        trigger: CompactionTrigger,
+    ) -> AppResult<ModelAnswer> {
+        let events = self.store.events(session, 0).await?;
+        let mut messages = project_messages(&events);
+        for message in &mut messages {
+            message.replay = None;
+            message.reasoning.clear();
+        }
+        let request = vec![
+            ModelMessage::system(
+                "请用中文总结会话目标、已完成工作、关键事实、未完成事项和工具执行结果。保留继续任务所需信息，不编造。",
+            ),
+            ModelMessage::user(serde_json::to_string(&messages).map_err(internal)?),
+        ];
+        let answer = provider
+            .complete(request, vec![], cancel.clone(), Arc::new(|_| {}))
+            .await?;
+        if cancel.is_cancelled() {
+            return Err(cancelled());
+        }
+        if answer.content.trim().is_empty() || !answer.calls.is_empty() {
+            return Err(AppError::new(
+                "COMPACTION_INVALID",
+                "模型没有返回有效纯文本摘要",
+            ));
+        }
+        self.append(
+            session,
+            "compaction.summary",
+            json!({
+                "content": answer.content,
+                "throughSeq": events.last().map(|e| e.seq.clone()),
+                "trigger": trigger.as_str(),
+            }),
+        )
+        .await?;
+        Ok(answer)
     }
     pub async fn fork(&self, id: &str) -> AppResult<SessionInfo> {
         let _boundary = self.session_boundary(id).await;
@@ -1888,6 +2342,38 @@ fn lsp_text(result: Value) -> AppResult<String> {
 fn internal(e: impl std::fmt::Display) -> AppError {
     AppError::new("RUNTIME", e.to_string())
 }
+/// 同步文件 IO 移入 tokio 阻塞线程池：并发段的磁盘读取/目录遍历真正多线程并行，
+/// 且不挤占 async 工作线程（串行单工具路径同样受益）。
+async fn blocking_io<T: Send + 'static>(
+    f: impl FnOnce() -> AppResult<T> + Send + 'static,
+) -> AppResult<T> {
+    tokio::task::spawn_blocking(f).await.map_err(internal)?
+}
+/// 单个调用的准备结果：钩子/校验完成后的调用、审批需求与准备期失败。
+struct PreparedCall {
+    call: ToolCall,
+    needs_approval: bool,
+    failure: Option<AppError>,
+}
+/// 工具执行守卫：子 token 取消、执行时限与工具体竞速；取消/超时先中断并等待收尾。
+async fn run_tool_guarded(runtime: Arc<Runtime>, input: ToolExecution) -> AppResult<ToolResult> {
+    let is_ask = input.call.name == "ask_user";
+    let tool_cancel = input.cancel.child_token();
+    let turn_cancel = input.cancel.clone();
+    let input = ToolExecution {
+        cancel: tool_cancel.clone(),
+        ..input
+    };
+    let work = runtime.execute_tool(input);
+    tokio::pin!(work);
+    // ask_user 挂起等待用户答复，与审批同享 600 秒等待上限；其余工具维持 180 秒执行时限。
+    let tool_limit = if is_ask { ASK_WAIT_SECS } else { 180 };
+    tokio::select! {
+        _ = turn_cancel.cancelled() => {tool_cancel.cancel(); let _ = work.await; Err(cancelled())},
+        _ = tokio::time::sleep(std::time::Duration::from_secs(tool_limit)) => {tool_cancel.cancel(); let _ = work.await; Err(AppError::new("TOOL_TIMEOUT", "工具超过执行时限"))},
+        r = &mut work => r,
+    }
+}
 /// ask_user 挂起等待上限（秒）：与审批 600 秒兜底一致。
 const ASK_WAIT_SECS: u64 = 600;
 /// 无人在场/超时的统一自动结算答复：提问失败不摧毁回合。
@@ -1929,6 +2415,17 @@ fn plan_safe_tool(name: &str) -> bool {
             | "plan_write"
             | "plan_exit"
     )
+}
+/// 工具批次并发安全白名单：显式能力声明，不凭名称推断。
+/// 逐项审计依据（纯只读、无外部副作用、无交互、不依赖批次内其他调用结果）：
+/// - `read`：读副本文件并登记 read-before-edit 状态，登记为良性竞争（同文件并发读取内容一致）；
+/// - `list_files` / `search`：只读目录遍历与内容搜索；
+/// - `read_artifact`：分块读会话附件/溢出输出 blob。
+///
+/// LSP、MCP、插件、自定义、shell、web_fetch、写类与交互类工具均默认串行；
+/// 外部工具需经 `ExternalTool::concurrency_safe` 显式声明才可进入并发段。
+fn concurrency_safe_tool(name: &str) -> bool {
+    matches!(name, "read" | "list_files" | "search" | "read_artifact")
 }
 /// 计划模式工具准入：内置只读白名单之外，shell 仅放行可静态证明只读的命令。
 /// 提权请求（escalate）一律拒绝；这是独立于审批档位的硬边界。
@@ -2046,6 +2543,38 @@ pub fn project_messages(events: &[SessionEvent]) -> Vec<ModelMessage> {
     let mut messages = vec![ModelMessage::system(system)];
     messages.extend(history);
     messages
+}
+/// 从事件流提取最近一次模型请求的总输入 token（压缩点后重置为 None）。
+/// 请求前自动压缩的阈值检查使用：上下文占用 = 全部输入（含缓存读），口径见 [`total_input_tokens`]。
+pub(crate) fn last_input_tokens(events: &[SessionEvent]) -> AppResult<Option<u64>> {
+    for event in events.iter().rev() {
+        match event.kind.as_str() {
+            "compaction.summary" => return Ok(None),
+            "assistant.message" => {
+                let usage = &event.data["usage"];
+                if usage.is_null() {
+                    continue;
+                }
+                return total_input_tokens(usage).map(Some);
+            }
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+/// 压缩触发来源：手动 `/compact`（宿主命令）或请求前自动压缩（阈值触发）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactionTrigger {
+    Manual,
+    Auto,
+}
+impl CompactionTrigger {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CompactionTrigger::Manual => "manual",
+            CompactionTrigger::Auto => "auto",
+        }
+    }
 }
 pub fn builtin_tools() -> Vec<ToolDefinition> {
     fn def(name: &str, description: &str, properties: Value, required: &[&str]) -> ToolDefinition {
