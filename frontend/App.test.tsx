@@ -474,7 +474,7 @@ describe('侧栏会话入口',()=>{
    return original(name,args);
   });
   await renderOpenA();
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
   fireEvent.click(screen.getByRole('button',{name:'在 B 新建聊天'}));
   await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'other',title:'新会话'}));
   await screen.findByText('内容 created-other');
@@ -484,7 +484,7 @@ describe('侧栏会话入口',()=>{
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>name==='session_create'?{id:'new-w',workspaceId:'w',title:'新会话'}:original(name,args));
   await renderOpenA();
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
   fireEvent.click(screen.getByRole('button',{name:'在 project 新建聊天'}));
   await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话'}));
   await screen.findByText('内容 new-w');
@@ -871,7 +871,7 @@ describe('工作区的首次会话',()=>{
   localStorage.clear();
   render(<App/>);
   await screen.findByText('B 的旧会话');
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
   fireEvent.click(screen.getByRole('button',{name:'在 B 新建聊天'}));
   await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'other',title:'新会话'}));
   // 挂起期间重复点击：复用同一创建请求，不重复调 session_create
@@ -1290,7 +1290,7 @@ describe('会话列表视图',()=>{
   expect(screen.getByText('今天')).toBeInTheDocument();
   expect(screen.getByRole('button',{name:/会话 A/})).toBeInTheDocument();
   expect(screen.getByRole('button',{name:/B 的会话/})).toBeInTheDocument();
-  const sw=screen.getByRole('switch',{name:'切换视图：最近 / 项目'});
+  const sw=screen.getByRole('switch',{name:'切换视图：项目 / 最近'});
   expect(sw).toHaveAttribute('aria-checked','false');
   fireEvent.click(sw);
   expect(sw).toHaveAttribute('aria-checked','true');
@@ -1300,6 +1300,13 @@ describe('会话列表视图',()=>{
   expect(screen.getAllByRole('button',{name:/会话 A/}).length).toBeGreaterThan(0);
   expect(screen.getAllByRole('button',{name:/B 的会话/}).length).toBeGreaterThan(0);
   expect(localStorage.getItem('sessionView')).toBe('project');
+ });
+ it('switch 内「项目」位于「最近」左侧（DOM 顺序在前）',async()=>{
+  localStorage.clear();installSessionMocks();
+  await renderOpenA();
+  const sw=screen.getByRole('switch',{name:'切换视图：项目 / 最近'});
+  const labels=[...sw.querySelectorAll('.sw-label')].map(el=>el.textContent);
+  expect(labels).toEqual(['项目','最近']);
  });
  it('会话标题栏将标题固定在左侧，并在右侧提供存档入口',async()=>{
   localStorage.clear();installSessionMocks();
@@ -1321,16 +1328,16 @@ describe('会话列表视图',()=>{
   await renderOpenA();
   const row=screen.getByRole('button',{name:/会话 A/});
   expect(getComputedStyle(row).textAlign).toBe('left');
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
   expect(getComputedStyle(screen.getByRole('button',{name:/会话 A/})).textAlign).toBe('left');
  });
- it.each(['最近','项目'])('%s视图会话行不再显示行内日期',async view=>{
+ it.each(['项目','最近'])('%s视图会话行不再显示行内日期',async view=>{
   localStorage.clear();installSessionMocks();
   await renderOpenA();
-  if(view==='项目')fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  if(view==='项目')fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
   expect(document.querySelector('.session-time')).toBeNull();
  });
- it.each(['最近','项目'])('%s视图悬停会话行浮现完整标题与时间，移出后收起',async view=>{
+ it.each(['项目','最近'])('%s视图悬停会话行浮现完整标题与时间，移出后收起',async view=>{
   localStorage.clear();
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name:string,args:any)=>{
@@ -1340,7 +1347,7 @@ describe('会话列表视图',()=>{
    return original(name,args);
   });
   await renderOpenA();
-  if(view==='项目')fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  if(view==='项目')fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
   const row=screen.getByRole('button',{name:/会话 A/});
   fireEvent.mouseEnter(row);
   const pop=await screen.findByRole('tooltip');
@@ -1352,7 +1359,7 @@ describe('会话列表视图',()=>{
  it('项目组可置顶并调用 workspace_set_pinned，搜索按标题过滤',async()=>{
   localStorage.clear();installSessionMocks();
   await renderOpenA();
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
   fireEvent.click(screen.getByRole('button',{name:'置顶 alpha'}));
   await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_set_pinned',{workspaceId:'w',pinned:true}));
   // 置顶的 alpha 排在 beta 之前
@@ -1375,7 +1382,7 @@ describe('会话列表视图',()=>{
    return [];
   });
   await renderOpenA();
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
   fireEvent.click(screen.getByRole('button',{name:'置顶 alpha'}));
   await screen.findByText('写入失败');
   expect(screen.getByRole('button',{name:'置顶 alpha'})).toBeInTheDocument();
@@ -1391,7 +1398,7 @@ describe('会话列表视图',()=>{
    return [];
   });
   await renderOpenA();
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
   // 无会话项目仍成组（计数 0），组头新建与置顶入口可用
   expect(screen.getByRole('button',{name:/^empty-proj 0$/})).toBeInTheDocument();
   expect(screen.getByRole('button',{name:'在 empty-proj 新建聊天'})).toBeInTheDocument();
@@ -1434,7 +1441,7 @@ describe('项目命名',()=>{
  it('项目组头可重命名并立即显示新名称',async()=>{
   localStorage.clear();namingBackend();
   await renderOpenA();
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
   expect(screen.getByRole('button',{name:/^alpha \d+$/})).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button',{name:'重命名 alpha'}));
   const dialog=await screen.findByRole('dialog',{name:'重命名项目'});
@@ -1448,7 +1455,7 @@ describe('项目命名',()=>{
  it('重命名留空提交时显示后端错误且名称不变',async()=>{
   localStorage.clear();namingBackend({renameError:'名称不能为空'});
   await renderOpenA();
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
   fireEvent.click(screen.getByRole('button',{name:'重命名 alpha'}));
   await screen.findByRole('dialog',{name:'重命名项目'});
   fireEvent.change(screen.getByLabelText('项目名称'),{target:{value:'  '}});
@@ -1539,7 +1546,7 @@ describe('会话命名',()=>{
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>name==='session_rename'?{id:args.sessionId,workspaceId:'w',title:args.title,createdAt:'',updatedAt:''}:original(name,args));
   await renderOpenA();
-  if(view==='项目')fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  if(view==='项目')fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
   fireEvent.contextMenu(screen.getByRole('button',{name:/会话 A/}));
   fireEvent.click(await screen.findByRole('menuitem',{name:'重命名'}));
   const dialog=await screen.findByRole('dialog',{name:'重命名会话'});
@@ -1879,7 +1886,7 @@ describe('项目移除（隐藏语义）',()=>{
   });
   render(<App/>);
   await screen.findByRole('button',{name:/会话 A/});
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
   fireEvent.contextMenu(screen.getByText('项目B'));
   fireEvent.click(await screen.findByRole('menuitem',{name:'移除项目'}));
   const dialog=await screen.findByRole('dialog',{name:'移除项目「项目B」'});
@@ -1901,7 +1908,7 @@ describe('项目移除（隐藏语义）',()=>{
   });
   render(<App/>);
   await screen.findByRole('button',{name:/会话 A/});
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：最近 / 项目'}));
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
   const sessionNav=screen.getByRole('navigation',{name:'会话列表'});
   fireEvent.contextMenu(within(sessionNav).getByText('运行项目'));
   fireEvent.click(await screen.findByRole('menuitem',{name:'移除项目'}));
