@@ -41,6 +41,23 @@ afterEach(cleanup);
 async function openPanel(){render(<App/>);fireEvent.click(screen.getByRole('button',{name:'设置'}));const page=await screen.findByRole('dialog',{name:'设置'});fireEvent.click(within(page).getByRole('button',{name:'模型设置'}));await screen.findByRole('button',{name:'添加自定义供应商'})}
 async function chooseZhipu(){fireEvent.click(screen.getByRole('button',{name:/智谱 Coding Plan/}));await screen.findByText('GLM Coding Pro')}
 
+it('模型设置内嵌在设置页中展示，不再弹出独立面板',async()=>{
+ await openPanel();
+ const page=screen.getByRole('dialog',{name:'设置'});
+ expect(within(page).getByRole('navigation',{name:'供应商目录'})).toBeInTheDocument();
+ expect(screen.queryByRole('dialog',{name:'模型设置'})).not.toBeInTheDocument();
+ expect(screen.queryByRole('button',{name:'打开现有面板'})).not.toBeInTheDocument();
+});
+
+it('发送框「管理模型」打开设置页并直接定位到模型设置',async()=>{
+ render(<App/>);
+ fireEvent.click(screen.getByRole('button',{name:'当前模型'}));
+ fireEvent.click(await screen.findByRole('button',{name:'管理模型'}));
+ const page=await screen.findByRole('dialog',{name:'设置'});
+ await within(page).findByRole('button',{name:'添加自定义供应商'});
+ expect(within(page).getByRole('navigation',{name:'供应商目录'})).toBeInTheDocument();
+});
+
 it('自定义模型视觉能力可设置并保存，旧配置默认未知',async()=>{
  await openPanel();
  fireEvent.click(screen.getByRole('button',{name:'添加模型'}));

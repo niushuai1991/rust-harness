@@ -10,7 +10,7 @@ const blankProvider=():ProviderInfo=>({id:crypto.randomUUID(),name:'自定义供
 const blankModel=(p:ProviderInfo):ModelConfig=>({id:crypto.randomUUID(),name:'',providerId:p.id,compatibility:p.compatibility,auth:p.auth,apiMode:p.endpoints[0]?.apiMode??'chatCompletions',baseUrl:p.endpoints[0]?.baseUrl??'',model:p.defaultModel,credentialRef:p.credentialRef,proxy:p.proxy,maxOutputTokens:null,contextWindow:null,efforts:[],effort:null,enabled:true,builtin:false,supportsVision:null});
 const snapshot=(p:ProviderInfo)=>JSON.stringify(p);
 const snapshotModel=(m:ModelConfig)=>JSON.stringify(m);
-export function ModelPanel({models,onClose,onSaved}:{models:ModelConfig[];onClose:()=>void;onSaved:()=>Promise<void>}) {
+export function ModelPanel({models,onSaved}:{models:ModelConfig[];onSaved:()=>Promise<void>}) {
  const [providers,setProviders]=useState<ProviderInfo[]>([]),[provider,setProvider]=useState<ProviderInfo|null>(null);
  const [draft,setDraft]=useState<ModelConfig|null>(null),[viewBuiltin,setViewBuiltin]=useState<string|null>(null);
  const [secret,setSecret]=useState(''),[error,setError]=useState(''),[status,setStatus]=useState(''),[busy,setBusy]=useState(false);
@@ -116,7 +116,7 @@ export function ModelPanel({models,onClose,onSaved}:{models:ModelConfig[];onClos
    </div>})}</div>
    :usage&&!usage.cards.length?<p className="muted">当前套餐未返回额度明细。</p>:null)}
  </section>;
- return <Modal wide title="模型设置" onClose={onClose}><p className="muted">先选择供应商并填写密钥，再在该供应商下添加或启用模型；发送框按“供应商 → 模型 → 档位”选择。密钥仅存入系统凭据管理器。</p>
+ return <><p className="muted">先选择供应商并填写密钥，再在该供应商下添加或启用模型；发送框按“供应商 → 模型 → 档位”选择。密钥仅存入系统凭据管理器。</p>
  {error&&<p role="alert" className="inline-error">{error}</p>}{status&&<p role="status" className="success">{status}</p>}
  <div className="provider-layout"><nav className="provider-nav" aria-label="供应商目录">
   <h3 className="nav-group-title">内置供应商</h3><div className="provider-list">{providers.filter(p=>p.builtin).map(providerRow)}</div>
@@ -177,5 +177,4 @@ export function ModelPanel({models,onClose,onSaved}:{models:ModelConfig[];onClos
   <div className="actions model-actions"><button type="button" disabled={busy||!savedDraft||!modelClean} onClick={()=>action(async token=>{await command<string>('model_test',{modelId:draft.id});if(current(token))setStatus('模型连接成功。')})}>测试已保存配置</button><button className="primary" disabled={busy||!desktop()}>{busy?'处理中…':'保存模型'}</button></div>
  </form></Modal>}
  {builtinView&&<Modal title={`内置模型：${builtinView.name}`} onClose={()=>setViewBuiltin(null)}><section aria-label="内置模型信息" className="settings-form"><p>模型标识 <code>{builtinView.id}</code>（内置目录成员，不可修改或删除，可启用/停用）。</p><p>支持档位：{builtinView.efforts.length?builtinView.efforts.join(' / '):'无'}；协议固定为 {provider?.endpoints[0]?.apiMode==='responses'?'Responses（ChatGPT 后端）':'Anthropic'} 端点。</p><p>图片输入能力：{visionLabel(builtinView.supportsVision)}。</p><p className="muted">这是模型能力参考；当前应用不支持原生图片输入。启用后即可在发送框的模型列表中选择。</p></section></Modal>}
- </Modal>
-}
+ </>}
