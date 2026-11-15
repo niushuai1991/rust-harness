@@ -1,12 +1,12 @@
 # 内置浏览器集成规范
 
-- 日期：2026-11-06（计划批准）
+- 日期：2026-11-06（计划批准）；2026-11-16（命令契约新增 forward、后端复用面公开）修订
 - 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
 - 范围：Agent 会话内的浏览器工具组（导航、快照、点击、输入、按键、截图、评估、关闭），系统 Edge/Chrome headless 内核与自研轻量 CDP 客户端；桌面可视面板、CLI 调试子命令、多标签页不在范围，协议层为其留位。
 
 ## 背景与目标
 
-Agent 仅靠 `web_fetch`（reqwest 纯文本抓取）无 JS 渲染与交互能力，无法承担网页测试（验证自研前端、操作页面后断言结果）。本规范参考 ZCode（`D:\code\zcode`）的三层浏览器架构，约定内置浏览器能力：
+Agent 仅靠 `web_fetch`（reqwest 纯文本抓取）无 JS 渲染与交互能力，无法承担网页测试（验证自研前端、操作页面后断言结果）。本规范约定内置浏览器能力采用分层架构：
 
 - 统一命令契约（`BrowserCommand`），后端可替换；
 - 第一版唯一后端为 headless CDP 后端（系统已装 Edge，Win11 自带；兼容 Chrome），不自动下载浏览器。
@@ -42,16 +42,16 @@ Agent 会话
 
 | 工具 | 参数 | 说明 |
 |---|---|---|
-| `browser_navigate` | `url`，可选 `action: back\|reload` | 打开 URL，仅允许 http/https/about:blank |
+| `browser_navigate` | `url`，可选 `action: back\|forward\|reload` | 打开 URL，仅允许 http/https/about:blank |
 | `browser_snapshot` | 无 | 返回可交互元素清单（ref/role/tag/name/value），操作元素前必须先快照 |
 | `browser_click` | `ref` | 重定位元素并派发真实鼠标事件，返回新快照 |
 | `browser_type` | `ref`、`text`、可选 `submit` | 聚焦后 `Input.insertText`，可追加回车 |
 | `browser_press` | `key` | 常用键（Enter/Tab/Escape/方向键等）虚拟键码映射 |
 | `browser_screenshot` | 可选 `fullPage` | PNG 保存到 `<数据目录>/browser/screenshots`，返回路径与尺寸 |
 | `browser_evaluate` | `expression` | 只读评估页面状态，`Runtime.evaluate` returnByValue |
-| `browser_close` | 无 | 关闭会话并终止浏览器进程 |
+| `browser_close` | 无 | 关闭浏览器会话（headless 后端同时终止浏览器进程） |
 
-安全边界（对齐 ZCode 结论）：页面内容视为不可信，仅用于定位；导航 scheme 白名单；工具默认走审批（`ExternalTool::requires_approval` 默认 true）；浏览器使用独立临时 user-data-dir，不携带用户配置与登录态。
+安全边界：页面内容视为不可信，仅用于定位；导航 scheme 白名单；工具默认走审批（`ExternalTool::requires_approval` 默认 true）；headless 后端使用独立临时 user-data-dir，不携带用户配置与登录态。
 
 ## 接入点
 

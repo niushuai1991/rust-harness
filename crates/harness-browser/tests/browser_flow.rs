@@ -86,13 +86,40 @@ async fn full_flow_against_real_headless_browser() {
     let backend = CdpBackend::new(dir.path().to_path_buf());
 
     let navigated = backend
-        .execute(BrowserCommand::Navigate { url: base })
+        .execute(BrowserCommand::Navigate { url: base.clone() })
         .await
         .expect("导航失败");
     assert!(
         navigated.summary.contains("浏览器集成测试页"),
         "导航结果：{}",
         navigated.summary
+    );
+
+    // 历史导航：第二页 → 后退回首页 → 前进回第二页（以 URL 区分）。
+    let second = format!("{base}history-second");
+    backend
+        .execute(BrowserCommand::Navigate {
+            url: second.clone(),
+        })
+        .await
+        .expect("二次导航失败");
+    let back = backend
+        .execute(BrowserCommand::Back)
+        .await
+        .expect("后退失败");
+    assert!(
+        back.summary.contains(&base) && !back.summary.contains("history-second"),
+        "后退应回到首页：{}",
+        back.summary
+    );
+    let forward = backend
+        .execute(BrowserCommand::Forward)
+        .await
+        .expect("前进失败");
+    assert!(
+        forward.summary.contains("history-second"),
+        "前进应回到第二页：{}",
+        forward.summary
     );
 
     let snapshot = element_snapshot(&backend).await;
