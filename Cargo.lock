@@ -4506,7 +4506,11 @@ dependencies = [
 name = "rust-harness-desktop"
 version = "0.1.6"
 dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
  "dirs 6.0.0",
+ "futures",
  "harness-browser",
  "harness-contracts",
  "harness-extensions",
