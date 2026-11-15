@@ -115,6 +115,35 @@ impl CdpBackend {
         })
     }
 
+    async fn forward(&self, session: &mut LiveSession) -> AppResult<CommandOutcome> {
+        let mut events = session.cdp.subscribe();
+        let history = session
+            .cdp
+            .call("Page.getNavigationHistory", json!({}))
+            .await?;
+        let index = history["currentIndex"].as_i64().unwrap_or(0);
+        let last = history["entries"]
+            .as_array()
+            .map_or(0, |entries| entries.len() as i64 - 1);
+        if index >= last {
+            return Err(AppError::new("NAVIGATION_END", "没有可前进的历史记录"));
+        }
+        let entry_id = history["entries"][(index + 1) as usize]["id"]
+            .as_i64()
+            .ok_or_else(|| AppError::new("NAVIGATION_END", "历史记录不可用"))?;
+        session
+            .cdp
+            .call("Page.navigateToHistoryEntry", json!({"entryId": entry_id}))
+            .await?;
+        wait_for(&mut events, "Page.loadEventFired", Duration::from_secs(10)).await;
+        session.refs.clear();
+        let (current, title) = page_info(session).await?;
+        Ok(CommandOutcome {
+            summary: format!("已前进到 {current}（{title}）"),
+            ..Default::default()
+        })
+    }
+
     async fn reload(&self, session: &mut LiveSession) -> AppResult<CommandOutcome> {
         let mut events = session.cdp.subscribe();
         session
@@ -342,6 +371,7 @@ impl BrowserBackend for CdpBackend {
         match command {
             BrowserCommand::Navigate { url } => self.navigate(session, &url).await,
             BrowserCommand::Back => self.back(session).await,
+            BrowserCommand::Forward => self.forward(session).await,
             BrowserCommand::Reload => self.reload(session).await,
             BrowserCommand::Snapshot => {
                 let snapshot = self.collect(session).await?;
@@ -455,7 +485,8 @@ async fn press_key(cdp: &CdpConnection, key: &str) -> AppResult<()> {
     Ok(())
 }
 
-fn translate_key(key: &str) -> Option<(String, String, u32)> {
+/// 按键名 → CDP 按键参数（key/code/windowsVirtualKeyCode）的映射；供各后端复用。
+pub fn translate_key(key: &str) -> Option<(String, String, u32)> {
     if key.len() == 1 {
         let lower = key.chars().next()?.to_ascii_lowercase();
         if lower.is_ascii_lowercase() {
@@ -484,12 +515,13 @@ fn translate_key(key: &str) -> Option<(String, String, u32)> {
     Some((named.0.into(), named.1.into(), named.2))
 }
 
-fn center(target: Located) -> (f64, f64) {
+/// 元素矩形中心的视口坐标；供各后端复用。
+pub fn center(target: Located) -> (f64, f64) {
     (target.x + target.w / 2.0, target.y + target.h / 2.0)
 }
 
-/// 解析 PNG IHDR 宽高（固定偏移 16..24，大端 u32）。
-fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
+/// 解析 PNG IHDR 宽高（固定偏移 16..24，大端 u32）；供各后端复用。
+pub fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
     if bytes.len() < 24 || bytes[0..8] != *b"\x89PNG\r\n\x1a\n" || bytes[12..16] != *b"IHDR" {
         return None;
     }
@@ -499,7 +531,8 @@ fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
     ))
 }
 
-fn describe_exception(exception: &Value) -> String {
+/// 从 CDP exceptionDetails 提取可读描述；供各后端复用。
+pub fn describe_exception(exception: &Value) -> String {
     exception["exception"]["description"]
         .as_str()
         .or_else(|| exception["text"].as_str())
