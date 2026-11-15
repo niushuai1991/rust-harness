@@ -122,6 +122,8 @@ pub async fn dispatch(runtime: Arc<Runtime>, method: &str, p: Value) -> AppResul
                     model,
                     serde_json::from_value(p.get("attachments").cloned().unwrap_or(json!([])))
                         .map_err(err)?,
+                    serde_json::from_value(p.get("quotes").cloned().unwrap_or(json!([])))
+                        .map_err(err)?,
                 )
                 .await?;
             Value::Null

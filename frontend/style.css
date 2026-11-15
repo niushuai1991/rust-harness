@@ -501,3 +501,13 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .perf-toggle:focus-visible{outline:2px solid #4a7c46;outline-offset:1px}
 .settings-performance-list input[type="number"]{flex-shrink:0;width:74px;border:1px solid #e4e8e2;border-radius:7px;padding:7px 9px;font-size:13px;text-align:center}
 .settings-performance-list input[type="number"]:disabled{background:#f3f5f1;color:#a5aca4}
+/* 消息引用：输入框上方的附件式引用条与用户消息内的引用块。 */
+.quote-row{display:flex;flex-wrap:wrap;gap:6px;padding:0 4px 8px}
+.quote-chip{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--border);background:var(--panel);border-radius:8px;padding:5px 7px 5px 10px;font-size:11.5px;max-width:420px;color:var(--text)}
+.quote-chip:hover{background:var(--surface)}
+.quote-chip .q-ico{color:var(--muted);flex-shrink:0}
+.quote-chip .q-txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:none;cursor:default}
+.quote-chip .q-x{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border:0;border-radius:5px;background:transparent;color:var(--muted);cursor:pointer;flex-shrink:0;padding:0}
+.quote-chip .q-x:hover{background:var(--selected);color:var(--text)}
+.sent-quote{border-left:3px solid var(--border);background:var(--surface);border-radius:0 7px 7px 0;padding:7px 12px;margin:0 0 10px;font-size:11.5px;color:var(--muted);line-height:1.7;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.sent-quote b{color:var(--text);font-weight:600}

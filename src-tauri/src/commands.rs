@@ -37,6 +37,8 @@ pub async fn workspace_list(state: Backend<'_>) -> AppResult<Vec<WorkspaceInfo>>
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceRemovalSummary {
     pub workspace_id: String,
+    // usize 会触发 specta BigInt 导出禁令；会话数用 u32 足够。
+    #[specta(type = u32)]
     pub stopped_sessions: usize,
 }
 
@@ -89,6 +91,8 @@ pub async fn workspace_remove(
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceRevealSummary {
     pub workspace_id: String,
+    // usize 会触发 specta BigInt 导出禁令；会话数用 u32 足够。
+    #[specta(type = u32)]
     pub revealed: usize,
 }
 
@@ -405,6 +409,7 @@ pub async fn session_send(
     effort: Option<String>,
     on_event: Channel<LiveEvent>,
     attachments: Option<Vec<String>>,
+    quotes: Option<Vec<String>>,
 ) -> AppResult<()> {
     let provider = state.models.build_model_with(&model_id, effort).await?;
     let runtime = state.inner().clone();
@@ -429,7 +434,13 @@ pub async fn session_send(
         }
     });
     let result = runtime
-        .run_session_with_attachments(session_id, text, provider, attachments.unwrap_or_default())
+        .run_session_with_attachments(
+            session_id,
+            text,
+            provider,
+            attachments.unwrap_or_default(),
+            quotes.unwrap_or_default(),
+        )
         .await;
     // Allow the final durable frame to drain; frontend also performs cursor-safe history reload.
     tokio::task::yield_now().await;
