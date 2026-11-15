@@ -1987,3 +1987,66 @@ describe('项目移除（隐藏语义）',()=>{
   expect(screen.getByRole('button',{name:'恢复'})).toBeEnabled();
  });
 });
+describe('消息引用',()=>{
+ const withSelection=async(body:()=>Promise<void>)=>{
+  const spy=vi.spyOn(window,'getSelection').mockReturnValue({toString:()=>'引用内容',removeAllRanges:()=>{}} as Selection);
+  try{await body()}finally{spy.mockRestore()}
+ };
+ it('有选区时右键菜单出现「引用」，点击后以附件式引用条显示且可删除',async()=>{
+  await withSelection(async()=>{
+   await renderOpenA();
+   fireEvent.contextMenu(screen.getByText('内容 a'));
+   const item=await screen.findByRole('menuitem',{name:/引用/});
+   expect(item).toBeEnabled();
+   fireEvent.click(item);
+   expect(await screen.findByTitle('引用内容')).toBeInTheDocument();
+   fireEvent.click(screen.getByRole('button',{name:'删除引用 1'}));
+   expect(screen.queryByTitle('引用内容')).toBeNull();
+  });
+ });
+ it('无选区时右键菜单「引用」禁用',async()=>{
+  const spy=vi.spyOn(window,'getSelection').mockReturnValue({toString:()=>'',removeAllRanges:()=>{}} as Selection);
+  try{
+   await renderOpenA();
+   fireEvent.contextMenu(screen.getByText('内容 a'));
+   expect(await screen.findByRole('menuitem',{name:/引用/})).toBeDisabled();
+  }finally{spy.mockRestore()}
+ });
+ it('发送时携带引用，发送成功后清空',async()=>{
+  mocks.send.mockResolvedValue(undefined);
+  await withSelection(async()=>{
+   await renderOpenA();
+   fireEvent.contextMenu(screen.getByText('内容 a'));
+   fireEvent.click(await screen.findByRole('menuitem',{name:/引用/}));
+   const input=screen.getByLabelText('消息');
+   fireEvent.change(input,{target:{value:'请看引用'}});
+   fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+   await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','请看引用','m',expect.any(Function),undefined,'high',['引用内容']));
+   await waitFor(()=>expect(screen.queryByTitle('引用内容')).toBeNull());
+  });
+ });
+ it('仅引用无正文也可发送',async()=>{
+  mocks.send.mockResolvedValue(undefined);
+  await withSelection(async()=>{
+   await renderOpenA();
+   fireEvent.contextMenu(screen.getByText('内容 a'));
+   fireEvent.click(await screen.findByRole('menuitem',{name:/引用/}));
+   const button=screen.getByRole('button',{name:'发送消息'});
+   expect(button).toBeEnabled();
+   fireEvent.click(button);
+   await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','','m',expect.any(Function),undefined,'high',['引用内容']));
+  });
+ });
+ it('时间线渲染用户消息的引用块',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,[
+   {...event(`u-${args.sessionId}`,args.sessionId,'1','带引用的消息'),kind:'user.message',data:{content:'带引用的消息',quotes:['引用甲','引用乙']}},
+   event(`e-${args.sessionId}`,args.sessionId,'2','回复内容'),
+  ]):original(name,args));
+  render(<App/>);
+  await openSidebarSession(/会话 A/);
+  await screen.findByText('带引用的消息');
+  expect(screen.getByText(/引用甲/)).toBeInTheDocument();
+  expect(screen.getByText(/引用乙/)).toBeInTheDocument();
+ });
+});

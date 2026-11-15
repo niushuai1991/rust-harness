@@ -679,7 +679,7 @@ impl Runtime {
         text: String,
         provider: Arc<dyn ModelProvider>,
     ) -> futures::future::BoxFuture<'static, AppResult<()>> {
-        self.run_session_with_attachments(session_id, text, provider, vec![])
+        self.run_session_with_attachments(session_id, text, provider, vec![], vec![])
     }
     pub fn run_session_with_attachments(
         self: Arc<Self>,
@@ -687,9 +687,12 @@ impl Runtime {
         text: String,
         provider: Arc<dyn ModelProvider>,
         attachments: Vec<String>,
+        quotes: Vec<String>,
     ) -> futures::future::BoxFuture<'static, AppResult<()>> {
         Box::pin(async move {
-            let message_id = self.enqueue_message(&session_id, text, attachments).await?;
+            let message_id = self
+                .enqueue_message(&session_id, text, attachments, quotes)
+                .await?;
             self.execute_message(session_id, message_id, provider).await
         })
     }
@@ -701,7 +704,9 @@ impl Runtime {
         token_budget: Arc<TurnBudget>,
     ) -> futures::future::BoxFuture<'static, AppResult<()>> {
         Box::pin(async move {
-            let message_id = self.enqueue_message(&session_id, text, vec![]).await?;
+            let message_id = self
+                .enqueue_message(&session_id, text, vec![], vec![])
+                .await?;
             self.execute_message_with_budget(session_id, message_id, provider, Some(token_budget))
                 .await
         })
@@ -819,13 +824,22 @@ impl Runtime {
         session_id: &str,
         text: String,
         attachments: Vec<String>,
+        quotes: Vec<String>,
     ) -> AppResult<String> {
-        if (text.trim().is_empty() && attachments.is_empty())
+        if (text.trim().is_empty()
+            && attachments.is_empty()
+            && quotes.iter().all(|q| q.trim().is_empty()))
             || text.len() > 1024 * 1024
             || attachments.len() > 20
+            || quotes.len() > 10
         {
             return Err(AppError::new("INVALID_INPUT", "消息不能为空或超过1MiB"));
         }
+        let quotes: Vec<String> = quotes
+            .into_iter()
+            .map(|q| q.trim().to_owned())
+            .filter(|q| !q.is_empty())
+            .collect();
         self.store.session(session_id).await?;
         let mut attached = Vec::new();
         for hash in attachments {
@@ -836,12 +850,12 @@ impl Runtime {
             }
         }
         let message_id = new_id();
-        self.append(
-            session_id,
-            "inbox.queued",
-            json!({"id":message_id,"content":text,"attachments":attached}),
-        )
-        .await?;
+        let mut queued = json!({"id":message_id,"content":text,"attachments":attached});
+        // 引用仅在有内容时落字段，避免空数组膨胀历史事件。
+        if !quotes.is_empty() {
+            queued["quotes"] = json!(quotes);
+        }
+        self.append(session_id, "inbox.queued", queued).await?;
         Ok(message_id)
     }
     /// 标记排队中的消息取消；`execute_message` 获得队列锁后结算为 `inbox.cancelled`。
@@ -933,12 +947,11 @@ impl Runtime {
                 .to_owned();
             let attached: Vec<ArtifactMetadata> =
                 serde_json::from_value(queued.data["attachments"].clone()).map_err(internal)?;
-            self.append(
-                &session_id,
-                "user.message",
-                json!({"content":text,"attachments":attached}),
-            )
-            .await?;
+            let mut message = json!({"content":text,"attachments":attached});
+            if let Some(quotes) = queued.data.get("quotes") {
+                message["quotes"] = quotes.clone();
+            }
+            self.append(&session_id, "user.message", message).await?;
             {
                 let _updates = token_budget.serialize_updates().await;
                 self.publish_token_budget(&session_id, &token_budget, token_budget.snapshot())
@@ -2510,6 +2523,26 @@ pub fn project_messages(events: &[SessionEvent]) -> Vec<ModelMessage> {
                             message.push_str(&format!("\n附件：{} ({}，{}字节)，hash={}。使用 read_artifact(hash,offset,length) 读取；文本为UTF-8，二进制为base64，不代表原生图像理解。",meta.name,meta.media_type,meta.size,meta.hash));
                         }
                     }
+                }
+                // 引用包成 quote 标签放在正文前：单条不带 index，多条全部从 1 编号。
+                let quotes: Vec<&str> = e.data["quotes"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|q| q.as_str()).collect())
+                    .unwrap_or_default();
+                if !quotes.is_empty() {
+                    let mut quoted = String::new();
+                    for (index, quote) in quotes.iter().enumerate() {
+                        if quotes.len() > 1 {
+                            quoted.push_str(&format!("<quote index=\"{}\">\n", index + 1));
+                        } else {
+                            quoted.push_str("<quote>\n");
+                        }
+                        quoted.push_str(quote);
+                        quoted.push_str("\n</quote>\n");
+                    }
+                    quoted.push('\n');
+                    quoted.push_str(&message);
+                    message = quoted;
                 }
                 history.push(ModelMessage::user(message));
             }

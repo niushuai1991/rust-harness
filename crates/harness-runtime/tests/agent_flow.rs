@@ -655,6 +655,7 @@ async fn attachments_enter_model_history_and_spilled_output_is_readable_after_re
             "检查附件".into(),
             provider.clone(),
             vec![meta.hash.clone()],
+            vec![],
         )
         .await
         .unwrap();
@@ -727,7 +728,8 @@ async fn attachments_enter_model_history_and_spilled_output_is_readable_after_re
                 other.id.clone(),
                 "steal".into(),
                 provider,
-                vec![meta.hash]
+                vec![meta.hash],
+                vec![]
             )
             .await
             .is_err()

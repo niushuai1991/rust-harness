@@ -204,7 +204,7 @@ pub(crate) async fn turn_once(
     // 订阅必须先于入队，避免丢失本消息的 inbox.queued/turn.start 事件
     let mut events = runtime.subscribe();
     let message_id = runtime
-        .enqueue_message(&session_id, prompt.to_owned(), vec![])
+        .enqueue_message(&session_id, prompt.to_owned(), vec![], vec![])
         .await?;
     let mut scope = RunScope::new(&session_id, &message_id);
     let mut task = tokio::spawn({
