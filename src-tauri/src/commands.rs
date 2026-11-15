@@ -1147,6 +1147,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         crate::web_panel::web_panel_open,
         crate::web_panel::web_panel_bounds,
         crate::web_panel::web_panel_close,
+        crate::web_panel::web_panel_history,
         workspace_list,
         workspace_open,
         workspace_remove,

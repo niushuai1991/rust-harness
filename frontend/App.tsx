@@ -1,5 +1,7 @@
 import {Fragment,useEffect,useLayoutEffect,useMemo,useRef,useState,type FormEvent,type MouseEvent as ReactMouseEvent,type ReactNode} from 'react';
 import {open,save} from '@tauri-apps/plugin-dialog';
+import {isTauri} from '@tauri-apps/api/core';
+import {listen} from '@tauri-apps/api/event';
 import {createPortal} from 'react-dom';
 import {Archive,ArrowUp,Bot,CalendarClock,Check,ChevronDown,ChevronRight,Copy,FileCode,FilePlus,Folder,FolderOpen,GitCompareArrows,ListTodo,MessageSquare,Paperclip,Pencil,Pin,Plus,Quote,Search,Send,Settings,ShieldCheck,Square,Sparkles,Target,Terminal,Timer,Trash2,Unplug,X,Download} from 'lucide-react';
 import {SessionMarkdown,LinkedText} from './SessionLinks';
@@ -145,6 +147,13 @@ export default function App(){
  useEffect(()=>{attachmentEpoch.current++;setAttachments([]);setImporting(false)},[sessionId,workspaceId]);
  // 切换工作区时重置右侧面板（预览路径与视图归属工作区，避免串状态）。
  useEffect(()=>{useSidePanel.getState().reset()},[workspaceId]);
+ // 模型在内嵌浏览器打开页面时自动弹出右侧「网页」视图。
+ useEffect(()=>{
+  if(!isTauri())return;
+  let disposed=false,stop=()=>{};
+  listen<string>('web-panel-agent-open',event=>{useSidePanel.getState().openWeb(String(event.payload))}).then(un=>{if(disposed)un();else stop=un}).catch(()=>{});
+  return()=>{disposed=true;stop()};
+ },[]);
  // 侧栏「自动化」徽标：跟随工作区拉取任务数，面板增删后经 onChanged 刷新。
  useEffect(()=>{if(!workspaceId||!desktop()){setAutomationCount(null);return}let alive=true;command<unknown[]>('automation_list',{workspaceId}).then(list=>{if(alive)setAutomationCount(list.length)}).catch(()=>{if(alive)setAutomationCount(null)});return()=>{alive=false}},[workspaceId]);
  // 技能名单：跟随工作区拉取（composer $ 补全候选）；读取失败退化为空（无补全）。
