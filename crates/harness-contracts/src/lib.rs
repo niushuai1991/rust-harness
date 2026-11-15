@@ -1068,12 +1068,14 @@ fn default_true() -> bool {
     true
 }
 
-/// 桌面端跨重启保留的上次模型选择；effort 为 None 表示跟随模型默认。
+/// 桌面端跨重启保留的上次选择；effort 为 None 表示跟随模型默认，workspace_id 为 None 表示尚未记录打开过的项目。
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DefaultSelection {
     pub model_id: String,
     pub effort: Option<String>,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 /// 用户自定义预设：命名的会话能力配置包（模型/effort/审批策略），可选字段缺省表示该项不覆盖。
@@ -1352,6 +1354,25 @@ mod approval_policy_tests {
         let roundtrip: WorkspaceInfo = serde_json::from_value(with_worktree).unwrap();
         assert_eq!(roundtrip.execution_mode, ExecutionMode::Worktree);
         assert_eq!(roundtrip.worktrees["s1"].branch, "feat/session-abc12345");
+    }
+
+    #[test]
+    fn default_selection_defaults_workspace_id_to_none() {
+        // 旧 KV 值没有 workspaceId 字段，反序列化后为 None。
+        let legacy: DefaultSelection =
+            serde_json::from_value(serde_json::json!({"modelId": "m", "effort": null})).unwrap();
+        assert_eq!(legacy.workspace_id, None);
+
+        // 新值含 workspaceId；序列化为 camelCase，可无损回读。
+        let saved = DefaultSelection {
+            model_id: "m".into(),
+            effort: Some("high".into()),
+            workspace_id: Some("w2".into()),
+        };
+        let json = serde_json::to_value(&saved).unwrap();
+        assert_eq!(json["workspaceId"], "w2");
+        let roundtrip: DefaultSelection = serde_json::from_value(json).unwrap();
+        assert_eq!(roundtrip.workspace_id.as_deref(), Some("w2"));
     }
 
     #[test]

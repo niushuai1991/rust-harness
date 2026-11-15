@@ -713,6 +713,54 @@ describe('终端事件可视化',()=>{
 });
 
 
+describe('启动默认恢复上次项目',()=>{
+ const twoWorkspaces=[
+  {id:'w',sourcePath:'D:/A',replicaPath:'D:/copy-a',createdAt:'',name:'A'},
+  {id:'w2',sourcePath:'D:/B',replicaPath:'D:/copy-b',createdAt:'',name:'B'}
+ ];
+ it('启动恢复上次打开的项目，而不是最早创建的项目',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='workspace_list')return twoWorkspaces;
+   if(name==='default_selection_get')return {modelId:'m',effort:'high',workspaceId:'w2'};
+   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A'},{id:'b1',workspaceId:'w2',title:'B 的会话'}];
+   return original(name,args);
+  });
+  render(<App/>);
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_list',{workspaceId:'w2',allWorkspaces:true}));
+  // 草稿态占位符标明落点项目为 B（而非列表首位的 A）
+  await screen.findByPlaceholderText(/发送后将在 B 创建会话/);
+ });
+ it('上次项目已被移除（隐藏）时回退到列表第一个项目',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='workspace_list')return [...twoWorkspaces,{id:'gone',sourcePath:'D:/gone',replicaPath:'D:/copy-g',createdAt:'',name:'已移除',hidden:true}];
+   if(name==='default_selection_get')return {modelId:'m',effort:'high',workspaceId:'gone'};
+   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A'}];
+   return original(name,args);
+  });
+  render(<App/>);
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_list',{workspaceId:'w',allWorkspaces:true}));
+  await screen.findByPlaceholderText(/发送后将在 A 创建会话/);
+ });
+ it('切换项目后将 workspaceId 写回默认选择',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='workspace_list')return twoWorkspaces;
+   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A'},{id:'b1',workspaceId:'w2',title:'B 的会话'}];
+   return original(name,args);
+  });
+  render(<App/>);
+  await screen.findByRole('button',{name:/会话 A/});
+  // 跨项目打开侧栏会话：先切工作区再经 pendingJump 跳转
+  fireEvent.click(screen.getByRole('button',{name:/B 的会话/}));
+  await screen.findByText('内容 b1');
+  expect(mocks.command).toHaveBeenCalledWith('session_list',{workspaceId:'w2',allWorkspaces:true});
+  expect(mocks.command).toHaveBeenCalledWith('default_selection_save',{selection:{modelId:'m',effort:'high',workspaceId:'w2'}});
+ });
+});
+
+
 describe('工作区的首次会话',()=>{
  it('启动默认不打开历史会话，直接进入新会话草稿态',async()=>{
   render(<App/>);
@@ -1063,12 +1111,12 @@ describe('模型选择',()=>{
   const menu=screen.getByRole('listbox',{name:'选择模型'});
   expect(within(menu).queryByText('DeepSeek Flash')).not.toBeInTheDocument();
   fireEvent.click(within(menu).getByText('自定义 GLM'));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('default_selection_save',{selection:{modelId:'custom',effort:'max'}}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('default_selection_save',{selection:{modelId:'custom',effort:'max',workspaceId:'w'}}));
   // 卡片保持展开，滑块区已切换为新模型档位，可直接继续调档
   expect(screen.getByRole('listbox',{name:'选择模型'})).toBeInTheDocument();
   expect(screen.getByLabelText('推理档位')).toHaveAttribute('aria-valuetext','max');
   fireEvent.change(screen.getByLabelText('推理档位'),{target:{value:'1'}});
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('default_selection_save',{selection:{modelId:'custom',effort:'high'}}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('default_selection_save',{selection:{modelId:'custom',effort:'high',workspaceId:'w'}}));
   // 会话流插入临时切换标记（不落库）
   expect(screen.getByText(/模型已切换：DeepSeek Flash → 自定义 GLM · 档位 max/)).toBeInTheDocument();
   fireEvent.change(screen.getByLabelText('消息'),{target:{value:'你好'}});
@@ -1261,14 +1309,14 @@ describe('能力预设',()=>{
   const staleOption=screen.getByRole('option',{name:/失效预设/}) as HTMLOptionElement;
   expect(staleOption.disabled).toBe(true);
   fireEvent.change(presetSelect,{target:{value:'p1'}});
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('default_selection_save',{selection:{modelId:'m',effort:'high'}}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('default_selection_save',{selection:{modelId:'m',effort:'high',workspaceId:'w'}}));
   // 打开浮层卡片查看档位滑块（默认档位即最高档）
   fireEvent.click(screen.getByLabelText('当前模型'));
   expect(screen.getByLabelText('推理档位')).toHaveAttribute('aria-valuetext','high');
   // 手改档位即放弃预设
   fireEvent.change(screen.getByLabelText('推理档位'),{target:{value:'0'}});
   expect((screen.getByLabelText('能力预设') as HTMLSelectElement).value).toBe('');
-  expect(mocks.command).toHaveBeenCalledWith('default_selection_save',{selection:{modelId:'m',effort:'low'}});
+  expect(mocks.command).toHaveBeenCalledWith('default_selection_save',{selection:{modelId:'m',effort:'low',workspaceId:'w'}});
  });
 });
 

@@ -178,7 +178,10 @@ export default function App(){
  const bootstrappedWorkspace=useRef<string|null>(null);
  activeWorkspaceId.current=workspaceId;
  async function attempt<T>(action:()=>Promise<T>):Promise<T|undefined>{setError('');try{return await action()}catch(e){setError(errorText(e));return undefined}}
- useEffect(()=>{if(!desktop())return;void attempt(async()=>{const [ws,ms,ps,sel,pset,amode]=await Promise.all([command<WorkspaceInfo[]>('workspace_list'),command<ModelConfig[]>('model_list'),command<ProviderInfo[]>('provider_list'),command<DefaultSelection|null>('default_selection_get'),command<PresetInfo[]>('preset_list'),command<string>('approval_mode_get')]);setWorkspaces(ws);setWorkspaceId(ws[0]?.id??'');setModels(ms);setProviders(ps);setPresets(pset);setApprovalMode((KNOWN_APPROVALS as readonly string[]).includes(amode)?amode as ApprovalPolicy:'ask');
+ useEffect(()=>{if(!desktop())return;void attempt(async()=>{const [ws,ms,ps,sel,pset,amode]=await Promise.all([command<WorkspaceInfo[]>('workspace_list'),command<ModelConfig[]>('model_list'),command<ProviderInfo[]>('provider_list'),command<DefaultSelection|null>('default_selection_get'),command<PresetInfo[]>('preset_list'),command<string>('approval_mode_get')]);setWorkspaces(ws);
+  // 启动恢复上次打开的项目；项目已移除（隐藏）或记录缺失时回退列表首个。
+  const lastWorkspace=sel?.workspaceId&&ws.some(w=>w.id===sel.workspaceId&&!w.hidden)?sel.workspaceId:(ws[0]?.id??'');
+  setWorkspaceId(lastWorkspace);setModels(ms);setProviders(ps);setPresets(pset);setApprovalMode((KNOWN_APPROVALS as readonly string[]).includes(amode)?amode as ApprovalPolicy:'ask');
   // 恢复上次选择；模型或供应商已停用/删除时回退到第一个可用模型，档位回落最高档。
   const usable=ms.filter(m=>m.enabled&&ps.some(p=>p.id===m.providerId&&p.enabled));
   const saved=sel&&usable.some(m=>m.id===sel.modelId)?sel:null;
@@ -187,6 +190,15 @@ export default function App(){
     ?(saved&&saved.modelId===restored.id&&saved.effort&&restored.efforts.includes(saved.effort)?saved.effort:restored.efforts.at(-1)??null)
     :null;
   setModelId(restored?.id??'');setEffort(restoredEffort)})},[]);
+ // 打开/切换项目即视为使用：跨重启保留，下次启动恢复该项目；启动装载本身不写回（值来自 KV）。
+ const lastSavedWorkspace=useRef<string|null>(null);
+ useEffect(()=>{
+  if(!desktop()||!workspaceId)return;
+  if(lastSavedWorkspace.current===null){lastSavedWorkspace.current=workspaceId;return}
+  if(lastSavedWorkspace.current===workspaceId)return;
+  lastSavedWorkspace.current=workspaceId;
+  void command('default_selection_save',{selection:{modelId,effort,workspaceId}}).catch(()=>{})
+ },[workspaceId]);
  useEffect(()=>{
   const token=++generation.current,targetWorkspaceId=workspaceId;
   const firstWorkspaceLoad=!!targetWorkspaceId&&(bootstrappedWorkspace.current===null||bootstrappedWorkspace.current===targetWorkspaceId);
@@ -369,10 +381,10 @@ export default function App(){
   const kept=next&&next.efforts.length?(effort&&next.efforts.includes(effort)?effort:next.efforts.at(-1)??null):null;
   const from=models.find(m=>m.id===modelId);
   setModelId(id);setEffort(kept);
-  void command('default_selection_save',{selection:{modelId:id,effort:kept}}).catch(()=>{});
+  void command('default_selection_save',{selection:{modelId:id,effort:kept,workspaceId:workspaceId||null}}).catch(()=>{});
   if(from&&from.id!==id&&sessionId)addModelNote(`模型已切换：${from.name||from.model} → ${next?.name||next?.model||id} · 档位 ${kept??'默认'}`);
  }
- function chooseEffort(value:string){setPresetId('');const next=value===''?null:value;setEffort(next);void command('default_selection_save',{selection:{modelId,effort:next}}).catch(()=>{})}
+ function chooseEffort(value:string){setPresetId('');const next=value===''?null:value;setEffort(next);void command('default_selection_save',{selection:{modelId,effort:next,workspaceId:workspaceId||null}}).catch(()=>{})}
  function addModelNote(text:string){const id=sessionId;if(id)setModelNotes(old=>[...old,{sessionId:id,text}])}
  // 选择预设：以预设字段填充级联（级联持久化沿用上次模型选择）；手改级联即放弃预设。
  function choosePreset(id:string){
@@ -384,7 +396,7 @@ export default function App(){
   if(info.modelId){
    const nextEffort=info.effort??models.find(m=>m.id===info.modelId)?.effort??null;
    setModelId(info.modelId);setEffort(nextEffort);
-   void command('default_selection_save',{selection:{modelId:info.modelId,effort:nextEffort}}).catch(()=>{});
+   void command('default_selection_save',{selection:{modelId:info.modelId,effort:nextEffort,workspaceId:workspaceId||null}}).catch(()=>{});
   }
  }
  // 权限模式：保存为默认档并对当前会话即时生效；会话内显式切换记录覆盖（与其他会话隔离）。
