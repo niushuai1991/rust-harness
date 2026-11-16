@@ -407,10 +407,6 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .settings-local-note>span{display:flex;flex-direction:column;gap:2px}
 .settings-local-note strong{font-size:10px;font-weight:600}
 .settings-local-note small{font-size:9px}
-.settings-version-note{display:flex;align-items:center;gap:9px;padding:4px 9px 12px;color:#989f98}
-.settings-version-note>span{display:flex;flex-direction:column;gap:2px}
-.settings-version-note strong{font-size:10px;font-weight:600}
-.settings-version-note small{font-size:9px}
 .settings-back-button{width:100%;justify-content:flex-start;border:0;background:transparent;padding:10px 11px;color:#59625c;font-size:11px}
 .settings-back-button svg{transform:rotate(180deg)}
 .settings-back-button:hover{background:#ebeeea}
@@ -473,6 +469,7 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .settings-mode-options span{border:1px solid #e5e8e3;border-radius:6px;padding:5px 9px;color:#858d86;font-size:9px}
 .settings-mode-options span.selected{border-color:#cbd8c8;background:#f2f6ef;color:#4e674e}
 .settings-plugin-examples{margin-top:16px}
+.settings-about-list{margin-top:24px}
 .settings-provider-card{padding:0;overflow:hidden}
 .settings-provider-heading{display:flex;align-items:center;gap:10px;padding:13px 14px}
 .settings-provider-heading>div{display:flex;flex:1;min-width:0;flex-direction:column;gap:3px}
