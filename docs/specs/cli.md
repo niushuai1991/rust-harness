@@ -91,7 +91,7 @@ CLI 的作用域隔离无法纯客户端实现：runtime 在写入 `inbox.queued
 1. **REPL 形态**：简单 readline 循环加流式纯文本输出，不引入 ratatui 全屏 TUI。（体验升级已由[输入框斜杠快捷指令规范](slash-commands.md)落地：crossterm 行编辑与 `/` 补全弹窗，仍不做全屏 TUI。）
 2. **默认模型**：优先级为 `-m/--model` > settings 键 `cli.default_model`（经 `Store::get/set` 读写）> 报错并列出可用模型。`models default <id>` 设置前经 `models.list_models()` 校验存在，不存在拒绝保存；`models default`（无参）查看当前值；`models default --clear` 清除（写 `Null` 视为未设置）。
 3. **参数解析**：`clap 4`（derive）；`rpc` 与 `call` 行为保持不变。
-4. **数据目录**：`--data-dir` > 环境变量 `RUST_HARNESS_DATA_DIR` > 默认 `~/.RustHarness`（Windows `%USERPROFILE%\.RustHarness`）；不自动迁移旧 `%LOCALAPPDATA%\RustHarness`，需用户手工搬迁。`host.lock` 独占与桌面端互斥的关系不变。
+4. **数据目录**：`--data-dir` > 环境变量 `RUST_HARNESS_DATA_DIR` > 默认 `~/.RustHarness`（Windows `%USERPROFILE%\.RustHarness`）；不自动迁移旧 `%LOCALAPPDATA%\RustHarness`，需用户手工搬迁。工作区记录内嵌的 `replicaPath` 绝对路径在搬迁后于加载期自愈回写为当前数据目录下的位置（记录 `id` 不匹配仍拒绝），手工搬迁后工作区无需修数据即可恢复。`host.lock` 独占与桌面端互斥的关系不变。
 
 ## 命令规格
 

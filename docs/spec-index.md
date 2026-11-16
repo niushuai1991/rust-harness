@@ -9,7 +9,7 @@
 | [总体规范](specs/overall.md) | 2026-11-03（设计确认） | 全局架构、模块职责、安全不变量、交付阶段划分与阶段验收要求。 |
 | [双供应商、多协议接入](specs/multi-protocol.md) | 2026-11-04（计划批准） | 固定供应商目录、三协议适配、配置迁移及桌面和 CLI 接入。 |
 | [P1 验收与缺口补齐](specs/p1-acceptance.md) | 2026-11-04（验收启动）；2026-11-16（显式清理新数据根）修订 | P1 验收范围、附件及插件缺口、安装清理和完成门槛。 |
-| [CLI 命令行 Agent 调用](specs/cli.md) | 2026-11-05（计划拟制）；2026-11-16（默认数据目录）修订 | `harness` 命令行 run/chat/diff/apply/models/sessions 能力，提供命令行调用入口。 |
+| [CLI 命令行 Agent 调用](specs/cli.md) | 2026-11-05（计划拟制）；2026-11-16（默认数据目录；搬迁后工作区记录自愈）修订 | `harness` 命令行 run/chat/diff/apply/models/sessions 能力，提供命令行调用入口。 |
 | [ACP 协议接口](specs/acp.md) | 2026-11-06（计划拟制） | `harness acp` 子命令：Agent Client Protocol v1 agent 端，官方 Rust SDK，供编辑器客户端接入。 |
 | [LSP 语言服务集成](specs/lsp.md) | 2026-11-06（计划拟制） | P3 提前项：只读五件套 LSP 工具（诊断/悬停/定义/引用/符号），通用 server 配置，默认 rust-analyzer。 |
 | [内置浏览器集成](specs/browser.md) | 2026-11-06（计划批准）；2026-11-16（契约新增 forward、后端复用面公开；桌面可视后端落地）修订 | Agent 会话 browser_* 工具组：系统 Edge/Chrome headless + 自研轻量 CDP，DevToolsActivePort 就绪检测与 Job Object 进程树清理；桌面端 WebView2 可视后端与「网页」面板人机共用同一实例。 |

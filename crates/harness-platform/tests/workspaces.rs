@@ -398,6 +398,43 @@ fn blank_stored_name_is_normalized_on_load() {
 }
 
 #[test]
+fn relocated_host_dir_heals_stale_replica_path() {
+    let (_temp, source, manager) = fixture();
+    let info = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
+    // 模拟数据目录整体搬迁（如 %LOCALAPPDATA%\RustHarness 手工迁移到 ~/.RustHarness）：
+    // record.json 内嵌的 replicaPath 仍指向旧位置绝对路径
+    let record_path = std::path::Path::new(&info.replica_path)
+        .parent()
+        .unwrap()
+        .join("record.json");
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&fs::read(&record_path).unwrap()).unwrap();
+    let stale = std::path::Path::new(&info.replica_path)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("RustHarness-old")
+        .join(&info.id)
+        .join("root");
+    value["info"]["replicaPath"] = serde_json::Value::String(stale.to_string_lossy().into_owned());
+    fs::write(&record_path, serde_json::to_vec(&value).unwrap()).unwrap();
+    // 加载应自愈为当前数据目录下的真实位置，而不是 INVALID_WORKSPACE
+    let healed = manager.get(&info.id).unwrap();
+    assert_eq!(healed.replica_path, info.replica_path);
+    assert_eq!(manager.list().unwrap()[0].replica_path, info.replica_path);
+    // 自愈即落盘：record.json 已回写，后续加载无需再修
+    let persisted: serde_json::Value =
+        serde_json::from_slice(&fs::read(&record_path).unwrap()).unwrap();
+    assert_eq!(persisted["info"]["replicaPath"], info.replica_path);
+    // 自愈后副本差异审阅全链路可用
+    write_file(std::path::Path::new(&info.replica_path), "a.txt", "edited").unwrap();
+    assert_eq!(manager.diff(&info.id).unwrap().len(), 1);
+}
+
+#[test]
 fn root_source_path_falls_back_to_full_path() {
     let (_temp, source, manager) = fixture();
     let info = manager
