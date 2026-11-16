@@ -46,6 +46,8 @@ enum Commands {
     Chat(chat::Args),
     /// 会话查看
     Sessions(manage::SessionsArgs),
+    /// 数据库维护
+    Db(manage::DbArgs),
     /// 审阅工作副本改动
     Diff(manage::DiffArgs),
     /// 审阅后同步到原项目
@@ -107,6 +109,7 @@ async fn run() -> AppResult<()> {
         }
         Commands::Chat(args) => chat::execute(runtime, args).await,
         Commands::Sessions(args) => manage::sessions(runtime, args).await,
+        Commands::Db(args) => manage::db(runtime, args).await,
         Commands::Diff(args) => manage::diff(runtime, args).await,
         Commands::Apply(args) => manage::apply(runtime, args).await,
         Commands::Models(args) => manage::models(runtime, args).await,

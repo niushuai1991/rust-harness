@@ -149,6 +149,46 @@ async fn recovery_finds_calls_committed_inside_assistant_before_tool_registratio
 }
 
 #[tokio::test]
+async fn purge_request_snapshots_drops_only_that_kind_and_vacuum_succeeds() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Store::open(&dir.path().join("events.db")).await.unwrap();
+    let session = db.create_session("work-a", "compact").await.unwrap();
+    for (kind, data) in [
+        ("user.message", json!({"content":"hello"})),
+        ("request.snapshot", json!({"messages":["big"],"tools":[1]})),
+        ("assistant.message", json!({"content":"hi"})),
+        (
+            "request.snapshot",
+            json!({"messages":["bigger"],"tools":[2]}),
+        ),
+        ("tool.result", json!({"callId":"c","content":"done"})),
+    ] {
+        db.append(&session.id, kind, data).await.unwrap();
+    }
+    let usage = db.request_snapshot_usage().await.unwrap();
+    assert_eq!(usage.rows, 2);
+    assert!(usage.bytes > 0);
+    let summary = db.purge_request_snapshots().await.unwrap();
+    assert_eq!(summary.rows, usage.rows);
+    assert_eq!(summary.bytes, usage.bytes);
+    let events = db.events(&session.id, 0).await.unwrap();
+    assert_eq!(
+        events.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(),
+        ["user.message", "assistant.message", "tool.result"]
+    );
+    assert_eq!(events[0].data["content"], "hello");
+    assert_eq!(events[2].data["content"], "done");
+    // 消息全文搜索与恢复逻辑不受 purge 影响。
+    assert_eq!(db.search("hello").await.unwrap()[0].id, session.id);
+    assert_eq!(db.recover().await.unwrap(), 0);
+    db.vacuum().await.unwrap();
+    // 重复 purge 幂等。
+    let again = db.purge_request_snapshots().await.unwrap();
+    assert_eq!(again.rows, 0);
+    assert_eq!(again.bytes, 0);
+}
+
+#[tokio::test]
 async fn timeline_page_reads_latest_then_strictly_older_bounded_windows() {
     let dir = tempfile::tempdir().unwrap();
     let db = Store::open(&dir.path().join("events.db")).await.unwrap();

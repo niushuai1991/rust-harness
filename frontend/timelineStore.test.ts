@@ -13,14 +13,36 @@ function page(sessionId:string,from:number,to:number,olderCursor:string|null,has
 beforeEach(()=>useChat.setState({events:{},timelines:{},timelineLru:[],streams:{},statuses:{}}));
 
 describe('timeline page cache',()=>{
- it('replaces the latest page and prepends at most three older pages',()=>{
+ it('prepends older pages without a page-count ceiling',()=>{
   const state=useChat.getState();
-  state.replaceTimelinePage('a',page('a',161,240,'161',true));
+  state.replaceTimelinePage('a',page('a',321,400,'321',true));
+  state.prependTimelinePage('a',page('a',241,320,'241',true));
+  state.prependTimelinePage('a',page('a',161,240,'161',true));
   state.prependTimelinePage('a',page('a',81,160,'81',true));
-  state.prependTimelinePage('a',page('a',1,80,'1',true));
+  state.prependTimelinePage('a',page('a',1,80,null,false));
 
-  expect(useChat.getState().events.a.map(item=>item.seq)).toEqual(Array.from({length:240},(_,index)=>String(index+1)));
-  expect(useChat.getState().timeline('a')).toMatchObject({olderCursor:'1',pagesLoaded:3,reachedPageLimit:true});
+  expect(useChat.getState().events.a.map(item=>item.seq)).toEqual(Array.from({length:400},(_,index)=>String(index+1)));
+  expect(useChat.getState().timeline('a')).toMatchObject({olderCursor:null,hasOlder:false,pagesLoaded:5,loadedOlder:true});
+ });
+
+ it('splits a full live page instead of dropping its oldest events',()=>{
+  const state=useChat.getState();
+  state.replaceTimelinePage('a',page('a',1,200,null,false));
+  state.receive({type:'durable',event:event('a',201)});
+
+  expect(useChat.getState().events.a.map(item=>item.seq)).toEqual(Array.from({length:201},(_,index)=>String(index+1)));
+  expect(useChat.getState().timeline('a')?.pages).toHaveLength(2);
+  expect(useChat.getState().timeline('a')).toMatchObject({loadedOlder:false});
+ });
+
+ it('keeps newer events when a snapshot that precedes them is reloaded',()=>{
+  const state=useChat.getState(),snapshot=page('a',1,200,null,false);
+  state.replaceTimelinePage('a',snapshot);
+  state.receive({type:'durable',event:event('a',201)});
+  state.receive({type:'durable',event:event('a',202)});
+  state.replaceTimelinePage('a',snapshot);
+
+  expect(useChat.getState().events.a.map(item=>item.seq)).toEqual(Array.from({length:202},(_,index)=>String(index+1)));
  });
 
  it('releases the least recently used inactive session after a fourth timeline is opened',()=>{

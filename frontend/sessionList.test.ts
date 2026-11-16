@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {filterByTitle,groupByProject,groupByTime,relativeLabel,timeGroupOf} from './sessionList';
+import {filterByTitle,formatFullTime,groupByProject,groupByTime,relativeLabel,timeGroupOf,withoutSubagents} from './sessionList';
 import type {SessionInfo,WorkspaceInfo} from './types';
 
 // 固定"现在"：本地时区 2026-11-08（周日）12:00，避免测试随真实时间漂移。
@@ -39,6 +39,16 @@ describe('relativeLabel',()=>{
  });
 });
 
+describe('formatFullTime',()=>{
+ it('输出本地时区的完整日期与时刻，分钟补零',()=>{
+  expect(formatFullTime(at(2026,11,8,9,5))).toBe('2026年11月8日 09:05');
+  expect(formatFullTime(at(2025,1,13,21,47))).toBe('2025年1月13日 21:47');
+ });
+ it('非法时间戳返回空串',()=>{
+  expect(formatFullTime('not-a-date')).toBe('');
+ });
+});
+
 describe('filterByTitle',()=>{
  it('按标题大小写不敏感过滤，空查询原样返回',()=>{
   const list=[session({id:'a',title:'ChatGPT OAuth 流式闭环'}),session({id:'b',title:'SQLite 快照'})];
@@ -46,6 +56,22 @@ describe('filterByTitle',()=>{
   expect(filterByTitle(list,'sqlite').map(s=>s.id)).toEqual(['b']);
   expect(filterByTitle(list,'OAUTH').map(s=>s.id)).toEqual(['a']);
   expect(filterByTitle(list,'不存在')).toEqual([]);
+ });
+});
+
+describe('withoutSubagents',()=>{
+ it('过滤子代理会话，保留主会话原顺序',()=>{
+  const list=[session({id:'a'}),session({id:'c1',parentId:'a',title:'依赖梳理子任务'}),session({id:'b'}),session({id:'c2',parentId:'a'})];
+  expect(withoutSubagents(list).map(s=>s.id)).toEqual(['a','b']);
+ });
+ it('全部为子代理会话时返回空数组',()=>{
+  const list=[session({id:'c1',parentId:'p'}),session({id:'c2',parentId:'p'})];
+  expect(withoutSubagents(list)).toEqual([]);
+ });
+ it('空列表与无 parentId 会话原样保留',()=>{
+  expect(withoutSubagents([])).toEqual([]);
+  const list=[session({id:'a'})];
+  expect(withoutSubagents(list)).toEqual(list);
  });
 });
 

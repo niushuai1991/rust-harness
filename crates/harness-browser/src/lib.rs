@@ -173,9 +173,9 @@ fn definition(name: &str) -> ToolDefinition {
     let text = json!({"type": "string", "minLength": 1});
     let (properties, required, description) = match name {
         "browser_navigate" => (
-            json!({"url": text, "action": {"type": "string", "enum": ["back", "reload"]}}),
+            json!({"url": text, "action": {"type": "string", "enum": ["back", "forward", "reload"]}}),
             vec![],
-            "在内置浏览器中打开 URL（仅 http/https/about:blank）；不传 url 且 action=back/reload 时后退或刷新当前页。导航后请先 browser_snapshot 再操作元素",
+            "在内置浏览器中打开 URL（仅 http/https/about:blank）；不传 url 且 action=back/forward/reload 时后退、前进或刷新当前页。导航后请先 browser_snapshot 再操作元素",
         ),
         "browser_snapshot" => (
             json!({}),
@@ -207,11 +207,7 @@ fn definition(name: &str) -> ToolDefinition {
             vec!["expression"],
             "在当前页面执行只读 JavaScript 表达式并返回 JSON 结果（读取页面状态用）",
         ),
-        "browser_close" => (
-            json!({}),
-            vec![],
-            "关闭浏览器会话并终止 headless 浏览器进程",
-        ),
+        "browser_close" => (json!({}), vec![], "关闭浏览器会话"),
         other => unreachable!("未注册的浏览器工具 {other}"),
     };
     ToolDefinition {
@@ -232,6 +228,7 @@ fn build_command(name: &str, args: &Value) -> AppResult<BrowserCommand> {
     Ok(match name {
         "browser_navigate" => match args["action"].as_str() {
             Some("back") => BrowserCommand::Back,
+            Some("forward") => BrowserCommand::Forward,
             Some("reload") => BrowserCommand::Reload,
             Some(other) => {
                 return Err(AppError::new(

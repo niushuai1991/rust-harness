@@ -1,4 +1,6 @@
 mod artifact_commands;
+#[cfg(windows)]
+mod browser_backend;
 mod commands;
 mod desktop;
 mod plugin_commands;
@@ -68,9 +70,30 @@ pub fn run() {
             harness_orchestration::install(runtime.clone())
         })?;
         app.manage(orchestration);
-        let browser =
-            tauri::async_runtime::block_on(async { harness_browser::install(runtime.clone()) })?;
-        app.manage(browser);
+        // 桌面端注入可视浏览器后端：browser_* 工具直接驱动「网页」面板的 WebView2；
+        // 非 Windows（无 WebView2）保持 headless CDP 后端。
+        #[cfg(windows)]
+        {
+            let bridge = browser_backend::new_bridge(app.handle().clone());
+            let screenshots_dir = runtime
+                .workspaces
+                .data_dir()
+                .join("browser")
+                .join("screenshots");
+            let factory = browser_backend::WebView2Factory::new(bridge, screenshots_dir);
+            app.manage(factory.backend());
+            let browser = tauri::async_runtime::block_on(async {
+                harness_browser::install_with(runtime.clone(), factory)
+            })?;
+            app.manage(browser);
+        }
+        #[cfg(not(windows))]
+        {
+            let browser = tauri::async_runtime::block_on(async {
+                harness_browser::install(runtime.clone())
+            })?;
+            app.manage(browser);
+        }
         app.manage(runtime);
         desktop::setup(app)?;
         #[cfg(windows)]
@@ -159,7 +182,11 @@ mod tests {
 mod web_link_tests {
     #[test]
     fn accepts_only_absolute_http_and_https_urls() {
-        for url in ["https://example.com/a", "http://localhost:8080/"] {
+        for url in [
+            "https://example.com/a",
+            "http://localhost:8080/",
+            "about:blank",
+        ] {
             assert!(super::web_panel::validated_url(url).is_ok());
         }
         assert!(super::web_panel::external_url("http://127.0.0.1:1420/").is_ok());
