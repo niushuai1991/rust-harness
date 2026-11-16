@@ -6,7 +6,8 @@ mod secrets;
 mod shell;
 mod workspace;
 pub use paths::{
-    list_files, read_file, read_file_bounded, read_file_bounded_sized, resolve_path, write_file,
+    DATA_DIR_NAME, default_data_dir, home_dir, list_files, read_file, read_file_bounded,
+    read_file_bounded_sized, resolve_data_dir, resolve_path, write_file,
 };
 pub use pty::{OutputBuffer, PtyService, READ_CAP, SandboxedPty};
 pub use secrets::{delete_secret, get_secret, set_secret};

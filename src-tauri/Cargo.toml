@@ -37,7 +37,6 @@ async-trait.workspace = true
 base64.workspace = true
 chrono.workspace = true
 reqwest.workspace = true
-dirs.workspace = true
 tracing-subscriber.workspace = true
 specta-typescript = "0.0.12"
 

@@ -12,7 +12,7 @@ use std::path::PathBuf;
 )]
 #[command(subcommand_required = true, arg_required_else_help = true)]
 struct Cli {
-    /// 数据目录（默认 RUST_HARNESS_DATA_DIR 或 %LOCALAPPDATA%\\RustHarness）
+    /// 数据目录（默认 RUST_HARNESS_DATA_DIR 或 ~/.RustHarness）
     #[arg(long, global = true, value_name = "PATH")]
     data_dir: Option<PathBuf>,
     #[command(subcommand)]
@@ -65,15 +65,7 @@ enum Commands {
 }
 
 fn data_dir(cli: &Cli) -> AppResult<PathBuf> {
-    match &cli.data_dir {
-        Some(path) => Ok(path.clone()),
-        None => match std::env::var_os("RUST_HARNESS_DATA_DIR") {
-            Some(value) => Ok(value.into()),
-            None => Ok(dirs::data_local_dir()
-                .ok_or_else(|| AppError::new("DATA_DIR", "无法定位数据目录"))?
-                .join("RustHarness")),
-        },
-    }
+    harness_platform::resolve_data_dir(cli.data_dir.clone())
 }
 
 #[tokio::main]

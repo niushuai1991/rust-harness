@@ -71,6 +71,12 @@ cargo run -p harness-cli -- acp
 
 同一数据目录只允许一个宿主进程；桌面运行时请给 CLI 指定独立 `--data-dir`。
 
+默认数据目录为 `~/.RustHarness`（Windows `%USERPROFILE%\.RustHarness`），可用 `--data-dir` 或 `RUST_HARNESS_DATA_DIR` 覆盖。从旧版本升级不会自动迁移 `%LOCALAPPDATA%\RustHarness`；请先关闭桌面端与 CLI 再手工移动（若新目录已被启动过，先确认其中没有需要保留的数据并删除空目录）：
+
+```powershell
+Move-Item -LiteralPath "$env:LOCALAPPDATA\RustHarness" -Destination "$env:USERPROFILE\.RustHarness"
+```
+
 ## 🏗 架构
 
 - 桌面宿主 Tauri 2 + React 19；SQLite（WAL）事件存储为唯一事实来源，支持游标、恢复、全文检索与 JSONL 导出。
