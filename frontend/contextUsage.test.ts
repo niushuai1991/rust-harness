@@ -127,7 +127,11 @@ describe('cacheHitFromEvents',()=>{
 });
 
 describe('formatHitRate',()=>{
- it('整数百分比不带小数',()=>{expect(formatHitRate(800,1000)).toBe('80%')});
- it('最多一位小数',()=>{expect(formatHitRate(1,3)).toBe('33.3%')});
- it('全部命中为 100%',()=>{expect(formatHitRate(500,500)).toBe('100%')});
+ it('整数百分比也补足两位小数',()=>{expect(formatHitRate(800,1000)).toBe('80.00%')});
+ it('无限小数四舍五入到两位',()=>{
+  expect(formatHitRate(1,3)).toBe('33.33%');
+  expect(formatHitRate(2,3)).toBe('66.67%');
+ });
+ it('全部命中为 100.00%',()=>{expect(formatHitRate(500,500)).toBe('100.00%')});
+ it('零命中为 0.00%',()=>{expect(formatHitRate(0,1000)).toBe('0.00%')});
 });
