@@ -407,6 +407,10 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .settings-local-note>span{display:flex;flex-direction:column;gap:2px}
 .settings-local-note strong{font-size:10px;font-weight:600}
 .settings-local-note small{font-size:9px}
+.settings-version-note{display:flex;align-items:center;gap:9px;padding:4px 9px 12px;color:#989f98}
+.settings-version-note>span{display:flex;flex-direction:column;gap:2px}
+.settings-version-note strong{font-size:10px;font-weight:600}
+.settings-version-note small{font-size:9px}
 .settings-back-button{width:100%;justify-content:flex-start;border:0;background:transparent;padding:10px 11px;color:#59625c;font-size:11px}
 .settings-back-button svg{transform:rotate(180deg)}
 .settings-back-button:hover{background:#ebeeea}

@@ -1,5 +1,6 @@
 import {useEffect,useRef,useState,type ReactNode} from 'react';
-import {ArrowRight,Archive,Bookmark,Check,ChevronRight,Cpu,Folder,Gauge,KeyRound,Layers,Plug,Settings,ShieldCheck,Sparkles,Terminal,Undo2,X,type LucideIcon} from 'lucide-react';
+import {ArrowRight,Archive,Bookmark,Check,ChevronRight,Cpu,Folder,Gauge,Info,KeyRound,Layers,Plug,Settings,ShieldCheck,Sparkles,Terminal,Undo2,X,type LucideIcon} from 'lucide-react';
+import {getVersion} from '@tauri-apps/api/app';
 import {relativeLabel} from './sessionList';
 import type {SessionInfo,ModelConfig} from './types';
 import {PerformancePanel} from './PerformancePanel';
@@ -30,8 +31,10 @@ const INTRO:Record<SettingsCategoryId,string>={
 
 export function SettingsPage({onClose,onOpenPanel,archivedSessions,projectName,onRestore,models,onModelsSaved,initialSection}:{onClose:()=>void;onOpenPanel:(panel:SettingsPanelId)=>void;archivedSessions:SessionInfo[];projectName:(id:string)=>string;onRestore:(id:string)=>void;models:ModelConfig[];onModelsSaved:()=>Promise<void>;initialSection?:SettingsCategoryId}){
  const [active,setActive]=useState<SettingsSectionId>(initialSection??'overview');
+ const [version,setVersion]=useState('');
  const dialogRef=useRef<HTMLDivElement>(null),closeRef=useRef(onClose);
  closeRef.current=onClose;
+ useEffect(()=>{let alive=true;getVersion().then(v=>{if(alive)setVersion(v)}).catch(()=>{});return()=>{alive=false}},[]);
  useEffect(()=>{
   const previous=document.activeElement as HTMLElement|null;
   const first=dialogRef.current?.querySelector<HTMLElement>('[data-settings-initial-focus]');
@@ -61,7 +64,7 @@ export function SettingsPage({onClose,onOpenPanel,archivedSessions,projectName,o
      {ITEMS.filter(item=>item.group===group).map(({id,title,icon:Icon})=><button type="button" key={id} className={`settings-nav-item${active===id?' active':''}`} aria-current={active===id?'page':undefined} onClick={()=>selectSection(id)}><Icon size={17}/><span>{title}</span>{active===id&&<ChevronRight size={14} className="settings-nav-chevron"/>}</button>)}
     </div>)}
    </nav>
-   <div className="settings-sidebar-foot"><div className="settings-local-note"><ShieldCheck size={16}/><span><strong>本地优先</strong><small>配置仅保存在本机</small></span></div><button type="button" className="settings-back-button" onClick={onClose}><ArrowRight size={16}/><span>返回工作台</span></button></div>
+   <div className="settings-sidebar-foot"><div className="settings-local-note"><ShieldCheck size={16}/><span><strong>本地优先</strong><small>配置仅保存在本机</small></span></div>{version&&<div className="settings-version-note"><Info size={16}/><span><strong>Rust Harness</strong><small>版本 {version}</small></span></div>}<button type="button" className="settings-back-button" onClick={onClose}><ArrowRight size={16}/><span>返回工作台</span></button></div>
   </aside>
   <section className="settings-main" aria-label="设置内容">
    <header className="settings-topbar"><div className="settings-breadcrumb"><span>设置</span>{selected&&<><ChevronRight size={14}/><strong>{selected.title}</strong></>}</div><div className="settings-top-actions"><span className="settings-preview-badge"><Sparkles size={13}/>布局预览</span><button type="button" className="settings-close" aria-label="关闭设置，返回工作台" title="关闭设置" onClick={onClose}><X size={18}/></button></div></header>

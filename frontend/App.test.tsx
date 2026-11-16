@@ -12,6 +12,7 @@ import type {LiveEvent,SessionEvent} from './types';
 const mocks=vi.hoisted(()=>({command:vi.fn(),send:vi.fn()}));
 vi.mock('./api',()=>({desktop:()=>true,command:mocks.command,send:mocks.send,errorText:(e:unknown)=>e instanceof Error?e.message:String(e)}));
 vi.mock('@tauri-apps/plugin-dialog',()=>({open:vi.fn(),save:vi.fn()}));
+vi.mock('@tauri-apps/api/app',()=>({getVersion:vi.fn(async()=>'0.1.6')}));
 const event=(id:string,sessionId:string,seq:string,content:string):SessionEvent=>({id,sessionId,seq,kind:'assistant.message',data:{content},createdAt:''});
 const timeline=(sessionId:string,events:SessionEvent[])=>({sessionId,events,olderCursor:null,throughSeq:events[events.length-1]?.seq??'0',hasOlder:false});
 // 启动默认进入新会话草稿态（不自动打开历史会话）；需要会话上下文的测试先从侧栏打开对应会话。
@@ -215,6 +216,12 @@ describe('设置入口',()=>{
   fireEvent.click(within(page).getByRole('button',{name:'关闭设置，返回工作台'}));
   expect(screen.queryByRole('dialog',{name:'设置'})).not.toBeInTheDocument();
   expect(screen.getByText('内容 a')).toBeInTheDocument();
+ });
+ it('设置页侧栏底部显示软件版本号',async()=>{
+  await renderOpenA();
+  fireEvent.click(screen.getByRole('button',{name:'设置'}));
+  const page=await screen.findByRole('dialog',{name:'设置'});
+  expect(await within(page).findByText(/版本 0\.1\.6/)).toBeInTheDocument();
  });
 });
 describe('聊天交互',()=>{
