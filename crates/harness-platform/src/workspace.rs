@@ -77,8 +77,18 @@ impl WorkspaceManager {
         paths::check(&dir)?;
         let mut record: Record =
             serde_json::from_slice(&paths::bytes(&dir, "record.json")?).map_err(io)?;
-        if record.info.id != id || Path::new(&record.info.replica_path) != dir.join("root") {
+        if record.info.id != id {
             return Err(AppError::new("INVALID_WORKSPACE", id));
+        }
+        // replica_path 是派生值：创建时恒为 <数据目录>/workspaces/<id>/root。数据目录
+        // 整体搬迁（如旧版 %LOCALAPPDATA%\RustHarness 手工迁移到 ~/.RustHarness）后，
+        // 旧记录内嵌的旧位置绝对路径不再匹配，与下方 name 归一化同一模式就地自愈回写，
+        // 使搬迁后的工作区仍可加载；自愈值恒为受控路径，篡改无逃逸面。id 不匹配
+        // （记录被移入错误目录）仍拒绝。
+        let root = dir.join("root");
+        if Path::new(&record.info.replica_path) != root {
+            record.info.replica_path = root.to_string_lossy().into_owned();
+            let _ = self.save(&record);
         }
         // 旧记录（无 name 字段）加载时归一化为目录名并立即回写补齐；回写为原子替换，
         // 失败不阻塞读取（内存归一化已生效），下次加载会再尝试。

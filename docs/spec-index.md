@@ -9,7 +9,7 @@
 | [总体规范](specs/overall.md) | 2026-11-03（设计确认） | 全局架构、模块职责、安全不变量、交付阶段划分与阶段验收要求。 |
 | [双供应商、多协议接入](specs/multi-protocol.md) | 2026-11-04（计划批准） | 固定供应商目录、三协议适配、配置迁移及桌面和 CLI 接入。 |
 | [P1 验收与缺口补齐](specs/p1-acceptance.md) | 2026-11-04（验收启动）；2026-11-16（显式清理新数据根）修订 | P1 验收范围、附件及插件缺口、安装清理和完成门槛。 |
-| [CLI 命令行 Agent 调用](specs/cli.md) | 2026-11-05（计划拟制）；2026-11-16（默认数据目录）修订 | `harness` 命令行 run/chat/diff/apply/models/sessions 能力，提供命令行调用入口。 |
+| [CLI 命令行 Agent 调用](specs/cli.md) | 2026-11-05（计划拟制）；2026-11-16（默认数据目录；搬迁后工作区记录自愈）修订 | `harness` 命令行 run/chat/diff/apply/models/sessions 能力，提供命令行调用入口。 |
 | [ACP 协议接口](specs/acp.md) | 2026-11-06（计划拟制） | `harness acp` 子命令：Agent Client Protocol v1 agent 端，官方 Rust SDK，供编辑器客户端接入。 |
 | [LSP 语言服务集成](specs/lsp.md) | 2026-11-06（计划拟制） | P3 提前项：只读五件套 LSP 工具（诊断/悬停/定义/引用/符号），通用 server 配置，默认 rust-analyzer。 |
 | [内置浏览器集成](specs/browser.md) | 2026-11-06（计划批准）；2026-11-16（契约新增 forward、后端复用面公开；桌面可视后端落地）修订 | Agent 会话 browser_* 工具组：系统 Edge/Chrome headless + 自研轻量 CDP，DevToolsActivePort 就绪检测与 Job Object 进程树清理；桌面端 WebView2 可视后端与「网页」面板人机共用同一实例。 |
@@ -26,7 +26,7 @@
 | [自动化任务（周期调度）](specs/automation.md) | 2026-11-07（计划拟制） | 桌面端用户可管理的周期自动化任务：单次/每天/每周/每月/每年五类周期（24 小时制、单次含秒）、可选绑定会话或自动新建会话投递回合；缺日跳过、错过不补跑；独立管理面板（列表/启停/编辑/删除/立即执行/运行历史）。 |
 | [Skills（技能）支持](specs/skills.md) | 2026-11-07（计划批准） | 技能目录（项目级 `.agents/skills/` + 用户级 `~/.agents/skills/` + 兜底扫描）、frontmatter 解析、catalog 注入系统提示、`$name` 显式提及全文注入、禁用名单落库；CLI 管理子命令/`/skills`/`$` 补全与桌面面板/composer 补全。 |
 | [会话列表「最近 / 项目」视图](specs/session-list.md) | 2026-11-08（计划拟制）；2026-11-09 / 2026-11-12 / 2026-11-13（含启动默认草稿态）/ 2026-11-14 / 2026-11-17 修订 | 桌面侧栏任务列表按最近（时间分组跨工作区）/ 按项目（分组折叠）两种视图、项目置顶（`workspace_set_pinned`）、标题搜索与跨工作区跳转、「新建聊天」草稿态、启动默认进入草稿态、首问自动生成标题、右键重命名、会话存档（`session_archive`/`session_restore`，schema v4）、设置页存档管理与会话行标题渐隐悬停浮层（行内无日期，存档后立即收起）。 |
-| [会话用量环形指示器与上下文窗口](specs/context-usage-indicator.md) | 2026-11-08（计划批准）；2026-11-13（上下文窗口段新增缓存命中率行）修订 | 会话输入区用量环形（本体显示当前上下文占用）+ 双段悬停明细卡（上下文窗口含缓存命中率/套餐额度）；模型目录 `context_window` 元数据；ChatGPT `/wham/usage` 订阅用量接入。 |
+| [会话用量环形指示器与上下文窗口](specs/context-usage-indicator.md) | 2026-11-08（计划批准）；2026-11-13（上下文窗口段新增缓存命中率行）修订；2026-11-16（命中率固定两位小数）修订 | 会话输入区用量环形（本体显示当前上下文占用）+ 双段悬停明细卡（上下文窗口含缓存命中率/套餐额度）；模型目录 `context_window` 元数据；ChatGPT `/wham/usage` 订阅用量接入。 |
 | [每回合 Token 预算](specs/token-usage-budget.md) | 2026-11-09（计划批准） | 每条用户消息独立累计输出与未缓存输入 token，父子代理共享额度，默认 1M 且可调；UsageRing 进度展示与设置。 |
 | [权限模式（五档审批策略）](specs/permission-modes.md) | 2026-11-09（计划批准） | 五档权限模式统一定义（ask/edit/auto/never/guarded）与四端接入：CLI `--approval`、预设 approval 字段、ACP modes、桌面发送框权限模式选择器（KV 默认档）；guarded 档危险 shell 命令识别规则。 |
 | [工作区（项目）命名](specs/workspace-naming.md) | 2026-11-09（计划批准） | 工作区显示名落 `record.json`（非可选 String，创建未填/空白归一化为源目录名，旧记录加载归一化）；桌面创建命名弹窗与「按项目」组头重命名按钮；各显示点统一消费名称字段；CLI 不提供命名参数。 |

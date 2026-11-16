@@ -97,11 +97,11 @@ export function cacheHitFromEvents(events:SessionEvent[]):{cacheRead:number;tota
  return totalInput>0?{cacheRead,totalInput}:null;
 }
 
-/// 命中率显示：80 → "80%"，1/3 → "33.3%"（最多一位小数）。
+/// 命中率显示：固定两位小数，80 → "80.00%"，1/3 → "33.33%"，500/500 → "100.00%"。
 export function formatHitRate(cacheRead:number,totalInput:number):string{
  const percent=Math.min(100,Math.max(0,cacheRead/totalInput*100));
- const rounded=Math.round(percent*10)/10;
- return `${Number.isInteger(rounded)?rounded:rounded.toFixed(1)}%`;
+ const text=percent.toFixed(2);
+ return `${text}%`;
 }
 
 /// token 数缩写：950 → 950，62_100 → 62.1k，200_000 → 200k，1_250_000 → 1.3M。
