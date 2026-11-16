@@ -313,6 +313,38 @@ impl Installed {
         });
         Ok(updated)
     }
+    /// 项目合并的工作区引用迁移：把 automation 与会话定时任务 KV 中挂在
+    /// `from` 的条目改挂到 `to`（绑定会话不变），返回 (自动化数, 定时任务数)。
+    /// 与调度器共用 `schedules_lock` 串行化，避免与 tick 并发写。
+    pub async fn workspace_retarget(&self, from: &str, to: &str) -> AppResult<(usize, usize)> {
+        if from.is_empty() || to.is_empty() {
+            return Err(AppError::new("INVALID_INPUT", "工作区不能为空"));
+        }
+        let _lock = self.state.schedules_lock.lock().await;
+        let mut moved_automations = 0;
+        let mut automations = self.state.automations().await?;
+        for a in &mut automations {
+            if a.workspace_id == from {
+                a.workspace_id = to.to_owned();
+                moved_automations += 1;
+            }
+        }
+        if moved_automations > 0 {
+            self.state.save_automations(&automations).await?;
+        }
+        let mut moved_schedules = 0;
+        let mut schedules = self.state.schedules().await?;
+        for s in &mut schedules {
+            if s.workspace_id == from {
+                s.workspace_id = to.to_owned();
+                moved_schedules += 1;
+            }
+        }
+        if moved_schedules > 0 {
+            self.state.save(&schedules).await?;
+        }
+        Ok((moved_automations, moved_schedules))
+    }
 }
 impl Drop for Installed {
     fn drop(&mut self) {
