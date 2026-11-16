@@ -562,6 +562,8 @@ export default function App(){
  }
  // 存档会话：后端落库后从任务列表移入归档集合；当前会话被存档时切到同项目下一个会话。
  async function archiveSession(item:SessionInfo){
+  // 存档会从列表移除该行，光标无从触发 mouseLeave，须主动收起悬停浮层避免驻留。
+  dismissSessionPop();
   try{
    const updated=await command<SessionInfo>('session_archive',{sessionId:item.id});
   setAllSessions(old=>old.filter(s=>s.id!==item.id));
