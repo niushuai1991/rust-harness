@@ -320,6 +320,22 @@ impl WorkspaceManager {
         self.save(&record)?;
         Ok(record.info)
     }
+    /// 删除项目记录目录（合并同源重复项目时清理被并入方）：确认无运行时或
+    /// 同步占用（独占锁）后整目录删除，隔离副本与备份一并移除。会话、自动化
+    /// 与偏好 KV 的迁移由调用方先行完成；记录不存在报 NOT_FOUND，非 UUID 报
+    /// INVALID_ID。源项目磁盘目录不受影响；worktree 模式源项目下已代建的会话
+    /// worktree 由调用方按返回登记提示用户手动清理。
+    pub fn delete(&self, id: &str) -> AppResult<()> {
+        let dir = self.dir(id)?;
+        if !dir.exists() {
+            return Err(AppError::new("NOT_FOUND", id));
+        }
+        paths::check(&dir)?;
+        let _lock = self.lock(id, true)?;
+        drop(_lock);
+        fs::remove_dir_all(dir).map_err(io)?;
+        Ok(())
+    }
     /// 宿主为会话代建 worktree（worktree 执行模式，会话首个 turn 前懒调用）。
     ///
     /// 幂等：已登记的会话直接返回。路径为 `<源项目>/.worktrees/harness-<会话 id 前 8 位>`，

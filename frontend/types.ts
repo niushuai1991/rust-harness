@@ -8,6 +8,8 @@ export interface WorkspaceInfo {id:string;sourcePath:string;replicaPath:string;c
 // 项目移除（隐藏）汇总（workspace_remove）与重开重新显示（workspace_reveal_hidden）。
 export interface WorkspaceRemovalSummary {workspaceId:string;stoppedSessions:number}
 export interface WorkspaceRevealSummary {workspaceId:string;revealed:number}
+// 项目合并（workspace_merge）：同源重复项目的会话/自动化改挂与被并入方记录删除。
+export interface WorkspaceMergeSummary {fromWorkspaceId:string;toWorkspaceId:string;movedSessions:number;movedAutomations:number;movedSchedules:number;leftoverWorktrees:string[]}
 export interface SessionInfo {id:string;workspaceId:string;title:string;createdAt:string;updatedAt:string;parentId?:string|null;archivedAt?:string|null}
 export interface SessionEvent {id:string;sessionId:string;seq:string;kind:string;data:Record<string,unknown>;createdAt:string}
 export interface TimelinePage {sessionId:string;events:SessionEvent[];olderCursor:string|null;throughSeq:string;hasOlder:boolean}

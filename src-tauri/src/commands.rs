@@ -124,6 +124,127 @@ pub async fn workspace_reveal_hidden(
         revealed,
     })
 }
+/// 项目合并结果汇总（前端提示与刷新用）。
+#[derive(Debug, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceMergeSummary {
+    pub from_workspace_id: String,
+    pub to_workspace_id: String,
+    // usize 会触发 specta BigInt 导出禁令；计数用 u32 足够。
+    #[specta(type = u32)]
+    pub moved_sessions: usize,
+    #[specta(type = u32)]
+    pub moved_automations: usize,
+    #[specta(type = u32)]
+    pub moved_schedules: usize,
+    /// 被并入方为 worktree 模式时，源项目下宿主代建的会话 worktree 残留路径
+    /// （记录目录已删除，登记丢失，路径仅供用户手动清理）。
+    pub leftover_worktrees: Vec<String>,
+}
+
+/// 合并同源重复项目：把 `from` 的全部会话（含归档）、自动化与定时任务引用改挂
+/// 到 `to`，清理置顶/隐藏偏好中的 `from` 项，最后删除 `from` 的项目记录目录
+/// （隔离副本与备份一并移除，副本未同步的改动不可恢复）。两个项目的源目录
+/// canonicalize 后必须一致（NOT_DUPLICATE）；`from` 有运行中会话时按 `stopRunning`
+/// 确认停止。仅桌面命令，CLI / JSON-RPC / ACP 不暴露。
+#[tauri::command]
+#[specta::specta]
+pub async fn workspace_merge(
+    state: Backend<'_>,
+    orch: Orchestration<'_>,
+    from_workspace_id: String,
+    to_workspace_id: String,
+    stop_running: bool,
+) -> AppResult<WorkspaceMergeSummary> {
+    if from_workspace_id == to_workspace_id {
+        return Err(AppError::new("INVALID_INPUT", "合并双方不能是同一个项目"));
+    }
+    let from = state.workspaces.get(&from_workspace_id)?;
+    let to = state.workspaces.get(&to_workspace_id)?;
+    let from_source = std::fs::canonicalize(&from.source_path).map_err(error)?;
+    let to_source = std::fs::canonicalize(&to.source_path).map_err(error)?;
+    if from_source != to_source {
+        return Err(AppError::new(
+            "NOT_DUPLICATE",
+            "两个项目的源目录不同，无法合并",
+        ));
+    }
+    let running: Vec<String> = state
+        .list_sessions(Some(&from_workspace_id), None)
+        .await?
+        .into_iter()
+        .map(|s| s.id)
+        .filter(|id| state.is_active(id))
+        .collect();
+    if !running.is_empty() && !stop_running {
+        return Err(AppError::new(
+            "WORKSPACE_RUNNING",
+            format!("项目还有 {} 个会话正在运行", running.len()),
+        ));
+    }
+    for id in &running {
+        state.cancel(id);
+    }
+    // 取消是异步的：等待回合退出，避免删除记录后回合继续写事件。
+    for _ in 0..200 {
+        if running.iter().all(|id| !state.is_active(id)) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let moved_sessions = state
+        .store
+        .move_sessions(&from_workspace_id, &to_workspace_id)
+        .await?;
+    let (moved_automations, moved_schedules) = orch
+        .workspace_retarget(&from_workspace_id, &to_workspace_id)
+        .await?;
+    // 偏好清理：from 记录即将删除，置顶/隐藏集合中的残留项一并移除；不改变 to 的状态。
+    if state
+        .store
+        .pinned_workspaces()
+        .await?
+        .iter()
+        .any(|id| id == &from_workspace_id)
+    {
+        state
+            .store
+            .set_workspace_pinned(&from_workspace_id, false)
+            .await?;
+    }
+    if state
+        .store
+        .hidden_workspaces()
+        .await?
+        .iter()
+        .any(|id| id == &from_workspace_id)
+    {
+        state
+            .store
+            .set_workspace_hidden(&from_workspace_id, false)
+            .await?;
+    }
+    // worktree 残留：源项目下宿主代建的会话 worktree 不自动删除（不碰用户源项目）。
+    let leftover_worktrees = from
+        .worktrees
+        .values()
+        .map(|w| w.path.clone())
+        .filter(|p| std::path::Path::new(p).is_dir())
+        .collect();
+    let manager = state.workspaces.clone();
+    let removed_id = from_workspace_id.clone();
+    tokio::task::spawn_blocking(move || manager.delete(&removed_id))
+        .await
+        .map_err(error)??;
+    Ok(WorkspaceMergeSummary {
+        from_workspace_id,
+        to_workspace_id,
+        moved_sessions: usize::try_from(moved_sessions).unwrap_or_default(),
+        moved_automations,
+        moved_schedules,
+        leftover_worktrees,
+    })
+}
 /// 会话列表「项目」视图的置顶切换；先校验工作区存在，返回更新后的工作区信息。
 #[tauri::command]
 #[specta::specta]
@@ -1152,6 +1273,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         workspace_open,
         workspace_remove,
         workspace_reveal_hidden,
+        workspace_merge,
         workspace_rename,
         workspace_set_pinned,
         workspace_diff,

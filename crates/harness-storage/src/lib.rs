@@ -351,6 +351,21 @@ impl Store {
         .map_err(db_error)?;
         Ok(rows.iter().map(session_row).collect())
     }
+    /// 项目合并的会话迁移：把源工作区的全部会话（含归档）挂到目标工作区，
+    /// 返回迁移数；源工作区无会话时为幂等空操作。事件与 FTS 索引按会话 id
+    /// 关联，不随 workspace_id 变化。
+    pub async fn move_sessions(&self, from: &str, to: &str) -> AppResult<u64> {
+        if from.is_empty() || to.is_empty() {
+            return Err(AppError::new("INVALID_INPUT", "工作区不能为空"));
+        }
+        let result = sqlx::query("UPDATE sessions SET workspace_id=? WHERE workspace_id=?")
+            .bind(to)
+            .bind(from)
+            .execute(&self.pool)
+            .await
+            .map_err(db_error)?;
+        Ok(result.rows_affected())
+    }
     pub async fn append(&self, session: &str, kind: &str, data: Value) -> AppResult<SessionEvent> {
         let mut tx = self.pool.begin().await.map_err(db_error)?;
         let event = append_tx(&mut tx, session, kind, data).await?;
