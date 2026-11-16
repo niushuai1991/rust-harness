@@ -19,7 +19,7 @@ const timeline=(sessionId:string,events:SessionEvent[])=>({sessionId,events,olde
 async function openSidebarSession(title:RegExp){fireEvent.click(await screen.findByRole('button',{name:title}))}
 async function openSessionA(){await openSidebarSession(/会话 A/);await screen.findByText('内容 a')}
 async function renderOpenA(){const utils=render(<App/>);await openSessionA();return utils}
-beforeEach(()=>{useChat.setState({events:{},streams:{},statuses:{},timelines:{},timelineLru:[]});useSidePanel.getState().reset();mocks.command.mockReset();mocks.send.mockReset();mocks.command.mockImplementation(async(name:string,args:any)=>{
+beforeEach(()=>{useChat.setState({events:{},streams:{},statuses:{},timelines:{},timelineLru:[]});useSidePanel.getState().reset();mocks.command.mockReset();mocks.send.mockReset();vi.mocked(open).mockReset();vi.mocked(save).mockReset();mocks.command.mockImplementation(async(name:string,args:any)=>{
  if(name==='workspace_list')return [{id:'w',sourcePath:'D:/project',replicaPath:'D:/copy',createdAt:'',name:'project'}];
  if(name==='model_list')return [{id:'m',name:'测试模型',compatibility:'standard',providerId:'custom',apiMode:'chatCompletions',maxOutputTokens:null,baseUrl:'https://example.test',model:'m',credentialRef:'',proxy:null,efforts:['low','high'],effort:null,enabled:true,builtin:false}];
  if(name==='provider_list')return [{id:'custom',name:'自定义供应商',builtin:false,compatibility:'standard',endpoints:[{apiMode:'chatCompletions',baseUrl:'https://example.test'}],defaultModel:'m',credentialRef:'',proxy:null,enabled:true,builtinModels:[],disabledModels:[]}];
@@ -232,7 +232,7 @@ describe('设置入口',()=>{
 describe('聊天交互',()=>{
  it('导出成功提示自动关闭，重复导出重新计时',async()=>{
   vi.mocked(save).mockResolvedValueOnce('D:/export.json').mockResolvedValueOnce('D:/export.json');
-  render(<App/>);await screen.findByText('内容 a');
+  await renderOpenA();
   vi.useFakeTimers();
   await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'导出会话'}))});
   expect(screen.getByText('会话已导出。')).toBeInTheDocument();
