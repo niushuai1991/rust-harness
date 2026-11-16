@@ -1,6 +1,6 @@
 # CLI 命令行 Agent 调用规范
 
-- 日期：2026-11-05（计划拟制）
+- 日期：2026-11-05（计划拟制）；2026-11-16（默认数据目录）修订
 - 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
 - 范围：`harness` 命令行 run/chat/diff/apply/models/sessions 能力，参考 codex CLI 设计（本地仓库 `D:\code\codex`）。
 
@@ -91,7 +91,7 @@ CLI 的作用域隔离无法纯客户端实现：runtime 在写入 `inbox.queued
 1. **REPL 形态**：简单 readline 循环加流式纯文本输出，不引入 ratatui 全屏 TUI。（体验升级已由[输入框斜杠快捷指令规范](slash-commands.md)落地：crossterm 行编辑与 `/` 补全弹窗，仍不做全屏 TUI。）
 2. **默认模型**：优先级为 `-m/--model` > settings 键 `cli.default_model`（经 `Store::get/set` 读写）> 报错并列出可用模型。`models default <id>` 设置前经 `models.list_models()` 校验存在，不存在拒绝保存；`models default`（无参）查看当前值；`models default --clear` 清除（写 `Null` 视为未设置）。
 3. **参数解析**：`clap 4`（derive）；`rpc` 与 `call` 行为保持不变。
-4. **数据目录**：维持现状（`--data-dir`、环境变量 `RUST_HARNESS_DATA_DIR`、默认 `%LOCALAPPDATA%\RustHarness`），`host.lock` 独占与桌面端互斥的关系不变。
+4. **数据目录**：`--data-dir` > 环境变量 `RUST_HARNESS_DATA_DIR` > 默认 `~/.RustHarness`（Windows `%USERPROFILE%\.RustHarness`）；不自动迁移旧 `%LOCALAPPDATA%\RustHarness`，需用户手工搬迁。`host.lock` 独占与桌面端互斥的关系不变。
 
 ## 命令规格
 
@@ -142,7 +142,7 @@ crates/harness-runtime/src/agent.rs
 └── （本规范的最小 runtime 增强：enqueue/execute 拆分、turn 事件含 messageId、cancel_message）
 
 crates/harness-cli/
-├── src/main.rs         # clap Parser + 子命令分发；保留 --data-dir 解析逻辑
+├── src/main.rs         # clap Parser + 子命令分发；--data-dir 解析委托 harness-platform
 ├── src/lib.rs          # JSON-RPC dispatch/serve
 ├── src/console.rs      # 渲染器（human：正文 stdout、工具/审批/推理 stderr；json：逐行 JSON）
 ├── src/approval.rs     # auto|ask|never 策略，作用域集合内审批处理

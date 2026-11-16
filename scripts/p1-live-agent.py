@@ -13,6 +13,27 @@ PROMPT = """执行这个小型验收任务，只使用 read、write 和 shell �
 4. 工具输出 PASS 后，简短回答已完成。不要创建子代理、计划、目标或使用其他工具。不读取环境变量或凭据，不自行同步原项目。
 """
 
+
+def data_dir_candidates():
+    configured = os.environ.get("RUST_HARNESS_DATA_DIR")
+    if configured:
+        yield Path(configured)
+    home = os.environ.get("USERPROFILE") or os.environ.get("HOME")
+    if home:
+        yield Path(home) / ".RustHarness"
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        yield Path(local) / "RustHarness"
+
+
+def settings_database():
+    for directory in data_dir_candidates():
+        database = directory / "harness.db"
+        if database.is_file():
+            return database
+    raise FileNotFoundError("未找到 harness.db；请先运行 harness，或将旧数据目录迁移到 ~/.RustHarness")
+
+
 def allowed(request):
     args = request.get("arguments", {})
     return ((request.get("tool") == "write" and args.get("path") == "greet.txt"
@@ -133,7 +154,7 @@ def main():
     if not output.is_relative_to((repo / ".cache").resolve()):
         raise ValueError("Acceptance output must be under repository .cache")
     output.mkdir(parents=True, exist_ok=False)
-    source_db = Path(os.environ["LOCALAPPDATA"]) / "RustHarness/harness.db"
+    source_db = settings_database()
     with sqlite3.connect(source_db.as_uri() + "?mode=ro", uri=True, timeout=5) as con:
         settings = {}
         for name in ("providers", "models"):

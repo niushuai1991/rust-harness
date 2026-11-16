@@ -43,13 +43,7 @@ pub fn run() {
         }
     }
     app.setup(|app| {
-        let root = std::env::var_os("RUST_HARNESS_DATA_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or(
-                dirs::data_local_dir()
-                    .ok_or("找不到本地数据目录")?
-                    .join("RustHarness"),
-            );
+        let root = harness_platform::resolve_data_dir(None)?;
         let runtime = tauri::async_runtime::block_on(harness_runtime::Runtime::open(root))?;
         // 桌面默认权限模式（KV 持久化）→ 运行时默认档：覆盖新会话与定时任务；会话内切档即时生效。
         tauri::async_runtime::block_on(async {

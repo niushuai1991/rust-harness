@@ -139,6 +139,7 @@ try {
     Check-Install '0.1.2'
     $markerValue = 'synthetic-p1-' + $manifest.runId
     $markers = @(
+        (Join-Path $env:USERPROFILE '.RustHarness\P1 中文 空格\retain.txt'),
         (Join-Path $env:LOCALAPPDATA 'RustHarness\P1 中文 空格\retain.txt'),
         (Join-Path $env:LOCALAPPDATA 'dev.rustharness.desktop\P1 中文 空格\retain.txt'),
         (Join-Path $env:APPDATA 'dev.rustharness.desktop\P1 中文 空格\retain.txt')
@@ -189,7 +190,7 @@ try {
     Check 'reinstall-before-selected-cleanup' ($code -eq 0) $code
     Check-Install $currentVersion
     # Synthetic guest junctions expose unsafe recursive deletion without mapping any host project.
-    $cleanupRoots = @((Join-Path $env:LOCALAPPDATA 'RustHarness'), (Join-Path $env:LOCALAPPDATA 'dev.rustharness.desktop'), (Join-Path $env:APPDATA 'dev.rustharness.desktop'))
+    $cleanupRoots = @((Join-Path $env:USERPROFILE '.RustHarness'), (Join-Path $env:LOCALAPPDATA 'RustHarness'), (Join-Path $env:LOCALAPPDATA 'dev.rustharness.desktop'), (Join-Path $env:APPDATA 'dev.rustharness.desktop'))
     foreach ($root in $cleanupRoots) {
         New-Item -ItemType Junction -Path (Join-Path $root 'P1 external link') -Target 'C:\P1 外部 fixture 空格' | Out-Null
     }

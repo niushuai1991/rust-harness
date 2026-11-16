@@ -4,10 +4,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Datelike, Days, Local, NaiveDate, TimeZone, Utc};
 use harness_contracts::*;
 use harness_platform::ShellService;
-use harness_runtime::{
-    ExternalTool, Registration, Runtime, ToolContext,
-    model::{ModelMessage, ModelProvider},
-};
+#[cfg(test)]
+use harness_runtime::model::ModelMessage;
+use harness_runtime::{ExternalTool, Registration, Runtime, ToolContext, model::ModelProvider};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{

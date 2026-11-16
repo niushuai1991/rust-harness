@@ -4,6 +4,27 @@ import argparse, datetime, json, os, shutil, sqlite3, sys, time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sdk/python"))
 from rust_harness import Harness
 
+
+def data_dir_candidates():
+    configured = os.environ.get("RUST_HARNESS_DATA_DIR")
+    if configured:
+        yield Path(configured)
+    home = os.environ.get("USERPROFILE") or os.environ.get("HOME")
+    if home:
+        yield Path(home) / ".RustHarness"
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        yield Path(local) / "RustHarness"
+
+
+def settings_database():
+    for directory in data_dir_candidates():
+        database = directory / "harness.db"
+        if database.is_file():
+            return database
+    raise FileNotFoundError("未找到 harness.db；请先运行 harness，或将旧数据目录迁移到 ~/.RustHarness")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--live", action="store_true", required=True)
@@ -15,7 +36,7 @@ def main():
     if not output.is_relative_to((repo / ".cache").resolve()):
         raise ValueError("Acceptance output must be under this repository's .cache")
     output.mkdir(parents=True, exist_ok=True)
-    source = Path(os.environ["LOCALAPPDATA"]) / "RustHarness/harness.db"
+    source = settings_database()
     con = sqlite3.connect(source.as_uri() + "?mode=ro", uri=True, timeout=5)
     settings = {}
     for name in ["providers", "models"]:

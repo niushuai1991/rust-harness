@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 #[path = "../src/uninstall.rs"]
 mod uninstall;
 
@@ -22,12 +24,14 @@ mod acceptance {
                     .as_nanos(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
+            fs::create_dir_all(root.join("profile")).unwrap();
             fs::create_dir_all(root.join("local")).unwrap();
             fs::create_dir_all(root.join("roaming")).unwrap();
             Self(root)
         }
         fn seed(&self) {
             for root in [
+                self.0.join("profile/.RustHarness"),
                 self.0.join("local/RustHarness"),
                 self.0.join("local/dev.rustharness.desktop"),
                 self.0.join("roaming/dev.rustharness.desktop"),
@@ -37,7 +41,11 @@ mod acceptance {
             }
         }
         fn purge(&self) -> Result<(), String> {
-            uninstall::purge_test_roots(&self.0.join("local"), &self.0.join("roaming"))
+            uninstall::purge_test_roots(
+                &self.0.join("profile"),
+                &self.0.join("local"),
+                &self.0.join("roaming"),
+            )
         }
     }
     impl Drop for Fixture {
@@ -47,13 +55,14 @@ mod acceptance {
     }
 
     #[test]
-    fn removes_three_fixed_roots_and_preserves_custom_project() {
+    fn removes_four_fixed_roots_and_preserves_custom_project() {
         let f = Fixture::new();
         f.seed();
         let custom = f.0.join("external custom project");
         fs::create_dir_all(&custom).unwrap();
         fs::write(custom.join("keep.txt"), "external").unwrap();
         f.purge().unwrap();
+        assert!(!f.0.join("profile/.RustHarness").exists());
         assert!(!f.0.join("local/RustHarness").exists());
         assert!(!f.0.join("local/dev.rustharness.desktop").exists());
         assert!(!f.0.join("roaming/dev.rustharness.desktop").exists());
@@ -61,6 +70,17 @@ mod acceptance {
             fs::read_to_string(custom.join("keep.txt")).unwrap(),
             "external"
         );
+    }
+
+    #[test]
+    fn legacy_roots_are_removed_when_new_root_is_absent() {
+        let f = Fixture::new();
+        f.seed();
+        fs::remove_dir_all(f.0.join("profile/.RustHarness")).unwrap();
+        f.purge().unwrap();
+        assert!(!f.0.join("local/RustHarness").exists());
+        assert!(!f.0.join("local/dev.rustharness.desktop").exists());
+        assert!(!f.0.join("roaming/dev.rustharness.desktop").exists());
     }
 
     #[test]
@@ -72,10 +92,11 @@ mod acceptance {
             .write(true)
             .create(true)
             .truncate(false)
-            .open(f.0.join("local/RustHarness/host.lock"))
+            .open(f.0.join("profile/.RustHarness/host.lock"))
             .unwrap();
         lock.try_lock().unwrap();
         assert!(f.purge().is_err());
+        assert!(f.0.join("profile/.RustHarness/retain.txt").exists());
         assert!(f.0.join("local/RustHarness/retain.txt").exists());
         assert!(
             f.0.join("local/dev.rustharness.desktop/retain.txt")
@@ -108,6 +129,7 @@ mod acceptance {
         let outside = f.0.join("outside");
         fs::create_dir_all(&outside).unwrap();
         fs::write(outside.join("keep.txt"), "external").unwrap();
+        junction(&f.0.join("profile/.RustHarness/project-link"), &outside);
         junction(&f.0.join("local/RustHarness/project-link"), &outside);
         fs::create_dir_all(f.0.join("local/RustHarness/nested")).unwrap();
         junction(&f.0.join("local/RustHarness/nested/deep-link"), &outside);
@@ -129,8 +151,8 @@ mod acceptance {
         let outside = f.0.join("outside");
         fs::create_dir_all(&outside).unwrap();
         fs::write(outside.join("keep.txt"), "external").unwrap();
-        fs::remove_dir_all(f.0.join("roaming/dev.rustharness.desktop")).unwrap();
-        junction(&f.0.join("roaming/dev.rustharness.desktop"), &outside);
+        fs::remove_dir_all(f.0.join("profile/.RustHarness")).unwrap();
+        junction(&f.0.join("profile/.RustHarness"), &outside);
         assert!(f.purge().is_err());
         assert!(f.0.join("local/RustHarness/retain.txt").exists());
         assert_eq!(
@@ -152,6 +174,10 @@ mod acceptance {
             .unwrap();
         assert!(f.purge().is_err());
         assert_eq!(
+            fs::read_to_string(f.0.join("profile/.RustHarness/retain.txt")).unwrap(),
+            "synthetic"
+        );
+        assert_eq!(
             fs::read_to_string(f.0.join("local/RustHarness/retain.txt")).unwrap(),
             "synthetic"
         );
@@ -163,12 +189,14 @@ mod acceptance {
             f.0.join("roaming/dev.rustharness.desktop/retain.txt")
                 .exists()
         );
-        assert!(!fs::read_dir(f.0.join("local")).unwrap().any(|entry| {
-            entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".rust-harness-uninstall-")
-        }));
+        for parent in ["profile", "local"] {
+            assert!(!fs::read_dir(f.0.join(parent)).unwrap().any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".rust-harness-uninstall-")
+            }));
+        }
     }
 }

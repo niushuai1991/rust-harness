@@ -6,6 +6,52 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// 用户主目录下的数据目录名。
+pub const DATA_DIR_NAME: &str = ".RustHarness";
+
+/// 用户主目录：`USERPROFILE` → `HOME` → 平台默认。
+pub fn home_dir() -> Option<PathBuf> {
+    ["USERPROFILE", "HOME"]
+        .into_iter()
+        .find_map(|key| {
+            std::env::var_os(key)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        })
+        .or_else(dirs::home_dir)
+}
+
+/// 默认数据目录 `<home>/.RustHarness`。
+pub fn default_data_dir() -> AppResult<PathBuf> {
+    home_dir()
+        .map(|home| home.join(DATA_DIR_NAME))
+        .ok_or_else(|| AppError::new("DATA_DIR", "无法定位用户主目录"))
+}
+
+/// 数据目录解析：显式参数 > `RUST_HARNESS_DATA_DIR` > 默认主目录点目录。
+pub fn resolve_data_dir(explicit: Option<PathBuf>) -> AppResult<PathBuf> {
+    resolve_data_dir_from(
+        home_dir(),
+        explicit,
+        std::env::var_os("RUST_HARNESS_DATA_DIR"),
+    )
+}
+
+fn resolve_data_dir_from(
+    home: Option<PathBuf>,
+    explicit: Option<PathBuf>,
+    env: Option<std::ffi::OsString>,
+) -> AppResult<PathBuf> {
+    if let Some(path) = explicit {
+        return Ok(path);
+    }
+    if let Some(path) = env {
+        return Ok(PathBuf::from(path));
+    }
+    home.map(|home| home.join(DATA_DIR_NAME))
+        .ok_or_else(|| AppError::new("DATA_DIR", "无法定位用户主目录"))
+}
+
 pub(crate) fn validate(relative: &str) -> AppResult<()> {
     if relative.is_empty()
         || relative.starts_with(['/', '\\'])
@@ -239,4 +285,44 @@ pub fn list_files(root: &Path) -> AppResult<Vec<String>> {
     }
     out.sort();
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_data_dir_wins_over_env_and_home() {
+        assert_eq!(
+            resolve_data_dir_from(
+                Some(PathBuf::from("C:/home")),
+                Some(PathBuf::from("C:/cli")),
+                Some("C:/env".into()),
+            )
+            .unwrap(),
+            PathBuf::from("C:/cli")
+        );
+    }
+
+    #[test]
+    fn env_data_dir_wins_over_home() {
+        assert_eq!(
+            resolve_data_dir_from(Some(PathBuf::from("C:/home")), None, Some("C:/env".into()),)
+                .unwrap(),
+            PathBuf::from("C:/env")
+        );
+    }
+
+    #[test]
+    fn falls_back_to_home_dot_dir() {
+        assert_eq!(
+            resolve_data_dir_from(Some(PathBuf::from("C:/home")), None, None).unwrap(),
+            PathBuf::from("C:/home").join(DATA_DIR_NAME)
+        );
+    }
+
+    #[test]
+    fn missing_home_is_an_error() {
+        assert!(resolve_data_dir_from(None, None, None).is_err());
+    }
 }

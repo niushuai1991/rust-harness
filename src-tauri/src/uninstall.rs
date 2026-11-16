@@ -51,6 +51,12 @@ mod windows {
         }
         Ok(())
     }
+    pub(super) const PROFILE: Guid = Guid {
+        a: 0x5e6c_858f,
+        b: 0x0e22,
+        c: 0x4760,
+        d: [0x9a, 0xfe, 0xea, 0x33, 0x17, 0xb6, 0x71, 0x73],
+    };
     pub(super) const LOCAL: Guid = Guid {
         a: 0xf1b32785,
         b: 0x6fba,
@@ -110,12 +116,13 @@ mod windows {
     }
 }
 
-/// Purge only this Windows user's three fixed application-owned data roots.
+/// Purge only this Windows user's fixed application-owned data roots.
 /// Does not consult environment overrides, settings, or project paths.
 pub fn purge_local_data() -> Result<(), String> {
     #[cfg(windows)]
     {
         purge_roots(
+            &windows::known_folder(&windows::PROFILE)?,
             &windows::known_folder(&windows::LOCAL)?,
             &windows::known_folder(&windows::ROAMING)?,
         )
@@ -151,10 +158,12 @@ fn checked_parent(path: &Path) -> Result<PathBuf, String> {
 }
 
 #[cfg(windows)]
-fn purge_roots(local: &Path, roaming: &Path) -> Result<(), String> {
+fn purge_roots(profile: &Path, local: &Path, roaming: &Path) -> Result<(), String> {
+    let profile = checked_parent(profile)?;
     let local = checked_parent(local)?;
     let roaming = checked_parent(roaming)?;
     let roots = [
+        profile.join(".RustHarness"),
         local.join("RustHarness"),
         local.join("dev.rustharness.desktop"),
         roaming.join("dev.rustharness.desktop"),
@@ -296,6 +305,6 @@ fn purge_roots(local: &Path, roaming: &Path) -> Result<(), String> {
 /// uninstall 集成测试的清理入口；生产代码无调用者（cfg(test) 挡不住集成测试的 lib 视角）。
 #[cfg(windows)]
 #[allow(dead_code)]
-pub(crate) fn purge_test_roots(local: &Path, roaming: &Path) -> Result<(), String> {
-    purge_roots(local, roaming)
+pub(crate) fn purge_test_roots(profile: &Path, local: &Path, roaming: &Path) -> Result<(), String> {
+    purge_roots(profile, local, roaming)
 }

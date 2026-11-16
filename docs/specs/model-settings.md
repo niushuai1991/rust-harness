@@ -1,6 +1,6 @@
 # 模型设置：厂商→模型两级选择与 effort 档位规范
 
-- 日期：2026-11-06（计划批准）；2026-11-13（模型图片输入能力元数据）修订
+- 日期：2026-11-06（计划批准）；2026-11-13（模型图片输入能力元数据）修订；2026-11-16（卸载清理新数据根）修订
 - 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
 - 范围：模型设置两级结构（供应商→模型）、内置供应商与内置模型目录、reasoning effort 档位、按 API 自动检测模型列表、发送框级联选择、卸载"清理用户数据"勾选行为、模型图片输入能力三态元数据（内置目录官方核实、自定义模型可配置、设置与选择器展示）。
 
@@ -74,7 +74,7 @@
 
 ### 卸载行为
 
-Tauri 2.12 的 NSIS 卸载确认页**无条件提供**"Delete app data"复选框（模板变量 `$DeleteAppDataCheckboxState`，与升级模式变量 `$UpdateMode` 一并由模板定义），无需任何配置字段——`deleteAppDataOnUninstall` 是 Tauri 3 的字段，在本项目锁定的 tauri-build 2.7.4 与 @tauri-apps/cli 2.12.4 双侧 schema 中均不存在，写入会导致构建失败。勾选且非升级模式时，模板先删除 `$APPDATA\BUNDLEID`/`$LOCALAPPDATA\BUNDLEID`，既有 `nsis-hooks.nsh` 借用同一勾选状态执行 `--purge-local-data`（删除 `%LOCALAPPDATA%\RustHarness` 与系统凭据）并跳过模板的递归删除；不勾选则全部保留。模型/供应商设置存于 SQLite 与系统凭据管理器，升级天然保留。
+Tauri 2.12 的 NSIS 卸载确认页**无条件提供**"Delete app data"复选框（模板变量 `$DeleteAppDataCheckboxState`，与升级模式变量 `$UpdateMode` 一并由模板定义），无需任何配置字段——`deleteAppDataOnUninstall` 是 Tauri 3 的字段，在本项目锁定的 tauri-build 2.7.4 与 @tauri-apps/cli 2.12.4 双侧 schema 中均不存在，写入会导致构建失败。勾选且非升级模式时，模板先删除 `$APPDATA\BUNDLEID`/`$LOCALAPPDATA\BUNDLEID`，既有 `nsis-hooks.nsh` 借用同一勾选状态执行 `--purge-local-data`（删除 `%USERPROFILE%\.RustHarness`、历史 `%LOCALAPPDATA%\RustHarness` 与系统凭据）并跳过模板的递归删除；不勾选则全部保留。模型/供应商设置存于 SQLite 与系统凭据管理器，升级天然保留。
 
 ## 边界与风险
 
