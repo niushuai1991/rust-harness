@@ -4,7 +4,7 @@ use tauri::{
 };
 use tauri_plugin_opener::OpenerExt;
 
-const LABEL: &str = "session-link-web";
+pub(crate) const LABEL: &str = "session-link-web";
 
 pub(crate) fn external_url(raw: &str) -> Result<tauri::Url, String> {
     let url = tauri::Url::parse(raw).map_err(|_| "无效的网址".to_string())?;
@@ -15,6 +15,10 @@ pub(crate) fn external_url(raw: &str) -> Result<tauri::Url, String> {
 }
 
 pub(crate) fn validated_url(raw: &str) -> Result<tauri::Url, String> {
+    // about:blank 仅作为可视浏览器后端的初始页（契约白名单允许）。
+    if raw == "about:blank" {
+        return tauri::Url::parse(raw).map_err(|_| "无效的网址".to_string());
+    }
     let url = external_url(raw)?;
     let host = url.host_str().unwrap_or_default();
     if host.ends_with(".localhost")
@@ -34,20 +38,26 @@ pub async fn open_external_link(app: tauri::AppHandle, url: String) -> Result<()
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-#[specta::specta]
-pub async fn web_panel_open(
-    app: tauri::AppHandle,
-    url: String,
-    generation: String,
-) -> Result<(), String> {
-    let url = validated_url(&url)?;
-    if let Some(old) = app.get_webview(LABEL) {
-        old.close().map_err(|e| e.to_string())?;
+/// 打开（或复用）面板 webview 并导航到 `url`：已存在时不重建，仅导航。
+/// 供 `web_panel_open` 命令与可视浏览器后端的 `ensure_webview` 共用。
+pub(crate) async fn create_panel_webview(
+    app: &tauri::AppHandle,
+    url: &str,
+) -> Result<tauri::Webview, String> {
+    let parsed = validated_url(url)?;
+    if let Some(view) = app.get_webview(LABEL) {
+        // 目标与当前页一致时不再导航：前端挂载与 agent 首开回环会对同一 URL
+        // 重复调用，重复导航会造成双重加载。
+        #[cfg(windows)]
+        if crate::browser_backend::panel_current_url(app).as_deref() == Some(url) {
+            return Ok(view);
+        }
+        view.navigate(parsed).map_err(|e| e.to_string())?;
+        return Ok(view);
     }
     let window = app.get_window("main").ok_or("找不到主窗口")?;
     let handle = app.clone();
-    let builder = WebviewBuilder::new(LABEL, WebviewUrl::External(url))
+    let builder = WebviewBuilder::new(LABEL, WebviewUrl::External(parsed))
         .on_navigation(|url| validated_url(url.as_str()).is_ok())
         .on_new_window(move |url, _| {
             if validated_url(url.as_str()).is_ok() {
@@ -69,8 +79,14 @@ pub async fn web_panel_open(
         .map_err(|e| e.to_string())?;
     view.hide().map_err(|e| e.to_string())?;
     #[cfg(windows)]
-    watch_webview_events(&view, app, generation);
-    Ok(())
+    crate::browser_backend::register_panel_listeners(&view, app);
+    Ok(view)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn web_panel_open(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    create_panel_webview(&app, &url).await.map(|_| ())
 }
 
 #[tauri::command]
@@ -110,72 +126,16 @@ pub async fn web_panel_close(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(windows)]
-fn watch_webview_events(view: &tauri::Webview, app: tauri::AppHandle, generation: String) {
-    use tauri::Emitter;
-    use webview2_com::Microsoft::Web::WebView2::Win32::{
-        COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN, COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED,
-    };
-    use webview2_com::{AcceleratorKeyPressedEventHandler, NavigationCompletedEventHandler};
-    if let Err(error) = view.with_webview(move |platform| {
-        let apply = || -> windows::core::Result<()> {
-            let controller = platform.controller();
-            let core = unsafe { controller.CoreWebView2()? };
-            let status_app = app.clone();
-            let status_generation = generation.clone();
-            let handler =
-                NavigationCompletedEventHandler::create(Box::new(move |_sender, args| {
-                    if let Some(args) = args {
-                        let mut success = windows::core::BOOL::default();
-                        if unsafe { args.IsSuccess(&mut success) }.is_ok() {
-                            let mut status = COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED;
-                            if success.as_bool()
-                                || (unsafe { args.WebErrorStatus(&mut status) }.is_ok()
-                                    && status != COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED)
-                            {
-                                let _ = status_app.emit_to(
-                                    "main",
-                                    "web-panel-load-status",
-                                    (status_generation.clone(), success.as_bool()),
-                                );
-                            }
-                        }
-                    }
-                    Ok(())
-                }));
-            let mut token = 0;
-            unsafe {
-                core.add_NavigationCompleted(&handler, &mut token)?;
-            }
-            let key_handler =
-                AcceleratorKeyPressedEventHandler::create(Box::new(move |_sender, args| {
-                    if let Some(args) = args {
-                        let mut key = 0;
-                        let mut kind = COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN;
-                        if unsafe { args.VirtualKey(&mut key) }.is_ok()
-                            && unsafe { args.KeyEventKind(&mut kind) }.is_ok()
-                            && key == 27
-                            && kind == COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN
-                        {
-                            unsafe {
-                                args.SetHandled(true)?;
-                            }
-                            let _ =
-                                app.emit_to("main", "web-panel-close-request", generation.clone());
-                        }
-                    }
-                    Ok(())
-                }));
-            let mut key_token = 0;
-            unsafe {
-                controller.add_AcceleratorKeyPressed(&key_handler, &mut key_token)?;
-            }
-            Ok(())
-        };
-        if let Err(error) = apply() {
-            tracing::warn!("网页事件监听失败：{error}");
-        }
-    }) {
-        tracing::warn!("无法访问网页视图：{error}");
+#[tauri::command]
+#[specta::specta]
+pub async fn web_panel_history(app: tauri::AppHandle, action: String) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        crate::browser_backend::panel_history(&app, &action).await
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, action);
+        Err("网页面板历史导航仅支持 Windows".into())
     }
 }

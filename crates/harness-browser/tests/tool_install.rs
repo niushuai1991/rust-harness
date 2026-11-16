@@ -172,6 +172,48 @@ async fn browser_tools_are_registered_and_go_through_approval() {
 }
 
 #[tokio::test]
+async fn navigate_forward_action_maps_to_forward_command() {
+    let (runtime, session) = fixture().await;
+    let commands: Recorder = Arc::default();
+    let _owner = harness_browser::install_with(
+        runtime.clone(),
+        RecordedFactory {
+            commands: commands.clone(),
+        },
+    )
+    .unwrap();
+    let model = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([
+            call("c1", "browser_navigate", json!({"action": "forward"})),
+            ModelAnswer::default(),
+        ])),
+        requests: Mutex::new(vec![]),
+        tool_names: Mutex::new(vec![]),
+    });
+    let task = tokio::spawn(runtime.clone().run_session(
+        session.id.clone(),
+        "前进一页".into(),
+        model.clone(),
+    ));
+    let pending = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let Some(r) = runtime.approvals.list().first() {
+                break r.clone();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    runtime.approvals.resolve(&pending.id, true).unwrap();
+    task.await.unwrap().unwrap();
+    assert_eq!(
+        commands.lock().unwrap().as_slice(),
+        [BrowserCommand::Forward]
+    );
+}
+
+#[tokio::test]
 async fn denied_browser_call_never_reaches_backend() {
     let (runtime, session) = fixture().await;
     let commands: Recorder = Arc::default();

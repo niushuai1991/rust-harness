@@ -26,7 +26,7 @@
 |NSIS离线包|仅保留0.1.2及以前的历史产物，后续不再提供|后续仅构建系统已有WebView2的单一NSIS包（skip模式）|
 |发布签名与自动更新|Tauri插件接入，信任配置未启用|没有签名证书、更新公钥或发布端点，未发布|
 |LSP只读五件套（诊断/悬停/定义/引用/符号）|已实现并接线|mock server 11项与runtime流程6项测试；真实rust-analyzer经Windows沙箱冒烟通过（E0308诊断与hover到位），测试为`#[ignore]`仅显式运行，见[LSP规范](specs/lsp.md)|
-|内置浏览器（browser_navigate/snapshot/click/type/press/screenshot/evaluate/close）|已实现并接线|11项Rust测试（白名单/stub解析/命令契约/审批链路，含真实Edge headless全链路）通过；真实模型端到端（glm-5.3-flash）navigate→snapshot→type→click→evaluate读到预期文本，turn completed，见[浏览器规范](specs/browser.md)|
+|内置浏览器（browser_navigate/snapshot/click/type/press/screenshot/evaluate/close）|已实现并接线|11项Rust测试（白名单/stub解析/命令契约/审批链路，含真实Edge headless全链路）通过；真实模型端到端（glm-5.3-flash）navigate→snapshot→type→click→evaluate读到预期文本，turn completed，见[浏览器规范](specs/browser.md)。2026-11-16 契约新增 forward（action=forward，真实浏览器后退→前进用例通过）并落地桌面 WebView2 可视后端：「网页」面板与 browser_* 工具人机共用同一实例、后退/前进/刷新工具栏、模型操作自动弹出面板；后端单测与前端 vitest 全过，真实桌面 UI 抽查待用户|
 |PTY 本地沙箱终端（terminal_open/write/read/close）|已实现并接线|ANSI 过滤/有界缓冲 8 项单测、orchestration stub 全流程 3 项与前端 52 项测试通过；真实 ConPTY 集成测试（往返/杀树/租约）在本开发机预检跳过——该机 ConPTY 客户端连接不可用（0xC0000142，最小样例复现，见[PTY规范](specs/pty-execution-world.md)），在 GitHub CI windows runner 真实运行；真实模型端到端待用户抽查；SSH 远端执行世界未实现，不能计为 P3 完成|
 |配置预设（模型/effort/审批策略命名组合）|已实现并接线|契约 3 项、PresetService 6 项、审批分层 6 项单测与 CLI 链路/ACP 2 项集成测试先红后绿；真实 `harness run --preset` 回合完成；桌面 3 项面板测试与发送框级联填充测试通过；解析为显式参数>预设>宿主缺省三层，桌面审批保持交互式，见[配置预设规范](specs/config-presets.md)，桌面 UI 抽查待用户|
 |Skills 技能（.agents/skills 目录、catalog 注入、$name 提及、启停）|已实现并接线|skills 模块 17 项单测与 agent_flow 2 项集成（catalog 进 system、$ 注入与 $PATH 排除、禁用生效）先红后绿；CLI skills 子命令//skills 与 $ 补全 6 项测试、前端 13 项（skills 纯函数+SkillsPanel/EventCard）通过；真实模型端到端与桌面 UI 抽查待用户，见[Skills 支持规范](specs/skills.md)|
@@ -37,6 +37,7 @@
 |项目移除（隐藏入口）与重新显示|已实现并接线|storage 隐藏 KV 往返/去重/跨重启与隐藏不影响会话恢复 2 项测试先红后绿；`workspace_remove` 仅置隐藏标记（运行中确认停止）、`workspace_reveal_hidden` 重开同路径重新显示、`WorkspaceInfo.hidden` KV 派生注入；前端右键菜单/隐藏确认/停止运行参数/重新显示提示/存档管理隐藏项目可查看可恢复 4 项测试，npm test 272 项与生产构建通过；cargo fmt/clippy/build 通过，cargo test 仅既有环境性失败（真实浏览器导航、git 子进程 ×2，主工作区复验同失败）；真实桌面 UI 抽查待用户，见[项目移除规范](specs/project-removal.md)|
 |搜索provider/Office预览|未实现|不能计为P2/P3完成|
 |脚本工作流/签名插件市场|未实现|不能计为P3完成|
+|Agent 执行性能优化（工具批次并发调度、请求前自动压缩、HTTP 连接复用）|已实现并接线|并发段重叠/上限/屏障/取消 unknown 结算/read-before-edit（6 项）、自动压缩阈值触发/投影重置/失败语义/预算记账（4 项）、连接 keep-alive 复用与传输配置隔离（3 项）集成测试通过；桌面设置「性能」选项卡 5 项前端测试通过；真实模型收益基准对照待用户；流式提前执行未实施（待预算规范修订），见[Agent 执行性能优化规范](specs/agent-execution-performance.md)|
 
 数据目录为宿主独占，桌面打开时headless需使用独立数据目录，避免另一个进程执行恢复时破坏活动会话。WASM采用每次调用独立Store，activate→execute/hook→deactivate，KV成功后提交；不承诺长期驻留实例状态。
 

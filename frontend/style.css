@@ -7,8 +7,6 @@
 
 .primary,.send{background:var(--accent);border-color:var(--accent)}.muted{color:var(--muted)}.topbar,.modal,.composer{background:var(--panel)}
 .prose{white-space:normal}.prose>:first-child{margin-top:0}.prose>:last-child{margin-bottom:0}.prose p{margin:0 0 12px}.prose h1,.prose h2,.prose h3,.prose h4{color:var(--text);font-weight:600;line-height:1.45;margin:22px 0 10px}.prose h1{font-size:23px}.prose h2{font-size:19px}.prose h3{font-size:16px}.prose ul,.prose ol{margin:0 0 12px;padding-left:23px}.prose li{margin:3px 0}.prose li::marker{color:var(--muted)}.prose a{color:var(--text);text-decoration-thickness:1px;text-underline-offset:2px}.prose :not(pre)>code{font-family:"Cascadia Code",Consolas,monospace;font-size:.9em;background:var(--surface);border-radius:4px;padding:2px 5px}.prose pre{margin:12px 0;padding:13px 15px;max-width:100%;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:8px;white-space:pre}.prose pre code{font-size:12px;background:transparent;padding:0}.prose blockquote{margin:12px 0;padding:3px 0 3px 13px;border-left:3px solid var(--border);color:var(--text)}.prose table{border-collapse:collapse;display:block;max-width:100%;overflow:auto;margin:12px 0}.prose th,.prose td{border:1px solid var(--border);padding:6px 9px;text-align:left}.prose th{background:var(--surface);font-weight:600}.prose input[type=checkbox]{accent-color:var(--accent);margin-right:7px}.turn-details{margin:8px 0 18px}.turn-details>summary{display:flex;align-items:center;gap:5px;list-style:none;cursor:pointer;color:var(--muted);font-size:11px}.turn-details>summary::-webkit-details-marker{display:none}.turn-details>summary svg{transition:transform .15s}.turn-details[open]>summary svg{transform:rotate(180deg)}.turn-details .message{margin:15px 0}.turn-details .tool-card{margin-left:0}
-.sessions .session-row.child{padding-left:26px}
-.subagent-badge{font-style:normal;font-size:9px;color:var(--text);background:var(--surface);border-radius:4px;padding:1px 6px;flex-shrink:0;margin-left:auto}
 .subagent-row{display:flex;align-items:center;gap:8px;padding:11px 14px 0;color:var(--text)}
 .subagent-row strong{font-weight:600}
 .subagent-row button{padding:3px 9px;font-size:10px;margin-left:auto}
@@ -42,6 +40,25 @@
 .composer-plus{width:34px;height:34px;padding:0;border:0;background:transparent;color:var(--muted);border-radius:8px}
 .composer-plus:hover{background:var(--surface);color:var(--text)}
 .composer-plus[aria-expanded="true"]{background:var(--surface);color:var(--accent)}
+/* 子代理入口：+号旁的 Bot 图标，运行中数量以右上角小徽标提示；面板向上弹出同 plus-menu。 */
+.composer-subagent-wrap{position:relative}
+.composer-subagent{position:relative;width:34px;height:34px;padding:0;border:0;background:transparent;color:var(--muted);border-radius:8px}
+.composer-subagent:hover{background:var(--surface);color:var(--text)}
+.composer-subagent[aria-expanded="true"]{background:var(--surface);color:var(--accent)}
+.composer-subagent .subagent-count{position:absolute;top:2px;right:2px;min-width:13px;height:13px;padding:0 3px;border-radius:7px;background:var(--accent);color:var(--panel);font-size:9px;font-weight:600;line-height:13px;text-align:center}
+.subagent-panel{position:absolute;bottom:calc(100% + 10px);left:0;width:300px;max-width:78vw;background:var(--panel);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(32,33,36,.14);padding:5px;display:flex;flex-direction:column;gap:3px;z-index:15;transform-origin:bottom left;animation:plus-menu-in .13s ease-out}
+@media(prefers-reduced-motion:reduce){.subagent-panel{animation:none}}
+.subagent-panel-head{display:flex;align-items:center;gap:6px;padding:7px 9px 5px;font-size:12px;color:var(--text)}
+.subagent-panel-head strong{display:flex;align-items:center;gap:6px;font-weight:600}
+.subagent-panel-head .icon-button{margin-left:auto;width:22px;height:22px}
+.subagent-panel-list{display:flex;flex-direction:column}
+.subagent-item{display:flex;align-items:center;gap:4px;border-radius:8px}
+.subagent-item:hover{background:var(--surface)}
+.subagent-open{flex:1;min-width:0;display:flex;align-items:center;gap:6px;border:0;background:transparent;padding:8px 10px;text-align:left;font-size:12px;color:var(--text)}
+.subagent-open .session-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.subagent-stop{flex-shrink:0;width:24px;height:24px;padding:0;margin-right:5px;border:0;background:transparent;color:var(--muted);border-radius:6px}
+.subagent-stop:hover{background:var(--surface);color:var(--text)}
+.subagent-panel .empty-small{padding:4px 10px 8px}
 .plus-menu{position:absolute;bottom:calc(100% + 10px);left:0;width:300px;max-width:78vw;background:var(--panel);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(32,33,36,.14);padding:5px;display:flex;flex-direction:column;z-index:15;transform-origin:bottom left;animation:plus-menu-in .13s ease-out}
 @keyframes plus-menu-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 @media(prefers-reduced-motion:reduce){.plus-menu{animation:none}}
@@ -203,19 +220,19 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .pair-row label{flex:1}
 .form-label-inline{font-size:11px;color:var(--muted);margin-bottom:5px}
 
-/* ---- 会话列表「最近 / 项目」视图：搜索框、任务列表标题行、圆角方块 switch ---- */
+/* ---- 会话列表「项目 / 最近」视图：搜索框、任务列表标题行、圆角方块 switch ---- */
 .session-search{display:flex;align-items:center;gap:7px;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:0 10px;height:33px;margin-top:12px;color:var(--muted);flex-shrink:0}
 .session-search input{flex:1;min-width:0;border:0;outline:0;background:transparent;padding:0;font-size:12.5px;color:var(--text)}
 .session-search input::placeholder{color:var(--muted)}
 .section-label .label-spacer{flex:1}
 .view-switch{position:relative;width:72px;height:22px;flex:0 0 72px;border:0;border-radius:6px;background:var(--accent);padding:0;overflow:hidden}
-.view-switch .knob{position:absolute;top:2px;left:2px;width:34px;height:18px;border-radius:4px;background:var(--panel);box-shadow:0 1px 2px rgba(32,33,36,.25);transition:transform .15s}
+.view-switch .knob{position:absolute;top:2px;left:2px;width:34px;height:18px;border-radius:4px;background:var(--panel);box-shadow:0 1px 2px rgba(32,33,36,.25);transition:transform .15s;transform:translateX(34px)}
 .view-switch .sw-label{position:absolute;top:0;height:100%;width:34px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500;pointer-events:none;transition:color .15s}
-.view-switch .sw-label.a{left:2px;color:var(--accent)}
-.view-switch .sw-label.b{right:2px;color:#fff}
-.view-switch[aria-checked="true"] .knob{transform:translateX(34px)}
-.view-switch[aria-checked="true"] .sw-label.a{color:#fff}
-.view-switch[aria-checked="true"] .sw-label.b{color:var(--accent)}
+.view-switch .sw-label.a{left:2px;color:#fff}
+.view-switch .sw-label.b{right:2px;color:var(--accent)}
+.view-switch[aria-checked="true"] .knob{transform:translateX(0)}
+.view-switch[aria-checked="true"] .sw-label.a{color:var(--accent)}
+.view-switch[aria-checked="true"] .sw-label.b{color:#fff}
 @media(prefers-reduced-motion:reduce){.view-switch .knob,.view-switch .sw-label{transition:none}}
 
 /* 标题栏：会话名从左侧开始，工作区上下文紧随其后，操作入口固定在右侧。 */
@@ -230,10 +247,10 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 /* switch 的选中项使用主色文字，滑块保持白色，和规范中的视觉层级一致。 */
 .section-label button.view-switch{padding:0;border:0;background:var(--accent)}
 .view-switch .knob{background:#fff}
-.view-switch .sw-label.a{color:var(--accent)}
-.view-switch .sw-label.b{color:#fff}
-.view-switch[aria-checked="true"] .sw-label.a{color:#fff}
-.view-switch[aria-checked="true"] .sw-label.b{color:var(--accent)}
+.view-switch .sw-label.a{color:#fff}
+.view-switch .sw-label.b{color:var(--accent)}
+.view-switch[aria-checked="true"] .sw-label.a{color:var(--accent)}
+.view-switch[aria-checked="true"] .sw-label.b{color:#fff}
 
 /* 「最近」视图：时间分组头 + 双行条目（标题/子任务 + 项目/置顶/运行中） */
 .sessions .group-head{position:sticky;top:0;z-index:2;background:var(--sidebar);font-size:10.5px;color:var(--muted);padding:9px 4px 5px}
@@ -246,9 +263,9 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .sessions .session-row{align-items:flex-start;gap:8px;text-align:left}
 .session-lines{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
 .session-l1{display:flex;align-items:baseline;gap:6px;min-width:0}
-.session-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.session-row .subagent-badge{margin-left:0}
-.session-time{flex-shrink:0;font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums}
+/* 会话标题：末端 20px 渐隐收尾（mask 作用于盒子末端，未溢出时无文字经过渐变区故无视觉影响）；
+   显式 text-overflow:clip 并用高特异性选择器覆盖上方 `.sessions .session-row span` 的兜底 ellipsis，避免「…+渐隐」叠加。 */
+.sessions .session-row .session-title{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:clip;-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 20px),transparent 100%);mask-image:linear-gradient(to right,#000 calc(100% - 20px),transparent 100%)}
 .session-l2{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--muted);min-width:0}
 .session-l2>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .session-l2 svg{flex-shrink:0;color:var(--accent)}
@@ -272,7 +289,6 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .ws-pin.on{color:var(--accent)}
 .ws-pin:hover{background:var(--surface);color:var(--accent)}
 .sessions .session-row.one{align-items:center}
-.sessions .session-row.one .session-title{flex:1}
 .session-context-menu{position:fixed;z-index:25;min-width:156px;padding:5px;background:var(--panel);border:1px solid var(--border);border-radius:9px;box-shadow:0 10px 28px rgba(32,33,36,.18)}
 .session-context-menu button{width:100%;justify-content:flex-start;border:0;background:transparent;padding:8px 10px;font-size:12px}
 .session-context-menu button:hover{background:var(--surface)}
@@ -280,6 +296,12 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .session-archive{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;opacity:0;flex-shrink:0;align-self:center;transition:opacity .12s,color .12s}
 .sessions .session-row:hover .session-archive,.session-archive:focus-visible{opacity:1}
 .session-archive:hover{background:var(--surface);color:var(--accent)}
+/* 会话行悬停浮层：完整会话名 + 更新时间。fixed 定位脱离侧栏滚动容器避免被 overflow 裁剪；
+   纯展示不拦截鼠标（pointer-events:none），portal 到 body 渲染。 */
+.session-pop{position:fixed;z-index:60;width:max-content;max-width:320px;background:var(--panel);border:1px solid var(--border);border-radius:11px;box-shadow:0 8px 24px rgba(32,33,36,.16);padding:11px 13px;pointer-events:none;animation:session-pop-in .13s ease-out}
+@keyframes session-pop-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.session-pop .pop-title{font-size:12.5px;font-weight:550;line-height:1.6;overflow-wrap:anywhere}
+.session-pop .pop-time{margin-top:5px;font-size:10.5px;color:var(--muted);font-variant-numeric:tabular-nums}
 /* 设置页「存档管理」：项目分组标题与条目恢复按钮 */
 .archive-group-title{display:flex;align-items:center;gap:6px;margin:20px 0 2px;font-size:11px;font-weight:600;color:var(--text)}
 .archive-group-title svg{color:var(--muted);flex-shrink:0}
@@ -447,6 +469,7 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .settings-mode-options span{border:1px solid #e5e8e3;border-radius:6px;padding:5px 9px;color:#858d86;font-size:9px}
 .settings-mode-options span.selected{border-color:#cbd8c8;background:#f2f6ef;color:#4e674e}
 .settings-plugin-examples{margin-top:16px}
+.settings-about-list{margin-top:24px}
 .settings-provider-card{padding:0;overflow:hidden}
 .settings-provider-heading{display:flex;align-items:center;gap:10px;padding:13px 14px}
 .settings-provider-heading>div{display:flex;flex:1;min-width:0;flex-direction:column;gap:3px}
@@ -471,3 +494,21 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 @media(max-width:850px){.settings-screen{grid-template-columns:74px minmax(0,1fr)}.settings-sidebar{align-items:center;padding:18px 8px 10px}.settings-brand{justify-content:center;padding:2px 0 22px}.settings-brand>span:last-child,.settings-nav-heading,.settings-nav-item>span,.settings-nav-chevron,.settings-sidebar-foot{display:none}.settings-nav{width:100%;padding:0}.settings-nav-group{width:100%;margin-top:15px}.settings-nav-item{width:42px;height:42px;justify-content:center;padding:0;margin:2px auto}.settings-nav-item svg{width:18px;height:18px}.settings-content{padding:34px 28px 40px}}
 @media(max-width:560px){.settings-screen{grid-template-columns:62px minmax(0,1fr)}.settings-sidebar{padding:14px 4px}.settings-brand-mark{width:31px;height:31px}.settings-topbar{height:55px;flex-basis:55px;padding:0 14px}.settings-preview-badge{font-size:9px}.settings-content{padding:27px 17px 32px}.settings-content h1{font-size:24px}.settings-overview-banner{padding:15px 13px}.settings-banner-sparkle{display:none}.settings-card-grid{grid-template-columns:1fr;gap:9px}.settings-category-card{min-height:148px}.settings-existing-action{align-items:flex-start;flex-direction:column}.settings-manage-button{width:100%;justify-content:center}.settings-example-item{gap:8px;padding:10px}.settings-example-badge{font-size:8px;padding:3px 5px}}
 @media(prefers-reduced-motion:reduce){.settings-category-card,.settings-card-arrow{transition:none}}
+/* 性能设置面板：开关与数字输入 */
+.perf-toggle{position:relative;flex-shrink:0;width:38px;height:21px;border-radius:11px;border:1px solid #d4dad2;background:#e8ece6;transition:background .15s,border-color .15s;cursor:pointer;padding:0}
+.perf-toggle.on{background:#4a7c46;border-color:#4a7c46}
+.perf-toggle-knob{position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:#fff;transition:left .15s}
+.perf-toggle.on .perf-toggle-knob{left:19px}
+.perf-toggle:focus-visible{outline:2px solid #4a7c46;outline-offset:1px}
+.settings-performance-list input[type="number"]{flex-shrink:0;width:74px;border:1px solid #e4e8e2;border-radius:7px;padding:7px 9px;font-size:13px;text-align:center}
+.settings-performance-list input[type="number"]:disabled{background:#f3f5f1;color:#a5aca4}
+/* 消息引用：输入框上方的附件式引用条与用户消息内的引用块。 */
+.quote-row{display:flex;flex-wrap:wrap;gap:6px;padding:0 4px 8px}
+.quote-chip{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--border);background:var(--panel);border-radius:8px;padding:5px 7px 5px 10px;font-size:11.5px;max-width:420px;color:var(--text)}
+.quote-chip:hover{background:var(--surface)}
+.quote-chip .q-ico{color:var(--muted);flex-shrink:0}
+.quote-chip .q-txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:none;cursor:default}
+.quote-chip .q-x{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border:0;border-radius:5px;background:transparent;color:var(--muted);cursor:pointer;flex-shrink:0;padding:0}
+.quote-chip .q-x:hover{background:var(--selected);color:var(--text)}
+.sent-quote{border-left:3px solid var(--border);background:var(--surface);border-radius:0 7px 7px 0;padding:7px 12px;margin:0 0 10px;font-size:11.5px;color:var(--muted);line-height:1.7;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.sent-quote b{color:var(--text);font-weight:600}

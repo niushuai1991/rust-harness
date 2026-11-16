@@ -1,6 +1,6 @@
 # 子代理可视化与 spawn 模型选择规范
 
-- 日期：2026-11-06（计划拟制）
+- 日期：2026-11-06（计划拟制）；2026-11-15 修订：子代理会话从侧栏列表移至输入框下方面板
 - 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
 - 范围：子代理父子关系与运行状态可视化，`agent_spawn` 可选 modelId；ACP 透传与管理面板留待后续。
 
@@ -36,16 +36,21 @@
 ### 前端（`frontend/`）
 
 - `types.ts` 的 `SessionInfo` 镜像增加 `parentId?:string|null`。
-- 会话列表：有 `parentId` 的会话缩进并显示「子任务」徽标；`running` 或 `session_active_list` 轮询结果（并入既有 2 秒审批轮询 effect）中的会话显示 live-dot。
+- 侧栏会话列表（项目视图与最近视图）**不展示**子代理会话：`sessionList.withoutSubagents` 在标题搜索过滤后统一剔除 `parentId` 非空的会话，含搜索结果与 `ws-count` 计数；列表内缩进、「子任务」徽标及右键重命名/存档入口随之移除。
+- 子代理入口收敛到输入框下方 `composer-bottom` 的 Bot 图标（`composer-subagent-wrap`）：运行中子代理数量以右上角小徽标提示；点击向上弹出 `SubagentPanel`（外点/Esc/收起按钮关闭）：
+  - 数据为**当前工作区**的子代理会话（会话未创建时取草稿落点工作区），运行中的排前面，live-dot 复用 `session_active_list` 既有 2 秒轮询（`activeIds`）；
+  - 点击行跳转对应会话（`openFromSidebar`）；运行中的行提供「停止」，经既有 `session_cancel` 命令中断该会话；
+  - 空态说明子代理会话的来源。
 - `EventCard` 新增分支（props 改为 `EventCardExtras` 透传 `onOpenSession`/`activeIds`）：
   - `subagent.created`：卡片「已创建子代理」，附「查看会话」跳转按钮（`openSession` 会话缺失时经 `session_list` 补齐并校验同工作区）；运行中显示 live-dot；`historyOnly=true`（fork 副本内的历史记录）不提供跳转并说明来源。
   - `subagent.message_sent`：「已向子代理投递任务」+ 内容预览 + 同上跳转。
   - `todo.state`：待办清单卡片（逐项渲染 text/content/title 与 done/completed/status 完成态，完成项划线）。
   - `plan.state`/`goal.state`：计划/目标文本卡片（Markdown 渲染）。
-- 样式追加 `sessions button.child`、`subagent-badge`、`subagent-row`、`subagent-card`、`todo-list`。
+- 样式追加 `subagent-row`、`subagent-card`、`todo-list`；列表徽标样式 `subagent-badge`、`session-row.child` 随列表展示移除，新增 `composer-subagent*`、`subagent-panel*`。
 
 ## 边界
 
 - `parent_id` 为运行时推导，CLI/桌面旧客户端多收到一个可为 null 的字段。
 - `agent_spawn` 的 8 个子代理上限、审批要求、180 秒工具超时均不变。
 - `session_active_list` 仅反映当前进程内存状态（重启后为空，子代理未完成回合已由 `Store::recover()` 结算）。
+- 子代理会话不再出现在侧栏（含搜索），唯一列表外入口是父会话事件卡片「查看会话」与子代理面板（仅当前工作区）；跨工作区的历史子代理会话只能经事件卡片到达。子代理会话因此没有侧栏右键重命名/存档入口。

@@ -9,6 +9,8 @@ pub enum BrowserCommand {
     Navigate { url: String },
     /// 后退一页。
     Back,
+    /// 前进一页。
+    Forward,
     /// 刷新当前页。
     Reload,
     /// 收集当前页面可交互元素清单。

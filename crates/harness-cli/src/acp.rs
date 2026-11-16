@@ -492,7 +492,7 @@ async fn run_turn(
         .await?;
     let mut events = runtime.subscribe();
     runtime
-        .run_session_with_attachments(session_id.to_owned(), text, model, Vec::new())
+        .run_session_with_attachments(session_id.to_owned(), text, model, Vec::new(), Vec::new())
         .await?;
     // run_session 返回时 turn.end/Status 已广播，扫订阅缓冲取终态。
     let mut status = "completed".to_owned();

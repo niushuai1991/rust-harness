@@ -44,4 +44,12 @@ describe('右侧面板状态',()=>{
   expect(state.view).toBe('changes');
   expect(state.previewPath).toBeNull();
  });
+ it('updateWebUrl 同步网页面板实际地址，reset 清理',()=>{
+  useSidePanel.getState().reset();
+  useSidePanel.getState().openWeb('https://example.com');
+  useSidePanel.getState().updateWebUrl('https://example.com/next');
+  expect(useSidePanel.getState().webUrl).toBe('https://example.com/next');
+  useSidePanel.getState().reset();
+  expect(useSidePanel.getState().webUrl).toBeNull();
+ });
 });

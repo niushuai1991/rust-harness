@@ -7,6 +7,9 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+/// HTTP 连接复用开关（KV，缺省开启；关闭时每次模型调用新建 HTTP 客户端）。
+pub(crate) const HTTP_CONNECTION_REUSE_KEY: &str = "app.http_connection_reuse";
+
 /// 内置供应商目录（deepseek、bigmodel）及其只读模型清单。
 /// 目录身份在升级间保持稳定；用户只能通过个人覆盖层启用/禁用，不能改写。
 /// 内置模型目录条目：id、显示名、effort 档位、上下文窗口（tokens）、最大输出（tokens）；第 6 项为图片输入能力（Some=官方文档已核实，None=未知）。
@@ -893,6 +896,7 @@ impl ModelService {
             return Err(AppError::new("MODEL_DISABLED", "供应商已停用"));
         }
         config = apply_effort(config, effort)?;
+        let connection_reuse = self.http_connection_reuse().await;
         if config.auth == ProviderAuth::ChatGptOAuth {
             let (secret, extra_headers) =
                 oauth_material(&*self.token_store, &config, chrono::Utc::now().timestamp()).await?;
@@ -901,6 +905,7 @@ impl ModelService {
                 secret,
                 extra_headers,
                 stream_idle_timeout: HttpModel::DEFAULT_STREAM_IDLE_TIMEOUT,
+                connection_reuse,
             }));
         }
         let secret = harness_platform::get_secret(&config.credential_ref)?.unwrap_or_default();
@@ -910,7 +915,23 @@ impl ModelService {
             secret,
             extra_headers: Vec::new(),
             stream_idle_timeout: HttpModel::DEFAULT_STREAM_IDLE_TIMEOUT,
+            connection_reuse,
         }))
+    }
+    /// HTTP 连接复用开关（KV `app.http_connection_reuse`，缺省开启）。
+    pub async fn http_connection_reuse(&self) -> bool {
+        self.store
+            .get(HTTP_CONNECTION_REUSE_KEY)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true)
+    }
+    pub async fn set_http_connection_reuse(&self, enabled: bool) -> AppResult<()> {
+        self.store
+            .set(HTTP_CONNECTION_REUSE_KEY, &json!(enabled))
+            .await
     }
     /// 内置目录模型的启用/禁用；写个人覆盖层，内置目录本身不变。
     pub async fn set_builtin_model_enabled(
@@ -1062,6 +1083,7 @@ impl ModelService {
             secret,
             extra_headers,
             stream_idle_timeout: HttpModel::DEFAULT_STREAM_IDLE_TIMEOUT,
+            connection_reuse: true,
         }
         .complete(
             vec![ModelMessage::user("Reply OK.")],

@@ -125,6 +125,12 @@ fn commands_serialize_with_action_tag() {
         }
     );
 
+    let forward: serde_json::Value = serde_json::to_value(BrowserCommand::Forward).unwrap();
+    assert_eq!(forward, serde_json::json!({"action":"forward"}));
+    let decoded: BrowserCommand =
+        serde_json::from_value(serde_json::json!({"action":"forward"})).unwrap();
+    assert_eq!(decoded, BrowserCommand::Forward);
+
     let submit: serde_json::Value = serde_json::to_value(BrowserCommand::Type {
         r#ref: "e2".into(),
         text: "hello".into(),

@@ -1,16 +1,17 @@
-import {Fragment,useEffect,useMemo,useRef,useState,type FormEvent,type MouseEvent as ReactMouseEvent,type ReactNode} from 'react';
+import {Fragment,useEffect,useLayoutEffect,useMemo,useRef,useState,type FormEvent,type MouseEvent as ReactMouseEvent,type ReactNode} from 'react';
 import {open,save} from '@tauri-apps/plugin-dialog';
+import {isTauri} from '@tauri-apps/api/core';
+import {listen} from '@tauri-apps/api/event';
 import {createPortal} from 'react-dom';
-import {Archive,ArrowUp,Bot,CalendarClock,Check,ChevronDown,ChevronRight,FileCode,FilePlus,Folder,FolderOpen,GitCompareArrows,ListTodo,MessageSquare,Paperclip,Pencil,Pin,Plus,Search,Send,Settings,ShieldCheck,Square,Sparkles,Target,Terminal,Timer,Trash2,Unplug,X,Download} from 'lucide-react';
+import {Archive,ArrowUp,Bot,CalendarClock,Check,ChevronDown,ChevronRight,Copy,FileCode,FilePlus,Folder,FolderOpen,GitCompareArrows,ListTodo,MessageSquare,Paperclip,Pencil,Pin,Plus,Quote,Search,Send,Settings,ShieldCheck,Square,Sparkles,Target,Terminal,Timer,Trash2,Unplug,X,Download} from 'lucide-react';
 import {SessionMarkdown,LinkedText} from './SessionLinks';
 import {command,desktop,errorText,send} from './api';
 import {KNOWN_APPROVALS} from './types';
 import {INIT_PROMPT,SLASH_COMMANDS,commandTokenUnderCursor,expandSlashPrompt,filterSlashCommands,type SlashSpec} from './slashCommands';
 import {filterSkillRows,skillRowsFrom,skillTokenUnderCursor,type SkillRow,type SkillToken} from './skills';
-import {GROUP_LABELS,filterByTitle,groupByProject,groupByTime,relativeLabel,type ViewMode} from './sessionList';
+import {GROUP_LABELS,filterByTitle,formatFullTime,groupByProject,groupByTime,relativeLabel,withoutSubagents,type ViewMode} from './sessionList';
 import {useChat} from './store';
 import {DiffView,diffStats,parseUnifiedDiff} from './DiffView';
-import {ModelPanel} from './ModelPanel';
 import ModelSelect from './ModelSelect';
 import {UsageRing} from './UsageRing';
 import {PresetsPanel} from './PresetsPanel';
@@ -19,15 +20,17 @@ import {McpPanel} from './McpPanel';
 import {PluginContributionsPanel,PluginThemeHost} from './PluginContributionsPanel';
 import {PluginResultCards} from './PluginResultCards';
 import {BackgroundTasksPanel,JOB_STATUS,SCHEDULE_STATUS} from './BackgroundTasksPanel';
+import {SubagentPanel} from './SubagentPanel';
 
-import {SettingsPage} from './SettingsPage';
+import {SettingsPage,type SettingsCategoryId} from './SettingsPage';
 import {AutomationsPanel} from './AutomationsPanel';
 import {SidePanel} from './SidePanel';
 import {useSidePanel} from './sidePanelStore';
 import type {WorkspaceInfo,SessionInfo,SessionEvent,TimelinePage,ModelConfig,ProviderInfo,DefaultSelection,ApprovalRequest,ApprovalPolicy,AskRequest,AskAnswer,PluginInfo,ArtifactMetadata,PresetInfo,SkillInfo,WorkspaceRemovalSummary,WorkspaceRevealSummary,LiveEvent} from './types';
 
-type Panel='models'|'presets'|'skills'|'plugins'|'tasks'|'automations'|null;
+type Panel='presets'|'skills'|'plugins'|'tasks'|'automations'|null;
 type SessionContextMenu={sessionId:string;x:number;y:number};
+type MessageContextMenu={x:number;y:number;text:string};
 type SessionRenameDraft={id:string;name:string;dialogId:number};
 const TERMINAL_STATUS:{[status:string]:string}={running:'运行中',exited:'已退出',terminated:'已终止',interrupted:'已中断'};
 // 桌面权限模式（与 contracts 五档一一对应）；改动仍只落隔离工作副本，进原项目仍需 apply 确认。
@@ -44,6 +47,23 @@ const GOAL_USAGE='用法：/goal <目标描述>，发送后模型经 goal_write 
 const basename=(path:string)=>path.split(/[\\/]/).filter(Boolean).at(-1)??path;
 const dirOf=(path:string)=>{const parts=path.split(/[\\/]/).filter(Boolean);return parts.length>1?parts.slice(0,-1).join('/'):''};
 const printable=(value:unknown)=>typeof value==='string'?value:JSON.stringify(value,null,2);
+type SessionPopState={title:string;time:string;rect:{left:number;top:number;right:number}};
+/// 会话行悬停浮层：完整会话名 + 更新时间。fixed 定位脱离侧栏滚动容器避免被裁剪；
+/// 渲染后按实际尺寸校正到视口内（右侧放不下换到行左侧），纯展示不拦截鼠标。
+function SessionPopCard({title,time,rect}:{title:string;time:string;rect:SessionPopState['rect']}){
+ const ref=useRef<HTMLDivElement|null>(null);
+ const [pos,setPos]=useState<{left:number;top:number}|null>(null);
+ useLayoutEffect(()=>{
+  const el=ref.current;if(!el)return;
+  let left=rect.right+10;
+  if(left+el.offsetWidth>window.innerWidth-8)left=Math.max(8,rect.left-el.offsetWidth-10);
+  setPos({left,top:Math.min(Math.max(8,rect.top-6),Math.max(8,window.innerHeight-el.offsetHeight-8))});
+ },[rect]);
+ return <div ref={ref} className="session-pop" role="tooltip" style={pos?{left:pos.left,top:pos.top}:undefined}>
+  <div className="pop-title">{title}</div>
+  {time&&<div className="pop-time">{time}</div>}
+ </div>;
+}
 export default function App(){
  const [workspaces,setWorkspaces]=useState<WorkspaceInfo[]>([]),[workspaceId,setWorkspaceId]=useState('');
  const [sessions,setSessions]=useState<SessionInfo[]>([]),[sessionId,setSessionId]=useState(''),[sessionBusy,setSessionBusy]=useState(false);
@@ -53,7 +73,7 @@ export default function App(){
  const [archivedSessions,setArchivedSessions]=useState<SessionInfo[]>([]);
  const [models,setModels]=useState<ModelConfig[]>([]),[modelId,setModelId]=useState(''),[providers,setProviders]=useState<ProviderInfo[]>([]),[effort,setEffort]=useState<string|null>(null);
  const [presets,setPresets]=useState<PresetInfo[]>([]),[presetId,setPresetId]=useState('');
- const [approvals,setApprovals]=useState<ApprovalRequest[]>([]),[panel,setPanel]=useState<Panel>(null),[settingsOpen,setSettingsOpen]=useState(false);
+ const [approvals,setApprovals]=useState<ApprovalRequest[]>([]),[panel,setPanel]=useState<Panel>(null),[settingsOpen,setSettingsOpen]=useState(false),[settingsSection,setSettingsSection]=useState<SettingsCategoryId|null>(null);
  // ask_user 提问：与审批同用轮询通道；答复后从列表移除。
  const [questions,setQuestions]=useState<AskRequest[]>([]);
  // 权限模式：默认档全局持久化；会话内切档记录显式覆盖（后端同口径：覆盖优先于默认档）。
@@ -71,6 +91,8 @@ export default function App(){
  const [planState,setPlanState]=useState<{id:string;enabled:boolean|null;busy:boolean}>({id:'',enabled:null,busy:false});
  const [draftPlan,setDraftPlan]=useState(false);
  const planRevision=useRef(0),planPending=useRef(new Set<string>());
+ const exportNoticeTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
+ useEffect(()=>()=>{if(exportNoticeTimer.current!==null)clearTimeout(exportNoticeTimer.current)},[]);
  // 会话列表「最近 / 项目」视图：视图模式与项目折叠状态存 localStorage，跨重启保留。
  const [viewMode,setViewMode]=useState<ViewMode>(()=>{try{return localStorage.getItem('sessionView')==='project'?'project':'recent'}catch{return 'recent'}});
  const [collapsed,setCollapsed]=useState<string[]>(()=>{try{const v=JSON.parse(localStorage.getItem('sessionCollapsed')??'[]');return Array.isArray(v)?v.filter(x=>typeof x==='string'):[]}catch{return []}});
@@ -80,10 +102,31 @@ export default function App(){
  const [wsContextMenu,setWsContextMenu]=useState<{workspaceId:string;x:number;y:number}|null>(null);
  const [wsRemove,setWsRemove]=useState<{id:string;name:string;running:boolean}|null>(null);
  const [sessionRenameSavingIds,setSessionRenameSavingIds]=useState<Set<string>>(()=>new Set());
+ // 会话行悬停浮层：行内去掉日期后，完整标题与时间移到 hover 卡片；延迟显示/关闭避免快速扫过闪烁。
+ const [sessionPop,setSessionPop]=useState<SessionPopState|null>(null);
+ const sessionPopTimers=useRef({show:0,hide:0});
+ function openSessionPop(s:SessionInfo,node:HTMLButtonElement){
+  window.clearTimeout(sessionPopTimers.current.hide);window.clearTimeout(sessionPopTimers.current.show);
+  sessionPopTimers.current.show=window.setTimeout(()=>{
+   const rect=node.getBoundingClientRect();
+   setSessionPop({title:s.title,time:[formatFullTime(s.updatedAt),relativeLabel(s.updatedAt,new Date())].filter(Boolean).join(' · '),rect:{left:rect.left,top:rect.top,right:rect.right}});
+  },350);
+ }
+ function scheduleSessionPopClose(){
+  window.clearTimeout(sessionPopTimers.current.show);window.clearTimeout(sessionPopTimers.current.hide);
+  sessionPopTimers.current.hide=window.setTimeout(()=>setSessionPop(null),120);
+ }
+ function dismissSessionPop(){window.clearTimeout(sessionPopTimers.current.show);window.clearTimeout(sessionPopTimers.current.hide);setSessionPop(null)}
+ useEffect(()=>{const onResize=()=>dismissSessionPop();window.addEventListener('resize',onResize);return()=>{window.removeEventListener('resize',onResize);window.clearTimeout(sessionPopTimers.current.show);window.clearTimeout(sessionPopTimers.current.hide)}},[]);
  const sessionRenameDialogId=useRef(0),sessionRenameSaving=useRef(new Set<string>());
  const [pluginRevision,setPluginRevision]=useState(0);
  const [attachments,setAttachments]=useState<ArtifactMetadata[]>([]),[importing,setImporting]=useState(false);
+ // 消息引用：发送前暂存的选中文字，随消息发给模型（<quote> 标签），UI 上不可编辑只能删除。
+ const [quotes,setQuotes]=useState<string[]>([]);
+ const [msgContextMenu,setMsgContextMenu]=useState<MessageContextMenu|null>(null);
  const [plusOpen,setPlusOpen]=useState(false);
+ // 输入框下方的子代理面板：承载从侧栏列表移走的子代理会话（当前工作区）。
+ const [subagentOpen,setSubagentOpen]=useState(false);
  // 新会话草稿态：点「新建聊天」不立即创建会话，composer 上方项目 chip 选定落点，发送首条消息时才真正 session_create。
  const [drafting,setDrafting]=useState(false),[draftWorkspaceId,setDraftWorkspaceId]=useState<string|null>(null);
  const [pjMenuOpen,setPjMenuOpen]=useState(false),[pjQuery,setPjQuery]=useState('');
@@ -96,6 +139,7 @@ export default function App(){
  useEffect(()=>{if(!plusOpen)return;const close=(e:MouseEvent)=>{if(!(e.target as Element|null)?.closest?.('.composer-plus-wrap'))setPlusOpen(false)};const esc=(e:KeyboardEvent)=>{if(e.key==='Escape')setPlusOpen(false)};document.addEventListener('mousedown',close);document.addEventListener('keydown',esc);return()=>{document.removeEventListener('mousedown',close);document.removeEventListener('keydown',esc)}},[plusOpen]);
  useEffect(()=>{if(!pjMenuOpen)return;const close=(e:MouseEvent)=>{if(!(e.target as Element|null)?.closest?.('.chip-row'))setPjMenuOpen(false)};const esc=(e:KeyboardEvent)=>{if(e.key==='Escape')setPjMenuOpen(false)};document.addEventListener('mousedown',close);document.addEventListener('keydown',esc);return()=>{document.removeEventListener('mousedown',close);document.removeEventListener('keydown',esc)}},[pjMenuOpen]);
  useEffect(()=>{if(!sessionContextMenu)return;const close=(e:MouseEvent)=>{if(!(e.target as Element|null)?.closest?.('.session-context-menu'))setSessionContextMenu(null)};const esc=(e:KeyboardEvent)=>{if(e.key==='Escape')setSessionContextMenu(null)};document.addEventListener('mousedown',close);document.addEventListener('keydown',esc);return()=>{document.removeEventListener('mousedown',close);document.removeEventListener('keydown',esc)}},[sessionContextMenu]);
+ useEffect(()=>{if(!msgContextMenu)return;const close=(e:MouseEvent)=>{if(!(e.target as Element|null)?.closest?.('.session-context-menu'))setMsgContextMenu(null)};const esc=(e:KeyboardEvent)=>{if(e.key==='Escape')setMsgContextMenu(null)};document.addEventListener('mousedown',close);document.addEventListener('keydown',esc);return()=>{document.removeEventListener('mousedown',close);document.removeEventListener('keydown',esc)}},[msgContextMenu]);
  useEffect(()=>{if(!wsContextMenu)return;const close=(e:MouseEvent)=>{if(!(e.target as Element|null)?.closest?.('.session-context-menu'))setWsContextMenu(null)};const esc=(e:KeyboardEvent)=>{if(e.key==='Escape')setWsContextMenu(null)};document.addEventListener('mousedown',close);document.addEventListener('keydown',esc);return()=>{document.removeEventListener('mousedown',close);document.removeEventListener('keydown',esc)}},[wsContextMenu]);
  const attachmentEpoch=useRef(0),activeSessionId=useRef(sessionId);activeSessionId.current=sessionId;
  const selectionEpoch=useRef({id:sessionId,workspace:workspaceId,version:0});
@@ -105,6 +149,13 @@ export default function App(){
  useEffect(()=>{attachmentEpoch.current++;setAttachments([]);setImporting(false)},[sessionId,workspaceId]);
  // 切换工作区时重置右侧面板（预览路径与视图归属工作区，避免串状态）。
  useEffect(()=>{useSidePanel.getState().reset()},[workspaceId]);
+ // 模型在内嵌浏览器打开页面时自动弹出右侧「网页」视图。
+ useEffect(()=>{
+  if(!isTauri())return;
+  let disposed=false,stop=()=>{};
+  listen<string>('web-panel-agent-open',event=>{useSidePanel.getState().openWeb(String(event.payload))}).then(un=>{if(disposed)un();else stop=un}).catch(()=>{});
+  return()=>{disposed=true;stop()};
+ },[]);
  // 侧栏「自动化」徽标：跟随工作区拉取任务数，面板增删后经 onChanged 刷新。
  useEffect(()=>{if(!workspaceId||!desktop()){setAutomationCount(null);return}let alive=true;command<unknown[]>('automation_list',{workspaceId}).then(list=>{if(alive)setAutomationCount(list.length)}).catch(()=>{if(alive)setAutomationCount(null)});return()=>{alive=false}},[workspaceId]);
  // 技能名单：跟随工作区拉取（composer $ 补全候选）；读取失败退化为空（无补全）。
@@ -119,7 +170,11 @@ export default function App(){
  const pendingAskIds=useMemo(()=>new Set(questions.map(question=>question.sessionId)),[questions]);
  const skillRows=useMemo(()=>skillRowsFrom(skills),[skills]);
  const workspace=workspaces.find(w=>w.id===workspaceId),session=sessions.find(s=>s.id===sessionId);
- const visibleSessions=useMemo(()=>filterByTitle(allSessions,query),[allSessions,query]);
+ const visibleSessions=useMemo(()=>withoutSubagents(filterByTitle(allSessions,query)),[allSessions,query]);
+ // 子代理面板数据：当前工作区（草稿态未建会话时落草稿落点）的子代理会话，运行中的排前由面板处理。
+ const panelWorkspaceId=workspaceId||draftWorkspaceId||'';
+ const subagentSessions=useMemo(()=>allSessions.filter(s=>s.parentId&&s.workspaceId===panelWorkspaceId),[allSessions,panelWorkspaceId]);
+ const runningSubagentCount=subagentSessions.reduce((count,s)=>count+((activeIds.has(s.id)||running[s.id])?1:0),0);
  const projectName=(id:string)=>workspaces.find(x=>x.id===id)?.name??'';
  // 可见项目：隐藏（已移除）项目不进「按项目」分组与草稿候选，其余显示点照常。
  const visibleWorkspaces=useMemo(()=>workspaces.filter(w=>!w.hidden),[workspaces]);
@@ -139,7 +194,10 @@ export default function App(){
  const bootstrappedWorkspace=useRef<string|null>(null);
  activeWorkspaceId.current=workspaceId;
  async function attempt<T>(action:()=>Promise<T>):Promise<T|undefined>{setError('');try{return await action()}catch(e){setError(errorText(e));return undefined}}
- useEffect(()=>{if(!desktop())return;void attempt(async()=>{const [ws,ms,ps,sel,pset,amode]=await Promise.all([command<WorkspaceInfo[]>('workspace_list'),command<ModelConfig[]>('model_list'),command<ProviderInfo[]>('provider_list'),command<DefaultSelection|null>('default_selection_get'),command<PresetInfo[]>('preset_list'),command<string>('approval_mode_get')]);setWorkspaces(ws);setWorkspaceId(ws[0]?.id??'');setModels(ms);setProviders(ps);setPresets(pset);setApprovalMode((KNOWN_APPROVALS as readonly string[]).includes(amode)?amode as ApprovalPolicy:'ask');
+ useEffect(()=>{if(!desktop())return;void attempt(async()=>{const [ws,ms,ps,sel,pset,amode]=await Promise.all([command<WorkspaceInfo[]>('workspace_list'),command<ModelConfig[]>('model_list'),command<ProviderInfo[]>('provider_list'),command<DefaultSelection|null>('default_selection_get'),command<PresetInfo[]>('preset_list'),command<string>('approval_mode_get')]);setWorkspaces(ws);
+  // 启动恢复上次打开的项目；项目已移除（隐藏）或记录缺失时回退列表首个。
+  const lastWorkspace=sel?.workspaceId&&ws.some(w=>w.id===sel.workspaceId&&!w.hidden)?sel.workspaceId:(ws[0]?.id??'');
+  setWorkspaceId(lastWorkspace);setModels(ms);setProviders(ps);setPresets(pset);setApprovalMode((KNOWN_APPROVALS as readonly string[]).includes(amode)?amode as ApprovalPolicy:'ask');
   // 恢复上次选择；模型或供应商已停用/删除时回退到第一个可用模型，档位回落最高档。
   const usable=ms.filter(m=>m.enabled&&ps.some(p=>p.id===m.providerId&&p.enabled));
   const saved=sel&&usable.some(m=>m.id===sel.modelId)?sel:null;
@@ -148,6 +206,15 @@ export default function App(){
     ?(saved&&saved.modelId===restored.id&&saved.effort&&restored.efforts.includes(saved.effort)?saved.effort:restored.efforts.at(-1)??null)
     :null;
   setModelId(restored?.id??'');setEffort(restoredEffort)})},[]);
+ // 打开/切换项目即视为使用：跨重启保留，下次启动恢复该项目；启动装载本身不写回（值来自 KV）。
+ const lastSavedWorkspace=useRef<string|null>(null);
+ useEffect(()=>{
+  if(!desktop()||!workspaceId)return;
+  if(lastSavedWorkspace.current===null){lastSavedWorkspace.current=workspaceId;return}
+  if(lastSavedWorkspace.current===workspaceId)return;
+  lastSavedWorkspace.current=workspaceId;
+  void command('default_selection_save',{selection:{modelId,effort,workspaceId}}).catch(()=>{})
+ },[workspaceId]);
  useEffect(()=>{
   const token=++generation.current,targetWorkspaceId=workspaceId;
   const firstWorkspaceLoad=!!targetWorkspaceId&&(bootstrappedWorkspace.current===null||bootstrappedWorkspace.current===targetWorkspaceId);
@@ -330,10 +397,10 @@ export default function App(){
   const kept=next&&next.efforts.length?(effort&&next.efforts.includes(effort)?effort:next.efforts.at(-1)??null):null;
   const from=models.find(m=>m.id===modelId);
   setModelId(id);setEffort(kept);
-  void command('default_selection_save',{selection:{modelId:id,effort:kept}}).catch(()=>{});
+  void command('default_selection_save',{selection:{modelId:id,effort:kept,workspaceId:workspaceId||null}}).catch(()=>{});
   if(from&&from.id!==id&&sessionId)addModelNote(`模型已切换：${from.name||from.model} → ${next?.name||next?.model||id} · 档位 ${kept??'默认'}`);
  }
- function chooseEffort(value:string){setPresetId('');const next=value===''?null:value;setEffort(next);void command('default_selection_save',{selection:{modelId,effort:next}}).catch(()=>{})}
+ function chooseEffort(value:string){setPresetId('');const next=value===''?null:value;setEffort(next);void command('default_selection_save',{selection:{modelId,effort:next,workspaceId:workspaceId||null}}).catch(()=>{})}
  function addModelNote(text:string){const id=sessionId;if(id)setModelNotes(old=>[...old,{sessionId:id,text}])}
  // 选择预设：以预设字段填充级联（级联持久化沿用上次模型选择）；手改级联即放弃预设。
  function choosePreset(id:string){
@@ -345,7 +412,7 @@ export default function App(){
   if(info.modelId){
    const nextEffort=info.effort??models.find(m=>m.id===info.modelId)?.effort??null;
    setModelId(info.modelId);setEffort(nextEffort);
-   void command('default_selection_save',{selection:{modelId:info.modelId,effort:nextEffort}}).catch(()=>{});
+   void command('default_selection_save',{selection:{modelId:info.modelId,effort:nextEffort,workspaceId:workspaceId||null}}).catch(()=>{});
   }
  }
  // 权限模式：保存为默认档并对当前会话即时生效；会话内显式切换记录覆盖（与其他会话隔离）。
@@ -394,10 +461,16 @@ export default function App(){
    ++planRevision.current;setPlanState({id:event.event.sessionId,enabled:event.event.data.enabled,busy:planPending.current.has(event.event.sessionId)});
   }
  }
- async function dispatchText(id:string,input:string,hashes:string[]){setRunning(old=>({...old,[id]:true}));await attempt(async()=>{if(hashes.length)await send(id,input,modelId,receiveEvent,hashes,effort);else await send(id,input,modelId,receiveEvent,undefined,effort)});setRunning(old=>({...old,[id]:false}));useChat.getState().clearStream(id);if(activeSessionId.current===id)await loadLatestTimeline(id)}
+ async function dispatchText(id:string,input:string,hashes:string[],messageQuotes:string[]=[]){setRunning(old=>({...old,[id]:true}));await attempt(async()=>{
+  // 无引用时保持原参数个数，避免既有 send 断言与调用形态漂移。
+  if(messageQuotes.length&&hashes.length)await send(id,input,modelId,receiveEvent,hashes,effort,messageQuotes);
+  else if(messageQuotes.length)await send(id,input,modelId,receiveEvent,undefined,effort,messageQuotes);
+  else if(hashes.length)await send(id,input,modelId,receiveEvent,hashes,effort);
+  else await send(id,input,modelId,receiveEvent,undefined,effort);
+ });setRunning(old=>({...old,[id]:false}));useChat.getState().clearStream(id);if(activeSessionId.current===id)await loadLatestTimeline(id)}
  async function submit(e:FormEvent){
   e.preventDefault();
-  if(sessionBusy||importing||(!text.trim()&&!attachments.length)||running[sessionId]||planPending.current.has(sessionId))return;
+  if(sessionBusy||importing||(!text.trim()&&!attachments.length&&!quotes.length)||running[sessionId]||planPending.current.has(sessionId))return;
   const planMatch=/^\/plan(?:\s+([\s\S]+))?$/.exec(text.trim());
   const planTask=planMatch?.[1]?.trim();
   if(planMatch&&!planTask){await togglePlanMode();if(!sessionId||planState.enabled!==null)setText('');return}
@@ -408,7 +481,7 @@ export default function App(){
   if(sessionId){
    const id=sessionId,selectionVersion=selectionEpoch.current.version;
    if(planMatch){if(planState.id!==id||planState.enabled===null||planState.busy)return;if(!await setPlanMode(id,true)||activeSessionId.current!==id||selectionEpoch.current.version!==selectionVersion)return}
-   if(session)startSessionTitleGeneration(session,input,attachmentNames,!events.some(event=>event.kind==='user.message'));setText('');setAttachments([]);await dispatchText(id,input,hashes);return
+   if(session)startSessionTitleGeneration(session,input,attachmentNames,!events.some(event=>event.kind==='user.message'));setText('');setAttachments([]);const messageQuotes=quotes;setQuotes([]);await dispatchText(id,input,hashes,messageQuotes);return
   }
   // 草稿态：发送首条消息时才创建会话；落点项目非当前工作区时经 pendingJump 切换定位。
   if(!drafting||draftWorkspaceId===null)return;
@@ -426,14 +499,14 @@ export default function App(){
    setDraftPlan(false);
    startSessionTitleGeneration(s,input,attachmentNames,true);
    setDrafting(false);setDraftWorkspaceId(null);
-   setText('');setAttachments([]);
+   setText('');setAttachments([]);const messageQuotes=quotes;setQuotes([]);
    // 迟到守卫：发送期间用户已切走（换会话/换工作区）则不再抢占 UI，消息仍归档到新会话。
    // 经 ref 读实时值（闭包快照恒等于 from*，守不住 await 期间的切换）。
    if(activeWorkspaceId.current===fromWorkspace&&activeSessionId.current===fromSession){
     if(target!==fromWorkspace){pendingJump.current=s.id;setWorkspaceId(target)}
     else{setSessions(old=>[s,...old.filter(item=>item.id!==s.id)]);setSessionId(s.id)}
    }
-   await dispatchText(s.id,input,hashes);
+   await dispatchText(s.id,input,hashes,messageQuotes);
   }catch(err){setError(errorText(err))}
   finally{setSessionBusy(false)}
  }
@@ -456,6 +529,8 @@ export default function App(){
   if(spec.name==='compact'){setNotice('正在压缩会话历史……');await attempt(async()=>{await command('session_compact',{sessionId,modelId,effort});await loadLatestTimeline(sessionId);setNotice('历史已压缩为摘要，后续回合将基于摘要继续。')});return}
  }
  async function cancel(){await attempt(()=>command('session_cancel',{sessionId}))}
+ // 子代理面板的停止按钮：session_cancel 支持任意会话，运行状态由 activeIds 轮询收敛。
+ async function cancelSubagent(id:string){await attempt(()=>command('session_cancel',{sessionId:id}))}
  async function openSession(id:string){if(!workspaceId||id===sessionId)return;await attempt(async()=>{let target=sessions.find(s=>s.id===id);if(!target){target=(await command<SessionInfo[]>('session_list',{workspaceId})).find(s=>s.id===id)}if(!target)return;if(target.workspaceId!==workspaceId)throw new Error('子会话不属于当前工作区。');setSessions(old=>old.some(s=>s.id===target!.id)?old:[target!,...old]);setSessionId(target.id);setDrafting(false);setDraftWorkspaceId(null);setText('')})}
  function openFromPanel(id:string,workspace:string){setPanel(null);if(workspace===workspaceId){void openSession(id);return}pendingJump.current=id;setWorkspaceId(workspace)}
  // 侧栏跨工作区点击：同工作区直接打开，跨工作区先切工作区再经 pendingJump 跳转。
@@ -515,25 +590,28 @@ export default function App(){
   try{await command<WorkspaceInfo>('workspace_set_pinned',{workspaceId:target.id,pinned:next})}
   catch(e){setWorkspaces(old=>old.map(w=>w.id===target.id?{...w,pinned:!next}:w));setError(errorText(e))}
  }
- // 打开设置页：同时刷新归档会话列表（存档管理数据源）。
- function openSettings(){
+ // 打开设置页：同时刷新归档会话列表（存档管理数据源）；可指定初始分类（如从发送框「管理模型」进入模型设置）。
+ function openSettings(section?:SettingsCategoryId){
+  setSettingsSection(section??null);
   setSettingsOpen(true);
   command<SessionInfo[]>('session_list',{workspaceId,allWorkspaces:true,archived:true}).then(list=>setArchivedSessions(list)).catch(()=>{});
  }
+ // 模型/供应商保存后刷新目录并做默认选中回退（模型设置保存后由设置页回调）。
+ async function refreshModels(){const [ms,ps]=await Promise.all([command<ModelConfig[]>('model_list'),command<ProviderInfo[]>('provider_list')]);setModels(ms);setProviders(ps);if(!ms.some(m=>m.id===modelId)||!ms.find(m=>m.id===modelId)?.enabled){const usable=ms.filter(m=>m.enabled&&ps.some(p=>p.id===m.providerId&&p.enabled));setModelId(usable[0]?.id??'');setEffort(usable[0]?.efforts.at(-1)??null)}}
  function chooseView(mode:ViewMode){setViewMode(mode);try{localStorage.setItem('sessionView',mode)}catch{}}
  function toggleCollapsed(id:string){setCollapsed(old=>{const next=old.includes(id)?old.filter(x=>x!==id):[...old,id];try{localStorage.setItem('sessionCollapsed',JSON.stringify(next))}catch{}return next})}
  async function resolve(id:string,allow:boolean){await attempt(async()=>{await command('approval_resolve',{id,allow});setApprovals(old=>old.filter(a=>a.id!==id))})}
  async function resolveQuestion(id:string,answer:AskAnswer){await attempt(async()=>{await command('question_resolve',{id,answer});setQuestions(old=>old.filter(q=>q.id!==id))})}
- async function exportSession(){await attempt(async()=>{const path=await save({defaultPath:'rust-harness-session.json',filters:[{name:'JSON',extensions:['json']}]});if(!path)return;await command('session_export',{sessionId,path});setNotice('会话已导出。')})}
+ async function exportSession(){await attempt(async()=>{const path=await save({defaultPath:'rust-harness-session.json',filters:[{name:'JSON',extensions:['json']}]});if(!path)return;await command('session_export',{sessionId,path});if(exportNoticeTimer.current!==null)clearTimeout(exportNoticeTimer.current);setNotice('会话已导出。');exportNoticeTimer.current=setTimeout(()=>{setNotice(current=>current==='会话已导出。'?'':current);exportNoticeTimer.current=null},3000)})}
  return <div className="app" aria-hidden={settingsOpen||undefined}>
   <aside className="sidebar">
    <button className="new-chat" title="新建聊天" onClick={newSession} disabled={sessionBusy}><Plus size={16}/><span>新建聊天</span></button>
    <div className="session-search"><Search size={14} aria-hidden="true"/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="搜索会话…" aria-label="搜索会话"/></div>
-   <div className="section-label"><span>项目列表</span><span className="label-spacer"/><button type="button" role="switch" aria-checked={viewMode==='project'} aria-label="切换视图：最近 / 项目" className="view-switch" onClick={()=>chooseView(viewMode==='recent'?'project':'recent')}><span className="knob" aria-hidden="true"/><span className="sw-label a" aria-hidden="true">最近</span><span className="sw-label b" aria-hidden="true">项目</span></button></div>
-   <nav className="sessions session-scrollbar" aria-label="会话列表">
+   <div className="section-label"><span>项目列表</span><span className="label-spacer"/><button type="button" role="switch" aria-checked={viewMode==='project'} aria-label="切换视图：项目 / 最近" className="view-switch" onClick={()=>chooseView(viewMode==='recent'?'project':'recent')}><span className="knob" aria-hidden="true"/><span className="sw-label a" aria-hidden="true">项目</span><span className="sw-label b" aria-hidden="true">最近</span></button></div>
+   <nav className="sessions session-scrollbar" aria-label="会话列表" onScrollCapture={dismissSessionPop}>
     {viewMode==='recent'?groupByTime(visibleSessions,new Date()).map(group=><Fragment key={group.group}>
      <div className="group-head">{GROUP_LABELS[group.group]}</div>
-     {group.sessions.map(s=>{const ws=workspaces.find(w=>w.id===s.workspaceId);return <button key={s.id} className={`session-row${sessionId===s.id?' active':''}${s.parentId?' child':''}`} title={s.parentId?'子代理会话':undefined} onClick={()=>openFromSidebar(s)} onContextMenu={event=>showSessionContextMenu(event,s)}><MessageSquare size={16}/><span className="session-lines"><span className="session-l1"><span className="session-title">{s.title}</span>{s.parentId&&<em className="subagent-badge">子任务</em>}{pendingAskIds.has(s.id)&&<em className="ask-badge">待答复</em>}<span className="session-time">{relativeLabel(s.updatedAt,new Date())}</span><span role="button" tabIndex={0} className="session-archive" aria-label="存档会话" title="存档会话" onClick={event=>{event.stopPropagation();archiveSession(s)}}><Archive size={13}/></span></span><span className="session-l2">{ws&&<span>{projectName(s.workspaceId)}</span>}{ws?.pinned&&<Pin size={10} aria-hidden="true"/>}{(running[s.id]||activeIds.has(s.id))&&<i className="live-dot" aria-label="运行中"/>}</span></span></button>})}
+     {group.sessions.map(s=>{const ws=workspaces.find(w=>w.id===s.workspaceId);return <button key={s.id} className={`session-row${sessionId===s.id?' active':''}`} onClick={()=>openFromSidebar(s)} onContextMenu={event=>showSessionContextMenu(event,s)} onMouseEnter={event=>openSessionPop(s,event.currentTarget)} onMouseLeave={scheduleSessionPopClose}><MessageSquare size={16}/><span className="session-lines"><span className="session-l1"><span className="session-title">{s.title}</span>{pendingAskIds.has(s.id)&&<em className="ask-badge">待答复</em>}<span role="button" tabIndex={0} className="session-archive" aria-label="存档会话" title="存档会话" onClick={event=>{event.stopPropagation();archiveSession(s)}}><Archive size={13}/></span></span><span className="session-l2">{ws&&<span>{projectName(s.workspaceId)}</span>}{ws?.pinned&&<Pin size={10} aria-hidden="true"/>}{(running[s.id]||activeIds.has(s.id))&&<i className="live-dot" aria-label="运行中"/>}</span></span></button>})}
     </Fragment>):groupByProject(visibleSessions,visibleWorkspaces,!query).map(({workspace:ws,sessions:list})=>{
      const open=!collapsed.includes(ws.id);
      return <div key={ws.id} className="ws-group">
@@ -543,28 +621,28 @@ export default function App(){
        <button type="button" className="ws-rename" aria-label={`重命名 ${ws.name}`} title="重命名项目" onClick={()=>setWsDialog({mode:'rename',id:ws.id,name:ws.name})}><Pencil size={13}/></button>
        <button type="button" className={`ws-pin${ws.pinned?' on':''}`} aria-label={`${ws.pinned?'取消置顶':'置顶'} ${ws.name}`} title={ws.pinned?'取消置顶':'置顶项目'} onClick={()=>void togglePinned(ws)}><Pin size={13}/></button>
       </div>
-      {open&&list.map(s=><button key={s.id} className={`session-row one${sessionId===s.id?' active':''}${s.parentId?' child':''}`} title={s.parentId?'子代理会话':undefined} onClick={()=>openFromSidebar(s)} onContextMenu={event=>showSessionContextMenu(event,s)}><MessageSquare size={16}/><span className="session-title">{s.title}</span>{s.parentId&&<em className="subagent-badge">子任务</em>}{pendingAskIds.has(s.id)&&<em className="ask-badge">待答复</em>}{(running[s.id]||activeIds.has(s.id))&&<i className="live-dot" aria-label="运行中"/>}<span className="session-time">{relativeLabel(s.updatedAt,new Date())}</span><span role="button" tabIndex={0} className="session-archive" aria-label="存档会话" title="存档会话" onClick={event=>{event.stopPropagation();archiveSession(s)}}><Archive size={13}/></span></button>)}
+      {open&&list.map(s=><button key={s.id} className={`session-row one${sessionId===s.id?' active':''}`} onClick={()=>openFromSidebar(s)} onContextMenu={event=>showSessionContextMenu(event,s)} onMouseEnter={event=>openSessionPop(s,event.currentTarget)} onMouseLeave={scheduleSessionPopClose}><MessageSquare size={16}/><span className="session-title">{s.title}</span>{pendingAskIds.has(s.id)&&<em className="ask-badge">待答复</em>}{(running[s.id]||activeIds.has(s.id))&&<i className="live-dot" aria-label="运行中"/>}<span role="button" tabIndex={0} className="session-archive" aria-label="存档会话" title="存档会话" onClick={event=>{event.stopPropagation();archiveSession(s)}}><Archive size={13}/></span></button>)}
      </div>;
     })}
     {(!visibleSessions.length&&!(viewMode==='project'&&!query&&workspaces.length))&&<p className="muted empty-small">{query?'无匹配会话。':workspaceId?'还没有会话，点击「新建聊天」开始':'打开工作区后，会话将保存在本机。'}</p>}
     {!visibleSessions.length&&!query&&!workspaceId&&<button className="empty-open" onClick={openWorkspace} disabled={busy||!desktop()}><FolderOpen size={14}/>打开工作区</button>}
    </nav>
-   <div className="sidebar-bottom"><div className="local-badge"><i className="live-dot"/> 本地优先 · 无遥测</div><button onClick={()=>useSidePanel.getState().openPlans()}><Target size={17}/>计划与目标</button><button onClick={()=>setPanel('automations')}><Timer size={17}/>自动化{automationCount!==null&&<span className="count">{automationCount}</span>}</button><button aria-label="设置" onClick={openSettings}><Settings size={17}/>设置</button></div>
+   <div className="sidebar-bottom"><div className="local-badge"><i className="live-dot"/> 本地优先 · 无遥测</div><button onClick={()=>useSidePanel.getState().openPlans()}><Target size={17}/>计划与目标</button><button onClick={()=>setPanel('automations')}><Timer size={17}/>自动化{automationCount!==null&&<span className="count">{automationCount}</span>}</button><button aria-label="设置" onClick={()=>openSettings()}><Settings size={17}/>设置</button></div>
   </aside>
+  {sessionPop&&createPortal(<SessionPopCard title={sessionPop.title} time={sessionPop.time} rect={sessionPop.rect}/>,document.body)}
   <main className="main"><header className="topbar"><div className="breadcrumb"><strong className="topbar-session-title">{session?.title??(drafting?'新会话':'新的可能，从这里开始')}</strong><span className="workspace-context"><Folder size={15}/><span className="workspace-name">{workspace?workspace.name:'工作台'}</span></span></div><div className="toolbar"><button className="icon-button" title="导出会话" aria-label="导出会话" disabled={!sessionId} onClick={exportSession}><Download size={17}/></button><button className="soft" aria-expanded={panel==='tasks'} aria-controls="task-popover" onClick={()=>setPanel(p=>p==='tasks'?null:'tasks')} disabled={!sessionId}><ListTodo size={16}/>后台任务{taskCount>0&&<span className="count">{taskCount}</span>}</button><button className="soft" aria-expanded={sideOpen} onClick={()=>useSidePanel.getState().toggle()} disabled={!workspaceId}><GitCompareArrows size={16}/>查看更改</button><button className="archive-button" type="button" title="存档会话" aria-label="存档会话" disabled={!sessionId} onClick={()=>{if(session)archiveSession(session)}}><Archive size={16}/>存档</button>{panel==='tasks'&&sessionId&&<BackgroundTasksPanel sessionId={sessionId} onClose={()=>setPanel(null)}/>}</div></header>
    {!desktop()&&<div className="host-banner"><Terminal size={16}/>当前为界面预览，需要桌面宿主才能访问工作区和模型。</div>}
    {error&&<div role="alert" className="alert"><span>{error}</span><button aria-label="关闭错误" onClick={()=>setError('')}><X size={16}/></button></div>}
    {notice&&<div role="status" className="notice"><Check size={15}/>{notice}<button aria-label="关闭提示" onClick={()=>setNotice('')}><X size={15}/></button></div>}
    <section ref={conversationRef} className="conversation" aria-label="聊天消息" onScroll={event=>{const node=event.currentTarget;autoFollow.current=node.scrollHeight-node.scrollTop-node.clientHeight<80;if(node.scrollTop<=8)void loadOlderTimeline()}}>
     {!timelineLoading&&!events.length&&!stream&&<div className="welcome"><span className="welcome-icon"><Terminal size={35}/></span><div className="eyebrow">BUILD WITH CONFIDENCE</div><h1>{drafting&&draftWorkspaceId?<>你想在 <em className="pj-name">{projectName(draftWorkspaceId)}</em> 中构建什么？</>:'想把什么变成现实？'}</h1><p>理解代码、探索想法，或完成下一次改进。<br/>在独立的工作副本中协作，每一处更改都由你掌控。</p>{!workspaceId&&!drafting&&<button className="primary welcome-open" onClick={openWorkspace} disabled={busy||!desktop()}><FolderOpen size={15}/>打开工作区</button>}<div className="suggestions">{['梳理项目结构和关键模块','检查代码，找出值得改进的地方','帮我规划并实现一个新功能'].map((s,i)=><button key={s} onClick={()=>setText(s)} disabled={!sessionId&&!drafting}><span>0{i+1}</span>{s}<ArrowUp size={14}/></button>)}</div><div className="welcome-foot"><ShieldCheck size={15}/>工作副本隔离 · 操作可审批 · 更改可预览</div></div>}
-    <div className="messages">{timeline?.hasOlder?<div className="timeline-page-control"><button type="button" onClick={()=>void loadOlderTimeline()} disabled={olderTimelineLoading}>{olderTimelineLoading?'正在加载更早消息…':'加载更早消息'}</button></div>:timeline&&timeline.loadedOlder?<div className="timeline-page-control"><small>已到会话开头</small></div>:null}<ConversationEvents events={events} workspaceId={workspaceId} onOpenSession={openSession} activeIds={activeIds} askAnswers={askAnswers}/>{modelNotes.filter(n=>n.sessionId===sessionId).map((note,index)=><div key={`${note.sessionId}-${index}`} className="model-note" role="status">{note.text}</div>)}{thinkingVisible&&<article className="message assistant thinking-indicator" role="status" aria-label="正在思考"><div className="avatar" aria-hidden="true">R</div><div className="message-body"><div className="message-label">Rust Harness</div><div className="thinking-line"><span>正在思考</span><span className="thinking-dots" aria-hidden="true"><i/><i/><i/></span></div></div></article>}{stream&&<article className="message assistant"><div className="avatar">R</div><div className="message-body"><div className="message-label">Rust Harness <span className="stream-label">正在思考与执行</span></div>{stream.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{stream.reasoning}</pre></details>}<div className="prose"><Markdown content={stream.text||'正在处理…'}/><span className="cursor"/></div></div></article>}<div ref={end}/></div>
+    <div className="messages" onContextMenu={event=>{event.preventDefault();setMsgContextMenu({x:event.clientX,y:event.clientY,text:window.getSelection()?.toString().trim()??''})}}>{timeline?.hasOlder?<div className="timeline-page-control"><button type="button" onClick={()=>void loadOlderTimeline()} disabled={olderTimelineLoading}>{olderTimelineLoading?'正在加载更早消息…':'加载更早消息'}</button></div>:timeline&&timeline.loadedOlder?<div className="timeline-page-control"><small>已到会话开头</small></div>:null}<ConversationEvents events={events} workspaceId={workspaceId} onOpenSession={openSession} activeIds={activeIds} askAnswers={askAnswers}/>{modelNotes.filter(n=>n.sessionId===sessionId).map((note,index)=><div key={`${note.sessionId}-${index}`} className="model-note" role="status">{note.text}</div>)}{thinkingVisible&&<article className="message assistant thinking-indicator" role="status" aria-label="正在思考"><div className="avatar" aria-hidden="true">R</div><div className="message-body"><div className="message-label">Rust Harness</div><div className="thinking-line"><span>正在思考</span><span className="thinking-dots" aria-hidden="true"><i/><i/><i/></span></div></div></article>}{stream&&<article className="message assistant"><div className="avatar">R</div><div className="message-body"><div className="message-label">Rust Harness <span className="stream-label">正在思考与执行</span></div>{stream.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{stream.reasoning}</pre></details>}<div className="prose"><Markdown content={stream.text||'正在处理…'}/><span className="cursor"/></div></div></article>}<div ref={end}/></div>
    </section>
-   <footer className="composer-area">{drafting&&<div className="chip-row"><button type="button" className="chip" aria-haspopup="menu" aria-expanded={pjMenuOpen} aria-label="选择项目" onClick={()=>setPjMenuOpen(v=>!v)}><Folder size={13} aria-hidden="true"/><span className="nm">{draftWorkspaceId?projectName(draftWorkspaceId):'选择项目'}</span><ChevronDown size={13} aria-hidden="true"/></button>{pjMenuOpen&&<div className="pj-menu" role="menu" aria-label="选择项目"><div className="pj-search"><Search size={13} aria-hidden="true"/><input value={pjQuery} onChange={e=>setPjQuery(e.target.value)} placeholder="搜索项目" aria-label="搜索项目"/></div><div className="pj-list">{pjCandidates.map(ws=><button type="button" key={ws.id} role="menuitem" className={ws.id===draftWorkspaceId?'current':''} onClick={()=>{setDraftWorkspaceId(ws.id);setPjMenuOpen(false)}}><Folder size={13} aria-hidden="true"/><span className="nm">{ws.name}</span>{ws.pinned&&<Pin size={11} aria-hidden="true"/>}{ws.id===draftWorkspaceId&&<Check size={14} aria-hidden="true"/>}</button>)}{!pjCandidates.length&&<p className="pj-empty">没有匹配的项目</p>}</div><div className="pj-sep"/><button type="button" role="menuitem" onClick={()=>{setPjMenuOpen(false);void openWorkspace()}}><Plus size={13} aria-hidden="true"/><span className="nm">新建项目</span><span className="pj-sub">打开文件夹</span></button></div>}</div>}{currentQuestion&&<QuestionCard key={currentQuestion.id} question={currentQuestion} sessionTitle={sessions.find(s=>s.id===currentQuestion.sessionId)?.title??currentQuestion.sessionId} onSubmit={answer=>void resolveQuestion(currentQuestion.id,answer)}/>}<form className="composer" onSubmit={submit}>{activeSkill&&<div className="slash-menu" role="listbox" aria-label="技能补全">{activeSkill.items.map((row,index)=>{const selected=index===Math.min(slashIndex,activeSkill.items.length-1);return <button type="button" key={row.name} role="option" aria-selected={selected} ref={selected?selectedOptionRef:undefined} className={selected?'selected':undefined} onMouseDown={e=>{e.preventDefault();applySkillCompletion(row,activeSkill.tok)}}><strong>${row.name}</strong><span>{row.description||'（无描述）'}</span></button>})}</div>}{activeSlash&&<div className="slash-menu" role="listbox" aria-label="斜杠命令补全">{activeSlash.items.map((spec,index)=>{const selected=index===Math.min(slashIndex,activeSlash.items.length-1);return <button type="button" key={spec.name} role="option" aria-selected={selected} ref={selected?selectedOptionRef:undefined} className={selected?'selected':undefined} onMouseDown={e=>{e.preventDefault();void executeSlash(spec)}}><strong>/{spec.name}</strong><span>{spec.description}</span></button>})}</div>}<textarea aria-label="消息" ref={textareaRef} placeholder={sessionBusy?'正在准备会话…':sessionId?'描述任务，或继续你的想法…（输入 / 唤出命令）':drafting&&draftWorkspaceId?`描述任务，发送后将在 ${projectName(draftWorkspaceId)} 创建会话（输入 / 唤出命令）`:'选择项目后开始协作'} value={text} onChange={e=>{setText(e.target.value);setCursor(e.currentTarget.selectionStart??0)}} onSelect={e=>setCursor(e.currentTarget.selectionStart??0)} disabled={sessionBusy||(!sessionId&&!drafting)} onKeyDown={e=>{const menu=activeSlash,menuSkill=activeSkill;if(menu){if(e.key==='ArrowDown'){e.preventDefault();setSlashIndex(menu.items.length?(slashIndex+1)%menu.items.length:0);return}if(e.key==='ArrowUp'){e.preventDefault();setSlashIndex(menu.items.length?(slashIndex-1+menu.items.length)%menu.items.length:0);return}if(e.key==='Tab'){e.preventDefault();applyCompletion(menu.items[Math.min(slashIndex,menu.items.length-1)],menu.token);return}if(e.key==='Escape'){e.preventDefault();setDismissedToken(menu.token);return}if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();const spec=menu.items[Math.min(slashIndex,menu.items.length-1)];if(spec)void executeSlash(spec);return}}if(menuSkill){if(e.key==='ArrowDown'){e.preventDefault();setSlashIndex(menuSkill.items.length?(slashIndex+1)%menuSkill.items.length:0);return}if(e.key==='ArrowUp'){e.preventDefault();setSlashIndex(menuSkill.items.length?(slashIndex-1+menuSkill.items.length)%menuSkill.items.length:0);return}if(e.key==='Tab'||e.key==='Enter'){e.preventDefault();const row=menuSkill.items[Math.min(slashIndex,menuSkill.items.length-1)];if(row)applySkillCompletion(row,menuSkill.tok);return}if(e.key==='Escape'){e.preventDefault();setDismissedToken(menuSkill.tok.token);return}}if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit()}}}/>{attachments.length>0&&<div className="permission-tags">{attachments.map(a=><span key={a.hash}>{a.name} <button type="button" aria-label={`移除附件 ${a.name}`} onClick={()=>setAttachments(old=>old.filter(item=>item.hash!==a.hash))}><X size={12}/></button></span>)}</div>}<div className="composer-bottom"><div className="composer-plus-wrap"><button type="button" className="composer-plus" aria-label="添加内容" aria-haspopup="menu" aria-expanded={plusOpen} disabled={(!sessionId&&!drafting)||sessionBusy||!!running[sessionId]} onClick={()=>setPlusOpen(v=>!v)}><Plus size={17}/></button>{plusOpen&&<div className="plus-menu" role="menu" aria-label="添加内容"><button type="button" role="menuitem" disabled={!sessionId||importing||attachments.length>=20} onClick={()=>{setPlusOpen(false);void addAttachment()}}><Paperclip size={15}/><span><strong>附件</strong><small>选择本地文件，随消息发送（最多 20 MiB）</small></span></button><button type="button" role="menuitem" disabled={!!sessionId&&(planState.id!==sessionId||planState.enabled===null||planState.busy)} onClick={()=>{setPlusOpen(false);if(!sessionId){setDraftPlan(true);setNotice('草稿将在发送时启用计划模式。')}else if(planState.id===sessionId&&planState.enabled===false&&!planState.busy)void setPlanMode(sessionId,true)}}><ListTodo size={15}/><span><strong>进入计划模式</strong><small>为当前会话启用计划模式</small></span></button><button type="button" role="menuitem" onClick={()=>insertPlusCommand('goal')}><Target size={15}/><span><strong>目标</strong><small>插入 /goal，为本会话设定一个目标</small></span></button></div>}</div><div className="model-select"><button type="button" className="plan-mode-chip" aria-label="计划模式" aria-pressed={sessionId&&planState.id===sessionId&&planState.enabled!==null?planState.enabled:undefined} disabled={sessionBusy||!!running[sessionId]||(!sessionId&&!drafting)||(!!sessionId&&(planState.id!==sessionId||planState.enabled===null||planState.busy))} onClick={()=>void togglePlanMode()}>{!sessionId?(draftPlan?'计划模式（草稿待启用）':'计划模式（草稿）'):planState.id!==sessionId||planState.enabled===null?'计划模式（未知）':planState.enabled?'计划模式：已开启':'计划模式：已关闭'}</button><div className="mode-select"><select aria-label="权限模式" value={sessionId?approvalModeForSession(sessionId):approvalMode} onChange={e=>chooseApprovalMode(e.target.value as ApprovalPolicy)}>{APPROVAL_MODES.map(m=><option key={m.value} value={m.value} title={m.description}>{m.label}</option>)}</select></div><select aria-label="能力预设" value={presetId} onChange={e=>choosePreset(e.target.value)}><option value="">不使用预设</option>{presets.filter(p=>p.id!=='builtin:default').map(p=><option key={p.id} value={p.id} disabled={!!p.broken}>{p.name}{p.broken?'（不可用）':''}</option>)}</select><ModelSelect models={models} providers={providers} modelId={modelId} effort={effort} open={modelMenuOpen} onOpenChange={setModelMenuOpen} onPickModel={chooseModel} onPickEffort={chooseEffort} onOpenManage={()=>setPanel('models')}/></div><UsageRing models={models} providers={providers} modelId={modelId} sessionId={sessionId}/><div className="send-controls"><span>Enter 发送 · Shift + Enter 换行</span>{running[sessionId]?<button type="button" className="send" aria-label="取消生成" onClick={cancel}><Square size={16}/></button>:<button className="send" type="submit" aria-label="发送消息" disabled={sessionBusy||importing||planState.busy||(!text.trim()&&!attachments.length)||(!sessionId&&(!drafting||draftWorkspaceId===null))||(!modelId&&!/^\/plan\s*$/.test(text.trim()))}><ArrowUp size={19}/></button>}</div></div></form><div className="footer-note">原项目保持安全。模型生成的更改需要你确认后才会同步。</div></footer>
+   <footer className="composer-area">{drafting&&<div className="chip-row"><button type="button" className="chip" aria-haspopup="menu" aria-expanded={pjMenuOpen} aria-label="选择项目" onClick={()=>setPjMenuOpen(v=>!v)}><Folder size={13} aria-hidden="true"/><span className="nm">{draftWorkspaceId?projectName(draftWorkspaceId):'选择项目'}</span><ChevronDown size={13} aria-hidden="true"/></button>{pjMenuOpen&&<div className="pj-menu" role="menu" aria-label="选择项目"><div className="pj-search"><Search size={13} aria-hidden="true"/><input value={pjQuery} onChange={e=>setPjQuery(e.target.value)} placeholder="搜索项目" aria-label="搜索项目"/></div><div className="pj-list">{pjCandidates.map(ws=><button type="button" key={ws.id} role="menuitem" className={ws.id===draftWorkspaceId?'current':''} onClick={()=>{setDraftWorkspaceId(ws.id);setPjMenuOpen(false)}}><Folder size={13} aria-hidden="true"/><span className="nm">{ws.name}</span>{ws.pinned&&<Pin size={11} aria-hidden="true"/>}{ws.id===draftWorkspaceId&&<Check size={14} aria-hidden="true"/>}</button>)}{!pjCandidates.length&&<p className="pj-empty">没有匹配的项目</p>}</div><div className="pj-sep"/><button type="button" role="menuitem" onClick={()=>{setPjMenuOpen(false);void openWorkspace()}}><Plus size={13} aria-hidden="true"/><span className="nm">新建项目</span><span className="pj-sub">打开文件夹</span></button></div>}</div>}{quotes.length>0&&<div className="quote-row">{quotes.map((quote,index)=><span key={`${index}-${quote.slice(0,12)}`} className="quote-chip" title={quote}><Quote size={11} className="q-ico" aria-hidden="true"/><span className="q-txt">{quote}</span><button type="button" className="q-x" aria-label={`删除引用 ${index+1}`} onClick={()=>setQuotes(old=>old.filter((_,i)=>i!==index))}><X size={9}/></button></span>)}</div>}{currentQuestion&&<QuestionCard key={currentQuestion.id} question={currentQuestion} sessionTitle={sessions.find(s=>s.id===currentQuestion.sessionId)?.title??currentQuestion.sessionId} onSubmit={answer=>void resolveQuestion(currentQuestion.id,answer)}/>}<form className="composer" onSubmit={submit}>{activeSkill&&<div className="slash-menu" role="listbox" aria-label="技能补全">{activeSkill.items.map((row,index)=>{const selected=index===Math.min(slashIndex,activeSkill.items.length-1);return <button type="button" key={row.name} role="option" aria-selected={selected} ref={selected?selectedOptionRef:undefined} className={selected?'selected':undefined} onMouseDown={e=>{e.preventDefault();applySkillCompletion(row,activeSkill.tok)}}><strong>${row.name}</strong><span>{row.description||'（无描述）'}</span></button>})}</div>}{activeSlash&&<div className="slash-menu" role="listbox" aria-label="斜杠命令补全">{activeSlash.items.map((spec,index)=>{const selected=index===Math.min(slashIndex,activeSlash.items.length-1);return <button type="button" key={spec.name} role="option" aria-selected={selected} ref={selected?selectedOptionRef:undefined} className={selected?'selected':undefined} onMouseDown={e=>{e.preventDefault();void executeSlash(spec)}}><strong>/{spec.name}</strong><span>{spec.description}</span></button>})}</div>}<textarea aria-label="消息" ref={textareaRef} placeholder={sessionBusy?'正在准备会话…':sessionId?'描述任务，或继续你的想法…（输入 / 唤出命令）':drafting&&draftWorkspaceId?`描述任务，发送后将在 ${projectName(draftWorkspaceId)} 创建会话（输入 / 唤出命令）`:'选择项目后开始协作'} value={text} onChange={e=>{setText(e.target.value);setCursor(e.currentTarget.selectionStart??0)}} onSelect={e=>setCursor(e.currentTarget.selectionStart??0)} disabled={sessionBusy||(!sessionId&&!drafting)} onKeyDown={e=>{const menu=activeSlash,menuSkill=activeSkill;if(menu){if(e.key==='ArrowDown'){e.preventDefault();setSlashIndex(menu.items.length?(slashIndex+1)%menu.items.length:0);return}if(e.key==='ArrowUp'){e.preventDefault();setSlashIndex(menu.items.length?(slashIndex-1+menu.items.length)%menu.items.length:0);return}if(e.key==='Tab'){e.preventDefault();applyCompletion(menu.items[Math.min(slashIndex,menu.items.length-1)],menu.token);return}if(e.key==='Escape'){e.preventDefault();setDismissedToken(menu.token);return}if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();const spec=menu.items[Math.min(slashIndex,menu.items.length-1)];if(spec)void executeSlash(spec);return}}if(menuSkill){if(e.key==='ArrowDown'){e.preventDefault();setSlashIndex(menuSkill.items.length?(slashIndex+1)%menuSkill.items.length:0);return}if(e.key==='ArrowUp'){e.preventDefault();setSlashIndex(menuSkill.items.length?(slashIndex-1+menuSkill.items.length)%menuSkill.items.length:0);return}if(e.key==='Tab'||e.key==='Enter'){e.preventDefault();const row=menuSkill.items[Math.min(slashIndex,menuSkill.items.length-1)];if(row)applySkillCompletion(row,menuSkill.tok);return}if(e.key==='Escape'){e.preventDefault();setDismissedToken(menuSkill.tok.token);return}}if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit()}}}/>{attachments.length>0&&<div className="permission-tags">{attachments.map(a=><span key={a.hash}>{a.name} <button type="button" aria-label={`移除附件 ${a.name}`} onClick={()=>setAttachments(old=>old.filter(item=>item.hash!==a.hash))}><X size={12}/></button></span>)}</div>}<div className="composer-bottom"><div className="composer-plus-wrap"><button type="button" className="composer-plus" aria-label="添加内容" aria-haspopup="menu" aria-expanded={plusOpen} disabled={(!sessionId&&!drafting)||sessionBusy||!!running[sessionId]} onClick={()=>setPlusOpen(v=>!v)}><Plus size={17}/></button>{plusOpen&&<div className="plus-menu" role="menu" aria-label="添加内容"><button type="button" role="menuitem" disabled={!sessionId||importing||attachments.length>=20} onClick={()=>{setPlusOpen(false);void addAttachment()}}><Paperclip size={15}/><span><strong>附件</strong><small>选择本地文件，随消息发送（最多 20 MiB）</small></span></button><button type="button" role="menuitem" disabled={!!sessionId&&(planState.id!==sessionId||planState.enabled===null||planState.busy)} onClick={()=>{setPlusOpen(false);if(!sessionId){setDraftPlan(true);setNotice('草稿将在发送时启用计划模式。')}else if(planState.id===sessionId&&planState.enabled===false&&!planState.busy)void setPlanMode(sessionId,true)}}><ListTodo size={15}/><span><strong>进入计划模式</strong><small>为当前会话启用计划模式</small></span></button><button type="button" role="menuitem" onClick={()=>insertPlusCommand('goal')}><Target size={15}/><span><strong>目标</strong><small>插入 /goal，为本会话设定一个目标</small></span></button></div>}</div><div className="composer-subagent-wrap"><button type="button" className="composer-subagent" aria-label="子代理" title="子代理" aria-haspopup="dialog" aria-controls="subagent-popover" aria-expanded={subagentOpen} disabled={!panelWorkspaceId} onClick={()=>setSubagentOpen(v=>!v)}><Bot size={17}/>{runningSubagentCount>0&&<span className="subagent-count">{runningSubagentCount>9?'9+':runningSubagentCount}</span>}</button>{subagentOpen&&<SubagentPanel sessions={subagentSessions} activeIds={activeIds} onOpen={s=>void openFromSidebar(s)} onCancel={id=>void cancelSubagent(id)} onClose={()=>setSubagentOpen(false)}/>}</div><div className="model-select"><button type="button" className="plan-mode-chip" aria-label="计划模式" aria-pressed={sessionId&&planState.id===sessionId&&planState.enabled!==null?planState.enabled:undefined} disabled={sessionBusy||!!running[sessionId]||(!sessionId&&!drafting)||(!!sessionId&&(planState.id!==sessionId||planState.enabled===null||planState.busy))} onClick={()=>void togglePlanMode()}>{!sessionId?(draftPlan?'计划模式（草稿待启用）':'计划模式（草稿）'):planState.id!==sessionId||planState.enabled===null?'计划模式（未知）':planState.enabled?'计划模式：已开启':'计划模式：已关闭'}</button><div className="mode-select"><select aria-label="权限模式" value={sessionId?approvalModeForSession(sessionId):approvalMode} onChange={e=>chooseApprovalMode(e.target.value as ApprovalPolicy)}>{APPROVAL_MODES.map(m=><option key={m.value} value={m.value} title={m.description}>{m.label}</option>)}</select></div><select aria-label="能力预设" value={presetId} onChange={e=>choosePreset(e.target.value)}><option value="">不使用预设</option>{presets.filter(p=>p.id!=='builtin:default').map(p=><option key={p.id} value={p.id} disabled={!!p.broken}>{p.name}{p.broken?'（不可用）':''}</option>)}</select><ModelSelect models={models} providers={providers} modelId={modelId} effort={effort} open={modelMenuOpen} onOpenChange={setModelMenuOpen} onPickModel={chooseModel} onPickEffort={chooseEffort} onOpenManage={()=>openSettings('models')}/></div><UsageRing models={models} providers={providers} modelId={modelId} sessionId={sessionId}/><div className="send-controls"><span>Enter 发送 · Shift + Enter 换行</span>{running[sessionId]?<button type="button" className="send" aria-label="取消生成" onClick={cancel}><Square size={16}/></button>:<button className="send" type="submit" aria-label="发送消息" disabled={sessionBusy||importing||planState.busy||(!text.trim()&&!attachments.length&&!quotes.length)||(!sessionId&&(!drafting||draftWorkspaceId===null))||(!modelId&&!/^\/plan\s*$/.test(text.trim()))}><ArrowUp size={19}/></button>}</div></div></form><div className="footer-note">原项目保持安全。模型生成的更改需要你确认后才会同步。</div></footer>
   </main>
   <SidePanel workspaceId={workspaceId} executionMode={workspace?.executionMode} currentSessionId={sessionId} onOpenSession={(id,workspace)=>{useSidePanel.getState().close();openFromPanel(id,workspace)}}/>
-  {wsContextMenu&&<div className="session-context-menu" role="menu" aria-label="项目操作" style={{left:wsContextMenu.x,top:wsContextMenu.y}} onContextMenu={event=>event.preventDefault()}><button type="button" role="menuitem" onClick={()=>{const ws=workspaces.find(candidate=>candidate.id===wsContextMenu.workspaceId);if(ws)setWsDialog({mode:'rename',id:ws.id,name:ws.name});setWsContextMenu(null)}}><Pencil size={14}/>重命名</button><button type="button" role="menuitem" onClick={()=>{const ws=workspaces.find(candidate=>candidate.id===wsContextMenu.workspaceId);if(ws)void togglePinned(ws);setWsContextMenu(null)}}><Pin size={14}/>{workspaces.find(candidate=>candidate.id===wsContextMenu.workspaceId)?.pinned?'取消置顶':'置顶'}</button><button type="button" role="menuitem" onClick={()=>{const ws=workspaces.find(candidate=>candidate.id===wsContextMenu.workspaceId);if(ws)openRemoveConfirm(ws);setWsContextMenu(null)}}><Trash2 size={14}/>移除项目</button></div>}{wsRemove&&<Modal title={`移除项目「${wsRemove.name}」`} onClose={()=>setWsRemove(null)}><p className="muted">项目入口将从任务列表隐藏；磁盘上的原项目、会话与自动化数据全部保留，不受影响。</p><p className="muted">重新打开同一目录的项目时会重新显示它。</p>{wsRemove.running&&<p role="alert" className="inline-error">该项目还有运行中的对话或 Agent，移除会停止并释放相关运行状态。</p>}<div className="actions"><button type="button" onClick={()=>setWsRemove(null)}>取消</button><button className="danger" type="button" onClick={()=>void removeWorkspace()}>移除项目{wsRemove.running?'（移除并停止运行）':''}</button></div></Modal>}{sessionContextMenu&&<div className="session-context-menu" role="menu" aria-label="会话操作" style={{left:sessionContextMenu.x,top:sessionContextMenu.y}} onContextMenu={event=>event.preventDefault()}><button type="button" role="menuitem" onClick={()=>{const item=allSessions.find(candidate=>candidate.id===sessionContextMenu.sessionId);if(item)openSessionRename(item);setSessionContextMenu(null)}}><Pencil size={14}/>重命名</button><button type="button" role="menuitem" onClick={()=>{const item=allSessions.find(candidate=>candidate.id===sessionContextMenu.sessionId);if(item)archiveSession(item);setSessionContextMenu(null)}}><Archive size={14}/>存档</button></div>}
+  {wsContextMenu&&<div className="session-context-menu" role="menu" aria-label="项目操作" style={{left:wsContextMenu.x,top:wsContextMenu.y}} onContextMenu={event=>event.preventDefault()}><button type="button" role="menuitem" onClick={()=>{const ws=workspaces.find(candidate=>candidate.id===wsContextMenu.workspaceId);if(ws)setWsDialog({mode:'rename',id:ws.id,name:ws.name});setWsContextMenu(null)}}><Pencil size={14}/>重命名</button><button type="button" role="menuitem" onClick={()=>{const ws=workspaces.find(candidate=>candidate.id===wsContextMenu.workspaceId);if(ws)void togglePinned(ws);setWsContextMenu(null)}}><Pin size={14}/>{workspaces.find(candidate=>candidate.id===wsContextMenu.workspaceId)?.pinned?'取消置顶':'置顶'}</button><button type="button" role="menuitem" onClick={()=>{const ws=workspaces.find(candidate=>candidate.id===wsContextMenu.workspaceId);if(ws)openRemoveConfirm(ws);setWsContextMenu(null)}}><Trash2 size={14}/>移除项目</button></div>}{wsRemove&&<Modal title={`移除项目「${wsRemove.name}」`} onClose={()=>setWsRemove(null)}><p className="muted">项目入口将从任务列表隐藏；磁盘上的原项目、会话与自动化数据全部保留，不受影响。</p><p className="muted">重新打开同一目录的项目时会重新显示它。</p>{wsRemove.running&&<p role="alert" className="inline-error">该项目还有运行中的对话或 Agent，移除会停止并释放相关运行状态。</p>}<div className="actions"><button type="button" onClick={()=>setWsRemove(null)}>取消</button><button className="danger" type="button" onClick={()=>void removeWorkspace()}>移除项目{wsRemove.running?'（移除并停止运行）':''}</button></div></Modal>}{sessionContextMenu&&<div className="session-context-menu" role="menu" aria-label="会话操作" style={{left:sessionContextMenu.x,top:sessionContextMenu.y}} onContextMenu={event=>event.preventDefault()}><button type="button" role="menuitem" onClick={()=>{const item=allSessions.find(candidate=>candidate.id===sessionContextMenu.sessionId);if(item)openSessionRename(item);setSessionContextMenu(null)}}><Pencil size={14}/>重命名</button><button type="button" role="menuitem" onClick={()=>{const item=allSessions.find(candidate=>candidate.id===sessionContextMenu.sessionId);if(item)archiveSession(item);setSessionContextMenu(null)}}><Archive size={14}/>存档</button></div>}{msgContextMenu&&<div className="session-context-menu" role="menu" aria-label="消息操作" style={{left:msgContextMenu.x,top:msgContextMenu.y}} onContextMenu={event=>event.preventDefault()}><button type="button" role="menuitem" disabled={!msgContextMenu.text} onClick={()=>{if(msgContextMenu.text)setQuotes(old=>[...old,msgContextMenu.text].slice(0,10));setMsgContextMenu(null);window.getSelection()?.removeAllRanges()}}><Quote size={14}/>引用</button><button type="button" role="menuitem" disabled={!msgContextMenu.text} onClick={()=>{if(msgContextMenu.text)void navigator.clipboard?.writeText(msgContextMenu.text);setMsgContextMenu(null)}}><Copy size={14}/>复制</button></div>}
   {sessionRename&&<Modal title="重命名会话" onClose={closeSessionRename}><form className="settings-form" onSubmit={event=>{event.preventDefault();void saveSessionRename()}}><label>会话名称<input autoFocus disabled={sessionRenameSavingIds.has(sessionRename.id)} value={sessionRename.name} onChange={event=>{setSessionRename(old=>old&&{...old,name:event.target.value});setSessionRenameError('')}}/></label>{sessionRenameError&&<p role="alert" className="inline-error">{sessionRenameError}</p>}<div className="actions"><button type="button" onClick={closeSessionRename}>取消</button><button className="primary" type="submit" disabled={sessionRenameSavingIds.has(sessionRename.id)}>保存</button></div></form></Modal>}
-  {panel==='models'&&<ModelPanel models={models} onClose={()=>setPanel(null)} onSaved={async()=>{const [ms,ps]=await Promise.all([command<ModelConfig[]>('model_list'),command<ProviderInfo[]>('provider_list')]);setModels(ms);setProviders(ps);if(!ms.some(m=>m.id===modelId)||!ms.find(m=>m.id===modelId)?.enabled){const usable=ms.filter(m=>m.enabled&&ps.some(p=>p.id===m.providerId&&p.enabled));setModelId(usable[0]?.id??'');setEffort(usable[0]?.efforts.at(-1)??null)}}}/>}
   {panel==='presets'&&<PresetsPanel models={models} providers={providers} onClose={()=>setPanel(null)} onChanged={async()=>{setPresets(await command<PresetInfo[]>('preset_list'))}}/>}
   {panel==='skills'&&<SkillsPanel workspaceId={workspaceId} onClose={()=>setPanel(null)}/>}
   <PluginThemeHost workspaceId={workspaceId} revision={pluginRevision}/>
@@ -583,7 +661,7 @@ export default function App(){
    <div className="actions"><button type="button" onClick={()=>setWsDialog(null)}>取消</button><button className="primary" type="submit">{wsDialog.mode==='create'?'创建':'保存'}</button></div>
   </form></Modal>}
   {approvals[0]&&<Modal title="操作需要你的批准" onClose={()=>void resolve(approvals[0].id,false)}><div className="approval-heading"><ShieldCheck size={24}/><strong>{approvals[0].tool}</strong></div><p>{approvals[0].reason}</p><pre className="code-block">{printable(approvals[0].arguments)}</pre><p className="muted">会话：{sessions.find(s=>s.id===approvals[0].sessionId)?.title??approvals[0].sessionId}</p><div className="actions"><button onClick={()=>resolve(approvals[0].id,false)}>拒绝</button><button className="primary" onClick={()=>resolve(approvals[0].id,true)}>批准此次操作</button></div></Modal>}
-  {settingsOpen&&createPortal(<SettingsPage onClose={()=>setSettingsOpen(false)} onOpenPanel={next=>{setPanel(next);setSettingsOpen(false)}} archivedSessions={archivedSessions} projectName={projectName} onRestore={restoreSession}/>,document.body)}
+  {settingsOpen&&createPortal(<SettingsPage key={settingsSection??'overview'} onClose={()=>setSettingsOpen(false)} initialSection={settingsSection??undefined} onOpenPanel={next=>{setPanel(next);setSettingsOpen(false)}} models={models} onModelsSaved={refreshModels} archivedSessions={archivedSessions} projectName={projectName} onRestore={restoreSession}/>,document.body)}
  </div>
 }
 // ask_user 提问浮层：锚定在输入框上方（非阻塞）；自定义答复是选项列表的「其他」一项，「忽略」按 unattended 结算。
@@ -633,7 +711,7 @@ export function EventCard({event,...extras}:{event:SessionEvent}&EventCardExtras
   return <article className="tool-card todo-card"><div className="subagent-row"><ListTodo size={15}/><strong>待办清单</strong></div><TodoList items={items}/></article>;
  }
  if(kind==='plan.state'||kind==='goal.state')return <article className="tool-card"><div className="subagent-row">{kind==='plan.state'?<ListTodo size={15}/>:<Target size={15}/>}<strong>{kind==='plan.state'?'计划':'目标'}</strong></div><div className="prose"><Markdown content={printable(data.content)}/></div></article>;
- if(kind==='user.message')return <article className="message user"><div className="avatar">你</div><div className="message-body"><div className="message-label">你</div><div className="prose"><LinkedText content={printable(data.content)}/></div>{Array.isArray(data.attachments)&&data.attachments.map((a,index)=><ArtifactDownload key={index} sessionId={event.sessionId} artifact={a as ArtifactMetadata}/>)}</div></article>;
+ if(kind==='user.message')return <article className="message user"><div className="avatar">你</div><div className="message-body"><div className="message-label">你</div>{Array.isArray(data.quotes)&&data.quotes.map((quote,index)=><blockquote key={index} className="sent-quote" title={String(quote)}><b>引用：</b>{String(quote)}</blockquote>)}<div className="prose"><LinkedText content={printable(data.content)}/></div>{Array.isArray(data.attachments)&&data.attachments.map((a,index)=><ArtifactDownload key={index} sessionId={event.sessionId} artifact={a as ArtifactMetadata}/>)}</div></article>;
  if(kind==='assistant.message'||kind==='assistant.attempt')return <article className="message assistant"><div className="avatar">R</div><div className="message-body"><div className="message-label">Rust Harness</div>{!!data.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{printable(data.reasoning)}</pre></details>}<div className="prose"><Markdown content={printable(data.content)}/></div>{!!data.error&&<div className="inline-error">{printable(data.error)}</div>}</div></article>;
  if(kind==='tool.call'||kind==='tool.result'){
   const args=typeof data.arguments==='object'&&data.arguments!==null?data.arguments as Record<string,unknown>:null;

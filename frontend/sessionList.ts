@@ -32,10 +32,23 @@ export function relativeLabel(updatedAt:string,now:Date):string{
  return date.getFullYear()===now.getFullYear()?md:`${date.getFullYear()}年${md}`;
 }
 
+/// 会话行悬停浮层用的完整时间："2026年11月8日 09:05"；非法时间戳返回空串。
+export function formatFullTime(updatedAt:string):string{
+ const time=Date.parse(updatedAt);
+ if(!Number.isFinite(time))return '';
+ const date=new Date(time);
+ return `${date.getFullYear()}年${date.getMonth()+1}月${date.getDate()}日 ${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}`;
+}
+
 export function filterByTitle(sessions:SessionInfo[],query:string):SessionInfo[]{
  const q=query.trim().toLowerCase();
  if(!q)return sessions;
  return sessions.filter(s=>s.title.toLowerCase().includes(q));
+}
+
+/// 侧栏列表只展示主会话；子代理会话（parentId 非空）由输入框下方的子代理面板承载。
+export function withoutSubagents(sessions:SessionInfo[]):SessionInfo[]{
+ return sessions.filter(s=>!s.parentId);
 }
 
 export interface RecentGroup{group:TimeGroup;sessions:SessionInfo[];}
