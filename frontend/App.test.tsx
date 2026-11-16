@@ -217,11 +217,16 @@ describe('设置入口',()=>{
   expect(screen.queryByRole('dialog',{name:'设置'})).not.toBeInTheDocument();
   expect(screen.getByText('内容 a')).toBeInTheDocument();
  });
- it('设置页侧栏底部显示软件版本号',async()=>{
+ it('关于选项卡展示版本与构建信息',async()=>{
   await renderOpenA();
   fireEvent.click(screen.getByRole('button',{name:'设置'}));
   const page=await screen.findByRole('dialog',{name:'设置'});
-  expect(await within(page).findByText(/版本 0\.1\.6/)).toBeInTheDocument();
+  const navigation=within(page).getByRole('navigation',{name:'设置导航'});
+  expect(within(navigation).getByRole('button',{name:'关于'})).toBeInTheDocument();
+  fireEvent.click(within(navigation).getByRole('button',{name:'关于'}));
+  expect(within(page).getByRole('heading',{name:'关于'})).toBeInTheDocument();
+  expect(await within(page).findByText('0.1.6')).toBeInTheDocument();
+  expect(within(page).getByText('开发构建')).toBeInTheDocument();
  });
 });
 describe('聊天交互',()=>{

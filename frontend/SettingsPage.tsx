@@ -1,13 +1,13 @@
 import {useEffect,useRef,useState,type ReactNode} from 'react';
 import {ArrowRight,Archive,Bookmark,Check,ChevronRight,Cpu,Folder,Gauge,Info,KeyRound,Layers,Plug,Settings,ShieldCheck,Sparkles,Terminal,Undo2,X,type LucideIcon} from 'lucide-react';
-import {getVersion} from '@tauri-apps/api/app';
 import {relativeLabel} from './sessionList';
 import type {SessionInfo,ModelConfig} from './types';
 import {PerformancePanel} from './PerformancePanel';
 import {ModelPanel} from './ModelPanel';
+import {AboutPanel} from './AboutPanel';
 
 export type SettingsPanelId='presets'|'skills'|'plugins';
-type SettingsSectionId='overview'|SettingsPanelId|'archive'|'performance'|'models';
+type SettingsSectionId='overview'|SettingsPanelId|'archive'|'performance'|'models'|'about';
 
 export type SettingsCategoryId=Exclude<SettingsSectionId,'overview'>;
 type SettingsItem={id:SettingsCategoryId;title:string;description:string;summary:string;group:string;icon:LucideIcon;legacyPanel?:SettingsPanelId};
@@ -18,8 +18,9 @@ const ITEMS:SettingsItem[]=[
  {id:'archive',title:'存档管理',description:'集中查看各项目的已归档会话，随时恢复到任务列表。',summary:'按项目分组 · 可恢复',group:'会话',icon:Archive},
  {id:'plugins',title:'插件与权限',description:'查看扩展、连接与权限策略，了解每项能力的授权范围。',summary:'扩展与安全策略',group:'扩展与安全',icon:Plug,legacyPanel:'plugins'},
  {id:'models',title:'模型设置',description:'管理模型供应商、API 连接与可用模型。',summary:'管理供应商与模型',group:'扩展与安全',icon:Cpu},
+ {id:'about',title:'关于',description:'查看版本号、构建时间与对应的提交记录。',summary:'版本与构建信息',group:'关于',icon:Info},
 ];
-const GROUPS=['工作方式','会话','扩展与安全'];
+const GROUPS=['工作方式','会话','扩展与安全','关于'];
 const INTRO:Record<SettingsCategoryId,string>={
  presets:'把常用模型、推理档位和审批方式保存为一组配置，之后可以在发送框快速切换。',
  skills:'查看当前工作区和用户目录中的技能，并管理它们是否参与助手的技能目录。',
@@ -27,14 +28,13 @@ const INTRO:Record<SettingsCategoryId,string>={
  plugins:'集中查看本地插件、MCP 连接及其声明与授权的权限范围。',
  models:'管理模型供应商、凭据和模型目录；API 密钥只保存在系统凭据管理器中。',
  archive:'归档后的会话不会出现在任务列表里，但仍保留在本机；在这里按项目查看并恢复。',
+ about:'查看当前安装的版本号、构建时间与对应的提交记录。',
 };
 
 export function SettingsPage({onClose,onOpenPanel,archivedSessions,projectName,onRestore,models,onModelsSaved,initialSection}:{onClose:()=>void;onOpenPanel:(panel:SettingsPanelId)=>void;archivedSessions:SessionInfo[];projectName:(id:string)=>string;onRestore:(id:string)=>void;models:ModelConfig[];onModelsSaved:()=>Promise<void>;initialSection?:SettingsCategoryId}){
  const [active,setActive]=useState<SettingsSectionId>(initialSection??'overview');
- const [version,setVersion]=useState('');
  const dialogRef=useRef<HTMLDivElement>(null),closeRef=useRef(onClose);
  closeRef.current=onClose;
- useEffect(()=>{let alive=true;getVersion().then(v=>{if(alive)setVersion(v)}).catch(()=>{});return()=>{alive=false}},[]);
  useEffect(()=>{
   const previous=document.activeElement as HTMLElement|null;
   const first=dialogRef.current?.querySelector<HTMLElement>('[data-settings-initial-focus]');
@@ -64,7 +64,7 @@ export function SettingsPage({onClose,onOpenPanel,archivedSessions,projectName,o
      {ITEMS.filter(item=>item.group===group).map(({id,title,icon:Icon})=><button type="button" key={id} className={`settings-nav-item${active===id?' active':''}`} aria-current={active===id?'page':undefined} onClick={()=>selectSection(id)}><Icon size={17}/><span>{title}</span>{active===id&&<ChevronRight size={14} className="settings-nav-chevron"/>}</button>)}
     </div>)}
    </nav>
-   <div className="settings-sidebar-foot"><div className="settings-local-note"><ShieldCheck size={16}/><span><strong>本地优先</strong><small>配置仅保存在本机</small></span></div>{version&&<div className="settings-version-note"><Info size={16}/><span><strong>Rust Harness</strong><small>版本 {version}</small></span></div>}<button type="button" className="settings-back-button" onClick={onClose}><ArrowRight size={16}/><span>返回工作台</span></button></div>
+   <div className="settings-sidebar-foot"><div className="settings-local-note"><ShieldCheck size={16}/><span><strong>本地优先</strong><small>配置仅保存在本机</small></span></div><button type="button" className="settings-back-button" onClick={onClose}><ArrowRight size={16}/><span>返回工作台</span></button></div>
   </aside>
   <section className="settings-main" aria-label="设置内容">
    <header className="settings-topbar"><div className="settings-breadcrumb"><span>设置</span>{selected&&<><ChevronRight size={14}/><strong>{selected.title}</strong></>}</div><div className="settings-top-actions"><span className="settings-preview-badge"><Sparkles size={13}/>布局预览</span><button type="button" className="settings-close" aria-label="关闭设置，返回工作台" title="关闭设置" onClick={onClose}><X size={18}/></button></div></header>
@@ -95,12 +95,13 @@ function SettingsCategory({item,onOpenPanel,archivedSessions,projectName,onResto
  return <div className="settings-content settings-category-content">
   <div className="settings-eyebrow">{item.group.toUpperCase()}</div>
   <div className="settings-category-heading"><div><h1>{item.title}</h1><p className="settings-lead">{INTRO[item.id]}</p></div><span className="settings-category-icon"><Icon size={21}/></span></div>
- {item.id!=='archive'&&item.id!=='performance'&&item.id!=='models'&&<div className="settings-preview-notice"><Sparkles size={15}/><span>页面布局预览 · 下方为示例内容，不会修改真实设置</span></div>}
+ {item.id!=='archive'&&item.id!=='performance'&&item.id!=='models'&&item.id!=='about'&&<div className="settings-preview-notice"><Sparkles size={15}/><span>页面布局预览 · 下方为示例内容，不会修改真实设置</span></div>}
  {item.id==='presets'&&<PresetPreview/>}
  {item.id==='skills'&&<SkillsPreview/>}
  {item.id==='archive'&&<ArchivePreview archived={archivedSessions} projectName={projectName} onRestore={onRestore}/>}
  {item.id==='performance'&&<PerformancePanel/>}
  {item.id==='models'&&<ModelPanel models={models} onSaved={onModelsSaved}/>}
+ {item.id==='about'&&<AboutPanel/>}
  {item.id==='plugins'&&<PluginsPreview/>}
   {item.legacyPanel&&<div className="settings-existing-action"><div><strong>继续使用当前管理功能</strong><p>此版先展示设置页的导航与布局；原有配置面板暂时保持不变。</p></div><button type="button" className="settings-manage-button" onClick={()=>onOpenPanel(item.legacyPanel!)}>打开现有面板<ArrowRight size={15}/></button></div>}
  </div>;
