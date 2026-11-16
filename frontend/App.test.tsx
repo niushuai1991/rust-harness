@@ -2178,3 +2178,69 @@ describe('消息引用',()=>{
   expect(screen.getByText(/引用乙/)).toBeInTheDocument();
  });
 });
+describe('滚动到底按钮',()=>{
+ // jsdom 无布局：给滚动容器注入 scrollHeight/clientHeight 后配合 fireEvent.scroll 驱动显隐逻辑。
+ const metrics=(conversation:HTMLElement,scrollHeight:number,clientHeight:number)=>{
+  Object.defineProperty(conversation,'scrollHeight',{configurable:true,value:scrollHeight});
+  Object.defineProperty(conversation,'clientHeight',{configurable:true,value:clientHeight});
+ };
+ const restoreMetrics=(conversation:HTMLElement)=>{
+  delete (conversation as unknown as Record<string,unknown>).scrollHeight;
+  delete (conversation as unknown as Record<string,unknown>).clientHeight;
+ };
+ it('位于底部时不显示按钮；上滚离开底部后出现',async()=>{
+  await renderOpenA();
+  const conversation=screen.getByLabelText('聊天消息');
+  metrics(conversation,1200,400);
+  try{
+   conversation.scrollTop=840;
+   fireEvent.scroll(conversation);
+   expect(screen.queryByRole('button',{name:'滚动到底部'})).toBeNull();
+   conversation.scrollTop=200;
+   fireEvent.scroll(conversation);
+   expect(screen.getByRole('button',{name:'滚动到底部'})).toBeInTheDocument();
+  }finally{restoreMetrics(conversation)}
+ });
+ it('点击按钮滚回底部并恢复自动跟随，按钮隐藏',async()=>{
+  await renderOpenA();
+  const conversation=screen.getByLabelText('聊天消息');
+  metrics(conversation,1200,400);
+  const proto=Element.prototype as unknown as Record<string,unknown>;
+  const originalScrollTo=proto.scrollTo;
+  const scrollTo=vi.fn();
+  proto.scrollTo=scrollTo;
+  try{
+   conversation.scrollTop=200;
+   fireEvent.scroll(conversation);
+   fireEvent.click(screen.getByRole('button',{name:'滚动到底部'}));
+   expect(scrollTo).toHaveBeenCalledWith({top:1200,behavior:'smooth'});
+   expect(screen.queryByRole('button',{name:'滚动到底部'})).toBeNull();
+  }finally{proto.scrollTo=originalScrollTo;restoreMetrics(conversation)}
+ });
+ it('滚回底部附近后按钮隐藏',async()=>{
+  await renderOpenA();
+  const conversation=screen.getByLabelText('聊天消息');
+  metrics(conversation,1200,400);
+  try{
+   conversation.scrollTop=200;
+   fireEvent.scroll(conversation);
+   expect(screen.getByRole('button',{name:'滚动到底部'})).toBeInTheDocument();
+   conversation.scrollTop=800;
+   fireEvent.scroll(conversation);
+   expect(screen.queryByRole('button',{name:'滚动到底部'})).toBeNull();
+  }finally{restoreMetrics(conversation)}
+ });
+ it('切换会话后按钮重置隐藏',async()=>{
+  await renderOpenA();
+  const conversation=screen.getByLabelText('聊天消息');
+  metrics(conversation,1200,400);
+  try{
+   conversation.scrollTop=200;
+   fireEvent.scroll(conversation);
+   expect(screen.getByRole('button',{name:'滚动到底部'})).toBeInTheDocument();
+   fireEvent.click(screen.getByRole('button',{name:/会话 B/}));
+   await screen.findByText('内容 b');
+   expect(screen.queryByRole('button',{name:'滚动到底部'})).toBeNull();
+  }finally{restoreMetrics(conversation)}
+ });
+});
