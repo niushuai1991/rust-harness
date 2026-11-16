@@ -1974,6 +1974,22 @@ it('非 HTTP Markdown 链接保留原有地址与行为',async()=>{
 
 describe('会话存档',()=>{
  const session=(id:string,title:string,extra:Partial<import('./types').SessionInfo>={})=>({id,workspaceId:'w',title,createdAt:'2026-11-01T00:00:00Z',updatedAt:'2026-11-08T00:00:00Z',parentId:null,...extra});
+ it('悬停浮层显示时点击行内存档按钮：会话移除后浮层立即收起',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_list')return args.archived?[]:[session('a','会话 A'),session('b','会话 B')];
+   if(name==='session_archive')return session('a','会话 A',{archivedAt:'2026-11-09T00:00:00Z'});
+   return original(name,args);
+  });
+  await renderOpenA();
+  const row=screen.getByRole('button',{name:/会话 A/});
+  fireEvent.mouseEnter(row);
+  await screen.findByRole('tooltip');
+  // 回归：光标未离开会话行（无 mouseLeave）时点击行内存档按钮，行随存档移除后浮层不得驻留
+  fireEvent.click(within(row).getByRole('button',{name:'存档会话'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_archive',{sessionId:'a'}));
+  await waitFor(()=>expect(screen.queryByRole('tooltip')).not.toBeInTheDocument());
+ });
  it('右键菜单存档会话：调用 session_archive 并从任务列表移除',async()=>{
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
