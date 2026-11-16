@@ -518,3 +518,6 @@ details.runs[open] summary svg{transform:rotate(180deg)}
 .quote-chip .q-x:hover{background:var(--selected);color:var(--text)}
 .sent-quote{border-left:3px solid var(--border);background:var(--surface);border-radius:0 7px 7px 0;padding:7px 12px;margin:0 0 10px;font-size:11.5px;color:var(--muted);line-height:1.7;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 .sent-quote b{color:var(--text);font-weight:600}
+
+/* 同源重复项目组头标记（合并入口见组头右键菜单）。 */
+.dup-badge{flex:none;font-size:10px;line-height:14px;color:#9a6700;background:#fff8c5;border:1px solid rgba(212,167,44,.4);border-radius:4px;padding:0 4px;margin-left:4px;white-space:nowrap}

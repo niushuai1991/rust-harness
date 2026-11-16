@@ -1046,3 +1046,54 @@ async fn automation_manual_run_fails_cleanly_without_model() {
     assert!(after[0].runs.is_empty());
     assert_eq!(after[0].next_run_at, a.next_run_at);
 }
+
+#[tokio::test]
+async fn workspace_retarget_moves_automation_and_schedule_references() {
+    let (_d, r, c) = setup().await;
+    let i = install(r.clone()).unwrap();
+    let mut bound = automation_params(&c.workspace_id, AutomationKind::Daily);
+    bound.session_id = Some(c.session_id.clone());
+    let automation = i.automation_create(bound).await.unwrap();
+    let mut other = automation_params("other-workspace", AutomationKind::Once);
+    other.at = Some("2099-01-01T00:00:00Z".into());
+    i.automation_create(other).await.unwrap();
+    let schedule = call(
+        &i,
+        &c,
+        "schedule_write",
+        json!({"at":"2099-01-01T00:00:00Z","task":"到点执行","modelId":"missing"}),
+    )
+    .await
+    .unwrap();
+
+    let (automations, schedules) = i
+        .workspace_retarget(&c.workspace_id, "ws-target")
+        .await
+        .unwrap();
+    assert_eq!(automations, 1, "只迁移本项目自动化");
+    assert_eq!(schedules, 1, "只迁移本会话定时任务");
+
+    let all = i.state.automations().await.unwrap();
+    let moved = all.iter().find(|x| x.id == automation.id).unwrap();
+    assert_eq!(moved.workspace_id, "ws-target", "自动化挂到目标工作区");
+    assert_eq!(
+        moved.session_id.as_deref(),
+        Some(c.session_id.as_str()),
+        "绑定会话不变"
+    );
+    let untouched = all
+        .iter()
+        .find(|x| x.workspace_id == "other-workspace")
+        .unwrap();
+    assert_eq!(
+        untouched.workspace_id, "other-workspace",
+        "其他项目自动化不动"
+    );
+    let schedules = i.state.schedules().await.unwrap();
+    let moved = schedules
+        .iter()
+        .find(|x| x.id == schedule["id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(moved.workspace_id, "ws-target", "定时任务挂到目标工作区");
+    assert_eq!(moved.session_id, c.session_id, "定时任务绑定会话不变");
+}

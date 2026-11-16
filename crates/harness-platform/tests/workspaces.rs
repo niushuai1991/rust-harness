@@ -587,3 +587,37 @@ fn worktree_mode_diff_view_renders_unified() {
     assert!(unified.contains("+edited"), "{unified}");
     assert!(unified.contains("-initial"), "{unified}");
 }
+
+#[test]
+fn delete_removes_record_directory_and_rejects_invalid_ids() {
+    let (_temp, source, manager) = fixture();
+    let info = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
+    let dir = std::path::Path::new(&info.replica_path)
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    assert!(dir.join("record.json").exists());
+
+    manager.delete(&info.id).unwrap();
+    assert!(!dir.exists(), "记录目录应整目录删除");
+    assert!(manager.list().unwrap().is_empty());
+    assert!(manager.get(&info.id).is_err());
+    // 非 UUID id 拒绝；删除后重复删除报 NOT_FOUND（合并重试场景）。
+    assert_eq!(manager.delete("not-a-uuid").unwrap_err().code, "INVALID_ID");
+    assert_eq!(manager.delete(&info.id).unwrap_err().code, "NOT_FOUND");
+}
+
+#[test]
+fn delete_rejects_while_runtime_lease_held() {
+    let (_temp, source, manager) = fixture();
+    let info = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
+    let lease = manager.acquire(&info.id).unwrap();
+    assert_eq!(manager.delete(&info.id).unwrap_err().code, "BUSY");
+    drop(lease);
+    manager.delete(&info.id).unwrap();
+    assert!(manager.list().unwrap().is_empty());
+}

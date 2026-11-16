@@ -2162,3 +2162,93 @@ describe('消息引用',()=>{
   expect(screen.getByText(/引用乙/)).toBeInTheDocument();
  });
 });
+
+describe('同源重复项目合并',()=>{
+ const dupWorkspaces=[
+  {id:'keep',sourcePath:'D:/rust',replicaPath:'D:/copy-keep',createdAt:'',name:'rust-harness',pinned:false,hidden:false,executionMode:'replica',worktrees:{}},
+  {id:'dup',sourcePath:'D:/rust',replicaPath:'D:/copy-dup',createdAt:'',name:'rust-harness',pinned:false,hidden:true,executionMode:'worktree',worktrees:{}},
+ ];
+ it('同源重复时组头显示重复标记且右键菜单出现合并入口',async()=>{
+  localStorage.removeItem('sessionView');
+  localStorage.removeItem('sessionCollapsed');
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='workspace_list')return dupWorkspaces;
+   if(name==='session_list')return [{id:'a',workspaceId:'keep',title:'会话 A'}];
+   return original(name,args);
+  });
+  render(<App/>);
+  await screen.findByRole('button',{name:/会话 A/});
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
+  const sessionNav=screen.getByRole('navigation',{name:'会话列表'});
+  expect(within(sessionNav).getByText('重复')).toBeInTheDocument();
+  fireEvent.contextMenu(within(sessionNav).getAllByText('rust-harness')[0]);
+  expect(await screen.findByRole('menuitem',{name:'合并同源项目…'})).toBeInTheDocument();
+ });
+ it('无重复时不出现合并入口',async()=>{
+  localStorage.removeItem('sessionView');
+  localStorage.removeItem('sessionCollapsed');
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='workspace_list')return [dupWorkspaces[0]];
+   if(name==='session_list')return [{id:'a',workspaceId:'keep',title:'会话 A'}];
+   return original(name,args);
+  });
+  render(<App/>);
+  await screen.findByRole('button',{name:/会话 A/});
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
+  const sessionNav=screen.getByRole('navigation',{name:'会话列表'});
+  fireEvent.contextMenu(within(sessionNav).getByText('rust-harness'));
+  expect(await screen.findByRole('menuitem',{name:'移除项目'})).toBeInTheDocument();
+  expect(screen.queryByRole('menuitem',{name:'合并同源项目…'})).not.toBeInTheDocument();
+ });
+ it('确认合并后调用 workspace_merge 并刷新项目与会话列表',async()=>{
+  localStorage.removeItem('sessionView');
+  localStorage.removeItem('sessionCollapsed');
+  const original=mocks.command.getMockImplementation()!;
+  let merged=false;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='workspace_merge'){merged=true;return {fromWorkspaceId:'dup',toWorkspaceId:'keep',movedSessions:1,movedAutomations:2,movedSchedules:0,leftoverWorktrees:['D:/rust/.worktrees/harness-dup0123']};}
+   if(name==='workspace_list')return merged?[dupWorkspaces[0]]:dupWorkspaces;
+   if(name==='session_list')return args.allWorkspaces?[{id:'a',workspaceId:'keep',title:'会话 A'},{id:'b',workspaceId:'dup',title:'重复项目会话'}]:[{id:'a',workspaceId:'keep',title:'会话 A'}];
+   return original(name,args);
+  });
+  render(<App/>);
+  await screen.findByRole('button',{name:/会话 A/});
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
+  const sessionNav=screen.getByRole('navigation',{name:'会话列表'});
+  fireEvent.contextMenu(within(sessionNav).getAllByText('rust-harness')[0]);
+  fireEvent.click(await screen.findByRole('menuitem',{name:'合并同源项目…'}));
+  const dialog=await screen.findByRole('dialog',{name:'合并同源项目'});
+  expect(within(dialog).getByText(/副本中未同步的改动将随之删除/)).toBeInTheDocument();
+  expect(within(dialog).getByText(/不会自动删除/)).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole('button',{name:'合并'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_merge',{fromWorkspaceId:'dup',toWorkspaceId:'keep',stopRunning:false}));
+  expect(await screen.findByText(/已合并 1 个重复项目：1 个会话与 2 个自动化任务挂到保留项目/)).toBeInTheDocument();
+  expect(screen.getByText(/仍有 1 个会话 worktree 残留/)).toBeInTheDocument();
+  // 合并后重拉：重复标记消失（workspace_list 再返回去重后的列表）。
+  await waitFor(()=>expect(screen.queryByText('重复')).not.toBeInTheDocument());
+ });
+ it('待并入项目运行中时提示停止并带 stopRunning=true',async()=>{
+  localStorage.removeItem('sessionView');
+  localStorage.removeItem('sessionCollapsed');
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='workspace_list')return dupWorkspaces;
+   if(name==='session_list')return [{id:'a',workspaceId:'keep',title:'会话 A'},{id:'b',workspaceId:'dup',title:'重复项目会话'}];
+   if(name==='session_active_list')return ['b'];
+   if(name==='workspace_merge')return {fromWorkspaceId:'dup',toWorkspaceId:'keep',movedSessions:1,movedAutomations:0,movedSchedules:0,leftoverWorktrees:[]};
+   return original(name,args);
+  });
+  render(<App/>);
+  await screen.findByRole('button',{name:/会话 A/});
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
+  const sessionNav=screen.getByRole('navigation',{name:'会话列表'});
+  fireEvent.contextMenu(within(sessionNav).getAllByText('rust-harness')[0]);
+  fireEvent.click(await screen.findByRole('menuitem',{name:'合并同源项目…'}));
+  const dialog=await screen.findByRole('dialog',{name:'合并同源项目'});
+  expect(within(dialog).getByText(/待并入项目还有运行中的对话或 Agent/)).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole('button',{name:'合并'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_merge',{fromWorkspaceId:'dup',toWorkspaceId:'keep',stopRunning:true}));
+ });
+});
