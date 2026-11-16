@@ -2164,9 +2164,10 @@ describe('消息引用',()=>{
 });
 
 describe('同源重复项目合并',()=>{
+ // keep 创建时间更早（合并时自动成为保留方）；两条记录均可见，「项目」视图出现两个同名组。
  const dupWorkspaces=[
-  {id:'keep',sourcePath:'D:/rust',replicaPath:'D:/copy-keep',createdAt:'',name:'rust-harness',pinned:false,hidden:false,executionMode:'replica',worktrees:{}},
-  {id:'dup',sourcePath:'D:/rust',replicaPath:'D:/copy-dup',createdAt:'',name:'rust-harness',pinned:false,hidden:true,executionMode:'worktree',worktrees:{}},
+  {id:'keep',sourcePath:'D:/rust',replicaPath:'D:/copy-keep',createdAt:'2026-11-06T00:00:00Z',name:'rust-harness',pinned:false,hidden:false,executionMode:'replica',worktrees:{}},
+  {id:'dup',sourcePath:'D:/rust',replicaPath:'D:/copy-dup',createdAt:'2026-11-16T00:00:00Z',name:'rust-harness',pinned:false,hidden:false,executionMode:'worktree',worktrees:{}},
  ];
  it('同源重复时组头显示重复标记且右键菜单出现合并入口',async()=>{
   localStorage.removeItem('sessionView');
@@ -2174,14 +2175,14 @@ describe('同源重复项目合并',()=>{
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
    if(name==='workspace_list')return dupWorkspaces;
-   if(name==='session_list')return [{id:'a',workspaceId:'keep',title:'会话 A'}];
+   if(name==='session_list')return [{id:'a',workspaceId:'keep',title:'会话 A',updatedAt:'2026-11-10T00:00:00Z'}];
    return original(name,args);
   });
   render(<App/>);
   await screen.findByRole('button',{name:/会话 A/});
   fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
   const sessionNav=screen.getByRole('navigation',{name:'会话列表'});
-  expect(within(sessionNav).getByText('重复')).toBeInTheDocument();
+  expect(within(sessionNav).getAllByText('重复').length).toBeGreaterThan(0);
   fireEvent.contextMenu(within(sessionNav).getAllByText('rust-harness')[0]);
   expect(await screen.findByRole('menuitem',{name:'合并同源项目…'})).toBeInTheDocument();
  });
@@ -2210,16 +2211,20 @@ describe('同源重复项目合并',()=>{
   mocks.command.mockImplementation(async(name,args)=>{
    if(name==='workspace_merge'){merged=true;return {fromWorkspaceId:'dup',toWorkspaceId:'keep',movedSessions:1,movedAutomations:2,movedSchedules:0,leftoverWorktrees:['D:/rust/.worktrees/harness-dup0123']};}
    if(name==='workspace_list')return merged?[dupWorkspaces[0]]:dupWorkspaces;
-   if(name==='session_list')return args.allWorkspaces?[{id:'a',workspaceId:'keep',title:'会话 A'},{id:'b',workspaceId:'dup',title:'重复项目会话'}]:[{id:'a',workspaceId:'keep',title:'会话 A'}];
+   if(name==='session_list')return args.allWorkspaces?[{id:'a',workspaceId:'keep',title:'会话 A',updatedAt:'2026-11-10T00:00:00Z'},{id:'b',workspaceId:'dup',title:'重复项目会话',updatedAt:'2026-11-16T01:00:00Z'}]:[{id:'a',workspaceId:'keep',title:'会话 A',updatedAt:'2026-11-10T00:00:00Z'}];
    return original(name,args);
   });
   render(<App/>);
   await screen.findByRole('button',{name:/会话 A/});
   fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
   const sessionNav=screen.getByRole('navigation',{name:'会话列表'});
+  // 组排序按组内最新会话倒序：dup 有更新的会话排前，右键的组是较新的 dup，
+  // 保留方仍应自动落在创建时间最早的 keep。
   fireEvent.contextMenu(within(sessionNav).getAllByText('rust-harness')[0]);
   fireEvent.click(await screen.findByRole('menuitem',{name:'合并同源项目…'}));
   const dialog=await screen.findByRole('dialog',{name:'合并同源项目'});
+  expect(within(dialog).getByText(/自动选择创建时间最早/)).toBeInTheDocument();
+  expect(within(dialog).getByText(/待并入并删除记录的项目/)).toBeInTheDocument();
   expect(within(dialog).getByText(/副本中未同步的改动将随之删除/)).toBeInTheDocument();
   expect(within(dialog).getByText(/不会自动删除/)).toBeInTheDocument();
   fireEvent.click(within(dialog).getByRole('button',{name:'合并'}));
@@ -2235,7 +2240,7 @@ describe('同源重复项目合并',()=>{
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
    if(name==='workspace_list')return dupWorkspaces;
-   if(name==='session_list')return [{id:'a',workspaceId:'keep',title:'会话 A'},{id:'b',workspaceId:'dup',title:'重复项目会话'}];
+   if(name==='session_list')return [{id:'a',workspaceId:'keep',title:'会话 A',updatedAt:'2026-11-10T00:00:00Z'},{id:'b',workspaceId:'dup',title:'重复项目会话',updatedAt:'2026-11-16T01:00:00Z'}];
    if(name==='session_active_list')return ['b'];
    if(name==='workspace_merge')return {fromWorkspaceId:'dup',toWorkspaceId:'keep',movedSessions:1,movedAutomations:0,movedSchedules:0,leftoverWorktrees:[]};
    return original(name,args);

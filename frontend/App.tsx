@@ -102,7 +102,8 @@ export default function App(){
  // 项目组头右键菜单与移除确认（移除只是隐藏入口，记录与会话原样保留）。
  const [wsContextMenu,setWsContextMenu]=useState<{workspaceId:string;x:number;y:number}|null>(null);
  const [wsRemove,setWsRemove]=useState<{id:string;name:string;running:boolean}|null>(null);
- // 同源项目合并弹窗：sourcePath 圈定参与合并的同源项目，keepId 为用户选定的保留方。
+ // 同源项目合并弹窗：sourcePath 圈定参与合并的同源项目，keepId 自动固定为
+ // 创建时间最早的保留方（openMergeConfirm 内确定，用户不可改选）。
  const [wsMerge,setWsMerge]=useState<{sourcePath:string}|null>(null),[wsMergeKeepId,setWsMergeKeepId]=useState('');
  const [sessionRenameSavingIds,setSessionRenameSavingIds]=useState<Set<string>>(()=>new Set());
  // 会话行悬停浮层：行内去掉日期后，完整标题与时间移到 hover 卡片；延迟显示/关闭避免快速扫过闪烁。
@@ -569,10 +570,13 @@ export default function App(){
    setNotice(`已移除项目「${target.name}」，数据全部保留；重新打开同一目录的项目会重新显示它。`);
   }catch(e){setError(errorText(e))}
  }
- // 项目组头右键「合并同源项目」：圈定同源项目集合，默认保留当前组项目。
+ // 项目组头右键「合并同源项目」：保留方自动固定为创建时间最早的项目
+ // （workspaces 按后端 WorkspaceManager::list 的 created_at 升序返回，同源子集
+ // 首项即最早登记，通常是迁移前的原始项目），其余同源项目全部并入。
  function openMergeConfirm(ws:WorkspaceInfo){
   setWsContextMenu(null);
-  setWsMergeKeepId(ws.id);
+  const keep=workspaces.filter(w=>w.sourcePath===ws.sourcePath)[0]??ws;
+  setWsMergeKeepId(keep.id);
   setWsMerge({sourcePath:ws.sourcePath});
  }
  // 合并同源重复项目：保留方之外的同源项目逐个并入（会话/自动化/定时任务改挂，
@@ -686,11 +690,8 @@ export default function App(){
   <SidePanel workspaceId={workspaceId} executionMode={workspace?.executionMode} currentSessionId={sessionId} onOpenSession={(id,workspace)=>{useSidePanel.getState().close();openFromPanel(id,workspace)}}/>
   {wsContextMenu&&<div className="session-context-menu" role="menu" aria-label="项目操作" style={{left:wsContextMenu.x,top:wsContextMenu.y}} onContextMenu={event=>event.preventDefault()}><button type="button" role="menuitem" onClick={()=>{const ws=workspaces.find(candidate=>candidate.id===wsContextMenu.workspaceId);if(ws)setWsDialog({mode:'rename',id:ws.id,name:ws.name});setWsContextMenu(null)}}><Pencil size={14}/>重命名</button><button type="button" role="menuitem" onClick={()=>{const ws=workspaces.find(candidate=>candidate.id===wsContextMenu.workspaceId);if(ws)void togglePinned(ws);setWsContextMenu(null)}}><Pin size={14}/>{workspaces.find(candidate=>candidate.id===wsContextMenu.workspaceId)?.pinned?'取消置顶':'置顶'}</button>{duplicateSourcePaths.has(workspaces.find(candidate=>candidate.id===wsContextMenu.workspaceId)?.sourcePath??'')&&<button type="button" role="menuitem" onClick={()=>{const ws=workspaces.find(candidate=>candidate.id===wsContextMenu.workspaceId);if(ws)openMergeConfirm(ws);setWsContextMenu(null)}}><GitCompareArrows size={14}/>合并同源项目…</button>}<button type="button" role="menuitem" onClick={()=>{const ws=workspaces.find(candidate=>candidate.id===wsContextMenu.workspaceId);if(ws)openRemoveConfirm(ws);setWsContextMenu(null)}}><Trash2 size={14}/>移除项目</button></div>}{wsRemove&&<Modal title={`移除项目「${wsRemove.name}」`} onClose={()=>setWsRemove(null)}><p className="muted">项目入口将从任务列表隐藏；磁盘上的原项目、会话与自动化数据全部保留，不受影响。</p><p className="muted">重新打开同一目录的项目时会重新显示它。</p>{wsRemove.running&&<p role="alert" className="inline-error">该项目还有运行中的对话或 Agent，移除会停止并释放相关运行状态。</p>}<div className="actions"><button type="button" onClick={()=>setWsRemove(null)}>取消</button><button className="danger" type="button" onClick={()=>void removeWorkspace()}>移除项目{wsRemove.running?'（移除并停止运行）':''}</button></div></Modal>}{wsMerge&&<Modal title="合并同源项目" onClose={()=>setWsMerge(null)}>
    <p className="muted">同一源目录存在多条项目记录（常见于数据目录迁移后重新打开项目）。合并会把重复项目的会话（含归档）、自动化与定时任务挂到保留项目，并删除重复项目的记录与隔离副本。</p>
-   <label>保留项目
-    <select value={wsMergeKeepId} onChange={e=>setWsMergeKeepId(e.target.value)}>
-     {workspaces.filter(ws=>ws.sourcePath===wsMerge.sourcePath).map(ws=><option key={ws.id} value={ws.id}>{ws.name}（{ws.executionMode==='worktree'?'worktree 直落':'隔离副本'}{ws.hidden?'，已隐藏':''}）</option>)}
-    </select></label>
-   <p className="muted">其余同源项目将被并入保留项目并删除其记录；副本中未同步的改动将随之删除，不可恢复。</p>
+   <p className="muted">保留项目：<strong>{projectName(wsMergeKeepId)}</strong>（自动选择创建时间最早的项目，其余同源项目全部并入）。</p>
+   <p className="muted">待并入并删除记录的项目：{workspaces.filter(ws=>ws.sourcePath===wsMerge.sourcePath&&ws.id!==wsMergeKeepId).map(ws=>ws.name).join('、')||'（无）'}；副本中未同步的改动将随之删除，不可恢复。</p>
    {workspaces.some(ws=>ws.sourcePath===wsMerge.sourcePath&&ws.id!==wsMergeKeepId&&ws.executionMode==='worktree')&&<p className="muted">worktree 项目在源项目下代建的会话 worktree 目录不会自动删除，合并后请手动清理。</p>}
    {workspaces.some(ws=>ws.sourcePath===wsMerge.sourcePath&&ws.id!==wsMergeKeepId&&allSessions.some(s=>s.workspaceId===ws.id&&(running[s.id]||activeIds.has(s.id))))&&<p role="alert" className="inline-error">待并入项目还有运行中的对话或 Agent，合并会停止并释放相关运行状态。</p>}
    <div className="actions"><button type="button" onClick={()=>setWsMerge(null)}>取消</button><button className="danger" type="button" onClick={()=>void mergeWorkspace()}>合并</button></div>
