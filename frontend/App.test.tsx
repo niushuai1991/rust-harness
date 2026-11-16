@@ -645,6 +645,93 @@ describe('右侧面板',()=>{
   fireEvent.click(screen.getByText('已完成'));
   expect(await screen.findByText('+# 标题')).toBeVisible();
  });
+ it('同文件连续编辑合并为一张文件卡，展开按序显示各次 diff',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  const first=['--- a/src/config.ts','+++ b/src/config.ts','@@ -1,2 +1,3 @@',' const a=1;','-const b=2;','+const b=3;','+const c=4;'].join('\n');
+  const second=['--- a/src/config.ts','+++ b/src/config.ts','@@ -1,3 +1,3 @@',' const a=1;','-const c=4;','+const c=5;'].join('\n');
+  mocks.command.mockImplementation(async(name:string,args:any)=>name==='session_timeline_page'?timeline(args.sessionId,[
+   {id:'c1',sessionId:'a',seq:'1',kind:'tool.call',data:{id:'c1',name:'edit',arguments:{path:'src/config.ts'}},createdAt:''},
+   {id:'r1',sessionId:'a',seq:'2',kind:'tool.result',data:{callId:'c1',name:'edit',content:'已修改副本 src/config.ts',isError:false,status:'completed',diff:first,path:'src/config.ts'},createdAt:''},
+   {id:'c2',sessionId:'a',seq:'3',kind:'tool.call',data:{id:'c2',name:'edit',arguments:{path:'src/config.ts'}},createdAt:''},
+   {id:'r2',sessionId:'a',seq:'4',kind:'tool.result',data:{callId:'c2',name:'edit',content:'已修改副本 src/config.ts',isError:false,status:'completed',diff:second,path:'src/config.ts'},createdAt:''},
+  ]):original(name,args));
+  render(<App/>);
+  await openSidebarSession(/会话 A/);
+  expect(await screen.findByText('编辑 ×2')).toBeInTheDocument();
+  expect(screen.getAllByRole('button',{name:'config.ts'})).toHaveLength(1);
+  expect(screen.getAllByText('src')).toHaveLength(1);
+  expect(screen.getByText('+3')).toBeInTheDocument();
+  expect(screen.getByText('-2')).toBeInTheDocument();
+  const card=screen.getByText('编辑 ×2').closest('details')!;
+  expect(card).not.toHaveAttribute('open');
+  fireEvent.click(screen.getByText('编辑 ×2'));
+  expect(card).toHaveAttribute('open');
+  expect(screen.getByText('第 1 次编辑')).toBeInTheDocument();
+  expect(screen.getByText('第 2 次编辑')).toBeInTheDocument();
+  expect(screen.getByText('+const b=3;')).toBeInTheDocument();
+  expect(screen.getByText('+const c=5;')).toBeInTheDocument();
+  expect(screen.queryByText(/oldText/)).not.toBeInTheDocument();
+ });
+ it('中间夹其他工具时同文件编辑不合并',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  const diff=['--- a/src/config.ts','+++ b/src/config.ts','@@ -1,1 +1,2 @@','-old','+new','+extra'].join('\n');
+  mocks.command.mockImplementation(async(name:string,args:any)=>name==='session_timeline_page'?timeline(args.sessionId,[
+   {id:'c1',sessionId:'a',seq:'1',kind:'tool.call',data:{id:'c1',name:'edit',arguments:{path:'src/config.ts'}},createdAt:''},
+   {id:'r1',sessionId:'a',seq:'2',kind:'tool.result',data:{callId:'c1',name:'edit',content:'已修改副本',isError:false,status:'completed',diff,path:'src/config.ts'},createdAt:''},
+   {id:'c2',sessionId:'a',seq:'3',kind:'tool.call',data:{id:'c2',name:'read',arguments:{path:'src/other.ts'}},createdAt:''},
+   {id:'r2',sessionId:'a',seq:'4',kind:'tool.result',data:{callId:'c2',name:'read',content:'other',isError:false,status:'completed'},createdAt:''},
+   {id:'c3',sessionId:'a',seq:'5',kind:'tool.call',data:{id:'c3',name:'edit',arguments:{path:'src/config.ts'}},createdAt:''},
+   {id:'r3',sessionId:'a',seq:'6',kind:'tool.result',data:{callId:'c3',name:'edit',content:'已修改副本',isError:false,status:'completed',diff,path:'src/config.ts'},createdAt:''},
+  ]):original(name,args));
+  render(<App/>);
+  await openSidebarSession(/会话 A/);
+  expect(await screen.findAllByRole('button',{name:'config.ts'})).toHaveLength(4);
+  expect(screen.queryByText('编辑 ×2')).not.toBeInTheDocument();
+  expect(screen.getAllByText('编辑')).toHaveLength(4);
+ });
+ it('合并卡显示部分失败状态并只聚合成功 diff 的增删',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  const diff=['--- a/src/config.ts','+++ b/src/config.ts','@@ -1,1 +1,3 @@','-old','+new','+extra'].join('\n');
+  mocks.command.mockImplementation(async(name:string,args:any)=>name==='session_timeline_page'?timeline(args.sessionId,[
+   {id:'c1',sessionId:'a',seq:'1',kind:'tool.call',data:{id:'c1',name:'edit',arguments:{path:'src/config.ts'}},createdAt:''},
+   {id:'r1',sessionId:'a',seq:'2',kind:'tool.result',data:{callId:'c1',name:'edit',content:'已修改副本',isError:false,status:'completed',diff,path:'src/config.ts'},createdAt:''},
+   {id:'c2',sessionId:'a',seq:'3',kind:'tool.call',data:{id:'c2',name:'edit',arguments:{path:'src/config.ts'}},createdAt:''},
+   {id:'r2',sessionId:'a',seq:'4',kind:'tool.result',data:{callId:'c2',name:'edit',content:'替换失败',isError:true,status:'error',diff:null,path:'src/config.ts'},createdAt:''},
+  ]):original(name,args));
+  render(<App/>);
+  await openSidebarSession(/会话 A/);
+  expect(await screen.findByText('编辑 ×2')).toBeInTheDocument();
+  expect(screen.getByText('部分失败')).toBeInTheDocument();
+  const summary=screen.getByText('编辑 ×2').closest('summary')!;
+  expect(within(summary).getByText('+2')).toBeInTheDocument();
+  expect(within(summary).getByText('-1')).toBeInTheDocument();
+  fireEvent.click(screen.getByText('编辑 ×2'));
+  expect(screen.getByText('第 1 次编辑')).toBeInTheDocument();
+  expect(screen.getByText('第 2 次编辑')).toBeInTheDocument();
+  expect(screen.getAllByText('执行失败')).toHaveLength(1);
+  expect(screen.getByText('替换失败')).toBeInTheDocument();
+ });
+ it('完成回合内的同文件连续编辑同样合并',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  const diff=['--- a/src/config.ts','+++ b/src/config.ts','@@ -1,1 +1,2 @@','-old','+new','+extra'].join('\n');
+  mocks.command.mockImplementation(async(name:string,args:any)=>name==='session_timeline_page'?timeline(args.sessionId,[
+   {id:'t1',sessionId:'a',seq:'1',kind:'turn.start',data:{runId:'run'},createdAt:''},
+   {id:'u1',sessionId:'a',seq:'2',kind:'user.message',data:{content:'改两次'},createdAt:''},
+   {id:'a1',sessionId:'a',seq:'3',kind:'assistant.message',data:{content:'开始修改'},createdAt:''},
+   {id:'c1',sessionId:'a',seq:'4',kind:'tool.call',data:{id:'c1',name:'edit',arguments:{path:'src/config.ts'}},createdAt:''},
+   {id:'r1',sessionId:'a',seq:'5',kind:'tool.result',data:{callId:'c1',name:'edit',content:'已修改副本',isError:false,status:'completed',diff,path:'src/config.ts'},createdAt:''},
+   {id:'c2',sessionId:'a',seq:'6',kind:'tool.call',data:{id:'c2',name:'edit',arguments:{path:'src/config.ts'}},createdAt:''},
+   {id:'r2',sessionId:'a',seq:'7',kind:'tool.result',data:{callId:'c2',name:'edit',content:'已修改副本',isError:false,status:'completed',diff,path:'src/config.ts'},createdAt:''},
+   {id:'a2',sessionId:'a',seq:'8',kind:'assistant.message',data:{content:'修改完成'},createdAt:''},
+   {id:'t2',sessionId:'a',seq:'9',kind:'turn.end',data:{runId:'run',status:'completed'},createdAt:''},
+  ]):original(name,args));
+  render(<App/>);
+  await openSidebarSession(/会话 A/);
+  expect(await screen.findByText('编辑 ×2')).toBeInTheDocument();
+  expect(screen.getAllByRole('button',{name:'config.ts'})).toHaveLength(1);
+  expect(screen.getByText('+4')).toBeInTheDocument();
+  expect(screen.getByText('-2')).toBeInTheDocument();
+ });
  it('/diff 斜杠命令打开更改视图',async()=>{
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name:string,args:any)=>name==='workspace_diff'?[]:original(name,args));

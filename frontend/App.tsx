@@ -12,6 +12,7 @@ import {filterSkillRows,skillRowsFrom,skillTokenUnderCursor,type SkillRow,type S
 import {GROUP_LABELS,filterByTitle,formatFullTime,groupByProject,groupByTime,relativeLabel,withoutSubagents,type ViewMode} from './sessionList';
 import {useChat} from './store';
 import {DiffView,diffStats,parseUnifiedDiff} from './DiffView';
+import {groupFileEdits,summarizeFileEdits,type FileEditGroup} from './fileEdits';
 import ModelSelect from './ModelSelect';
 import {UsageRing} from './UsageRing';
 import {PresetsPanel} from './PresetsPanel';
@@ -686,18 +687,47 @@ function CompletedTurn({events,...extras}:{events:SessionEvent[]}&EventCardExtra
  const process=events.filter((event,index)=>index!==finalIndex&&!['turn.start','turn.end','user.message'].includes(event.kind));
  const user=events.find(event=>event.kind==='user.message'),final=finalIndex>=0?events[finalIndex]:undefined;
  const start=events.find(event=>event.kind==='turn.start'),end=events.at(-1);
- return <>{user&&<EventCard event={user} {...extras}/>} {process.length>0&&<details className="turn-details" open><summary>{durationLabel(start,end)}<ChevronDown size={14}/></summary>{process.map(event=><EventCard key={event.id} event={event} {...extras}/>)}</details>} {final&&<EventCard event={final} {...extras}/>}</>;
+ return <>{user&&<EventCard event={user} {...extras}/>} {process.length>0&&<details className="turn-details" open><summary>{durationLabel(start,end)}<ChevronDown size={14}/></summary><EventList events={process} {...extras}/></details>} {final&&<EventCard event={final} {...extras}/>}</>;
 }
 function ConversationEvents({events,...extras}:{events:SessionEvent[]}&EventCardExtras){
- const cards:ReactNode[]=[];let start=-1;
+ const cards:ReactNode[]=[];let start=-1,loose:SessionEvent[]=[];const flushLoose=()=>{if(!loose.length)return;cards.push(<EventList key={`loose-${loose[0].id}`} events={loose} {...extras}/>);loose=[]};
  for(let index=0;index<events.length;index++){
   const event=events[index];
-  if(event.kind==='turn.start'){if(start>=0)cards.push(<Fragment key={`open-${events[start].id}`}>{events.slice(start,index).map(item=><EventCard key={item.id} event={item} {...extras}/>)}</Fragment>);start=index;continue}
-  if(event.kind==='turn.end'&&start>=0){const turn=events.slice(start,index+1);cards.push(event.data.status==='completed'?<CompletedTurn key={event.id} events={turn} {...extras}/>:<Fragment key={event.id}>{turn.map(item=><EventCard key={item.id} event={item} {...extras}/>)}</Fragment>);start=-1;continue}
-  if(start<0)cards.push(<EventCard key={event.id} event={event} {...extras}/>);
+  if(event.kind==='turn.start'){flushLoose();if(start>=0)cards.push(<EventList key={`open-${events[start].id}`} events={events.slice(start,index)} {...extras}/>);start=index;continue}
+  if(event.kind==='turn.end'&&start>=0){flushLoose();const turn=events.slice(start,index+1);cards.push(event.data.status==='completed'?<CompletedTurn key={event.id} events={turn} {...extras}/>:<EventList key={event.id} events={turn} {...extras}/>);start=-1;continue}
+  if(start<0)loose.push(event);
  }
- if(start>=0)cards.push(<Fragment key={`open-${events[start].id}`}>{events.slice(start).map(event=><EventCard key={event.id} event={event} {...extras}/>)}</Fragment>);
+ flushLoose();if(start>=0)cards.push(<EventList key={`open-${events[start].id}`} events={events.slice(start)} {...extras}/>);
  return <>{cards}</>;
+}
+function EventList({events,...extras}:{events:SessionEvent[]}&EventCardExtras) {
+ return <>{groupFileEdits(events).map(node=>node.kind==='group'
+  ?<FileEditGroup key={node.key} group={node.group}/>
+  :<EventCard key={node.event.id} event={node.event} {...extras}/>)}</>;
+}
+function FileEditGroup({group}:{group:FileEditGroup}) {
+ const summary=summarizeFileEdits(group);
+ const status=summary.failed>0?(summary.pending===0&&summary.failed===summary.results.length?'执行失败':'部分失败'):summary.pending>0?'进行中':'已完成';
+ const head=<>
+  {summary.label==='写入'?<FilePlus size={14} aria-hidden="true"/>:<Pencil size={14} aria-hidden="true"/>}
+  <span className="ft-label">{summary.label} ×{summary.operations}</span>
+  <button type="button" className="file-chip" title={summary.path} onClick={e=>{e.preventDefault();useSidePanel.getState().openPreview(summary.path)}}><FileCode size={12}/>{basename(summary.path)}</button>
+  {!!dirOf(summary.path)&&<span className="ft-dir">{dirOf(summary.path)}</span>}
+ </>;
+ return <details className="tool-card file-tool file-tool-group"><summary>{head}{summary.hasStats&&<span className="tool-stats"><b className="st-add">+{summary.add}</b><b className="st-del">-{summary.del}</b></span>}<span className={`ft-status${summary.failed?' is-error':''}`}>{status}</span><ChevronRight size={14} className="chev" aria-hidden="true"/></summary>
+  <div className="file-edit-log">
+   {summary.results.map((event,index)=>{
+    const diff=typeof event.data.diff==='string'&&event.data.diff?event.data.diff:null;
+    const stats=diff?diffStats(parseUnifiedDiff(diff)):null;
+    const opName=event.data.name==='write'?'写入':'编辑';
+    return <section key={event.id} className="file-edit-entry">
+     <div className="file-edit-meta"><span>第 {index+1} 次{opName}</span>{stats&&<span className="tool-stats"><b className="st-add">+{stats.add}</b><b className="st-del">-{stats.del}</b></span>}<span className={`ft-status${event.data.isError?' is-error':''}`}>{event.data.isError?'执行失败':'已完成'}</span></div>
+     {diff?<div className="tool-diff"><DiffView diff={diff}/></div>:<pre>{printable(event.data.content)}</pre>}
+    </section>;
+   })}
+   {summary.pending>0&&<p className="file-edit-pending">还有 {summary.pending} 次修改等待执行结果…</p>}
+  </div>
+ </details>;
 }
 export function EventCard({event,...extras}:{event:SessionEvent}&EventCardExtras) {
  const {kind,data}=event;
