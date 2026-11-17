@@ -1,5 +1,6 @@
 //! Scoped agent ownership, durable tool settlements, and human approvals.
 use crate::model::{MessageRole, ModelAnswer, ModelMessage, ModelProvider, StreamDelta, cancelled};
+use crate::request_timing::RequestTiming;
 use crate::token_budget::{
     BudgetSnapshot, BudgetStop, DEFAULT_LIMIT_TOKENS, LIMIT_SETTING_KEY, TurnBudget,
     consumed_tokens, total_input_tokens, validate_limit,
@@ -1233,6 +1234,8 @@ impl Runtime {
             let partial_usage_sink = Arc::new(move |usage| {
                 *partial_usage_for_sink.lock().unwrap() = Some(usage);
             });
+            let mut request_timing = RequestTiming::start(session, "main_turn");
+            let sink = request_timing.wrap_sink(sink);
             let model_result = provider
                 .complete_with_partial_usage(
                     messages,
@@ -1243,6 +1246,9 @@ impl Runtime {
                 )
                 .await;
             benchmark_timing(session, "model_request", model_started);
+            if request_timing.is_enabled() {
+                request_timing.finish(&model_result, partial_usage.lock().unwrap().as_ref());
+            }
             let answer = match model_result {
                 Ok(answer) => answer,
                 Err(e) => {
@@ -2326,9 +2332,13 @@ impl Runtime {
             ),
             ModelMessage::user(serde_json::to_string(&messages).map_err(internal)?),
         ];
-        let answer = provider
-            .complete(request, vec![], cancel.clone(), Arc::new(|_| {}))
-            .await?;
+        let mut timing = RequestTiming::start(session, "compact");
+        let sink = timing.wrap_sink(Arc::new(|_| {}));
+        let result = provider
+            .complete(request, vec![], cancel.clone(), sink)
+            .await;
+        timing.finish(&result, None);
+        let answer = result?;
         if cancel.is_cancelled() {
             return Err(cancelled());
         }

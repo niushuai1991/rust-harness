@@ -3,6 +3,7 @@ use harness_contracts::*;
 use harness_runtime::Runtime;
 use harness_runtime::chatgpt::LoginHandle;
 use harness_runtime::model::ModelMessage;
+use harness_runtime::request_timing::RequestTiming;
 use serde::Deserialize;
 use std::{path::PathBuf, sync::Arc};
 use tauri::{State, ipc::Channel};
@@ -487,7 +488,9 @@ pub async fn session_title_generate(
     );
     let model_result = async {
         let provider = state.models.build_model_with(&model_id, effort).await?;
-        let answer = provider
+        let mut timing = RequestTiming::start(&session_id, "session_title");
+        let sink = timing.wrap_sink(Arc::new(|_| {}));
+        let result = provider
             .complete(
                 vec![
                     ModelMessage::system(
@@ -497,9 +500,11 @@ pub async fn session_title_generate(
                 ],
                 Vec::new(),
                 CancellationToken::new(),
-                Arc::new(|_| {}),
+                sink,
             )
-            .await?;
+            .await;
+        timing.finish(&result, None);
+        let answer = result?;
         Ok::<_, AppError>(answer.content)
     };
     let generated = tokio::time::timeout(std::time::Duration::from_secs(30), model_result)

@@ -161,8 +161,10 @@ async fn benchmark_trace_reports_model_and_projection_timings() {
     let dir = tempfile::tempdir().unwrap();
     let source = source_dir(dir.path());
     configure_model(&host_dir(&dir), &base).await;
+    let request_trace = dir.path().join("requests.jsonl");
     let output = harness(&host_dir(&dir))
         .env("RUST_HARNESS_BENCHMARK_TRACE", "1")
+        .env("RUST_HARNESS_REQUEST_TRACE_FILE", &request_trace)
         .args([
             "run",
             "-C",
@@ -202,6 +204,21 @@ async fn benchmark_trace_reports_model_and_projection_timings() {
             "missing {phase}: {stderr}"
         );
     }
+    let request_lines = std::fs::read_to_string(request_trace).unwrap();
+    let requests: Vec<serde_json::Value> = request_lines
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(request["source"], "main_turn");
+    assert_eq!(request["status"], "completed");
+    assert!(request["started_unix_ms"].as_u64().is_some());
+    assert!(request["duration_ms"].as_f64().is_some());
+    assert!(request["first_delta_ms"].as_f64().is_some());
+    assert!(request["request_id"].is_string());
+    assert!(!request_lines.contains("总结项目"));
+    assert!(!request_lines.contains("\"finished\""));
 }
 
 #[tokio::test]
