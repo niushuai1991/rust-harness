@@ -1,4 +1,5 @@
 //! `harness run` 集成测试：本地 SSE mock 驱动，验证 JSONL 契约、退出码与 stdin 矩阵。
+use base64::Engine;
 use std::process::Stdio;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -162,9 +163,11 @@ async fn benchmark_trace_reports_model_and_projection_timings() {
     let source = source_dir(dir.path());
     configure_model(&host_dir(&dir), &base).await;
     let request_trace = dir.path().join("requests.jsonl");
+    let sse_trace = dir.path().join("sse.jsonl");
     let output = harness(&host_dir(&dir))
         .env("RUST_HARNESS_BENCHMARK_TRACE", "1")
         .env("RUST_HARNESS_REQUEST_TRACE_FILE", &request_trace)
+        .env("RUST_HARNESS_SSE_TRACE_FILE", &sse_trace)
         .args([
             "run",
             "-C",
@@ -219,6 +222,22 @@ async fn benchmark_trace_reports_model_and_projection_timings() {
     assert!(request["request_id"].is_string());
     assert!(!request_lines.contains("总结项目"));
     assert!(!request_lines.contains("\"finished\""));
+    let sse_lines = std::fs::read_to_string(sse_trace).unwrap();
+    let streams: Vec<serde_json::Value> = sse_lines
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(streams.len(), 1);
+    let stream = &streams[0];
+    assert_eq!(stream["request_id"], request["request_id"]);
+    assert_eq!(stream["session_id"], request["session_id"]);
+    assert_eq!(stream["source"], "main_turn");
+    assert_eq!(stream["status"], "completed");
+    assert_eq!(stream["truncated"], false);
+    let body = base64::engine::general_purpose::STANDARD
+        .decode(stream["sse_base64"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(body, b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"finished\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\ndata: [DONE]\n\n");
 }
 
 #[tokio::test]

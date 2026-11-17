@@ -1,6 +1,7 @@
 //! Protocol-neutral model history and cancellable streaming transports.
 mod encoding;
 mod streaming;
+use crate::request_timing::SseCapture;
 use async_trait::async_trait;
 pub use encoding::encode_request;
 use futures::StreamExt;
@@ -195,6 +196,23 @@ impl HttpModel {
         sink: DeltaSink,
         partial_usage: Option<PartialUsageSink>,
     ) -> AppResult<ModelAnswer> {
+        let mut capture = SseCapture::start();
+        let result = self
+            .complete_inner_captured(messages, tools, cancel, sink, partial_usage, &mut capture)
+            .await;
+        capture.finish(&result);
+        result
+    }
+
+    async fn complete_inner_captured(
+        &self,
+        messages: Vec<ModelMessage>,
+        tools: Vec<ToolDefinition>,
+        cancel: CancellationToken,
+        sink: DeltaSink,
+        partial_usage: Option<PartialUsageSink>,
+        capture: &mut SseCapture,
+    ) -> AppResult<ModelAnswer> {
         let client = if self.connection_reuse {
             shared_http_client(&HttpClientKey {
                 proxy: self.config.proxy.clone().filter(|p| !p.is_empty()),
@@ -252,6 +270,7 @@ impl HttpModel {
             },
         };
         let status = response.status();
+        capture.set_http_status(status.as_u16());
         if !status.is_success() {
             return Err(http_error(response, cancel.clone()).await?);
         }
@@ -284,7 +303,12 @@ impl HttpModel {
                     return Err(transport_error(error));
                 }
             };
-            let deltas = match decoder.push(&chunk) {
+            capture.push(&chunk);
+            let decoded = decoder.push(&chunk);
+            if capture.is_enabled() {
+                capture.observe_usage(&decoder.usage());
+            }
+            let deltas = match decoded {
                 Ok(deltas) => deltas,
                 Err(error) => {
                     if let Some(observer) = &partial_usage {
@@ -306,6 +330,9 @@ impl HttpModel {
         match decoder.finish_with_usage() {
             Ok(answer) => Ok(answer),
             Err((error, usage)) => {
+                if capture.is_enabled() {
+                    capture.observe_usage(&usage);
+                }
                 if let Some(observer) = partial_usage {
                     observer(usage);
                 }
