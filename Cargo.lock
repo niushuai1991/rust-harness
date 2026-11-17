@@ -2228,6 +2228,7 @@ name = "harness-cli"
 version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "crossterm",

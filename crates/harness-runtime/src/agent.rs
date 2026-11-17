@@ -1236,14 +1236,14 @@ impl Runtime {
             });
             let mut request_timing = RequestTiming::start(session, "main_turn");
             let sink = request_timing.wrap_sink(sink);
-            let model_result = provider
-                .complete_with_partial_usage(
+            let model_result = request_timing
+                .scope(provider.complete_with_partial_usage(
                     messages,
                     tools.clone(),
                     cancel.clone(),
                     sink,
                     partial_usage_sink,
-                )
+                ))
                 .await;
             benchmark_timing(session, "model_request", model_started);
             if request_timing.is_enabled() {
@@ -2334,8 +2334,8 @@ impl Runtime {
         ];
         let mut timing = RequestTiming::start(session, "compact");
         let sink = timing.wrap_sink(Arc::new(|_| {}));
-        let result = provider
-            .complete(request, vec![], cancel.clone(), sink)
+        let result = timing
+            .scope(provider.complete(request, vec![], cancel.clone(), sink))
             .await;
         timing.finish(&result, None);
         let answer = result?;

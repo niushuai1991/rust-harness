@@ -490,7 +490,7 @@ pub async fn session_title_generate(
         let provider = state.models.build_model_with(&model_id, effort).await?;
         let mut timing = RequestTiming::start(&session_id, "session_title");
         let sink = timing.wrap_sink(Arc::new(|_| {}));
-        let result = provider
+        let result = timing.scope(provider
             .complete(
                 vec![
                     ModelMessage::system(
@@ -501,7 +501,7 @@ pub async fn session_title_generate(
                 Vec::new(),
                 CancellationToken::new(),
                 sink,
-            )
+            ))
             .await;
         timing.finish(&result, None);
         let answer = result?;
