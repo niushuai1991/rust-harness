@@ -1,7 +1,8 @@
-import {useEffect,useMemo,useRef,useState} from 'react';
+import {useEffect,useLayoutEffect,useMemo,useRef,useState} from 'react';
 import {RefreshCw} from 'lucide-react';
 import {command,errorText} from './api';
 import {cacheHitFromEvents,contextTokensFromEvents,formatHitRate,formatResetTime,formatTokens,USAGE_CARD_LABELS} from './contextUsage';
+import {fitPopoverLeft} from './popoverFit';
 import {tokenBudgetFromEvents} from './tokenBudget';
 import {useChat} from './store';
 import type {ModelConfig,ProviderInfo,ProviderUsageSnapshot,UsageCardKind} from './types';
@@ -107,6 +108,21 @@ export function UsageRing({models,providers,modelId,sessionId}:{models:ModelConf
  },[]);
 
  const wrapRef=useRef<HTMLDivElement|null>(null);
+ const popRef=useRef<HTMLDivElement|null>(null);
+ // 浮层水平位置：打开时按视口右缘夹紧（窄窗口下整体左移避免被裁掉），窗口变化时重算；
+ // null 表示未测量/无需调整，沿用 CSS 默认 left:-6px。
+ const [popLeft,setPopLeft]=useState<number|null>(null);
+ useLayoutEffect(()=>{
+  if(!open){setPopLeft(null);return}
+  const fit=()=>{
+   const wrap=wrapRef.current,pop=popRef.current;
+   if(!wrap||!pop)return;
+   setPopLeft(fitPopoverLeft(wrap.getBoundingClientRect().left,pop.getBoundingClientRect().width,window.innerWidth));
+  };
+  fit();
+  window.addEventListener('resize',fit);
+  return()=>window.removeEventListener('resize',fit);
+ },[open]);
  const used=tokens??0;
  const budgetUsed=budget?.usedTokens??0;
  const displayedBudgetLimit=budget?.limitTokens??budgetLimit;
@@ -125,7 +141,7 @@ export function UsageRing({models,providers,modelId,sessionId}:{models:ModelConf
    }}>
    <span dangerouslySetInnerHTML={{__html:ringSvg(percent)}}/>
   </button>
-  {open&&<div className="usage-ring-pop" role="dialog" aria-label="用量明细">
+  {open&&<div className="usage-ring-pop" ref={popRef} role="dialog" aria-label="用量明细" style={popLeft==null?undefined:{left:popLeft}}>
    {windowSize!=null&&<>
     <p className="usage-ring-title">上下文窗口</p>
     <div className="usage-ring-line"><strong>{formatTokens(used)} / {formatTokens(windowSize)}</strong><span>{Math.round(usedPercent(used,windowSize))}%</span></div>

@@ -30,7 +30,7 @@ function renderRing(props:{models?:any[];providers?:any[];modelId?:string|null;s
 function pushEvents(events:SessionEvent[]){act(()=>{useChat.getState().replace('s1',events)})}
 
 beforeEach(()=>{mocks.command.mockReset();mocks.command.mockResolvedValue(undefined)});
-afterEach(()=>{cleanup();mocks.command.mockReset();useChat.setState({events:{},streams:{},statuses:{}})});
+afterEach(()=>{cleanup();mocks.command.mockReset();vi.restoreAllMocks();vi.unstubAllGlobals();useChat.setState({events:{},streams:{},statuses:{}})});
 
 it('模型没有上下文窗口时仍显示 Token 预算入口',async()=>{
  renderRing({models:[{id:'m1',name:'自定义',baseUrl:'',model:'m',credentialRef:'',proxy:null,providerId:'custom',compatibility:'standard',auth:'apiKey',apiMode:'chatCompletions',maxOutputTokens:null,efforts:[],effort:null,enabled:true,builtin:false} as any],modelId:'m1'});
@@ -228,4 +228,43 @@ it('面板展开时切换供应商立即清空旧套餐数据',async()=>{
  view.rerender(<UsageRing models={[glmConfig,codexConfig]} providers={[bigmodel,chatgpt]} modelId={codexConfig.id} sessionId='s1'/>);
  expect(screen.queryByText('GLM Coding Pro')).not.toBeInTheDocument();
  await waitFor(()=>expect(usageCalls()).toEqual(["bigmodel","chatgpt"]));
+});
+
+// —— 窄窗口自适应：浮层按视口边界夹紧水平位置，避免右侧被窗口裁掉 ——
+
+function domRect(left:number,width:number):DOMRect{
+ return {x:left,y:0,left,top:0,right:left+width,bottom:0,width,height:0,toJSON(){}} as DOMRect;
+}
+function mockRingRects(anchorLeft:number,popWidth:number){
+ return vi.spyOn(Element.prototype,'getBoundingClientRect').mockImplementation(function(this:Element){
+  if(this.classList.contains('usage-ring-wrap'))return domRect(anchorLeft,25);
+  if(this.classList.contains('usage-ring-pop'))return domRect(0,popWidth);
+  return domRect(0,0);
+ });
+}
+
+it('窄窗口下浮层自动左移保持在视口内',async()=>{
+ pushEvents([]);
+ mockCommand(usageOk);
+ vi.stubGlobal('innerWidth',900);
+ mockRingRects(700,280);
+ renderRing();
+ fireEvent.mouseEnter(screen.getByRole('button',{name:/上下文用量/}));
+ expect(await screen.findByText('GLM Coding Pro')).toBeInTheDocument();
+ // 默认 left:-6px 时浮层右缘到 974，超出 900 视口；夹紧后 left=900-8-280-700=-88。
+ await waitFor(()=>expect(screen.getByRole('dialog',{name:'用量明细'}).style.left).toBe('-88px'));
+});
+
+it('浮层打开期间窗口变窄会重新夹紧位置',async()=>{
+ pushEvents([]);
+ mockCommand(usageOk);
+ vi.stubGlobal('innerWidth',900);
+ mockRingRects(700,280);
+ renderRing();
+ fireEvent.mouseEnter(screen.getByRole('button',{name:/上下文用量/}));
+ await waitFor(()=>expect(screen.getByRole('dialog',{name:'用量明细'}).style.left).toBe('-88px'));
+ vi.stubGlobal('innerWidth',700);
+ act(()=>{window.dispatchEvent(new Event('resize'))});
+ // 700-8-280-700=-288。
+ await waitFor(()=>expect(screen.getByRole('dialog',{name:'用量明细'}).style.left).toBe('-288px'));
 });
