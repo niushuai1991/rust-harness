@@ -51,6 +51,12 @@ export function withoutSubagents(sessions:SessionInfo[]):SessionInfo[]{
  return sessions.filter(s=>!s.parentId);
 }
 
+/// 子代理面板只展示当前会话的子代理；会话未创建（无 id）时没有子代理。
+export function subagentsOf(sessions:SessionInfo[],sessionId:string|null|undefined):SessionInfo[]{
+ if(!sessionId)return [];
+ return sessions.filter(s=>s.parentId===sessionId);
+}
+
 export interface RecentGroup{group:TimeGroup;sessions:SessionInfo[];}
 /** 输入需已按 updatedAt 倒序（后端保证）；相邻同组合并，避免打乱组内顺序。 */
 export function groupByTime(sessions:SessionInfo[],now:Date):RecentGroup[]{

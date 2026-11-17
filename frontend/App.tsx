@@ -9,7 +9,7 @@ import {command,desktop,errorText,send} from './api';
 import {KNOWN_APPROVALS} from './types';
 import {INIT_PROMPT,SLASH_COMMANDS,commandTokenUnderCursor,expandSlashPrompt,filterSlashCommands,type SlashSpec} from './slashCommands';
 import {filterSkillRows,skillRowsFrom,skillTokenUnderCursor,type SkillRow,type SkillToken} from './skills';
-import {GROUP_LABELS,filterByTitle,formatFullTime,groupByProject,groupByTime,relativeLabel,withoutSubagents,type ViewMode} from './sessionList';
+import {GROUP_LABELS,filterByTitle,formatFullTime,groupByProject,groupByTime,relativeLabel,subagentsOf,withoutSubagents,type ViewMode} from './sessionList';
 import {useChat} from './store';
 import {DiffView,diffStats,parseUnifiedDiff} from './DiffView';
 import {groupFileEdits,summarizeFileEdits,type FileEditGroup} from './fileEdits';
@@ -186,9 +186,9 @@ export default function App(){
  const skillRows=useMemo(()=>skillRowsFrom(skills),[skills]);
  const workspace=workspaces.find(w=>w.id===workspaceId),session=sessions.find(s=>s.id===sessionId);
  const visibleSessions=useMemo(()=>withoutSubagents(filterByTitle(allSessions,query)),[allSessions,query]);
- // 子代理面板数据：当前工作区（草稿态未建会话时落草稿落点）的子代理会话，运行中的排前由面板处理。
+ // 子代理面板数据：只取当前会话的子代理会话（草稿态未建会话时为空），运行中的排前由面板处理。
  const panelWorkspaceId=workspaceId||draftWorkspaceId||'';
- const subagentSessions=useMemo(()=>allSessions.filter(s=>s.parentId&&s.workspaceId===panelWorkspaceId),[allSessions,panelWorkspaceId]);
+ const subagentSessions=useMemo(()=>subagentsOf(allSessions,sessionId),[allSessions,sessionId]);
  const runningSubagentCount=subagentSessions.reduce((count,s)=>count+((activeIds.has(s.id)||running[s.id])?1:0),0);
  const projectName=(id:string)=>workspaces.find(x=>x.id===id)?.name??'';
  // 可见项目：隐藏（已移除）项目不进「按项目」分组与草稿候选，其余显示点照常。

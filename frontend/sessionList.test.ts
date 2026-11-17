@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {filterByTitle,formatFullTime,groupByProject,groupByTime,relativeLabel,timeGroupOf,withoutSubagents} from './sessionList';
+import {filterByTitle,formatFullTime,groupByProject,groupByTime,relativeLabel,subagentsOf,timeGroupOf,withoutSubagents} from './sessionList';
 import type {SessionInfo,WorkspaceInfo} from './types';
 
 // 固定"现在"：本地时区 2026-11-08（周日）12:00，避免测试随真实时间漂移。
@@ -72,6 +72,23 @@ describe('withoutSubagents',()=>{
   expect(withoutSubagents([])).toEqual([]);
   const list=[session({id:'a'})];
   expect(withoutSubagents(list)).toEqual(list);
+ });
+});
+
+describe('subagentsOf',()=>{
+ it('只返回当前会话的子代理，保持原顺序',()=>{
+  const list=[session({id:'c1',parentId:'p1'}),session({id:'c2',parentId:'p2'}),session({id:'c3',parentId:'p1'}),session({id:'a'})];
+  expect(subagentsOf(list,'p1').map(s=>s.id)).toEqual(['c1','c3']);
+ });
+ it('会话未创建（无 id）时返回空数组',()=>{
+  const list=[session({id:'c1',parentId:'p1'})];
+  expect(subagentsOf(list,null)).toEqual([]);
+  expect(subagentsOf(list,'')).toEqual([]);
+ });
+ it('无匹配父会话或空列表时返回空数组',()=>{
+  expect(subagentsOf([session({id:'c1',parentId:'p1'})],'p2')).toEqual([]);
+  expect(subagentsOf([session({id:'a'})],'p1')).toEqual([]);
+  expect(subagentsOf([],'p1')).toEqual([]);
  });
 });
 
