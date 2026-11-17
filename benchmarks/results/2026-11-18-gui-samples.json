@@ -1,0 +1,436 @@
+{
+  "schema_version": 1,
+  "test_date": "2026-11-18",
+  "timezone": "Asia/Shanghai",
+  "applications": [
+    {
+      "name": "ZCode GUI",
+      "product_version": "3.18.2",
+      "file_version": "3.18.2.10443",
+      "executable_sha256": "e853398ea2023e3e472fd2799389ad02445df5c2bfd36b2ed1f1e3dfe3dc958e",
+      "execution_mode": "原目录",
+      "permission_mode": "yolo"
+    },
+    {
+      "name": "Rust Harness GUI",
+      "product_version": "0.1.6",
+      "executable_sha256": "453013892c0606b00e89452c872268ea341be4b737c1c1b57842af4b806ab724",
+      "execution_mode": "replica",
+      "permission_mode": "auto"
+    }
+  ],
+  "configured_model": {
+    "provider": "智谱 Coding Plan",
+    "model": "GLM-5.3 Flash",
+    "effort": "high",
+    "protocol": "Anthropic（配置记录，未保存 HTTP 抓包）"
+  },
+  "prompt": "读取 alpha.txt、beta.txt 和 gamma.txt。分别列出三个项目代号和对应负责人。",
+  "expected_markers": [
+    "海棠",
+    "林青",
+    "松林",
+    "周明",
+    "星河",
+    "陈宁"
+  ],
+  "fixture": [
+    {
+      "name": "alpha.txt",
+      "size_bytes": 41,
+      "sha256": "0dcdf05155c7eff2ef8c716dcf091807b7acaca7b4604e8c38c593235926c278"
+    },
+    {
+      "name": "beta.txt",
+      "size_bytes": 41,
+      "sha256": "40be670bacf7cb33c4958952811f92c4c9c713fca82395acf4b4ba0c3fdd2e58"
+    },
+    {
+      "name": "gamma.txt",
+      "size_bytes": 41,
+      "sha256": "0361d96346630fcc7cb332ff8b587a9da50bd396bbfdd4174cec24e93ab17f0e"
+    }
+  ],
+  "notes": [
+    "不包含本地会话标识、私有路径、凭据、提示词快照或工具结果正文。",
+    "Rust Harness 的 input_tokens_uncached 是未缓存输入；ZCode 的 input_tokens_total 包含缓存读取。",
+    "null 表示未采集，并非零。"
+  ],
+  "samples": [
+    {
+      "id": "Z1",
+      "source": "ZCode GUI",
+      "started_at": "2026-11-18T01:01:50.144+08:00",
+      "completed_at": "2026-11-18T01:01:56.106+08:00",
+      "duration_ms": 5962,
+      "status": "completed",
+      "answer_markers_passed": true,
+      "main_requests": [
+        {
+          "provider_id": "account:bigmodel-individual-coding-plan",
+          "model_id": "GLM-5.3-Flash",
+          "variant": "high",
+          "mode": "yolo",
+          "status": "completed",
+          "started_at": "2026-11-18T01:01:50.462+08:00",
+          "completed_at": "2026-11-18T01:01:54.108+08:00",
+          "duration_ms": 3646,
+          "time_to_first_token_ms": 1590,
+          "input_tokens_total": 27808,
+          "output_tokens": 179,
+          "cache_read_tokens": 15808,
+          "cache_creation_tokens": 0
+        },
+        {
+          "provider_id": "account:bigmodel-individual-coding-plan",
+          "model_id": "GLM-5.3-Flash",
+          "variant": "high",
+          "mode": "yolo",
+          "status": "completed",
+          "started_at": "2026-11-18T01:01:54.137+08:00",
+          "completed_at": "2026-11-18T01:01:56.088+08:00",
+          "duration_ms": 1951,
+          "time_to_first_token_ms": 1246,
+          "input_tokens_total": 28059,
+          "output_tokens": 53,
+          "cache_read_tokens": 20992,
+          "cache_creation_tokens": 0
+        }
+      ],
+      "title_requests": [
+        {
+          "status": "completed",
+          "model_id": "GLM-5.3-Flash",
+          "variant": "low",
+          "started_at": "2026-11-18T01:01:56.116+08:00",
+          "completed_at": "2026-11-18T01:01:57.164+08:00",
+          "duration_ms": 1048,
+          "input_tokens_total": 245,
+          "output_tokens": 14
+        }
+      ],
+      "tools": [
+        {
+          "name": "Read",
+          "status": "completed",
+          "started_at": "2026-11-18T01:01:53.369+08:00",
+          "completed_at": "2026-11-18T01:01:53.381+08:00",
+          "duration_ms": 4
+        },
+        {
+          "name": "Read",
+          "status": "completed",
+          "started_at": "2026-11-18T01:01:53.806+08:00",
+          "completed_at": "2026-11-18T01:01:53.814+08:00",
+          "duration_ms": 4
+        },
+        {
+          "name": "Read",
+          "status": "completed",
+          "started_at": "2026-11-18T01:01:54.056+08:00",
+          "completed_at": "2026-11-18T01:01:54.063+08:00",
+          "duration_ms": 3
+        }
+      ]
+    },
+    {
+      "id": "Z2",
+      "source": "ZCode GUI",
+      "started_at": "2026-11-18T01:04:07.790+08:00",
+      "completed_at": "2026-11-18T01:04:29.521+08:00",
+      "duration_ms": 21731,
+      "status": "completed",
+      "answer_markers_passed": true,
+      "main_requests": [
+        {
+          "provider_id": "account:bigmodel-individual-coding-plan",
+          "model_id": "GLM-5.3-Flash",
+          "variant": "high",
+          "mode": "yolo",
+          "status": "completed",
+          "started_at": "2026-11-18T01:04:08.033+08:00",
+          "completed_at": "2026-11-18T01:04:11.330+08:00",
+          "duration_ms": 3297,
+          "time_to_first_token_ms": 1311,
+          "input_tokens_total": 27808,
+          "output_tokens": 170,
+          "cache_read_tokens": 20992,
+          "cache_creation_tokens": 0
+        },
+        {
+          "provider_id": "account:bigmodel-individual-coding-plan",
+          "model_id": "GLM-5.3-Flash",
+          "variant": "high",
+          "mode": "yolo",
+          "status": "completed",
+          "started_at": "2026-11-18T01:04:11.355+08:00",
+          "completed_at": "2026-11-18T01:04:29.511+08:00",
+          "duration_ms": 18156,
+          "time_to_first_token_ms": 16712,
+          "input_tokens_total": 28050,
+          "output_tokens": 115,
+          "cache_read_tokens": 27776,
+          "cache_creation_tokens": 0
+        }
+      ],
+      "title_requests": [
+        {
+          "status": "completed",
+          "model_id": "GLM-5.3-Flash",
+          "variant": "low",
+          "started_at": "2026-11-18T01:04:29.525+08:00",
+          "completed_at": "2026-11-18T01:04:30.543+08:00",
+          "duration_ms": 1018,
+          "input_tokens_total": 245,
+          "output_tokens": 14
+        }
+      ],
+      "tools": [
+        {
+          "name": "Read",
+          "status": "completed",
+          "started_at": "2026-11-18T01:04:10.557+08:00",
+          "completed_at": "2026-11-18T01:04:10.565+08:00",
+          "duration_ms": 3
+        },
+        {
+          "name": "Read",
+          "status": "completed",
+          "started_at": "2026-11-18T01:04:10.942+08:00",
+          "completed_at": "2026-11-18T01:04:10.949+08:00",
+          "duration_ms": 3
+        },
+        {
+          "name": "Read",
+          "status": "completed",
+          "started_at": "2026-11-18T01:04:11.301+08:00",
+          "completed_at": "2026-11-18T01:04:11.308+08:00",
+          "duration_ms": 3
+        }
+      ]
+    },
+    {
+      "id": "Z3",
+      "source": "ZCode GUI",
+      "started_at": "2026-11-18T01:04:47.056+08:00",
+      "completed_at": "2026-11-18T01:04:55.262+08:00",
+      "duration_ms": 8206,
+      "status": "completed",
+      "answer_markers_passed": true,
+      "main_requests": [
+        {
+          "provider_id": "account:bigmodel-individual-coding-plan",
+          "model_id": "GLM-5.3-Flash",
+          "variant": "high",
+          "mode": "yolo",
+          "status": "completed",
+          "started_at": "2026-11-18T01:04:47.292+08:00",
+          "completed_at": "2026-11-18T01:04:50.627+08:00",
+          "duration_ms": 3335,
+          "time_to_first_token_ms": 1374,
+          "input_tokens_total": 27808,
+          "output_tokens": 177,
+          "cache_read_tokens": 27776,
+          "cache_creation_tokens": 0
+        },
+        {
+          "provider_id": "account:bigmodel-individual-coding-plan",
+          "model_id": "GLM-5.3-Flash",
+          "variant": "high",
+          "mode": "yolo",
+          "status": "completed",
+          "started_at": "2026-11-18T01:04:50.647+08:00",
+          "completed_at": "2026-11-18T01:04:55.253+08:00",
+          "duration_ms": 4606,
+          "time_to_first_token_ms": 2375,
+          "input_tokens_total": 28057,
+          "output_tokens": 73,
+          "cache_read_tokens": 27776,
+          "cache_creation_tokens": 0
+        }
+      ],
+      "title_requests": [
+        {
+          "status": "completed",
+          "model_id": "GLM-5.3-Flash",
+          "variant": "low",
+          "started_at": "2026-11-18T01:04:55.266+08:00",
+          "completed_at": "2026-11-18T01:04:56.278+08:00",
+          "duration_ms": 1012,
+          "input_tokens_total": 245,
+          "output_tokens": 14
+        }
+      ],
+      "tools": [
+        {
+          "name": "Read",
+          "status": "completed",
+          "started_at": "2026-11-18T01:04:49.951+08:00",
+          "completed_at": "2026-11-18T01:04:49.958+08:00",
+          "duration_ms": 3
+        },
+        {
+          "name": "Read",
+          "status": "completed",
+          "started_at": "2026-11-18T01:04:50.275+08:00",
+          "completed_at": "2026-11-18T01:04:50.281+08:00",
+          "duration_ms": 2
+        },
+        {
+          "name": "Read",
+          "status": "completed",
+          "started_at": "2026-11-18T01:04:50.591+08:00",
+          "completed_at": "2026-11-18T01:04:50.598+08:00",
+          "duration_ms": 2
+        }
+      ]
+    },
+    {
+      "id": "R1",
+      "source": "Rust Harness GUI",
+      "started_at": "2026-11-18T01:07:25.932881+08:00",
+      "completed_at": "2026-11-18T01:07:38.245291+08:00",
+      "duration_ms": 12312.41,
+      "status": "completed",
+      "answer_markers_passed": true,
+      "title_state": "generated",
+      "main_requests": [
+        {
+          "assistant_event_recorded_at": "2026-11-18T01:07:31.263436+08:00",
+          "input_tokens_uncached": 4204,
+          "output_tokens": 72,
+          "cache_read_tokens": 0,
+          "duration_ms": null
+        },
+        {
+          "assistant_event_recorded_at": "2026-11-18T01:07:38.244059+08:00",
+          "input_tokens_uncached": 4316,
+          "output_tokens": 81,
+          "cache_read_tokens": 0,
+          "duration_ms": null
+        }
+      ],
+      "tools": [
+        {
+          "name": "read",
+          "status": "completed",
+          "call_event_recorded_at": "2026-11-18T01:07:31.263733+08:00",
+          "result_event_recorded_at": "2026-11-18T01:07:31.272431+08:00",
+          "duration_ms": null
+        },
+        {
+          "name": "read",
+          "status": "completed",
+          "call_event_recorded_at": "2026-11-18T01:07:31.263974+08:00",
+          "result_event_recorded_at": "2026-11-18T01:07:31.273741+08:00",
+          "duration_ms": null
+        },
+        {
+          "name": "read",
+          "status": "completed",
+          "call_event_recorded_at": "2026-11-18T01:07:31.264105+08:00",
+          "result_event_recorded_at": "2026-11-18T01:07:31.275149+08:00",
+          "duration_ms": null
+        }
+      ]
+    },
+    {
+      "id": "R2",
+      "source": "Rust Harness GUI",
+      "started_at": "2026-11-18T01:08:32.248584+08:00",
+      "completed_at": "2026-11-18T01:08:43.803604+08:00",
+      "duration_ms": 11555.02,
+      "status": "completed",
+      "answer_markers_passed": true,
+      "title_state": "generated",
+      "main_requests": [
+        {
+          "assistant_event_recorded_at": "2026-11-18T01:08:38.233271+08:00",
+          "input_tokens_uncached": 4204,
+          "output_tokens": 84,
+          "cache_read_tokens": 0,
+          "duration_ms": null
+        },
+        {
+          "assistant_event_recorded_at": "2026-11-18T01:08:43.802287+08:00",
+          "input_tokens_uncached": 4328,
+          "output_tokens": 81,
+          "cache_read_tokens": 0,
+          "duration_ms": null
+        }
+      ],
+      "tools": [
+        {
+          "name": "read",
+          "status": "completed",
+          "call_event_recorded_at": "2026-11-18T01:08:38.233568+08:00",
+          "result_event_recorded_at": "2026-11-18T01:08:38.236925+08:00",
+          "duration_ms": null
+        },
+        {
+          "name": "read",
+          "status": "completed",
+          "call_event_recorded_at": "2026-11-18T01:08:38.233770+08:00",
+          "result_event_recorded_at": "2026-11-18T01:08:38.238120+08:00",
+          "duration_ms": null
+        },
+        {
+          "name": "read",
+          "status": "completed",
+          "call_event_recorded_at": "2026-11-18T01:08:38.233926+08:00",
+          "result_event_recorded_at": "2026-11-18T01:08:38.239168+08:00",
+          "duration_ms": null
+        }
+      ]
+    },
+    {
+      "id": "R3",
+      "source": "Rust Harness GUI",
+      "started_at": "2026-11-18T01:09:54.152243+08:00",
+      "completed_at": "2026-11-18T01:10:05.068157+08:00",
+      "duration_ms": 10915.914,
+      "status": "completed",
+      "answer_markers_passed": true,
+      "title_state": "generated",
+      "main_requests": [
+        {
+          "assistant_event_recorded_at": "2026-11-18T01:09:59.547252+08:00",
+          "input_tokens_uncached": 4204,
+          "output_tokens": 67,
+          "cache_read_tokens": 0,
+          "duration_ms": null
+        },
+        {
+          "assistant_event_recorded_at": "2026-11-18T01:10:05.066897+08:00",
+          "input_tokens_uncached": 4311,
+          "output_tokens": 79,
+          "cache_read_tokens": 0,
+          "duration_ms": null
+        }
+      ],
+      "tools": [
+        {
+          "name": "read",
+          "status": "completed",
+          "call_event_recorded_at": "2026-11-18T01:09:59.547521+08:00",
+          "result_event_recorded_at": "2026-11-18T01:09:59.550685+08:00",
+          "duration_ms": null
+        },
+        {
+          "name": "read",
+          "status": "completed",
+          "call_event_recorded_at": "2026-11-18T01:09:59.547696+08:00",
+          "result_event_recorded_at": "2026-11-18T01:09:59.551811+08:00",
+          "duration_ms": null
+        },
+        {
+          "name": "read",
+          "status": "completed",
+          "call_event_recorded_at": "2026-11-18T01:09:59.547746+08:00",
+          "result_event_recorded_at": "2026-11-18T01:09:59.552855+08:00",
+          "duration_ms": null
+        }
+      ]
+    }
+  ]
+}

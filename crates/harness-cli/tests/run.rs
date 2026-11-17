@@ -108,6 +108,7 @@ async fn run_json_streams_deltas_and_reports_result_line() {
     let source = source_dir(dir.path());
     configure_model(&host_dir(&dir), &base).await;
     let output = harness(&host_dir(&dir))
+        .env_remove("RUST_HARNESS_BENCHMARK_TRACE")
         .args([
             "run",
             "-C",
@@ -130,6 +131,7 @@ async fn run_json_streams_deltas_and_reports_result_line() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!stdout.is_empty());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("BENCHMARK "));
     let lines: Vec<serde_json::Value> = stdout
         .lines()
         .map(|line| {
@@ -151,6 +153,55 @@ async fn run_json_streams_deltas_and_reports_result_line() {
     assert!(result["workspaceId"].is_string());
     assert!(result["messageId"].is_string());
     assert_eq!(result["changedFiles"], 0);
+}
+
+#[tokio::test]
+async fn benchmark_trace_reports_model_and_projection_timings() {
+    let base = mock_finished().await;
+    let dir = tempfile::tempdir().unwrap();
+    let source = source_dir(dir.path());
+    configure_model(&host_dir(&dir), &base).await;
+    let output = harness(&host_dir(&dir))
+        .env("RUST_HARNESS_BENCHMARK_TRACE", "1")
+        .args([
+            "run",
+            "-C",
+            source.to_str().unwrap(),
+            "--approval",
+            "never",
+            "--json",
+            "-m",
+            "mock",
+            "总结项目",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let records: Vec<serde_json::Value> = stderr
+        .lines()
+        .filter_map(|line| line.strip_prefix("BENCHMARK "))
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    for phase in [
+        "history_read",
+        "projection",
+        "model_first_delta",
+        "model_request",
+    ] {
+        assert!(
+            records
+                .iter()
+                .any(|r| r["phase"] == phase && r["duration_ms"].as_f64().is_some()),
+            "missing {phase}: {stderr}"
+        );
+    }
 }
 
 #[tokio::test]

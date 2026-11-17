@@ -1,0 +1,63 @@
+{
+  "fixture": "benchmarks/fixtures/short",
+  "prompt": "读取 alpha.txt、beta.txt 和 gamma.txt。分别列出三个项目代号和对应负责人。",
+  "required_markers": [
+    "海棠",
+    "林青",
+    "松林",
+    "周明",
+    "星河",
+    "陈宁"
+  ],
+  "repeats": 3,
+  "timeout_seconds": 240,
+  "variants": [
+    {
+      "name": "zcode",
+      "result_format": "zcode",
+      "expected_zcode_selection": {
+        "providerId": "account:bigmodel-individual-coding-plan",
+        "modelId": "GLM-5.3-Flash",
+        "reasoningLevel": "high"
+      },
+      "setup": [
+        [
+          "python",
+          "D:/path/to/prepare_zcode.py",
+          "--output",
+          "{run_dir}",
+          "--builtin",
+          "D:/path/to/zcode-builtin.json"
+        ]
+      ],
+      "env": {
+        "ZCODE_DATA_BASE_DIR": "{run_dir}",
+        "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE": "{run_dir}/.zcode/v2/builtin.json",
+        "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE": "{run_dir}/.zcode/v2/provider_config.json"
+      },
+      "command": [
+        "node",
+        "D:/path/to/zcode.cjs",
+        "--prompt",
+        "{prompt}",
+        "--mode",
+        "plan",
+        "--output-format",
+        "stream-json",
+        "--cwd",
+        "{workspace}"
+      ],
+      "fingerprint_files": [
+        "D:/path/to/zcode.cjs",
+        "D:/path/to/zcode-builtin.json"
+      ]
+    }
+  ],
+  "metadata": {
+    "model": "GLM-5.3 Flash",
+    "provider": "智谱 Coding Plan",
+    "effort": "high",
+    "protocol": "待核验",
+    "build": "ZCode packaged CLI"
+  }
+}
