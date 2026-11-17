@@ -17,6 +17,13 @@ describe('斜杠命令注册表',()=>{
   expect(filterSlashCommands('')).toEqual(SLASH_COMMANDS);
   expect(filterSlashCommands('zzz')).toEqual([]);
  });
+ it('草稿态过滤掉依赖会话的命令，非草稿保留全量',()=>{
+  expect(filterSlashCommands('',{draft:true}).map(spec=>spec.name)).toEqual(['clear','plan','goal','model','diff','status','help']);
+  expect(filterSlashCommands('/co',{draft:true})).toEqual([]);
+  expect(filterSlashCommands('/init',{draft:true})).toEqual([]);
+  expect(filterSlashCommands('/cl',{draft:true})).toEqual([SLASH_COMMANDS[0]]);
+  expect(filterSlashCommands('init')).toEqual([SLASH_COMMANDS[2]]);
+ });
  it('光标不在首命令 token 内时返回 null',()=>{
   expect(commandTokenUnderCursor('/cl',3)).toBe('/cl');
   expect(commandTokenUnderCursor('/cl',2)).toBe('/cl');

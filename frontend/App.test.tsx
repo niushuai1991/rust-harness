@@ -1347,6 +1347,45 @@ describe('斜杠命令补全',()=>{
   fireEvent.keyDown(input,{key:'Enter'});
   await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','/clear 帮我重开','m',expect.any(Function),undefined,'high'));
  });
+ it('草稿态输入 / 仍显示候选，隐藏依赖会话的命令',async()=>{
+  render(<App/>);
+  await screen.findByRole('heading',{name:/你想在/});
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'/'}});
+  const menu=screen.getByRole('listbox',{name:'斜杠命令补全'});
+  expect(within(menu).getByText('/help')).toBeInTheDocument();
+  expect(within(menu).queryByText('/init')).not.toBeInTheDocument();
+  expect(within(menu).queryByText('/compact')).not.toBeInTheDocument();
+  fireEvent.change(input,{target:{value:'/in'}});
+  expect(screen.queryByRole('listbox',{name:'斜杠命令补全'})).not.toBeInTheDocument();
+ });
+ it('草稿态执行 /help 显示可用命令提示',async()=>{
+  render(<App/>);
+  await screen.findByRole('heading',{name:/你想在/});
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'/he'}});
+  fireEvent.keyDown(input,{key:'Enter'});
+  expect(await screen.findByText(/可用命令：/)).toBeInTheDocument();
+ });
+});
+describe('草稿态技能补全',()=>{
+ it('输入 $ 显示技能候选，并按草稿目标项目加载技能',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name:string,args:any)=>{
+   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/project',replicaPath:'D:/copy',createdAt:'',name:'project'},{id:'w2',sourcePath:'D:/project2',replicaPath:'D:/copy2',createdAt:'',name:'项目二'}];
+   if(name==='skill_list')return [{name:'alpha',description:'技能 A',path:'D:/skills/alpha',scope:'workspace',enabled:true,brokenReason:null}];
+   return original(name,args);
+  });
+  render(<App/>);
+  await screen.findByRole('heading',{name:/你想在/});
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('skill_list',{workspaceId:'w'}));
+  fireEvent.click(screen.getByRole('button',{name:'选择项目'}));
+  fireEvent.click(screen.getByRole('menuitem',{name:/项目二/}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('skill_list',{workspaceId:'w2'}));
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'$al'}});
+  expect(within(screen.getByRole('listbox',{name:'技能补全'})).getByText('$alpha')).toBeInTheDocument();
+ });
 });
 
 describe('补全弹层滚动跟随',()=>{

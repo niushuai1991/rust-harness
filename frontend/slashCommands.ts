@@ -1,10 +1,10 @@
 // 斜杠命令注册表：桌面端可执行子集，与 CLI docs/specs/slash-commands.md 保持镜像。
-export interface SlashSpec {name:string;description:string}
+export interface SlashSpec {name:string;description:string;requiresSession?:boolean}
 
 export const SLASH_COMMANDS:SlashSpec[] = [
  {name:'clear',description:'重开新会话'},
- {name:'compact',description:'压缩历史为摘要'},
- {name:'init',description:'在项目根生成 AGENTS.md'},
+ {name:'compact',description:'压缩历史为摘要',requiresSession:true},
+ {name:'init',description:'在项目根生成 AGENTS.md',requiresSession:true},
  {name:'plan',description:'切换计划模式'},
  {name:'goal',description:'设定会话目标'},
  {name:'model',description:'查看或切换模型'},
@@ -31,10 +31,12 @@ export function expandSlashPrompt(input:string):SlashPromptExpansion {
 }
 
 // 过滤候选：exact 命中优先于 prefix 命中，各自保持注册顺序；容忍前导 '/'；空查询返回全量。
-export function filterSlashCommands(query:string):SlashSpec[] {
+// 草稿态（尚未创建会话）跳过依赖会话的命令，与 CLI/TUI 参考实现的命令级可用性过滤一致。
+export function filterSlashCommands(query:string,options:{draft?:boolean}={}):SlashSpec[] {
  const q=query.replace(/^\//,'').toLowerCase();
  const exact:SlashSpec[]=[],prefix:SlashSpec[]=[];
  for(const spec of SLASH_COMMANDS){
+  if(options.draft&&spec.requiresSession)continue;
   if(spec.name===q)exact.push(spec);
   else if(spec.name.startsWith(q))prefix.push(spec);
  }

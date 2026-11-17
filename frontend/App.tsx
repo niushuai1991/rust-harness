@@ -173,8 +173,9 @@ export default function App(){
  },[]);
  // 侧栏「自动化」徽标：跟随工作区拉取任务数，面板增删后经 onChanged 刷新。
  useEffect(()=>{if(!workspaceId||!desktop()){setAutomationCount(null);return}let alive=true;command<unknown[]>('automation_list',{workspaceId}).then(list=>{if(alive)setAutomationCount(list.length)}).catch(()=>{if(alive)setAutomationCount(null)});return()=>{alive=false}},[workspaceId]);
- // 技能名单：跟随工作区拉取（composer $ 补全候选）；读取失败退化为空（无补全）。
- useEffect(()=>{if(!workspaceId||!desktop()){setSkills([]);return}let alive=true;command<SkillInfo[]>('skill_list',{workspaceId}).then(list=>{if(alive)setSkills(Array.isArray(list)?list:[])}).catch(()=>{if(alive)setSkills([])});return()=>{alive=false}},[workspaceId]);
+ // 技能名单：跟随工作区拉取（composer $ 补全候选）；草稿态跟随草稿目标项目，读取失败退化为空（无补全）。
+ const skillWorkspaceId=drafting?(draftWorkspaceId??workspaceId):workspaceId;
+ useEffect(()=>{if(!skillWorkspaceId||!desktop()){setSkills([]);return}let alive=true;command<SkillInfo[]>('skill_list',{workspaceId:skillWorkspaceId}).then(list=>{if(alive)setSkills(Array.isArray(list)?list:[])}).catch(()=>{if(alive)setSkills([])});return()=>{alive=false}},[skillWorkspaceId]);
  const events=useChat(s=>s.events[sessionId]??EMPTY_EVENTS),timeline=useChat(s=>s.timelines[sessionId]),stream=useChat(s=>s.streams[sessionId]);
  const [timelineLoading,setTimelineLoading]=useState(false),[olderTimelineLoading,setOlderTimelineLoading]=useState(false);
  const thinkingVisible=running[sessionId]&&!stream&&!approvals.some(approval=>approval.sessionId===sessionId)&&!questions.some(question=>question.sessionId===sessionId);
@@ -203,8 +204,9 @@ export default function App(){
  // 项目 chip 菜单候选：按搜索词过滤，置顶项目排前，其余按名称排序。
  const pjCandidates=useMemo(()=>[...visibleWorkspaces].filter(ws=>{const q=pjQuery.trim().toLowerCase();return !q||ws.name.toLowerCase().includes(q)}).sort((a,b)=>(b.pinned?1:0)-(a.pinned?1:0)||a.name.localeCompare(b.name)),[visibleWorkspaces,pjQuery]);
  const slashToken=commandTokenUnderCursor(text,cursor);
- const activeSlash=slashToken&&slashToken!==dismissedToken&&sessionId&&!sessionCreating?(()=>{const items=filterSlashCommands(slashToken);return items.length?{token:slashToken,items}:null})():null;
- const skillToken=useMemo(()=>sessionId&&!sessionCreating?skillTokenUnderCursor(text,cursor):null,[text,cursor,sessionId,sessionCreating]);
+ // 输入框可用即弹菜单（含草稿态）；命令级可用性由注册表按是否已建会话过滤。
+ const activeSlash=slashToken&&slashToken!==dismissedToken&&(sessionId||drafting)&&!sessionCreating?(()=>{const items=filterSlashCommands(slashToken,{draft:!sessionId});return items.length?{token:slashToken,items}:null})():null;
+ const skillToken=useMemo(()=>(sessionId||drafting)&&!sessionCreating?skillTokenUnderCursor(text,cursor):null,[text,cursor,sessionId,drafting,sessionCreating]);
  const activeSkill=skillToken&&skillToken.token!==dismissedToken?(()=>{const items=filterSkillRows(skillRows,skillToken.token.slice(1));return items.length?{tok:skillToken,items}:null})():null;
  useEffect(()=>{setSlashIndex(0)},[slashToken,skillToken]);
  // 补全弹层滚动跟随：选中项或候选集变化时把选中项滚入可视区（容器 overflow:auto 不会自动跟随；jsdom 无实现，?. 跳过）。
