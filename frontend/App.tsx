@@ -621,7 +621,7 @@ export default function App(){
    setNotice(`已合并 ${froms.length} 个重复项目：${movedSessions} 个会话与 ${movedAutomations} 个自动化任务挂到保留项目。${leftovers.length?`源项目下仍有 ${leftovers.length} 个会话 worktree 残留，请手动清理。`:''}`);
   }catch(e){setError(errorText(e))}
  }
- // 存档会话：后端落库后从任务列表移入归档集合；当前会话被存档时切到同项目下一个会话。
+ // 存档会话：后端落库后从任务列表移入归档集合；当前会话被存档时统一回到该项目的新会话草稿态。
  async function archiveSession(item:SessionInfo){
   // 存档会从列表移除该行，光标无从触发 mouseLeave，须主动收起悬停浮层避免驻留。
   dismissSessionPop();
@@ -630,7 +630,9 @@ export default function App(){
   setAllSessions(old=>old.filter(s=>s.id!==item.id));
   setSessions(old=>old.filter(s=>s.id!==item.id));
   setArchivedSessions(old=>[updated,...old.filter(s=>s.id!==item.id)]);
-  if(sessionId===item.id){const next=allSessions.find(s=>s.id!==item.id&&s.workspaceId===workspaceId);setSessionId(next?.id??'');setText('')}
+  // 统一回主页：不自动打开同项目其他会话。allSessions 含侧栏隐藏的子代理会话，
+  // 按「下一个会话」切换会误载其内容（如被存档会话的子代理），因此只清空当前会话进入草稿态。
+  if(sessionId===item.id){setSessionId('');setText('');setDrafting(!!workspaceId);setDraftWorkspaceId(workspaceId||null);setDraftPlan(false)}
   setNotice(`已存档会话「${item.title}」。`);
   }catch(e){setError(errorText(e))}
  }

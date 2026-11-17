@@ -2027,6 +2027,36 @@ describe('会话存档',()=>{
   await waitFor(()=>expect(screen.queryByText('会话 A')).not.toBeInTheDocument());
   expect(screen.getByText('已存档会话「会话 A」。')).toBeInTheDocument();
  });
+ it('存档当前会话后统一回到新会话草稿态，不自动打开同项目其他会话',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_list')return [session('a','会话 A'),session('sub','检查计划模式安全接入点',{parentId:'a'}),session('b','会话 B')];
+   if(name==='session_archive')return session('a','会话 A',{archivedAt:'2026-11-09T00:00:00Z'});
+   return original(name,args);
+  });
+  await renderOpenA();
+  const row=screen.getByRole('button',{name:/会话 A/});
+  fireEvent.click(within(row).getByRole('button',{name:'存档会话'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_archive',{sessionId:'a'}));
+  // 统一回主页：欢迎页带项目名、输入框可用，同项目其他会话与子代理会话都不自动打开
+  expect(await screen.findByRole('heading',{name:/你想在 project 中构建什么/})).toBeInTheDocument();
+  expect(screen.getByLabelText('消息')).toBeEnabled();
+  expect(mocks.command.mock.calls.some(([name,args])=>name==='session_timeline_page'&&(args.sessionId==='b'||args.sessionId==='sub'))).toBe(false);
+ });
+ it('存档项目唯一主会话后回到新会话草稿态，不加载子代理会话内容',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_list')return [session('a','会话 A'),session('sub','检查计划模式安全接入点',{parentId:'a'})];
+   if(name==='session_archive')return session('a','会话 A',{archivedAt:'2026-11-09T00:00:00Z'});
+   return original(name,args);
+  });
+  await renderOpenA();
+  const row=screen.getByRole('button',{name:/会话 A/});
+  fireEvent.click(within(row).getByRole('button',{name:'存档会话'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_archive',{sessionId:'a'}));
+  expect(await screen.findByRole('heading',{name:/你想在 project 中构建什么/})).toBeInTheDocument();
+  expect(mocks.command.mock.calls.some(([name,args])=>name==='session_timeline_page'&&args.sessionId==='sub')).toBe(false);
+ });
  it('设置存档管理按项目显示归档会话并可恢复到列表',async()=>{
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
