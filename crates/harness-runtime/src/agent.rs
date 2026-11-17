@@ -19,6 +19,14 @@ use tokio_util::sync::CancellationToken;
 
 type PendingApproval = (ApprovalRequest, oneshot::Sender<bool>);
 static FILE_MUTATION: Mutex<()> = Mutex::new(());
+fn benchmark_timing(session: &str, phase: &str, started: std::time::Instant) {
+    if std::env::var_os("RUST_HARNESS_BENCHMARK_TRACE").is_some() {
+        eprintln!(
+            "BENCHMARK {}",
+            json!({"session_id":session,"phase":phase,"duration_ms":started.elapsed().as_secs_f64()*1000.0})
+        );
+    }
+}
 /// 工具批次并发调度开关（KV，缺省开启）。
 const TOOL_CONCURRENCY_KEY: &str = "app.tool_concurrency";
 /// 工具批次并发上限（KV，缺省 8，允许 1–16）。
@@ -1118,8 +1126,12 @@ impl Runtime {
                 )
                 .await?;
             }
+            let history_started = std::time::Instant::now();
             let mut history = self.store.events(session, 0).await?;
+            benchmark_timing(session, "history_read", history_started);
+            let projection_started = std::time::Instant::now();
             let mut messages = project_messages(&history);
+            benchmark_timing(session, "projection", projection_started);
             let plan_mode = self.session_plan_get(session).await?;
             if plan_mode {
                 messages[0].content.push_str(PLAN_MODE_HINT);
@@ -1134,23 +1146,29 @@ impl Runtime {
                 auto_compaction_tried = true;
                 let threshold = (f64::from(window) * AUTO_COMPACTION_THRESHOLD_RATIO) as u64;
                 if input >= threshold {
-                    match self
+                    let compaction_started = std::time::Instant::now();
+                    let compaction = self
                         .compact_projection(
                             session,
                             provider.clone(),
                             cancel.clone(),
                             CompactionTrigger::Auto,
                         )
-                        .await
-                    {
+                        .await;
+                    benchmark_timing(session, "compaction", compaction_started);
+                    match compaction {
                         Ok(answer) => {
                             // 压缩请求的 usage 计入回合共享预算（不得通过压缩绕过预算）。
                             self.record_token_usage(session, &token_budget, &answer.usage)
                                 .await?;
                             token_budget.check_available()?;
                             // 基于摘要重建投影后继续原请求。
+                            let started = std::time::Instant::now();
                             history = self.store.events(session, 0).await?;
+                            benchmark_timing(session, "history_read", started);
+                            let started = std::time::Instant::now();
                             messages = project_messages(&history);
+                            benchmark_timing(session, "projection", started);
                             if plan_mode {
                                 messages[0].content.push_str(PLAN_MODE_HINT);
                             }
@@ -1186,10 +1204,15 @@ impl Runtime {
             let sender = self.events.clone();
             let sid = session.to_owned();
             let rid = request_id.clone();
+            let model_started = std::time::Instant::now();
+            let first_delta = std::sync::atomic::AtomicBool::new(false);
             let index = Arc::new(std::sync::atomic::AtomicU32::new(0));
             let partial = Arc::new(Mutex::new((String::new(), String::new())));
             let partial_sink = partial.clone();
             let sink = Arc::new(move |d: StreamDelta| {
+                if !first_delta.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    benchmark_timing(&sid, "model_first_delta", model_started);
+                }
                 let mut p = partial_sink.lock().unwrap();
                 if d.reasoning {
                     p.1.push_str(&d.text);
@@ -1210,7 +1233,7 @@ impl Runtime {
             let partial_usage_sink = Arc::new(move |usage| {
                 *partial_usage_for_sink.lock().unwrap() = Some(usage);
             });
-            let answer = match provider
+            let model_result = provider
                 .complete_with_partial_usage(
                     messages,
                     tools.clone(),
@@ -1218,8 +1241,9 @@ impl Runtime {
                     sink,
                     partial_usage_sink,
                 )
-                .await
-            {
+                .await;
+            benchmark_timing(session, "model_request", model_started);
+            let answer = match model_result {
                 Ok(answer) => answer,
                 Err(e) => {
                     let partial_usage =
@@ -1320,6 +1344,7 @@ impl Runtime {
             }
             // 工具批次执行：白名单成员的连续段并发执行（上限受控），其余保持串行。
             // 段内 prepare（校验/钩子）保持串行语义；结果按声明顺序结算，保证事件回放一致。
+            let batch_started = std::time::Instant::now();
             let concurrency = self.tool_concurrency_enabled().await?;
             let concurrency_limit = self.tool_concurrency_limit().await? as usize;
             let ctx = CallCtx {
@@ -1432,6 +1457,7 @@ impl Runtime {
                         .await?;
                 }
             }
+            benchmark_timing(session, "tool_batch", batch_started);
             step = step.saturating_add(1);
         }
     }

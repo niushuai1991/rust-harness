@@ -1,0 +1,168 @@
+{
+  "fixture": "benchmarks/fixtures/short",
+  "prompt": "读取 alpha.txt、beta.txt 和 gamma.txt。分别列出三个项目代号和对应负责人。",
+  "required_markers": [
+    "海棠",
+    "林青",
+    "松林",
+    "周明",
+    "星河",
+    "陈宁"
+  ],
+  "repeats": 3,
+  "timeout_seconds": 240,
+  "variants": [
+    {
+      "name": "baseline",
+      "harness_seed_database": "C:/path/to/harness.db",
+      "harness_settings": {
+        "app.tool_concurrency": true,
+        "app.auto_compaction": true,
+        "app.http_connection_reuse": true
+      },
+      "env": {
+        "RUST_HARNESS_BENCHMARK_TRACE": "1"
+      },
+      "command": [
+        "D:/path/to/harness.exe",
+        "--data-dir",
+        "{data_dir}",
+        "run",
+        "-C",
+        "{workspace}",
+        "--approval",
+        "never",
+        "--json",
+        "-m",
+        "builtin:bigmodel:glm-5.3-flash",
+        "-e",
+        "high",
+        "--session",
+        "{session_id}",
+        "{prompt}"
+      ],
+      "result_format": "harness",
+      "history": {
+        "turns": 30,
+        "content": "历史协作记录：保持接口稳定、验证测试结果，并记录已完成的工作。",
+        "repeat_content": 20
+      }
+    },
+    {
+      "name": "serial",
+      "harness_seed_database": "C:/path/to/harness.db",
+      "harness_settings": {
+        "app.tool_concurrency": false,
+        "app.auto_compaction": true,
+        "app.http_connection_reuse": true
+      },
+      "env": {
+        "RUST_HARNESS_BENCHMARK_TRACE": "1"
+      },
+      "command": [
+        "D:/path/to/harness.exe",
+        "--data-dir",
+        "{data_dir}",
+        "run",
+        "-C",
+        "{workspace}",
+        "--approval",
+        "never",
+        "--json",
+        "-m",
+        "builtin:bigmodel:glm-5.3-flash",
+        "-e",
+        "high",
+        "--session",
+        "{session_id}",
+        "{prompt}"
+      ],
+      "result_format": "harness",
+      "history": {
+        "turns": 30,
+        "content": "历史协作记录：保持接口稳定、验证测试结果，并记录已完成的工作。",
+        "repeat_content": 20
+      }
+    },
+    {
+      "name": "no_compact",
+      "harness_seed_database": "C:/path/to/harness.db",
+      "harness_settings": {
+        "app.tool_concurrency": true,
+        "app.auto_compaction": false,
+        "app.http_connection_reuse": true
+      },
+      "env": {
+        "RUST_HARNESS_BENCHMARK_TRACE": "1"
+      },
+      "command": [
+        "D:/path/to/harness.exe",
+        "--data-dir",
+        "{data_dir}",
+        "run",
+        "-C",
+        "{workspace}",
+        "--approval",
+        "never",
+        "--json",
+        "-m",
+        "builtin:bigmodel:glm-5.3-flash",
+        "-e",
+        "high",
+        "--session",
+        "{session_id}",
+        "{prompt}"
+      ],
+      "result_format": "harness",
+      "history": {
+        "turns": 30,
+        "content": "历史协作记录：保持接口稳定、验证测试结果，并记录已完成的工作。",
+        "repeat_content": 20
+      }
+    },
+    {
+      "name": "no_reuse",
+      "harness_seed_database": "C:/path/to/harness.db",
+      "harness_settings": {
+        "app.tool_concurrency": true,
+        "app.auto_compaction": true,
+        "app.http_connection_reuse": false
+      },
+      "env": {
+        "RUST_HARNESS_BENCHMARK_TRACE": "1"
+      },
+      "command": [
+        "D:/path/to/harness.exe",
+        "--data-dir",
+        "{data_dir}",
+        "run",
+        "-C",
+        "{workspace}",
+        "--approval",
+        "never",
+        "--json",
+        "-m",
+        "builtin:bigmodel:glm-5.3-flash",
+        "-e",
+        "high",
+        "--session",
+        "{session_id}",
+        "{prompt}"
+      ],
+      "result_format": "harness",
+      "history": {
+        "turns": 30,
+        "content": "历史协作记录：保持接口稳定、验证测试结果，并记录已完成的工作。",
+        "repeat_content": 20
+      }
+    }
+  ],
+  "metadata": {
+    "model": "GLM-5.3 Flash",
+    "provider": "bigmodel Coding Plan",
+    "protocol": "Anthropic",
+    "effort": "high",
+    "build": "release",
+    "history": "synthetic"
+  }
+}
