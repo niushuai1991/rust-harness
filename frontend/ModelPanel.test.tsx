@@ -340,3 +340,34 @@ it('同步期间切换供应商后仍刷新已保存模型列表',async()=>{
  finish(1);
  await waitFor(()=>expect(mocks.command.mock.calls.filter(call=>call[0]==='model_list').length).toBeGreaterThan(before));
 });
+
+it('供应商端点优先级可设置并随保存写回',async()=>{
+ await openPanel();
+ fireEvent.click(screen.getByRole('button',{name:/智谱 Coding Plan/}));
+ await screen.findByText('GLM Coding Pro');
+ expect(screen.getByLabelText('端点优先级（可选）')).toHaveValue('');
+ fireEvent.change(screen.getByLabelText('端点优先级（可选）'),{target:{value:'chatCompletions'}});
+ fireEvent.click(screen.getByRole('button',{name:'保存供应商'}));
+ await screen.findByText('已保存供应商；密钥由系统凭据管理器保管。');
+ expect(mocks.command).toHaveBeenCalledWith('provider_save',{config:expect.objectContaining({id:'zhipu',endpointPriority:'chatCompletions'}),secret:undefined});
+});
+
+it('端点优先级下拉只列出该供应商已配置的协议',async()=>{
+ await openPanel();
+ fireEvent.click(screen.getByRole('button',{name:/ChatGPT 账号/}));
+ await screen.findByText('使用 ChatGPT 账号登录');
+ const options=within(screen.getByLabelText('端点优先级（可选）')).getAllByRole('option').map(o=>o.textContent);
+ expect(options).toEqual(['跟随模型协议','仅 Responses']);
+});
+
+it('模型表单不再提供协议选择，内置模型弹窗说明跟随供应商',async()=>{
+ await openPanel();
+ fireEvent.click(screen.getByRole('button',{name:/智谱 Coding Plan/}));
+ await screen.findByText('GLM Coding Pro');
+ fireEvent.click(screen.getByRole('button',{name:'添加模型'}));
+ expect(screen.queryByLabelText('协议')).not.toBeInTheDocument();
+ expect(screen.getByText('协议端点由供应商的端点优先级决定，模型不再单独选择。')).toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'关闭面板'}));
+ fireEvent.click(screen.getByRole('button',{name:'查看 GLM-5.3'}));
+ await screen.findByText(/协议端点跟随供应商的端点优先级设置/);
+});
