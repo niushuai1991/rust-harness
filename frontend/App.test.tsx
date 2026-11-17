@@ -2339,3 +2339,43 @@ describe('同源重复项目合并',()=>{
   await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_merge',{fromWorkspaceId:'dup',toWorkspaceId:'keep',stopRunning:true}));
  });
 });
+
+describe('侧栏宽度拖拽',()=>{
+ // jsdom 可能缺 PointerEvent 与 setPointerCapture：fireEvent.pointerMove 需要它们携带 clientX。
+ beforeEach(()=>{
+  Element.prototype.setPointerCapture=Element.prototype.setPointerCapture??(()=>{});
+  Element.prototype.releasePointerCapture=Element.prototype.releasePointerCapture??(()=>{});
+  if(typeof window.PointerEvent!=='function'){
+   const PE=class extends MouseEvent{pointerId:number;constructor(type:string,init:Record<string,unknown>={}){super(type,init as MouseEventInit);this.pointerId=Number(init.pointerId??0)}};
+   (window as unknown as {PointerEvent:unknown}).PointerEvent=PE;
+   (globalThis as unknown as {PointerEvent:unknown}).PointerEvent=PE;
+  }
+ });
+ afterEach(()=>{localStorage.removeItem('sidebar-width')});
+ it('侧栏渲染宽度分隔条，默认 264px',async()=>{
+  render(<App/>);
+  await screen.findByRole('button',{name:/会话 A/});
+  expect(screen.getByRole('complementary',{name:'项目列表'}).style.width).toBe('264px');
+  expect(screen.getByRole('separator',{name:'调整列表宽度'})).toBeInTheDocument();
+ });
+ it('拖拽右缘分隔条调宽并记忆，限制 200px 到 40% 视口',async()=>{
+  render(<App/>);
+  await screen.findByRole('button',{name:/会话 A/});
+  const sidebar=screen.getByRole('complementary',{name:'项目列表'});
+  const resizer=screen.getByRole('separator',{name:'调整列表宽度'});
+  fireEvent.pointerDown(resizer,{pointerId:1});
+  fireEvent.pointerMove(resizer,{pointerId:1,clientX:500});
+  const max=Math.min(window.innerWidth*0.4,480);
+  expect(sidebar.style.width).toBe(`${Math.min(500,max)}px`);
+  fireEvent.pointerMove(resizer,{pointerId:1,clientX:100});
+  expect(sidebar.style.width).toBe('200px');
+  fireEvent.pointerUp(resizer,{pointerId:1});
+  expect(localStorage.getItem('sidebar-width')).toBe('200');
+ });
+ it('已保存的宽度在启动时恢复',async()=>{
+  localStorage.setItem('sidebar-width','380');
+  render(<App/>);
+  await screen.findByRole('button',{name:/会话 A/});
+  expect(screen.getByRole('complementary',{name:'项目列表'}).style.width).toBe('380px');
+ });
+});

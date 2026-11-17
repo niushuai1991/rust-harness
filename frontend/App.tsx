@@ -44,6 +44,10 @@ const APPROVAL_MODES:{value:ApprovalPolicy;label:string;description:string}[]=[
 ];
 
 
+// 侧栏宽度：拖拽 200px ~ 40% 视口（上限 480px），localStorage['sidebar-width'] 记忆（与右侧面板同模式）。
+const SIDEBAR_WIDTH_KEY='sidebar-width';
+const SIDEBAR_MIN_WIDTH=200;
+function savedSidebarWidth(){const value=Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));return Number.isFinite(value)&&value>=SIDEBAR_MIN_WIDTH?value:264}
 const GOAL_USAGE='用法：/goal <目标描述>，发送后模型经 goal_write 记录本会话目标。';
 const basename=(path:string)=>path.split(/[\\/]/).filter(Boolean).at(-1)??path;
 const dirOf=(path:string)=>{const parts=path.split(/[\\/]/).filter(Boolean);return parts.length>1?parts.slice(0,-1).join('/'):''};
@@ -136,6 +140,9 @@ export default function App(){
  // 新会话草稿态：点「新建聊天」不立即创建会话，composer 上方项目 chip 选定落点，发送首条消息时才真正 session_create。
  const [drafting,setDrafting]=useState(false),[draftWorkspaceId,setDraftWorkspaceId]=useState<string|null>(null);
  const [pjMenuOpen,setPjMenuOpen]=useState(false),[pjQuery,setPjQuery]=useState('');
+ // 侧栏宽度：localStorage 记忆（sidebar-width），默认 264px；ref 供拖拽闭包取最新值。
+ const [sidebarWidth,setSidebarWidth]=useState(savedSidebarWidth);
+ const sidebarWidthRef=useRef(sidebarWidth);sidebarWidthRef.current=sidebarWidth;
  // 工作区命名弹窗：create=打开工作区时命名（留空用目录名），rename=项目重命名。
  const [wsDialog,setWsDialog]=useState<{mode:'create';path:string;name:string;execMode:'replica'|'worktree'}|{mode:'rename';id:string;name:string}|null>(null);
  // 模型浮层卡片与切换标记（仅内存：切换模型在会话流里的临时提示，不落库）。
@@ -652,12 +659,22 @@ export default function App(){
  // 模型/供应商保存后刷新目录并做默认选中回退（模型设置保存后由设置页回调）。
  async function refreshModels(){const [ms,ps]=await Promise.all([command<ModelConfig[]>('model_list'),command<ProviderInfo[]>('provider_list')]);setModels(ms);setProviders(ps);if(!ms.some(m=>m.id===modelId)||!ms.find(m=>m.id===modelId)?.enabled){const usable=ms.filter(m=>m.enabled&&ps.some(p=>p.id===m.providerId&&p.enabled));setModelId(usable[0]?.id??'');setEffort(usable[0]?.efforts.at(-1)??null)}}
  function chooseView(mode:ViewMode){setViewMode(mode);try{localStorage.setItem('sessionView',mode)}catch{}}
+ // 侧栏宽度拖拽：手写 pointer 拖拽并记忆（与右侧面板同模式），宽度限制 200px ~ 40% 视口。
+ function startSidebarDrag(e:React.PointerEvent<HTMLDivElement>){
+  e.preventDefault();
+  const handle=e.currentTarget;
+  handle.setPointerCapture(e.pointerId);
+  const move=(ev:PointerEvent)=>{const max=Math.min(window.innerWidth*0.4,480);setSidebarWidth(Math.min(Math.max(SIDEBAR_MIN_WIDTH,ev.clientX),max))};
+  const up=()=>{handle.removeEventListener('pointermove',move);handle.removeEventListener('pointerup',up);try{localStorage.setItem(SIDEBAR_WIDTH_KEY,String(sidebarWidthRef.current))}catch{/* 隐私模式等场景忽略 */}};
+  handle.addEventListener('pointermove',move);
+  handle.addEventListener('pointerup',up);
+ }
  function toggleCollapsed(id:string){setCollapsed(old=>{const next=old.includes(id)?old.filter(x=>x!==id):[...old,id];try{localStorage.setItem('sessionCollapsed',JSON.stringify(next))}catch{}return next})}
  async function resolve(id:string,allow:boolean){await attempt(async()=>{await command('approval_resolve',{id,allow});setApprovals(old=>old.filter(a=>a.id!==id))})}
  async function resolveQuestion(id:string,answer:AskAnswer){await attempt(async()=>{await command('question_resolve',{id,answer});setQuestions(old=>old.filter(q=>q.id!==id))})}
  async function exportSession(){await attempt(async()=>{const path=await save({defaultPath:'rust-harness-session.json',filters:[{name:'JSON',extensions:['json']}]});if(!path)return;await command('session_export',{sessionId,path});if(exportNoticeTimer.current!==null)clearTimeout(exportNoticeTimer.current);setNotice('会话已导出。');exportNoticeTimer.current=setTimeout(()=>{setNotice(current=>current==='会话已导出。'?'':current);exportNoticeTimer.current=null},3000)})}
  return <div className="app" aria-hidden={settingsOpen||undefined}>
-  <aside className="sidebar">
+  <aside className="sidebar" aria-label="项目列表" style={{width:sidebarWidth}}>
    <button className="new-chat" title="新建聊天" onClick={newSession} disabled={sessionBusy}><Plus size={16}/><span>新建聊天</span></button>
    <div className="session-search"><Search size={14} aria-hidden="true"/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="搜索会话…" aria-label="搜索会话"/></div>
    <div className="section-label"><span>项目列表</span><span className="label-spacer"/><button type="button" role="switch" aria-checked={viewMode==='project'} aria-label="切换视图：项目 / 最近" className="view-switch" onClick={()=>chooseView(viewMode==='recent'?'project':'recent')}><span className="knob" aria-hidden="true"/><span className="sw-label a" aria-hidden="true">项目</span><span className="sw-label b" aria-hidden="true">最近</span></button></div>
@@ -681,6 +698,7 @@ export default function App(){
     {!visibleSessions.length&&!query&&!workspaceId&&<button className="empty-open" onClick={openWorkspace} disabled={busy||!desktop()}><FolderOpen size={14}/>打开工作区</button>}
    </nav>
    <div className="sidebar-bottom"><div className="local-badge"><i className="live-dot"/> 本地优先 · 无遥测</div><button onClick={()=>useSidePanel.getState().openPlans()}><Target size={17}/>计划与目标</button><button onClick={()=>setPanel('automations')}><Timer size={17}/>自动化{automationCount!==null&&<span className="count">{automationCount}</span>}</button><button aria-label="设置" onClick={()=>openSettings()}><Settings size={17}/>设置</button></div>
+   <div className="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="调整列表宽度" onPointerDown={startSidebarDrag}/>
   </aside>
   {sessionPop&&createPortal(<SessionPopCard title={sessionPop.title} time={sessionPop.time} rect={sessionPop.rect}/>,document.body)}
   <main className="main"><header className="topbar"><div className="breadcrumb"><strong className="topbar-session-title">{session?.title??(drafting?'新会话':'新的可能，从这里开始')}</strong><span className="workspace-context"><Folder size={15}/><span className="workspace-name">{workspace?workspace.name:'工作台'}</span></span></div><div className="toolbar"><button className="icon-button" title="导出会话" aria-label="导出会话" disabled={!sessionId} onClick={exportSession}><Download size={17}/></button><button className="soft" aria-expanded={panel==='tasks'} aria-controls="task-popover" onClick={()=>setPanel(p=>p==='tasks'?null:'tasks')} disabled={!sessionId}><ListTodo size={16}/>后台任务{taskCount>0&&<span className="count">{taskCount}</span>}</button><button className="soft" aria-expanded={sideOpen} onClick={()=>useSidePanel.getState().toggle()} disabled={!workspaceId}><GitCompareArrows size={16}/>查看更改</button><button className="archive-button" type="button" title="存档会话" aria-label="存档会话" disabled={!sessionId} onClick={()=>{if(session)archiveSession(session)}}><Archive size={16}/>存档</button>{panel==='tasks'&&sessionId&&<BackgroundTasksPanel sessionId={sessionId} onClose={()=>setPanel(null)}/>}</div></header>
