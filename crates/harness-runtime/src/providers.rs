@@ -116,6 +116,7 @@ pub fn builtin_providers() -> Vec<ProviderInfo> {
         default_model: model.into(),
         credential_ref: format!("provider/{id}"),
         proxy: None,
+        endpoint_priority: None,
         endpoints: [
             ApiMode::ChatCompletions,
             ApiMode::Responses,
@@ -237,6 +238,7 @@ fn chatgpt_provider() -> ProviderInfo {
         default_model: "gpt-6.1-sol".into(),
         credential_ref: crate::chatgpt::CREDENTIAL_MAIN.into(),
         proxy: None,
+        endpoint_priority: None,
         enabled: true,
         endpoints: vec![ProtocolEndpoint {
             api_mode: ApiMode::Responses,
@@ -262,10 +264,12 @@ fn chatgpt_provider() -> ProviderInfo {
 /// 由内置目录条目合成的可路由模型配置；api_mode 取供应商协议端点
 /// （既有目录固定 Anthropic，chatgpt 仅有 Responses）。
 fn builtin_model_config(provider: &ProviderInfo, model: &BuiltinModel) -> Option<ModelConfig> {
+    // 端点优先级覆盖内置目录的默认选择；未设置时沿用现状（Anthropic 优先，缺失则取首个端点）。
+    let preferred = provider.endpoint_priority.unwrap_or(ApiMode::Anthropic);
     let endpoint = provider
         .endpoints
         .iter()
-        .find(|e| e.api_mode == ApiMode::Anthropic)
+        .find(|e| e.api_mode == preferred)
         .or_else(|| provider.endpoints.first())?;
     Some(ModelConfig {
         provider_id: provider.id.clone(),
@@ -670,6 +674,11 @@ impl ModelService {
         secret: Option<String>,
     ) -> AppResult<ProviderInfo> {
         let _guard = self.gate.lock().await;
+        if let Some(mode) = config.endpoint_priority
+            && !config.endpoints.iter().any(|e| e.api_mode == mode)
+        {
+            return Err(invalid("供应商未配置该协议"));
+        }
         let mut all = self.read::<ProviderInfo>("providers").await?;
         let existing = all.iter().find(|p| p.id == config.id).cloned();
         if let Some(builtin) = builtin_providers().into_iter().find(|p| p.id == config.id) {
@@ -772,6 +781,8 @@ impl ModelService {
             .iter()
             .find(|p| p.id == model.provider_id)
             .ok_or_else(|| invalid("请选择供应商"))?;
+        // 供应商级端点优先级覆盖模型自身协议；未设置时沿用模型协议。
+        model.api_mode = supplier.endpoint_priority.unwrap_or(model.api_mode);
         let endpoint = supplier
             .endpoints
             .iter()
@@ -967,6 +978,7 @@ impl ModelService {
                     default_model: String::new(),
                     credential_ref: String::new(),
                     proxy: supplier.proxy.clone(),
+                    endpoint_priority: None,
                     enabled: true,
                     builtin_models: Vec::new(),
                     disabled_models: if enabled {
@@ -1495,6 +1507,78 @@ mod tests {
         let mut supplier = s.copy_provider("deepseek").await.unwrap();
         supplier.default_model.clear();
         assert!(s.save_provider(supplier, None).await.is_ok());
+    }
+    /// 供应商级端点优先级：设置后该供应商下内置与自定义模型一律使用指定端点；未设置保持现状。
+    #[tokio::test]
+    async fn endpoint_priority_overrides_builtin_and_custom_models() {
+        let (_dir, s) = service().await;
+        let mut supplier = s.copy_provider("bigmodel").await.unwrap();
+        let supplier_id = supplier.id.clone();
+        let custom = ModelConfig {
+            provider_id: supplier_id.clone(),
+            api_mode: ApiMode::Anthropic,
+            id: "custom-model".into(),
+            name: "自定义".into(),
+            base_url: "https://example.invalid".into(),
+            model: "m".into(),
+            ..Default::default()
+        };
+        s.save_model(custom, None).await.unwrap();
+
+        // 未设置：内置模型保持 Anthropic 端点现状，自定义模型走自身协议。
+        let all = s.list_models().await.unwrap();
+        let builtin = all
+            .iter()
+            .find(|m| m.id == format!("builtin:{}:glm-5.3", supplier_id))
+            .unwrap();
+        assert_eq!(builtin.api_mode, ApiMode::Anthropic);
+        let custom = all.iter().find(|m| m.id == "custom-model").unwrap();
+        assert_eq!(custom.api_mode, ApiMode::Anthropic);
+        // resolve 按模型协议取供应商端点地址，模型自填地址不参与请求。
+        assert_eq!(custom.base_url, "https://open.bigmodel.cn/api/anthropic");
+
+        supplier.endpoint_priority = Some(ApiMode::ChatCompletions);
+        s.save_provider(supplier, None).await.unwrap();
+        let all = s.list_models().await.unwrap();
+        let builtin = all
+            .iter()
+            .find(|m| m.id == format!("builtin:{}:glm-5.3", supplier_id))
+            .unwrap();
+        assert_eq!(builtin.api_mode, ApiMode::ChatCompletions);
+        assert_eq!(
+            builtin.base_url,
+            "https://open.bigmodel.cn/api/coding/paas/v4"
+        );
+        let custom = all.iter().find(|m| m.id == "custom-model").unwrap();
+        assert_eq!(custom.api_mode, ApiMode::ChatCompletions);
+        assert_eq!(
+            custom.base_url,
+            "https://open.bigmodel.cn/api/coding/paas/v4"
+        );
+    }
+    /// 内置供应商允许设置端点优先级（端点本身仍不可改）；指向缺失端点的设置被拒绝。
+    #[tokio::test]
+    async fn endpoint_priority_requires_existing_endpoint() {
+        let (_dir, s) = service().await;
+        let mut builtin = s
+            .list_providers()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == "bigmodel")
+            .unwrap();
+        builtin.endpoint_priority = Some(ApiMode::ChatCompletions);
+        let saved = s.save_provider(builtin, None).await.unwrap();
+        assert_eq!(saved.endpoint_priority, Some(ApiMode::ChatCompletions));
+
+        let mut supplier = s.copy_provider("bigmodel").await.unwrap();
+        supplier
+            .endpoints
+            .retain(|e| e.api_mode != ApiMode::Responses);
+        s.save_provider(supplier.clone(), None).await.unwrap();
+        supplier.endpoint_priority = Some(ApiMode::Responses);
+        let err = s.save_provider(supplier, None).await.unwrap_err();
+        assert_eq!(err.code, "MODEL_CONFIG");
     }
     #[tokio::test]
     async fn sync_adds_only_missing_models_with_builtin_metadata() {

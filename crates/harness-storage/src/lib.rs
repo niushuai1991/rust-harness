@@ -120,6 +120,7 @@ impl Store {
                         enabled: true,
                         builtin_models: Vec::new(),
                         disabled_models: Vec::new(),
+                        endpoint_priority: None,
                     });
                     model.provider_id = id;
                 }

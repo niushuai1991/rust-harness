@@ -6,7 +6,7 @@ import {Modal} from './App';
 import {VisionBadge,visionLabel} from './VisionBadge';
 import {KNOWN_EFFORTS,type ApiMode,type ChatGptAccountInfo,type ChatGptLoginState,type ModelConfig,type ProviderInfo,type ProviderUsageSnapshot} from './types';
 const modes:{id:ApiMode;name:string}[]=[{id:'chatCompletions',name:'Chat Completions'},{id:'responses',name:'Responses'},{id:'anthropic',name:'Anthropic'}];
-const blankProvider=():ProviderInfo=>({id:crypto.randomUUID(),name:'自定义供应商',builtin:false,compatibility:'standard',auth:'apiKey',endpoints:modes.map(m=>({apiMode:m.id,baseUrl:''})),defaultModel:'',credentialRef:'',proxy:null,enabled:true,builtinModels:[],disabledModels:[]});
+const blankProvider=():ProviderInfo=>({id:crypto.randomUUID(),name:'自定义供应商',builtin:false,compatibility:'standard',auth:'apiKey',endpoints:modes.map(m=>({apiMode:m.id,baseUrl:''})),defaultModel:'',credentialRef:'',proxy:null,enabled:true,builtinModels:[],disabledModels:[],endpointPriority:null});
 const blankModel=(p:ProviderInfo):ModelConfig=>({id:crypto.randomUUID(),name:'',providerId:p.id,compatibility:p.compatibility,auth:p.auth,apiMode:p.endpoints[0]?.apiMode??'chatCompletions',baseUrl:p.endpoints[0]?.baseUrl??'',model:p.defaultModel,credentialRef:p.credentialRef,proxy:p.proxy,maxOutputTokens:null,contextWindow:null,efforts:[],effort:null,enabled:true,builtin:false,supportsVision:null});
 const snapshot=(p:ProviderInfo)=>JSON.stringify(p);
 const snapshotModel=(m:ModelConfig)=>JSON.stringify(m);
@@ -98,7 +98,7 @@ export function ModelPanel({models,onSaved}:{models:ModelConfig[];onSaved:()=>Pr
  async function toggleModel(m:ModelConfig,enabled:boolean){await action(async token=>{await command('model_save',{config:{...m,enabled}});if(!current(token))return;await refreshLists()})}
  async function copyProvider(){if(!provider)return;await action(async token=>{const p=await command<ProviderInfo>('provider_copy',{id:provider.id});if(!current(token))return;originals.current=[...originals.current,p];setProviders(list=>[...list,p]);choose(p)})}
  async function removeProvider(){if(!provider)return;const id=provider.id;await action(async token=>{if(originals.current.some(p=>p.id===id))await command('provider_remove',{id});if(!current(token))return;originals.current=originals.current.filter(p=>p.id!==id);const list=providers.filter(p=>p.id!==id);setProviders(list);if(list[0])choose(list[0]);else{setProvider(null);setDraft(null)}})}
- async function fetchAvailable(){if(!provider||!draft)return;await action(async token=>{const ids=await command<string[]>('model_fetch_available',{providerId:provider.id,apiMode:draft.apiMode});if(current(token))setFetched(ids)})}
+ async function fetchAvailable(){if(!provider||!draft)return;const apiMode=provider.endpointPriority??provider.endpoints.find(x=>x.baseUrl.trim())?.apiMode??draft.apiMode;await action(async token=>{const ids=await command<string[]>('model_fetch_available',{providerId:provider.id,apiMode});if(current(token))setFetched(ids)})}
  const providerDirty=!!provider&&snapshot(provider)!==savedProvider;
  const modelClean=!!draft&&snapshotModel(draft)===savedModel;
  const savedDraft=!!draft&&models.some(m=>m.id===draft.id);
@@ -148,6 +148,8 @@ export function ModelPanel({models,onSaved}:{models:ModelConfig[];onSaved:()=>Pr
   :<label>API 密钥<input type="password" autoComplete="new-password" value={secret} placeholder={provider.credentialRef?'留空保留已保存密钥':'输入此供应商的密钥'} onChange={e=>{changed();setSecret(e.target.value)}}/></label>}
   {modes.map(mode=><label key={mode.id}>{mode.name} API 地址<input type="url" readOnly={provider.builtin} value={provider.endpoints.find(x=>x.apiMode===mode.id)?.baseUrl??''} onChange={e=>{const endpoints=provider.endpoints.filter(x=>x.apiMode!==mode.id);editProvider({...provider,endpoints:[...endpoints,{apiMode:mode.id,baseUrl:e.target.value}]})}}/></label>)}
   <small>三个协议地址均可选，至少填写一个。</small>
+  <label>端点优先级（可选）<select value={provider.endpointPriority??''} onChange={e=>editProvider({...provider,endpointPriority:(e.target.value||null) as ApiMode|null})}><option value="">跟随模型协议</option>{modes.filter(m=>provider.endpoints.some(x=>x.apiMode===m.id)).map(m=><option key={m.id} value={m.id}>仅 {m.name}</option>)}</select></label>
+  <small>设置后该供应商下所有模型（含内置模型）一律使用该协议端点；未设置时内置模型默认 Anthropic，自定义模型用各自协议。</small>
   <label>HTTP 代理（可选）<input value={provider.proxy??''} placeholder="http://127.0.0.1:7890" onChange={e=>editProvider({...provider,proxy:e.target.value||null})}/></label>
   {provider.builtin&&<small>{chatgptOAuth?'ChatGPT 账号供应商通过浏览器登录，无 API 密钥；名称与端点固定。':'内置供应商名称与端点固定，可启用/停用或复制后修改。'}</small>}
   <div className="provider-actions">{!chatgptOAuth&&<button type="button" disabled={busy||!originals.current.some(p=>p.id===provider.id)} onClick={copyProvider}>复制供应商</button>}{!provider.builtin&&<button type="button" className="danger" disabled={busy||models.some(m=>m.providerId===provider.id)} onClick={removeProvider}>删除供应商</button>}</div>
@@ -167,7 +169,7 @@ export function ModelPanel({models,onSaved}:{models:ModelConfig[];onSaved:()=>Pr
  </div>:<p className="muted">{busy?'处理中…':'正在加载供应商…'}</p>}</div>
  {provider&&draft&&<Modal title={savedDraft?'编辑模型':'添加模型'} onClose={()=>{setDraft(null);setFetched([])}}><form onSubmit={saveModel} className="settings-form">
   <label>显示名称<input required value={draft.name} onChange={e=>editModel({...draft,name:e.target.value})}/></label>
-  <label>协议<select value={draft.apiMode} onChange={e=>editModel({...draft,apiMode:e.target.value as ApiMode})}>{modes.filter(m=>provider.endpoints.some(x=>x.apiMode===m.id&&x.baseUrl.trim())).map(m=><option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
+  <p className="muted">协议端点由供应商的端点优先级决定，模型不再单独选择。</p>
   <label>图片输入能力<select value={draft.supportsVision==null?'unknown':String(draft.supportsVision)} onChange={e=>editModel({...draft,supportsVision:e.target.value==='unknown'?null:e.target.value==='true'})}><option value="unknown">未知</option><option value="true">支持图片输入</option><option value="false">不支持图片输入</option></select></label>
   <p className="muted">这是模型能力参考；当前应用不支持原生图片输入。</p>
   <label>模型标识<input required list="fetched-model-ids" value={draft.model} onChange={e=>editModel({...draft,model:e.target.value})}/></label>
@@ -181,5 +183,5 @@ export function ModelPanel({models,onSaved}:{models:ModelConfig[];onSaved:()=>Pr
   <p className="muted">连接测试会向已保存模型发送少量请求并消耗额度。修改配置后需先保存。</p>
   <div className="actions model-actions"><button type="button" disabled={busy||!savedDraft||!modelClean} onClick={()=>action(async token=>{await command<string>('model_test',{modelId:draft.id});if(current(token))setStatus('模型连接成功。')})}>测试已保存配置</button><button className="primary" disabled={busy||!desktop()}>{busy?'处理中…':'保存模型'}</button></div>
  </form></Modal>}
- {builtinView&&<Modal title={`内置模型：${builtinView.name}`} onClose={()=>setViewBuiltin(null)}><section aria-label="内置模型信息" className="settings-form"><p>模型标识 <code>{builtinView.id}</code>（内置目录成员，不可修改或删除，可启用/停用）。</p><p>支持档位：{builtinView.efforts.length?builtinView.efforts.join(' / '):'无'}；协议固定为 {provider?.endpoints[0]?.apiMode==='responses'?'Responses（ChatGPT 后端）':'Anthropic'} 端点。</p><p>图片输入能力：{visionLabel(builtinView.supportsVision)}。</p><p className="muted">这是模型能力参考；当前应用不支持原生图片输入。启用后即可在发送框的模型列表中选择。</p></section></Modal>}
+ {builtinView&&<Modal title={`内置模型：${builtinView.name}`} onClose={()=>setViewBuiltin(null)}><section aria-label="内置模型信息" className="settings-form"><p>模型标识 <code>{builtinView.id}</code>（内置目录成员，不可修改或删除，可启用/停用）。</p><p>支持档位：{builtinView.efforts.length?builtinView.efforts.join(' / '):'无'}；协议端点跟随供应商的端点优先级设置（未设置时默认 Anthropic）。</p><p>图片输入能力：{visionLabel(builtinView.supportsVision)}。</p><p className="muted">这是模型能力参考；当前应用不支持原生图片输入。启用后即可在发送框的模型列表中选择。</p></section></Modal>}
  </>}

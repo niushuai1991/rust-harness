@@ -933,6 +933,9 @@ pub struct ProviderInfo {
     pub builtin_models: Vec<BuiltinModel>,
     #[serde(default)]
     pub disabled_models: Vec<String>,
+    /// 供应商级端点优先级；设置后该供应商下所有模型一律使用指定协议端点，None 跟随模型自身协议。
+    #[serde(default)]
+    pub endpoint_priority: Option<ApiMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
