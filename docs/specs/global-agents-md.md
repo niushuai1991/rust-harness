@@ -2,6 +2,7 @@
 
 - 日期：2026-11-17
 - 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
+- 修订记录：2026-11-17 全局文件改用普通文件读取，允许符号链接；不再复用副本工作区的受控 `read_file`。
 - 范围：数据目录下全局指令文件 `AGENTS.md` 的读取、静默跳过、截断与系统提示注入；CLI/桌面端/ACP/子代理共用同一注入链路。
 
 ## 背景与范围
@@ -12,7 +13,7 @@
 
 ## 设计约定
 
-- **路径**：`resolve_data_dir(...)` 解析出的数据目录下的 `AGENTS.md`（显式参数 > `RUST_HARNESS_DATA_DIR` 环境变量 > 默认主目录点目录）。读取复用 `harness_platform::read_file`（受控读取，防路径逃逸）。
+- **路径**：`resolve_data_dir(...)` 解析出的数据目录下的 `AGENTS.md`（显式参数 > `RUST_HARNESS_DATA_DIR` 环境变量 > 默认主目录点目录）。读取使用普通文件读取（如 `tokio::fs::read_to_string`），**允许符号链接**：全局文件是用户自有配置，可能指向统一维护的指令文件；副本工作区的受控读取会拒绝 reparse point，不适用于此处。
 - **发现规则**：单文件。文件缺失、读取失败或内容 trim 后为空白时静默跳过（与技能用户级目录缺失静默跳过一致），不产生警告或事件。
 - **注入位置**：系统提示（`workspace_context` 纯函数），身份段之后、项目级 `AGENTS.md`/`CLAUDE.md` 之前、技能 catalog 之前；全局与项目级同时存在时全部注入，全局在前。段落标题为数据目录下实际路径（`{数据目录}/AGENTS.md:`），与项目级的 `{文件名}:` 标题自然区分。
 - **截断**：32000 字符（`chars().take(32000)`），与项目级指令一致。
@@ -22,5 +23,5 @@
 
 ## 验证
 
-- `crates/harness-runtime/tests/agent_flow.rs`：全局注入且先于项目级、32000 字符截断、空白内容静默跳过（先红后绿）。
+- `crates/harness-runtime/tests/agent_flow.rs`：全局注入且先于项目级、32000 字符截断、空白内容静默跳过、符号链接跟随注入（先红后绿）。
 - 交付前按仓库约定执行 `cargo fmt --check`、`cargo clippy`、`cargo test`、`cargo build`（均 `--all-features`）。
