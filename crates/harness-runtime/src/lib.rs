@@ -3,6 +3,7 @@ pub mod agent;
 pub mod chatgpt;
 pub mod model;
 mod registry;
+pub mod request_timing;
 mod token_budget;
 pub use agent::Runtime;
 pub use registry::{ExternalTool, Registration, ToolContext};
