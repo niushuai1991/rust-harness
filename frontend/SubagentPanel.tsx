@@ -11,7 +11,7 @@ export type SubagentPanelProps={
 };
 
 /// 输入框下方 Bot 图标弹出的子代理面板；运行中排前面，点击行跳转会话，运行中的可停止。
-/// 数据由 App 侧过滤传入（当前工作区的子代理会话），运行状态复用既有的 activeIds 轮询。
+/// 数据由 App 侧过滤传入（当前会话的子代理会话），运行状态复用既有的 activeIds 轮询。
 export function SubagentPanel({sessions,activeIds,onOpen,onCancel,onClose}:SubagentPanelProps) {
  const root=useRef<HTMLElement>(null);
  useEffect(()=>{
