@@ -2,7 +2,7 @@
 
 `agent_bench.py` 用固定项目 fixture、独立工作区和数据目录重复执行命令，按轮次轮换配置顺序。`short.example.json` 对照 PR 97 的三个开关；`long.example.json` 使用固定的 30 轮合成历史。均使用 GLM 5.3 Flash、智谱 Coding Plan 的 Anthropic 协议和 high effort。每个样本均是新进程，进程内的后续请求仍可复用连接。
 
-`zcode.example.json` 演示 ZCode 安装包 CLI 的单独测量。将其中的 CLI、内置供应商配置和 `prepare_zcode.py` 路径改为绝对路径；辅助脚本只把本机已有的凭据文件和供应商配置复制到临时数据目录，并在副本中设定模型，不修改用户配置。它要求本机已登录相应的智谱账号。运行器从 ZCode 的 stream-json 事件核实实际供应商、模型和档位，观察不到或不一致时样本失败，避免静默回退。临时凭据副本在运行结束后删除；异常中断后若操作系统无法立即释放文件，需检查系统临时目录。ZCode 的 plan 模式与 Harness 的 never 模式并非完全相同，系统提示词和工具能力也可能不同；对比时必须记录这些差异。当前长会话 fixture 仅适用于 Harness，不能声称两边长会话上下文等价。
+与实际安装版 ZCode 进行对照时，使用官方 GUI；安装包中的 CLI 不应视为受支持的独立入口。`zcode.example.json` 和 `prepare_zcode.py` 只保留供具备兼容 CLI 的构建实验，不能代表安装版 GUI 的表现。将 CLI、内置供应商配置和辅助脚本路径改为绝对路径；辅助脚本会把本机凭据文件和供应商配置复制到临时数据目录，并在副本中设定模型，不修改用户配置。运行器从 stream-json 事件核实实际供应商、模型和档位，观察不到或不一致时样本失败。临时凭据副本在运行结束后删除；异常中断后若操作系统无法立即释放文件，需检查系统临时目录。示例中的 ZCode plan 模式与 Harness never 模式并不完全相同。当前长会话 fixture 仅适用于 Harness，不能声称两边长会话上下文等价。
 
 ZCode 样本必须使用 `--output-format stream-json`：采集器要求最终结果对应的 `turn.completed` 事件为 `success`，无法确认、取消或超预算都记为失败。`fingerprint_files` 用来额外登记 `zcode.cjs` 和内置配置等文件的摘要，仅对 `node` 可执行文件取摘要不能标识 ZCode 版本。
 
