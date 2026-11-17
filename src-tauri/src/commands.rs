@@ -694,6 +694,16 @@ pub async fn model_test(state: Backend<'_>, model_id: String) -> AppResult<Strin
 }
 #[tauri::command]
 #[specta::specta]
+pub async fn provider_has_credential(state: Backend<'_>, provider_id: String) -> AppResult<bool> {
+    state.models.provider_has_credential(&provider_id).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn model_sync(state: Backend<'_>, provider_id: String) -> AppResult<u32> {
+    Ok(state.models.sync_models(&provider_id).await? as u32)
+}
+#[tauri::command]
+#[specta::specta]
 pub async fn model_fetch_available(
     state: Backend<'_>,
     provider_id: String,
@@ -1338,6 +1348,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         model_save,
         model_test,
         model_fetch_available,
+        provider_has_credential,
+        model_sync,
         default_selection_get,
         default_selection_save,
         approval_mode_get,

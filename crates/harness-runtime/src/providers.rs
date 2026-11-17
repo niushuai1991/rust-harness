@@ -696,11 +696,8 @@ impl ModelService {
                 .map(|p| p.credential_ref)
                 .unwrap_or_else(|| format!("provider/{}", config.id));
             config.endpoints.retain(|e| !e.base_url.trim().is_empty());
-            if config.name.trim().is_empty()
-                || config.default_model.trim().is_empty()
-                || config.endpoints.is_empty()
-            {
-                return Err(invalid("请填写名称、默认模型和至少一个协议端点"));
+            if config.name.trim().is_empty() || config.endpoints.is_empty() {
+                return Err(invalid("请填写名称和至少一个协议端点"));
             }
             let mut modes = Vec::new();
             for endpoint in &config.endpoints {
@@ -982,7 +979,115 @@ impl ModelService {
         }
         self.store.set("providers", &json!(all)).await
     }
-    /// 按供应商与协议从远端拉取可用模型列表（GET /models），供设置页选择后手动保存。
+    /// 不返回凭据内容，仅报告系统凭据管理器中是否存在非空密钥。
+    pub async fn provider_has_credential(&self, provider_id: &str) -> AppResult<bool> {
+        let supplier = self
+            .list_providers()
+            .await?
+            .into_iter()
+            .find(|p| p.id == provider_id)
+            .ok_or_else(|| invalid("供应商不存在"))?;
+        if supplier.auth == ProviderAuth::ChatGptOAuth {
+            return Ok(false);
+        }
+        Ok(harness_platform::get_secret(&supplier.credential_ref)?.is_some_and(|s| !s.is_empty()))
+    }
+
+    pub async fn sync_models(&self, provider_id: &str) -> AppResult<usize> {
+        let supplier = self
+            .list_providers()
+            .await?
+            .into_iter()
+            .find(|p| p.id == provider_id)
+            .ok_or_else(|| invalid("供应商不存在"))?;
+        if supplier.auth == ProviderAuth::ChatGptOAuth {
+            return Err(invalid("ChatGPT 供应商使用内置模型目录"));
+        }
+        let mode = [
+            ApiMode::ChatCompletions,
+            ApiMode::Responses,
+            ApiMode::Anthropic,
+        ]
+        .into_iter()
+        .find(|mode| {
+            supplier
+                .endpoints
+                .iter()
+                .any(|e| e.api_mode == *mode && !e.base_url.trim().is_empty())
+        })
+        .ok_or_else(|| invalid("供应商未配置协议端点"))?;
+        let ids = self.fetch_available_models(provider_id, mode).await?;
+        self.import_model_ids(provider_id, mode, &ids, Some(&supplier))
+            .await
+    }
+
+    async fn import_model_ids(
+        &self,
+        provider_id: &str,
+        mode: ApiMode,
+        ids: &[String],
+        expected: Option<&ProviderInfo>,
+    ) -> AppResult<usize> {
+        let _guard = self.gate.lock().await;
+        let suppliers = self.providers().await?;
+        let supplier = suppliers
+            .iter()
+            .find(|p| p.id == provider_id)
+            .ok_or_else(|| invalid("供应商不存在"))?;
+        if let Some(expected) = expected
+            && (supplier.endpoints != expected.endpoints
+                || supplier.credential_ref != expected.credential_ref
+                || supplier.proxy != expected.proxy
+                || supplier.auth != expected.auth)
+        {
+            return Err(invalid("同步期间供应商连接设置已更改，请重试"));
+        }
+        if !supplier.endpoints.iter().any(|e| e.api_mode == mode) {
+            return Err(invalid("供应商未配置该协议"));
+        }
+        let mut models = self.read::<ModelConfig>("models").await?;
+        let catalog = builtin_providers();
+        let mut added = 0;
+        for id in ids.iter().filter(|id| !id.trim().is_empty()) {
+            if supplier.builtin_models.iter().any(|m| m.id == *id)
+                || models
+                    .iter()
+                    .any(|m| m.provider_id == provider_id && m.model == *id)
+            {
+                continue;
+            }
+            let matches: Vec<_> = catalog
+                .iter()
+                .flat_map(|p| p.builtin_models.iter())
+                .filter(|m| m.id == *id)
+                .collect();
+            let template = if matches.len() == 1 {
+                Some(matches[0])
+            } else {
+                None
+            };
+            let config = ModelConfig {
+                id: new_id(),
+                name: template.map_or_else(|| id.clone(), |m| m.name.clone()),
+                provider_id: provider_id.to_string(),
+                api_mode: mode,
+                model: id.clone(),
+                context_window: template.and_then(|m| m.context_window),
+                max_output_tokens: template.and_then(|m| m.max_output_tokens),
+                supports_vision: template.and_then(|m| m.supports_vision),
+                efforts: template.map_or_else(Vec::new, |m| m.efforts.clone()),
+                ..ModelConfig::default()
+            };
+            models.push(Self::resolve(config, &suppliers)?);
+            added += 1;
+        }
+        if added > 0 {
+            self.store.set("models", &json!(models)).await?;
+        }
+        Ok(added)
+    }
+
+    /// 按供应商与协议从远端拉取可用模型列表，供设置页选择后手动保存。
     pub async fn fetch_available_models(
         &self,
         provider_id: &str,
@@ -1383,6 +1488,111 @@ mod tests {
         let snapshot = map_chatgpt_usage(serde_json::json!({"plan_type": "free"}), 0).unwrap();
         assert_eq!(snapshot.plan_name.as_deref(), Some("ChatGPT Free"));
         assert!(snapshot.cards.is_empty());
+    }
+    #[tokio::test]
+    async fn custom_provider_can_save_without_default_model() {
+        let (_dir, s) = service().await;
+        let mut supplier = s.copy_provider("deepseek").await.unwrap();
+        supplier.default_model.clear();
+        assert!(s.save_provider(supplier, None).await.is_ok());
+    }
+    #[tokio::test]
+    async fn sync_adds_only_missing_models_with_builtin_metadata() {
+        let (_dir, s) = service().await;
+        let supplier = s.copy_provider("deepseek").await.unwrap();
+        let ids = vec![
+            "glm-5.3".to_string(),
+            "unknown".to_string(),
+            "glm-5.3".to_string(),
+        ];
+        assert_eq!(
+            s.import_model_ids(&supplier.id, ApiMode::ChatCompletions, &ids, None)
+                .await
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            s.import_model_ids(&supplier.id, ApiMode::ChatCompletions, &ids, None)
+                .await
+                .unwrap(),
+            0
+        );
+        let all = s.list_models().await.unwrap();
+        let glm = all
+            .iter()
+            .find(|m| m.provider_id == supplier.id && m.model == "glm-5.3")
+            .unwrap();
+        assert_eq!(glm.context_window, Some(1_000_000));
+        assert_eq!(glm.supports_vision, Some(false));
+        let unknown = all
+            .iter()
+            .find(|m| m.provider_id == supplier.id && m.model == "unknown")
+            .unwrap();
+        assert_eq!(unknown.context_window, None);
+        assert!(unknown.enabled);
+    }
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn sync_uses_first_protocol_and_real_credential_and_persists() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (_dir, s) = service().await;
+        let mut supplier = s.copy_provider("deepseek").await.unwrap();
+        assert!(!s.provider_has_credential(&supplier.id).await.unwrap());
+        assert_eq!(
+            s.sync_models(&supplier.id).await.unwrap_err().code,
+            "MODEL_CREDENTIAL"
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        supplier.endpoints = vec![
+            ProtocolEndpoint {
+                api_mode: ApiMode::Anthropic,
+                base_url: "http://127.0.0.1:1".into(),
+            },
+            ProtocolEndpoint {
+                api_mode: ApiMode::ChatCompletions,
+                base_url: format!("http://{address}/v1"),
+            },
+        ];
+        supplier = s
+            .save_provider(supplier, Some("sync-test-secret".into()))
+            .await
+            .unwrap();
+        let credential_ref = supplier.credential_ref.clone();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut input = vec![0; 8192];
+            let n = stream.read(&mut input).await.unwrap();
+            let request = String::from_utf8_lossy(&input[..n]);
+            assert!(request.contains("GET /v1/models"));
+            assert!(
+                request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer sync-test-secret")
+            );
+            let body = r#"{"data":[{"id":"glm-5.3"},{"id":"unknown"}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        assert!(s.provider_has_credential(&supplier.id).await.unwrap());
+        assert_eq!(s.sync_models(&supplier.id).await.unwrap(), 2);
+        server.await.unwrap();
+        let reopened =
+            ModelService::new(Store::open(&_dir.path().join("config.db")).await.unwrap());
+        harness_platform::delete_secret(&credential_ref).unwrap();
+        assert_eq!(
+            reopened
+                .list_models()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|m| m.provider_id == supplier.id && !m.builtin)
+                .count(),
+            2
+        );
     }
     #[tokio::test]
     async fn immutable_builtins_and_independent_copy() {
