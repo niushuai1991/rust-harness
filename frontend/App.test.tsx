@@ -2137,6 +2137,42 @@ describe('项目移除（隐藏语义）',()=>{
   expect(screen.getByRole('button',{name:'恢复'})).toBeEnabled();
  });
 });
+describe('项目右键打开目录',()=>{
+ it('右键项目菜单首项「打开项目目录」调用 workspace_open_dir',async()=>{
+  localStorage.removeItem('sessionView');
+  localStorage.removeItem('sessionCollapsed');
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='workspace_list')return [{id:'w2',sourcePath:'D:/project-2',replicaPath:'D:/copy2',createdAt:'',name:'项目B',pinned:false,hidden:false}];
+   if(name==='session_list')return [];
+   return original(name,args);
+  });
+  render(<App/>);
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
+  const sessionNav=screen.getByRole('navigation',{name:'会话列表'});
+  fireEvent.contextMenu(await within(sessionNav).findByText('项目B'));
+  fireEvent.click(await screen.findByRole('menuitem',{name:'打开项目目录'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_open_dir',{workspaceId:'w2'}));
+  expect(screen.queryByRole('menu',{name:'项目操作'})).not.toBeInTheDocument();
+ });
+ it('打开目录失败时顶部错误区展示原因',async()=>{
+  localStorage.removeItem('sessionView');
+  localStorage.removeItem('sessionCollapsed');
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='workspace_list')return [{id:'w2',sourcePath:'D:/project-2',replicaPath:'D:/copy2',createdAt:'',name:'项目B',pinned:false,hidden:false}];
+   if(name==='session_list')return [];
+   if(name==='workspace_open_dir')return Promise.reject(new Error('项目目录不存在或已被移动：D:/project-2'));
+   return original(name,args);
+  });
+  render(<App/>);
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
+  const sessionNav=screen.getByRole('navigation',{name:'会话列表'});
+  fireEvent.contextMenu(await within(sessionNav).findByText('项目B'));
+  fireEvent.click(await screen.findByRole('menuitem',{name:'打开项目目录'}));
+  expect(await screen.findByText('项目目录不存在或已被移动：D:/project-2')).toBeInTheDocument();
+ });
+});
 describe('消息引用',()=>{
  const withSelection=async(body:()=>Promise<void>)=>{
   const spy=vi.spyOn(window,'getSelection').mockReturnValue({toString:()=>'引用内容',removeAllRanges:()=>{}} as Selection);

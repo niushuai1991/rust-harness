@@ -6,6 +6,7 @@ use harness_runtime::model::ModelMessage;
 use serde::Deserialize;
 use std::{path::PathBuf, sync::Arc};
 use tauri::{State, ipc::Channel};
+use tauri_plugin_opener::OpenerExt;
 use tokio_util::sync::CancellationToken;
 
 type Backend<'a> = State<'a, Arc<Runtime>>;
@@ -288,6 +289,33 @@ pub async fn workspace_rename(
     tokio::task::spawn_blocking(move || manager.rename(&workspace_id, name))
         .await
         .map_err(error)?
+}
+
+/// 在系统文件管理器中打开项目源目录；目录不存在或已被移动时直接报错。
+#[tauri::command]
+#[specta::specta]
+pub async fn workspace_open_dir(
+    app: tauri::AppHandle,
+    state: Backend<'_>,
+    workspace_id: String,
+) -> AppResult<()> {
+    let info = state.workspaces.get(&workspace_id)?;
+    if let Some(message) = source_dir_missing(&info.source_path) {
+        return Err(error(message));
+    }
+    app.opener()
+        .open_path(&info.source_path, None::<&str>)
+        .map_err(error)?;
+    Ok(())
+}
+
+/// 目录存在且确实是目录时返回 None，否则给出可直接展示的错误消息。
+fn source_dir_missing(path: &str) -> Option<String> {
+    if std::path::Path::new(path).is_dir() {
+        None
+    } else {
+        Some(format!("项目目录不存在或已被移动：{path}"))
+    }
 }
 #[tauri::command]
 #[specta::specta]
@@ -1275,6 +1303,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         workspace_reveal_hidden,
         workspace_merge,
         workspace_rename,
+        workspace_open_dir,
         workspace_set_pinned,
         workspace_diff,
         workspace_file_diff,
@@ -1412,5 +1441,38 @@ mod session_title_tests {
         assert_eq!(parse_timeline_before(None).unwrap(), None);
         assert_eq!(parse_timeline_before(Some("42")).unwrap(), Some(42));
         assert!(parse_timeline_before(Some("not-a-seq")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod workspace_open_dir_tests {
+    use super::source_dir_missing;
+
+    #[test]
+    fn existing_directory_passes() {
+        let dir = std::env::temp_dir().join(format!("ws-open-dir-ok-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(source_dir_missing(&dir.to_string_lossy()), None);
+        std::fs::remove_dir(&dir).ok();
+    }
+
+    #[test]
+    fn missing_path_reports_the_path() {
+        let missing =
+            std::env::temp_dir().join(format!("ws-open-dir-absent-{}", std::process::id()));
+        let message = source_dir_missing(&missing.to_string_lossy()).expect("应报告缺失");
+        assert!(message.contains("项目目录"), "错误应可读：{message}");
+        assert!(
+            message.contains(&missing.to_string_lossy().to_string()),
+            "错误应含路径：{message}"
+        );
+    }
+
+    #[test]
+    fn a_file_path_is_rejected() {
+        let file = std::env::temp_dir().join(format!("ws-open-dir-file-{}", std::process::id()));
+        std::fs::write(&file, b"x").unwrap();
+        assert!(source_dir_missing(&file.to_string_lossy()).is_some());
+        std::fs::remove_file(&file).ok();
     }
 }
