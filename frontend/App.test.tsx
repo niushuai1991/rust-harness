@@ -933,6 +933,28 @@ describe('工作区的首次会话',()=>{
   await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话'}));
   await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('restored','开始干活','m',expect.any(Function),undefined,'high'));
  });
+ it('草稿首条发送后首轮执行期间，新建聊天按钮与输入框恢复可用',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_list')return [];
+   if(name==='session_create')return {id:'restored',workspaceId:'w',title:'新会话'};
+   if(name==='session_timeline_page')return timeline(args.sessionId,[]);
+   return original(name,args);
+  });
+  // 首轮 turn 挂起不返回，模拟执行中的长回合
+  mocks.send.mockReturnValue(new Promise(()=>{}));
+  render(<App/>);
+  await screen.findByRole('heading',{name:/你想在 project 中构建什么/});
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'开始干活'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('restored','开始干活','m',expect.any(Function),undefined,'high'));
+  // 会话已创建、首轮执行中：创建态解除，与既有会话发消息行为一致
+  await waitFor(()=>expect(screen.getByRole('button',{name:'新建聊天'})).toBeEnabled());
+  expect(screen.getByLabelText('消息')).toBeEnabled();
+  expect(screen.getByLabelText('消息')).not.toHaveAttribute('placeholder','正在准备会话…');
+  expect(screen.getByRole('button',{name:'取消生成'})).toBeInTheDocument();
+ });
  it('草稿态发送时创建会话失败会显示错误，再次发送可重试',async()=>{
   let fail=true;
   const original=mocks.command.getMockImplementation()!;
