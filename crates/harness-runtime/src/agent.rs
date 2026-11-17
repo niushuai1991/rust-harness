@@ -1047,7 +1047,21 @@ impl Runtime {
             ],
         );
         let skills_catalog = self.skills.catalog(root).await?;
-        let context = workspace_context(root, exec, &skills_catalog)?;
+        // 全局指令：数据目录下的 AGENTS.md（默认 ~/.RustHarness/AGENTS.md），缺失或空白静默跳过，
+        // 32000 字符截断与项目级一致；每回合重算，修改后下一回合生效。
+        let data_dir = self.workspaces.data_dir().to_path_buf();
+        let global_agents = harness_platform::read_file(&data_dir, "AGENTS.md")
+            .ok()
+            .filter(|text| !text.trim().is_empty())
+            .map(|text| {
+                format!(
+                    "\n\n{}:\n{}",
+                    data_dir.join("AGENTS.md").display(),
+                    text.chars().take(32000).collect::<String>()
+                )
+            })
+            .unwrap_or_default();
+        let context = workspace_context(root, exec, &skills_catalog, &global_agents)?;
         self.append(session, "context.snapshot", json!({"content":context}))
             .await?;
         // read-before-edit 状态：并发段成员共享（read 登记为良性竞争），写类工具只在串行屏障执行。
@@ -2480,7 +2494,12 @@ fn requires_approval(name: &str) -> bool {
             | "ask_user"
     )
 }
-fn workspace_context(root: &Path, exec: &ExecContext, skills_catalog: &str) -> AppResult<String> {
+fn workspace_context(
+    root: &Path,
+    exec: &ExecContext,
+    skills_catalog: &str,
+    global_agents: &str,
+) -> AppResult<String> {
     let mut context = match exec.mode {
         ExecutionMode::Replica => format!(
             "你是本地开发助手。执行根为隔离工作副本 {}。文件工具只接受相对路径。先读取再编辑，原项目变更需用户在差异界面单独确认。",
@@ -2492,6 +2511,10 @@ fn workspace_context(root: &Path, exec: &ExecContext, skills_catalog: &str) -> A
             root.display()
         ),
     };
+    // 全局指令：数据目录下的 AGENTS.md（调用点已渲染段落并截断），先于项目级注入。
+    if !global_agents.is_empty() {
+        context.push_str(global_agents);
+    }
     for path in ["AGENTS.md", "CLAUDE.md"] {
         if let Ok(text) = harness_platform::read_file(root, path) {
             context.push_str(&format!(

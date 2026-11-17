@@ -812,6 +812,160 @@ async fn skills_catalog_enters_system_prompt_and_mention_injects_body() {
 }
 
 #[tokio::test]
+async fn global_agents_md_enters_system_prompt_before_project() {
+    let temp = tempfile::tempdir().unwrap();
+    let host = temp.path().join("host");
+    std::fs::create_dir(&host).unwrap();
+    std::fs::write(host.join("AGENTS.md"), "全局指令标记：回答一律使用中文。").unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(
+        source.join("AGENTS.md"),
+        "项目级指令标记：缩进统一使用空格。",
+    )
+    .unwrap();
+    let runtime = Runtime::open(host.clone()).await.unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "agents-md")
+        .await
+        .unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            content: "ok".into(),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .run_session(session.id.clone(), "你好".into(), provider.clone())
+        .await
+        .unwrap();
+    let requests = provider.requests.lock().unwrap();
+    let system = requests[0]
+        .iter()
+        .find(|m| m.role == MessageRole::System)
+        .unwrap();
+    assert!(
+        system.content.contains("全局指令标记：回答一律使用中文。"),
+        "数据目录下的全局 AGENTS.md 应注入系统提示"
+    );
+    assert!(
+        system
+            .content
+            .contains("项目级指令标记：缩进统一使用空格。"),
+        "项目级 AGENTS.md 注入不受影响"
+    );
+    let global_pos = system.content.find("全局指令标记").unwrap();
+    let project_pos = system.content.find("项目级指令标记").unwrap();
+    assert!(global_pos < project_pos, "全局指令应先于项目级指令注入");
+    assert!(
+        system.content.contains(&format!(
+            "{}:",
+            runtime.workspaces.data_dir().join("AGENTS.md").display()
+        )),
+        "全局段落以数据目录下实际路径为标题，与项目级区分"
+    );
+}
+
+#[tokio::test]
+async fn global_agents_md_truncated_at_32000_chars() {
+    let temp = tempfile::tempdir().unwrap();
+    let host = temp.path().join("host");
+    std::fs::create_dir(&host).unwrap();
+    let mut text = "甲".repeat(32_001);
+    text.push_str("截断哨兵乙");
+    std::fs::write(host.join("AGENTS.md"), text).unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let runtime = Runtime::open(host).await.unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "agents-md")
+        .await
+        .unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            content: "ok".into(),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .run_session(session.id.clone(), "你好".into(), provider.clone())
+        .await
+        .unwrap();
+    let requests = provider.requests.lock().unwrap();
+    let system = requests[0]
+        .iter()
+        .find(|m| m.role == MessageRole::System)
+        .unwrap();
+    assert_eq!(
+        system.content.matches('甲').count(),
+        32_000,
+        "前 32000 字符保留"
+    );
+    assert!(
+        !system.content.contains('乙'),
+        "超出 32000 字符的内容被截断"
+    );
+}
+
+#[tokio::test]
+async fn global_agents_md_missing_or_empty_is_silent() {
+    let temp = tempfile::tempdir().unwrap();
+    let host = temp.path().join("host");
+    std::fs::create_dir(&host).unwrap();
+    std::fs::write(host.join("AGENTS.md"), "   \n").unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let runtime = Runtime::open(host.clone()).await.unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "agents-md")
+        .await
+        .unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            content: "ok".into(),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .run_session(session.id.clone(), "你好".into(), provider.clone())
+        .await
+        .unwrap();
+    let requests = provider.requests.lock().unwrap();
+    let system = requests[0]
+        .iter()
+        .find(|m| m.role == MessageRole::System)
+        .unwrap();
+    assert!(
+        !system.content.contains(&format!(
+            "{}:",
+            runtime.workspaces.data_dir().join("AGENTS.md").display()
+        )),
+        "全局 AGENTS.md 为空白内容时不注入空段落"
+    );
+}
+
+#[tokio::test]
 async fn disabled_skill_is_absent_from_catalog_and_mention() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("source");

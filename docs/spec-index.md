@@ -37,6 +37,7 @@
 | [项目移除（隐藏入口）与重新显示](specs/project-removal.md) | 桌面移除项目=仅隐藏入口（KV 标记，数据原样保留），重开同源路径项目自动重新显示。 |
 | [同源重复项目检测与合并](specs/workspace-merge.md) | 检测同一源目录的重复项目记录并支持合并：会话、自动化与定时任务改挂保留项目。 |
 | [Agent 执行性能优化](specs/agent-execution-performance.md) | 工具批次并发调度、请求前自动压缩与模型 HTTP 连接复用，设置入口在桌面「性能」选项卡。 |
+| [全局指令文件](specs/global-agents-md.md) | 数据目录（默认 `~/.RustHarness`）下的 `AGENTS.md` 自动注入所有会话系统提示，缺失静默跳过。 |
 
 ## 关联实现文档
 
