@@ -654,10 +654,12 @@ impl ModelService {
         for saved in self.read::<ProviderInfo>("providers").await? {
             if let Some(builtin) = all.iter_mut().find(|p| p.id == saved.id) {
                 // Built-in catalog identity and URLs are immutable; personal layer
-                // may only toggle visibility (proxy / enabled / disabled models).
+                // may only toggle visibility (proxy / enabled / disabled models)
+                // and pick the endpoint priority.
                 builtin.proxy = saved.proxy;
                 builtin.enabled = saved.enabled;
                 builtin.disabled_models = saved.disabled_models;
+                builtin.endpoint_priority = saved.endpoint_priority;
             } else {
                 all.push(saved);
             }
@@ -1553,6 +1555,30 @@ mod tests {
         assert_eq!(custom.api_mode, ApiMode::ChatCompletions);
         assert_eq!(
             custom.base_url,
+            "https://open.bigmodel.cn/api/coding/paas/v4"
+        );
+    }
+    /// 内置供应商的端点优先级经个人层保存后，合并回读仍需生效（内置本体路径）。
+    #[tokio::test]
+    async fn builtin_provider_endpoint_priority_survives_merge() {
+        let (_dir, s) = service().await;
+        let mut builtin = s
+            .list_providers()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == "bigmodel")
+            .unwrap();
+        builtin.endpoint_priority = Some(ApiMode::ChatCompletions);
+        s.save_provider(builtin, None).await.unwrap();
+        let models = s.list_models().await.unwrap();
+        let model = models
+            .iter()
+            .find(|m| m.id == "builtin:bigmodel:glm-5.3")
+            .unwrap();
+        assert_eq!(model.api_mode, ApiMode::ChatCompletions);
+        assert_eq!(
+            model.base_url,
             "https://open.bigmodel.cn/api/coding/paas/v4"
         );
     }

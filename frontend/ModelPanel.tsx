@@ -148,8 +148,8 @@ export function ModelPanel({models,onSaved}:{models:ModelConfig[];onSaved:()=>Pr
   :<label>API 密钥<input type="password" autoComplete="new-password" value={secret} placeholder={provider.credentialRef?'留空保留已保存密钥':'输入此供应商的密钥'} onChange={e=>{changed();setSecret(e.target.value)}}/></label>}
   {modes.map(mode=><label key={mode.id}>{mode.name} API 地址<input type="url" readOnly={provider.builtin} value={provider.endpoints.find(x=>x.apiMode===mode.id)?.baseUrl??''} onChange={e=>{const endpoints=provider.endpoints.filter(x=>x.apiMode!==mode.id);editProvider({...provider,endpoints:[...endpoints,{apiMode:mode.id,baseUrl:e.target.value}]})}}/></label>)}
   <small>三个协议地址均可选，至少填写一个。</small>
-  <label>端点优先级（可选）<select value={provider.endpointPriority??''} onChange={e=>editProvider({...provider,endpointPriority:(e.target.value||null) as ApiMode|null})}><option value="">跟随模型协议</option>{modes.filter(m=>provider.endpoints.some(x=>x.apiMode===m.id)).map(m=><option key={m.id} value={m.id}>仅 {m.name}</option>)}</select></label>
-  <small>设置后该供应商下所有模型（含内置模型）一律使用该协议端点；未设置时内置模型默认 Anthropic，自定义模型用各自协议。</small>
+  <label>选择端点<select value={provider.endpointPriority??''} onChange={e=>editProvider({...provider,endpointPriority:(e.target.value||null) as ApiMode|null})}><option value="">跟随模型协议</option>{modes.filter(m=>provider.endpoints.some(x=>x.apiMode===m.id)).map(m=><option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
+  <small>选择后该供应商下所有模型（含内置模型）一律使用该协议端点；未设置时内置模型默认 Anthropic，自定义模型用各自协议。</small>
   <label>HTTP 代理（可选）<input value={provider.proxy??''} placeholder="http://127.0.0.1:7890" onChange={e=>editProvider({...provider,proxy:e.target.value||null})}/></label>
   {provider.builtin&&<small>{chatgptOAuth?'ChatGPT 账号供应商通过浏览器登录，无 API 密钥；名称与端点固定。':'内置供应商名称与端点固定，可启用/停用或复制后修改。'}</small>}
   <div className="provider-actions">{!chatgptOAuth&&<button type="button" disabled={busy||!originals.current.some(p=>p.id===provider.id)} onClick={copyProvider}>复制供应商</button>}{!provider.builtin&&<button type="button" className="danger" disabled={busy||models.some(m=>m.providerId===provider.id)} onClick={removeProvider}>删除供应商</button>}</div>
@@ -169,7 +169,7 @@ export function ModelPanel({models,onSaved}:{models:ModelConfig[];onSaved:()=>Pr
  </div>:<p className="muted">{busy?'处理中…':'正在加载供应商…'}</p>}</div>
  {provider&&draft&&<Modal title={savedDraft?'编辑模型':'添加模型'} onClose={()=>{setDraft(null);setFetched([])}}><form onSubmit={saveModel} className="settings-form">
   <label>显示名称<input required value={draft.name} onChange={e=>editModel({...draft,name:e.target.value})}/></label>
-  <p className="muted">协议端点由供应商的端点优先级决定，模型不再单独选择。</p>
+  <p className="muted">协议端点跟随供应商的选择端点设置，模型不再单独选择。</p>
   <label>图片输入能力<select value={draft.supportsVision==null?'unknown':String(draft.supportsVision)} onChange={e=>editModel({...draft,supportsVision:e.target.value==='unknown'?null:e.target.value==='true'})}><option value="unknown">未知</option><option value="true">支持图片输入</option><option value="false">不支持图片输入</option></select></label>
   <p className="muted">这是模型能力参考；当前应用不支持原生图片输入。</p>
   <label>模型标识<input required list="fetched-model-ids" value={draft.model} onChange={e=>editModel({...draft,model:e.target.value})}/></label>
@@ -183,5 +183,5 @@ export function ModelPanel({models,onSaved}:{models:ModelConfig[];onSaved:()=>Pr
   <p className="muted">连接测试会向已保存模型发送少量请求并消耗额度。修改配置后需先保存。</p>
   <div className="actions model-actions"><button type="button" disabled={busy||!savedDraft||!modelClean} onClick={()=>action(async token=>{await command<string>('model_test',{modelId:draft.id});if(current(token))setStatus('模型连接成功。')})}>测试已保存配置</button><button className="primary" disabled={busy||!desktop()}>{busy?'处理中…':'保存模型'}</button></div>
  </form></Modal>}
- {builtinView&&<Modal title={`内置模型：${builtinView.name}`} onClose={()=>setViewBuiltin(null)}><section aria-label="内置模型信息" className="settings-form"><p>模型标识 <code>{builtinView.id}</code>（内置目录成员，不可修改或删除，可启用/停用）。</p><p>支持档位：{builtinView.efforts.length?builtinView.efforts.join(' / '):'无'}；协议端点跟随供应商的端点优先级设置（未设置时默认 Anthropic）。</p><p>图片输入能力：{visionLabel(builtinView.supportsVision)}。</p><p className="muted">这是模型能力参考；当前应用不支持原生图片输入。启用后即可在发送框的模型列表中选择。</p></section></Modal>}
+ {builtinView&&<Modal title={`内置模型：${builtinView.name}`} onClose={()=>setViewBuiltin(null)}><section aria-label="内置模型信息" className="settings-form"><p>模型标识 <code>{builtinView.id}</code>（内置目录成员，不可修改或删除，可启用/停用）。</p><p>支持档位：{builtinView.efforts.length?builtinView.efforts.join(' / '):'无'}；协议端点跟随供应商的选择端点设置（未设置时默认 Anthropic）。</p><p>图片输入能力：{visionLabel(builtinView.supportsVision)}。</p><p className="muted">这是模型能力参考；当前应用不支持原生图片输入。启用后即可在发送框的模型列表中选择。</p></section></Modal>}
  </>}
