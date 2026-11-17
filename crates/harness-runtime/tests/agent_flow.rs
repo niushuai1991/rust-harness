@@ -874,6 +874,71 @@ async fn global_agents_md_enters_system_prompt_before_project() {
 }
 
 #[tokio::test]
+async fn global_agents_md_symlink_is_followed() {
+    let temp = tempfile::tempdir().unwrap();
+    let host = temp.path().join("host");
+    std::fs::create_dir(&host).unwrap();
+    let target = temp.path().join("global-instructions.md");
+    std::fs::write(&target, "符号链接指令标记：回答一律使用中文。").unwrap();
+    if !create_file_symlink(&target, &host.join("AGENTS.md")) {
+        eprintln!("跳过：当前环境无法创建文件符号链接");
+        return;
+    }
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let runtime = Runtime::open(host).await.unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&source, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "agents-md")
+        .await
+        .unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            content: "ok".into(),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .run_session(session.id.clone(), "你好".into(), provider.clone())
+        .await
+        .unwrap();
+    let requests = provider.requests.lock().unwrap();
+    let system = requests[0]
+        .iter()
+        .find(|m| m.role == MessageRole::System)
+        .unwrap();
+    assert!(
+        system
+            .content
+            .contains("符号链接指令标记：回答一律使用中文。"),
+        "全局 AGENTS.md 为符号链接时应跟随读取并注入"
+    );
+}
+
+/// 尝试创建文件符号链接；Windows 无开发者模式或管理员权限时返回 false，用例跳过。
+fn create_file_symlink(target: &std::path::Path, link: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link).is_ok()
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_file(target, link).is_ok()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (target, link);
+        false
+    }
+}
+
+#[tokio::test]
 async fn global_agents_md_truncated_at_32000_chars() {
     let temp = tempfile::tempdir().unwrap();
     let host = temp.path().join("host");

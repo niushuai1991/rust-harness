@@ -1048,9 +1048,12 @@ impl Runtime {
         );
         let skills_catalog = self.skills.catalog(root).await?;
         // 全局指令：数据目录下的 AGENTS.md（默认 ~/.RustHarness/AGENTS.md），缺失或空白静默跳过，
-        // 32000 字符截断与项目级一致；每回合重算，修改后下一回合生效。
+        // 32000 字符截断与项目级一致；每回合重算，修改后下一回合生效。读取用普通文件读取而非
+        // 副本工作区的受控 read_file：全局文件是用户自有配置，允许符号链接（受控读取会拒绝
+        // reparse point），文件工具与项目级指令仍走沙箱读取。
         let data_dir = self.workspaces.data_dir().to_path_buf();
-        let global_agents = harness_platform::read_file(&data_dir, "AGENTS.md")
+        let global_agents = tokio::fs::read_to_string(data_dir.join("AGENTS.md"))
+            .await
             .ok()
             .filter(|text| !text.trim().is_empty())
             .map(|text| {
