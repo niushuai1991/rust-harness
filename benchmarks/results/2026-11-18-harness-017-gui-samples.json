@@ -1,0 +1,200 @@
+{
+ "schema_version": 1,
+ "test_date": "2026-11-18 22:13–22:14",
+ "timezone": "Asia/Shanghai",
+ "applications": [
+  {
+   "name": "Rust Harness",
+   "product_version": "0.1.7",
+   "file_version": "0.1.7",
+   "executable_sha256": "E7B3CCC0FA70FF4342D868A6D4369413E1B1408AE57C8FB31EC38BE193AD12CA",
+   "execution_mode": "auto + replica（隔离副本）",
+   "permission_mode": "auto"
+  }
+ ],
+ "configured_model": {
+  "provider": "智谱 Coding Plan",
+  "model": "GLM-5.3-Flash",
+  "effort": "high",
+  "protocol": "Chat Completions（供应商选择端点=Chat Completions）",
+  "endpoint": "https://open.bigmodel.cn/api/coding/paas/v4"
+ },
+ "prompt": "读取 alpha.txt、beta.txt 和 gamma.txt。分别列出三个项目代号和对应负责人。",
+ "expected_markers": [
+  "海棠",
+  "林青",
+  "松林",
+  "周明",
+  "星河",
+  "陈宁"
+ ],
+ "fixture": [
+  {
+   "name": "alpha.txt",
+   "size_bytes": 41,
+   "sha256": "0dcdf05155c7eff2ef8c716dcf091807b7acaca7b4604e8c38c593235926c278"
+  },
+  {
+   "name": "beta.txt",
+   "size_bytes": 41,
+   "sha256": "40be670bacf7cb33c4958952811f92c4c9c713fca82395acf4b4ba0c3fdd2e58"
+  },
+  {
+   "name": "gamma.txt",
+   "size_bytes": 41,
+   "sha256": "0361d96346630fcc7cb332ff8b587a9da50bd396bbfdd4174cec24e93ab17f0e"
+  }
+ ],
+ "notes": [
+  "不包含本地会话标识、私有路径、凭据、提示词快照或工具结果正文。",
+  "缓存条件与 2026-11-18 上午对照不同：全部主请求 cache_read=4160（含每个会话首轮），前缀由同批次会话及更早的 Chat Completions 会话写入。",
+  "null 表示未采集，并非零。ZCode 侧未重测（程序未升级），复用同日 GUI 样本。",
+  "可执行文件哈希为采集前读取；duration 取 turn.start 到 turn.end。"
+ ],
+ "samples": [
+  {
+   "id": "R1",
+   "source": "Rust Harness 0.1.7 GUI",
+   "started_at": "2026-11-17T22:13:47.374950+00:00",
+   "completed_at": "2026-11-17T22:13:53.381313+00:00",
+   "duration_ms": 6006,
+   "status": "completed",
+   "answer_markers_passed": true,
+   "title_state": "generated",
+   "main_requests": [
+    {
+     "recorded_at": "2026-11-17T22:13:50.001995+00:00",
+     "input_tokens_total": 4204,
+     "cache_read_tokens": 4160,
+     "output_tokens": 82,
+     "status": "completed"
+    },
+    {
+     "recorded_at": "2026-11-17T22:13:53.379551+00:00",
+     "input_tokens_total": 4326,
+     "cache_read_tokens": 4160,
+     "output_tokens": 119,
+     "status": "completed"
+    }
+   ],
+   "tools": [
+    {
+     "name": "read",
+     "status": "completed",
+     "called_at": "2026-11-17T22:13:50.002185+00:00"
+    },
+    {
+     "name": "read",
+     "status": "completed",
+     "called_at": "2026-11-17T22:13:50.002561+00:00"
+    },
+    {
+     "name": "read",
+     "status": "completed",
+     "called_at": "2026-11-17T22:13:50.002890+00:00",
+     "result_recorded_at": "2026-11-17T22:13:50.007531+00:00",
+     "is_error": false
+    }
+   ],
+   "request_duration_ms": null,
+   "time_to_first_token_ms": null,
+   "notes": "主请求仅有持久化结算时间与用量；请求耗时与首 token 未采集，null 并非零。"
+  },
+  {
+   "id": "R2",
+   "source": "Rust Harness 0.1.7 GUI",
+   "started_at": "2026-11-17T22:14:07.013030+00:00",
+   "completed_at": "2026-11-17T22:14:12.569575+00:00",
+   "duration_ms": 5556,
+   "status": "completed",
+   "answer_markers_passed": true,
+   "title_state": "generated",
+   "main_requests": [
+    {
+     "recorded_at": "2026-11-17T22:14:09.767984+00:00",
+     "input_tokens_total": 4204,
+     "cache_read_tokens": 4160,
+     "output_tokens": 80,
+     "status": "completed"
+    },
+    {
+     "recorded_at": "2026-11-17T22:14:12.568179+00:00",
+     "input_tokens_total": 4324,
+     "cache_read_tokens": 4160,
+     "output_tokens": 97,
+     "status": "completed"
+    }
+   ],
+   "tools": [
+    {
+     "name": "read",
+     "status": "completed",
+     "called_at": "2026-11-17T22:14:09.768262+00:00"
+    },
+    {
+     "name": "read",
+     "status": "completed",
+     "called_at": "2026-11-17T22:14:09.768395+00:00"
+    },
+    {
+     "name": "read",
+     "status": "completed",
+     "called_at": "2026-11-17T22:14:09.768437+00:00",
+     "result_recorded_at": "2026-11-17T22:14:09.773907+00:00",
+     "is_error": false
+    }
+   ],
+   "request_duration_ms": null,
+   "time_to_first_token_ms": null,
+   "notes": "主请求仅有持久化结算时间与用量；请求耗时与首 token 未采集，null 并非零。"
+  },
+  {
+   "id": "R3",
+   "source": "Rust Harness 0.1.7 GUI",
+   "started_at": "2026-11-17T22:14:22.043661+00:00",
+   "completed_at": "2026-11-17T22:14:27.524691+00:00",
+   "duration_ms": 5481,
+   "status": "completed",
+   "answer_markers_passed": true,
+   "title_state": "generated",
+   "main_requests": [
+    {
+     "recorded_at": "2026-11-17T22:14:24.829981+00:00",
+     "input_tokens_total": 4204,
+     "cache_read_tokens": 4160,
+     "output_tokens": 83,
+     "status": "completed"
+    },
+    {
+     "recorded_at": "2026-11-17T22:14:27.523620+00:00",
+     "input_tokens_total": 4327,
+     "cache_read_tokens": 4160,
+     "output_tokens": 75,
+     "status": "completed"
+    }
+   ],
+   "tools": [
+    {
+     "name": "read",
+     "status": "completed",
+     "called_at": "2026-11-17T22:14:24.830311+00:00"
+    },
+    {
+     "name": "read",
+     "status": "completed",
+     "called_at": "2026-11-17T22:14:24.830581+00:00"
+    },
+    {
+     "name": "read",
+     "status": "completed",
+     "called_at": "2026-11-17T22:14:24.830768+00:00",
+     "result_recorded_at": "2026-11-17T22:14:24.836269+00:00",
+     "is_error": false
+    }
+   ],
+   "request_duration_ms": null,
+   "time_to_first_token_ms": null,
+   "notes": "主请求仅有持久化结算时间与用量；请求耗时与首 token 未采集，null 并非零。"
+  }
+ ]
+}
