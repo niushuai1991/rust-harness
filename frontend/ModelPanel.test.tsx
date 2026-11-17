@@ -29,6 +29,8 @@ beforeEach(()=>{reset();mocks.command.mockReset();mocks.command.mockImplementati
  if(name==='model_test')throw new Error('服务返回 401');
  if(name==='provider_copy'){const copy={...structuredClone(deepseek),id:'copy',name:'DeepSeek 副本',builtin:false,credentialRef:''};catalog.push(copy);return structuredClone(copy)}
  if(name==='provider_remove'){catalog=catalog.filter(p=>p.id!==args.id);return null}
+ if(name==='provider_has_credential')return args.providerId!=='copy';
+ if(name==='model_sync')return 2;
  if(name==='model_fetch_available')return ['glm-5.3','glm-5.3-flash','glm-4.6'];
  if(name==='provider_usage'){if(usageResult instanceof Error)throw usageResult;return structuredClone(usageResult)}
  if(name==='chatgpt_account_status')return structuredClone(accountResult);
@@ -207,12 +209,13 @@ it('自定义供应商可以只填所需协议并保存模型',async()=>{
  await openPanel();
  fireEvent.click(screen.getByRole('button',{name:'添加自定义供应商'}));
  fireEvent.change(screen.getByLabelText('供应商名称'),{target:{value:'私有供应商'}});
- fireEvent.click(screen.getByRole('button',{name:'添加模型'}));
- fireEvent.change(screen.getByLabelText('API 地址'),{target:{value:'https://private.test/v1'}});
- fireEvent.change(screen.getByLabelText('显示名称'),{target:{value:'私有模型'}});
- fireEvent.change(screen.getByLabelText('模型标识'),{target:{value:'private-model'}});
+ fireEvent.change(screen.getByLabelText('Chat Completions API 地址'),{target:{value:'https://private.test/v1'}});
  fireEvent.click(screen.getByRole('button',{name:'保存供应商'}));
  await screen.findByText('已保存供应商；密钥由系统凭据管理器保管。');
+ fireEvent.click(screen.getByRole('button',{name:'添加模型'}));
+ expect(screen.queryByLabelText('API 地址')).not.toBeInTheDocument();
+ fireEvent.change(screen.getByLabelText('显示名称'),{target:{value:'私有模型'}});
+ fireEvent.change(screen.getByLabelText('模型标识'),{target:{value:'private-model'}});
  fireEvent.click(screen.getByRole('button',{name:'保存模型'}));
  await screen.findByText('已保存模型。');
  expect(mocks.command).toHaveBeenCalledWith('provider_save',{config:expect.objectContaining({name:'私有供应商',compatibility:'standard'}),secret:undefined});
@@ -285,4 +288,55 @@ it('ChatGPT 模型弹窗不提供 API 模型列表抓取',async()=>{
  await screen.findByRole('button',{name:'使用 ChatGPT 账号登录'});
  fireEvent.click(screen.getByRole('button',{name:'添加模型'}));
  expect(screen.queryByRole('button',{name:'从 API 获取模型列表'})).not.toBeInTheDocument();
+});
+
+ it('供应商连接设置中编辑三个协议地址，模型弹窗只展示已保存协议',async()=>{
+ await openPanel();
+ fireEvent.click(screen.getByRole('button',{name:'添加自定义供应商'}));
+ expect(screen.getByLabelText('Chat Completions API 地址')).toBeInTheDocument();
+ expect(screen.getByLabelText('Responses API 地址')).toBeInTheDocument();
+ expect(screen.getByLabelText('Anthropic API 地址')).toBeInTheDocument();
+ });
+
+it('有已保存密钥时同步模型并展示新增数量',async()=>{
+ await openPanel();
+ const sync=await screen.findByRole('button',{name:'同步模型列表'});
+ fireEvent.click(sync);
+ await screen.findByText('同步完成，新增 2 个模型。');
+ expect(mocks.command).toHaveBeenCalledWith('model_sync',{providerId:'deepseek'});
+});
+
+it('内置协议地址只读，OAuth 供应商不显示同步按钮',async()=>{
+ await openPanel();
+ expect(screen.getByLabelText('Chat Completions API 地址')).toHaveAttribute('readonly');
+ fireEvent.click(screen.getByRole('button',{name:/ChatGPT 账号/}));
+ expect(screen.getByLabelText('Responses API 地址')).toHaveAttribute('readonly');
+ expect(screen.queryByRole('button',{name:'同步模型列表'})).not.toBeInTheDocument();
+});
+it('供应商配置未保存时不能添加或同步模型',async()=>{
+ await openPanel();
+ await screen.findByRole('button',{name:'同步模型列表'});
+ fireEvent.change(screen.getByLabelText('HTTP 代理（可选）'),{target:{value:'http://127.0.0.1:7890'}});
+ expect(screen.getByRole('button',{name:'添加模型'})).toBeDisabled();
+ expect(screen.getByRole('button',{name:'同步模型列表'})).toBeDisabled();
+ expect(screen.getByText('请先保存供应商设置，再管理模型。')).toBeInTheDocument();
+});
+
+it('切换内置模型启停后仍可添加模型',async()=>{
+ await openPanel();
+ fireEvent.click(screen.getByRole('checkbox',{name:'启用模型 DeepSeek Flash'}));
+ await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('provider_save',expect.objectContaining({config:expect.objectContaining({disabledModels:['deepseek-flash']})})));
+ await waitFor(()=>expect(screen.getByRole('button',{name:'添加模型'})).toBeEnabled());
+});
+
+it('同步期间切换供应商后仍刷新已保存模型列表',async()=>{
+ let finish:(count:number)=>void=()=>{};
+ const base=mocks.command.getMockImplementation()!;
+ mocks.command.mockImplementation((name:string,args:any)=>name==='model_sync'?new Promise<number>(resolve=>{finish=resolve}):base(name,args));
+ await openPanel();
+ fireEvent.click(await screen.findByRole('button',{name:'同步模型列表'}));
+ fireEvent.click(screen.getByRole('button',{name:/智谱 Coding Plan/}));
+ const before=mocks.command.mock.calls.filter(call=>call[0]==='model_list').length;
+ finish(1);
+ await waitFor(()=>expect(mocks.command.mock.calls.filter(call=>call[0]==='model_list').length).toBeGreaterThan(before));
 });

@@ -14,7 +14,8 @@ export function ModelPanel({models,onSaved}:{models:ModelConfig[];onSaved:()=>Pr
  const [providers,setProviders]=useState<ProviderInfo[]>([]),[provider,setProvider]=useState<ProviderInfo|null>(null);
  const [draft,setDraft]=useState<ModelConfig|null>(null),[viewBuiltin,setViewBuiltin]=useState<string|null>(null);
  const [secret,setSecret]=useState(''),[error,setError]=useState(''),[status,setStatus]=useState(''),[busy,setBusy]=useState(false);
- const [fetched,setFetched]=useState<string[]>([]);
+ const [fetched,setFetched]=useState<string[]>([]),[hasCredential,setHasCredential]=useState(false);
+ useEffect(()=>{let active=true;setHasCredential(false);if(provider&&provider.auth!=='chatGptOAuth')void command<boolean>('provider_has_credential',{providerId:provider.id}).then(value=>{if(active)setHasCredential(value)}).catch(()=>{});return()=>{active=false}},[provider?.id,provider?.credentialRef]);
  const [savedProvider,setSavedProvider]=useState(''),[savedModel,setSavedModel]=useState('');
  const [usage,setUsage]=useState<ProviderUsageSnapshot|null>(null),[usageError,setUsageError]=useState(''),[usageBusy,setUsageBusy]=useState(false);
  const [account,setAccount]=useState<ChatGptAccountInfo|null>(null),[loginState,setLoginState]=useState<ChatGptLoginState|null>(null),[authUrl,setAuthUrl]=useState('');
@@ -55,8 +56,8 @@ export function ModelPanel({models,onSaved}:{models:ModelConfig[];onSaved:()=>Pr
  function choose(p:ProviderInfo){changed();const fresh=structuredClone(p);setProvider(fresh);setDraft(null);setViewBuiltin(null);setFetched([]);setSecret('');setUsage(null);setUsageError('');usageLoadedAt.current=0;setSavedProvider(snapshot(originals.current.find(x=>x.id===p.id)??p));setSavedModel('')}
  function editProvider(next:ProviderInfo){changed();setProvider(next)}
  function editModel(next:ModelConfig){changed();setDraft(next)}
- function startModel(){if(!provider)return;changed();setViewBuiltin(null);setFetched([]);const fresh=blankModel(provider);setDraft(fresh);setSavedModel('')}
- function startEditModel(m:ModelConfig){changed();setViewBuiltin(null);setFetched([]);setDraft(structuredClone(m));setSavedModel(snapshotModel(m))}
+ function startModel(){if(!provider)return;changed();setViewBuiltin(null);setFetched([]);const fresh=blankModel(provider);fresh.apiMode=modes.find(m=>provider.endpoints.some(x=>x.apiMode===m.id&&x.baseUrl.trim()))?.id??'chatCompletions';setDraft(fresh);setSavedModel('')}
+ function startEditModel(m:ModelConfig){if(providerDirty||secret){setError('请先保存供应商设置。');return}changed();setViewBuiltin(null);setFetched([]);setDraft(structuredClone(m));setSavedModel(snapshotModel(m))}
  function viewBuiltinModel(id:string){changed();setDraft(null);setFetched([]);setViewBuiltin(id)}
  async function action(fn:(token:number)=>Promise<void>){if(locked.current)return;locked.current=true;const token=revision.current;setBusy(true);setStatus('');setError('');try{await fn(token)}catch(e){if(alive.current&&token===revision.current)setError(errorText(e))}finally{locked.current=false;if(alive.current)setBusy(false)}}
  const current=(token:number)=>alive.current&&token===revision.current;
@@ -81,9 +82,11 @@ export function ModelPanel({models,onSaved}:{models:ModelConfig[];onSaved:()=>Pr
   if(!current(token))return;
   originals.current=[...originals.current.filter(x=>x.id!==stored.id),stored];
   setProvider(structuredClone(stored));setSecret('');setSavedProvider(snapshot(stored));
+  if(key)setHasCredential(true);
   await refreshLists();if(current(token))setStatus('已保存供应商；密钥由系统凭据管理器保管。');
   if(usageSupported)void loadUsage(true);
  })}
+ async function syncModels(){if(!provider)return;await action(async token=>{const count=await command<number>('model_sync',{providerId:provider.id});await refreshLists();if(current(token))setStatus(`同步完成，新增 ${count} 个模型。`)})}
  async function saveModel(e:FormEvent){e.preventDefault();if(!draft||!provider)return;const m=draft;await action(async token=>{
   const next={...m,providerId:provider.id,compatibility:provider.compatibility,baseUrl:provider.endpoints.find(x=>x.apiMode===m.apiMode)?.baseUrl??m.baseUrl,credentialRef:provider.credentialRef,proxy:provider.proxy};
   await command('model_save',{config:next});if(!current(token))return;
@@ -91,7 +94,7 @@ export function ModelPanel({models,onSaved}:{models:ModelConfig[];onSaved:()=>Pr
  })}
  async function removeModel(m:ModelConfig){await action(async token=>{await command('model_remove',{modelId:m.id});if(!current(token))return;if(draft?.id===m.id){setDraft(null);setSavedModel('')}await refreshLists()})}
  async function toggleProvider(p:ProviderInfo,enabled:boolean){await action(async token=>{const stored=await command<ProviderInfo>('provider_save',{config:{...p,enabled},secret:undefined});if(!current(token))return;originals.current=[...originals.current.filter(x=>x.id!==stored.id),stored];if(provider?.id===stored.id){setProvider(structuredClone(stored));setSavedProvider(snapshot(stored))}await refreshLists()})}
- async function toggleBuiltinModel(p:ProviderInfo,modelId:string,enabled:boolean){await action(async token=>{const disabled=p.disabledModels.filter(id=>id!==modelId);if(!enabled)disabled.push(modelId);const stored=await command<ProviderInfo>('provider_save',{config:{...p,disabledModels:disabled},secret:undefined});if(!current(token))return;originals.current=[...originals.current.filter(x=>x.id!==stored.id),stored];if(provider?.id===stored.id)setProvider(structuredClone(stored));await refreshLists()})}
+ async function toggleBuiltinModel(p:ProviderInfo,modelId:string,enabled:boolean){await action(async token=>{const disabled=p.disabledModels.filter(id=>id!==modelId);if(!enabled)disabled.push(modelId);const stored=await command<ProviderInfo>('provider_save',{config:{...p,disabledModels:disabled},secret:undefined});if(!current(token))return;originals.current=[...originals.current.filter(x=>x.id!==stored.id),stored];if(provider?.id===stored.id){setProvider(structuredClone(stored));setSavedProvider(snapshot(stored))}await refreshLists()})}
  async function toggleModel(m:ModelConfig,enabled:boolean){await action(async token=>{await command('model_save',{config:{...m,enabled}});if(!current(token))return;await refreshLists()})}
  async function copyProvider(){if(!provider)return;await action(async token=>{const p=await command<ProviderInfo>('provider_copy',{id:provider.id});if(!current(token))return;originals.current=[...originals.current,p];setProviders(list=>[...list,p]);choose(p)})}
  async function removeProvider(){if(!provider)return;const id=provider.id;await action(async token=>{if(originals.current.some(p=>p.id===id))await command('provider_remove',{id});if(!current(token))return;originals.current=originals.current.filter(p=>p.id!==id);const list=providers.filter(p=>p.id!==id);setProviders(list);if(list[0])choose(list[0]);else{setProvider(null);setDraft(null)}})}
@@ -143,6 +146,8 @@ export function ModelPanel({models,onSaved}:{models:ModelConfig[];onSaved:()=>Pr
    {loginState?.status==='pending'&&authUrl&&<p className="muted">若浏览器未自动打开，请手动访问：<code style={{wordBreak:'break-all'}}>{authUrl}</code></p>}
   </section>
   :<label>API 密钥<input type="password" autoComplete="new-password" value={secret} placeholder={provider.credentialRef?'留空保留已保存密钥':'输入此供应商的密钥'} onChange={e=>{changed();setSecret(e.target.value)}}/></label>}
+  {modes.map(mode=><label key={mode.id}>{mode.name} API 地址<input type="url" readOnly={provider.builtin} value={provider.endpoints.find(x=>x.apiMode===mode.id)?.baseUrl??''} onChange={e=>{const endpoints=provider.endpoints.filter(x=>x.apiMode!==mode.id);editProvider({...provider,endpoints:[...endpoints,{apiMode:mode.id,baseUrl:e.target.value}]})}}/></label>)}
+  <small>三个协议地址均可选，至少填写一个。</small>
   <label>HTTP 代理（可选）<input value={provider.proxy??''} placeholder="http://127.0.0.1:7890" onChange={e=>editProvider({...provider,proxy:e.target.value||null})}/></label>
   {provider.builtin&&<small>{chatgptOAuth?'ChatGPT 账号供应商通过浏览器登录，无 API 密钥；名称与端点固定。':'内置供应商名称与端点固定，可启用/停用或复制后修改。'}</small>}
   <div className="provider-actions">{!chatgptOAuth&&<button type="button" disabled={busy||!originals.current.some(p=>p.id===provider.id)} onClick={copyProvider}>复制供应商</button>}{!provider.builtin&&<button type="button" className="danger" disabled={busy||models.some(m=>m.providerId===provider.id)} onClick={removeProvider}>删除供应商</button>}</div>
@@ -150,8 +155,9 @@ export function ModelPanel({models,onSaved}:{models:ModelConfig[];onSaved:()=>Pr
   {!provider.builtin&&<label>默认模型<input value={provider.defaultModel} onChange={e=>editProvider({...provider,defaultModel:e.target.value})}/></label>}
   <div className="actions"><button className="primary" disabled={busy||!desktop()||(!providerDirty&&!secret)}>{busy?'处理中…':'保存供应商'}</button></div>
   </form>
+  {(providerDirty||!!secret)&&<p className="muted">请先保存供应商设置，再管理模型。</p>}
   <section className="model-section" aria-label="模型列表">
-   <div className="section-head"><h4>模型列表</h4><button type="button" className="soft" disabled={busy||!provider.enabled||!desktop()} onClick={startModel}><Plus size={13}/>添加模型</button></div>
+   <div className="section-head"><h4>模型列表</h4>{!chatgptOAuth&&hasCredential&&<button type="button" className="soft" disabled={busy||providerDirty||!!secret||!provider.enabled||!desktop()} onClick={syncModels}>同步模型列表</button>}<button type="button" className="soft" disabled={busy||providerDirty||!!secret||!originals.current.some(p=>p.id===provider.id)||!provider.enabled||!desktop()} onClick={startModel}><Plus size={13}/>添加模型</button></div>
    <div className="model-list">
    {provider.builtinModels.map(m=>{const enabled=provider.enabled&&!provider.disabledModels.includes(m.id);return <div key={m.id} className={`model-row${viewBuiltin===m.id?' selected':''}`}><button className="model-name" onClick={()=>viewBuiltinModel(m.id)}>{m.name}</button><em className="builtin-badge">内置</em><VisionBadge value={m.supportsVision}/>{!!m.efforts.length&&<em className="chip">{m.efforts.join(' / ')}</em>}{!enabled&&<em className="off-badge">已停用</em>}<span className="model-row-actions"><button type="button" className="icon-soft" aria-label={`查看 ${m.name}`} onClick={()=>viewBuiltinModel(m.id)}><Pencil size={13}/></button><label className="switch" title={enabled?'停用内置模型':'启用内置模型'}><input type="checkbox" aria-label={`启用模型 ${m.name}`} checked={enabled} disabled={busy||!provider.enabled} onChange={e=>toggleBuiltinModel(provider,m.id,e.target.checked)}/></label></span></div>})}
    {currentModels.map(m=><div key={m.id} className={`model-row${draft?.id===m.id?' selected':''}`}><button className="model-name" onClick={()=>startEditModel(m)}>{m.name} · {m.model}</button><VisionBadge value={m.supportsVision}/>{!m.enabled&&<em className="off-badge">已停用</em>}<span className="model-row-actions"><button type="button" className="icon-soft" aria-label={`编辑 ${m.name}`} onClick={()=>startEditModel(m)}><Pencil size={13}/></button><button type="button" className="icon-soft" aria-label={`删除模型 ${m.name}`} disabled={busy} onClick={()=>void removeModel(m)}><Trash2 size={13}/></button><label className="switch" title={m.enabled?'停用模型':'启用模型'}><input type="checkbox" aria-label={`启用模型 ${m.name}`} checked={m.enabled} disabled={busy} onChange={e=>toggleModel(m,e.target.checked)}/></label></span></div>)}
@@ -161,8 +167,7 @@ export function ModelPanel({models,onSaved}:{models:ModelConfig[];onSaved:()=>Pr
  </div>:<p className="muted">{busy?'处理中…':'正在加载供应商…'}</p>}</div>
  {provider&&draft&&<Modal title={savedDraft?'编辑模型':'添加模型'} onClose={()=>{setDraft(null);setFetched([])}}><form onSubmit={saveModel} className="settings-form">
   <label>显示名称<input required value={draft.name} onChange={e=>editModel({...draft,name:e.target.value})}/></label>
-  <label>协议<select value={draft.apiMode} onChange={e=>{const apiMode=e.target.value as ApiMode;if(!provider.endpoints.some(x=>x.apiMode===apiMode))editProvider({...provider,endpoints:[...provider.endpoints,{apiMode,baseUrl:''}]});editModel({...draft,apiMode})}}>{modes.filter(m=>!provider.builtin||provider.endpoints.some(x=>x.apiMode===m.id)).map(m=><option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
-  {!provider.builtin&&<label>API 地址<input required type="url" value={provider.endpoints.find(x=>x.apiMode===draft.apiMode)?.baseUrl??''} onChange={e=>editProvider({...provider,endpoints:provider.endpoints.map(x=>x.apiMode===draft.apiMode?{...x,baseUrl:e.target.value}:x)})}/></label>}
+  <label>协议<select value={draft.apiMode} onChange={e=>editModel({...draft,apiMode:e.target.value as ApiMode})}>{modes.filter(m=>provider.endpoints.some(x=>x.apiMode===m.id&&x.baseUrl.trim())).map(m=><option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
   <label>图片输入能力<select value={draft.supportsVision==null?'unknown':String(draft.supportsVision)} onChange={e=>editModel({...draft,supportsVision:e.target.value==='unknown'?null:e.target.value==='true'})}><option value="unknown">未知</option><option value="true">支持图片输入</option><option value="false">不支持图片输入</option></select></label>
   <p className="muted">这是模型能力参考；当前应用不支持原生图片输入。</p>
   <label>模型标识<input required list="fetched-model-ids" value={draft.model} onChange={e=>editModel({...draft,model:e.target.value})}/></label>
