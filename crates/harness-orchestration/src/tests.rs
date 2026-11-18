@@ -1041,10 +1041,83 @@ async fn automation_manual_run_fails_cleanly_without_model() {
         ]
         .contains(&err.code.as_str())
     );
-    let after = i.automation_list(&c.workspace_id).await.unwrap();
+    let after = i.automation_list(&c.workspace_id, None).await.unwrap();
     assert_eq!(after[0].run_count, 0);
     assert!(after[0].runs.is_empty());
     assert_eq!(after[0].next_run_at, a.next_run_at);
+}
+
+#[tokio::test]
+async fn automation_rejects_unknown_workspace() {
+    let (_d, r, c) = setup().await;
+    let i = install(r.clone()).unwrap();
+    // 创建：项目不存在被拒
+    assert_eq!(
+        i.automation_create(automation_params("missing-ws", AutomationKind::Daily))
+            .await
+            .unwrap_err()
+            .code,
+        "NOT_FOUND"
+    );
+    let a = i
+        .automation_create(automation_params(&c.workspace_id, AutomationKind::Daily))
+        .await
+        .unwrap();
+    // 编辑：项目不存在被拒
+    assert_eq!(
+        i.automation_update(
+            &a.id,
+            automation_params("missing-ws", AutomationKind::Daily)
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "NOT_FOUND"
+    );
+}
+
+#[tokio::test]
+async fn automation_update_moves_workspace_and_list_filters() {
+    let (_d, r, c) = setup().await;
+    let i = install(r.clone()).unwrap();
+    let second_dir = _d.path().join("source-2");
+    std::fs::create_dir(&second_dir).unwrap();
+    let second = r
+        .workspaces
+        .create(&second_dir, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
+    let a = i
+        .automation_create(automation_params(&c.workspace_id, AutomationKind::Daily))
+        .await
+        .unwrap();
+    // 绑定会话不属于目标项目：迁移被拒
+    let mut bad = automation_params(&second.id, AutomationKind::Daily);
+    bad.session_id = Some(c.session_id.clone());
+    assert_eq!(
+        i.automation_update(&a.id, bad).await.unwrap_err().code,
+        "AUTOMATION_SESSION"
+    );
+    // 未绑定会话：迁移成功
+    let moved = i
+        .automation_update(&a.id, automation_params(&second.id, AutomationKind::Daily))
+        .await
+        .unwrap();
+    assert_eq!(moved.workspace_id, second.id);
+    // 列表：按项目过滤与全局模式
+    assert!(
+        i.automation_list(&c.workspace_id, None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(i.automation_list(&second.id, None).await.unwrap().len(), 1);
+    assert_eq!(
+        i.automation_list(&c.workspace_id, Some(true))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -1054,7 +1127,13 @@ async fn workspace_retarget_moves_automation_and_schedule_references() {
     let mut bound = automation_params(&c.workspace_id, AutomationKind::Daily);
     bound.session_id = Some(c.session_id.clone());
     let automation = i.automation_create(bound).await.unwrap();
-    let mut other = automation_params("other-workspace", AutomationKind::Once);
+    let second_dir = _d.path().join("source-2");
+    std::fs::create_dir(&second_dir).unwrap();
+    let second = r
+        .workspaces
+        .create(&second_dir, None, harness_contracts::ExecutionMode::Replica)
+        .unwrap();
+    let mut other = automation_params(&second.id, AutomationKind::Once);
     other.at = Some("2099-01-01T00:00:00Z".into());
     i.automation_create(other).await.unwrap();
     let schedule = call(
@@ -1081,14 +1160,8 @@ async fn workspace_retarget_moves_automation_and_schedule_references() {
         Some(c.session_id.as_str()),
         "绑定会话不变"
     );
-    let untouched = all
-        .iter()
-        .find(|x| x.workspace_id == "other-workspace")
-        .unwrap();
-    assert_eq!(
-        untouched.workspace_id, "other-workspace",
-        "其他项目自动化不动"
-    );
+    let untouched = all.iter().find(|x| x.workspace_id == second.id).unwrap();
+    assert_eq!(untouched.workspace_id, second.id, "其他项目自动化不动");
     let schedules = i.state.schedules().await.unwrap();
     let moved = schedules
         .iter()
