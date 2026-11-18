@@ -33,6 +33,28 @@ beforeEach(()=>{useChat.setState({events:{},streams:{},statuses:{},timelines:{},
  return [];
 })});
 afterEach(()=>{cleanup();vi.useRealTimers()});
+describe('Shell 命令时间线',()=>{
+ it('完成回合中配对命令与结果，过程和命令分别默认折叠',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  const events:SessionEvent[]=[
+   {id:'start',sessionId:'a',seq:'1',kind:'turn.start',data:{},createdAt:''},
+   {id:'call',sessionId:'a',seq:'2',kind:'tool.call',data:{id:'c1',name:'shell',arguments:{command:'cargo test'}},createdAt:''},
+   {id:'other',sessionId:'a',seq:'3',kind:'tool.call',data:{id:'c2',name:'read',arguments:{path:'a.txt'}},createdAt:''},
+   {id:'result',sessionId:'a',seq:'4',kind:'tool.result',data:{callId:'c1',name:'shell',content:JSON.stringify({stdout:'测试通过',stderr:'',exit_code:0}),status:'completed'},createdAt:''},
+   {id:'final',sessionId:'a',seq:'5',kind:'assistant.message',data:{content:'已完成检查'},createdAt:''},
+   {id:'end',sessionId:'a',seq:'6',kind:'turn.end',data:{status:'completed'},createdAt:''}
+  ];
+  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,events):original(name,args));
+  render(<App/>);await openSidebarSession(/会话 A/);await screen.findByText('已完成检查');
+  const process=screen.getByText('本轮已完成').closest('details')!;
+  expect(process.open).toBe(false);fireEvent.click(screen.getByText('本轮已完成'));
+  const card=screen.getByText('执行命令').closest('details')!;
+  expect(card.open).toBe(false);expect(screen.getAllByText('执行命令')).toHaveLength(1);
+  fireEvent.click(screen.getByText('执行命令'));
+  expect(screen.getByText('测试通过')).toBeVisible();expect(screen.getByText('退出码 0')).toBeVisible();
+  expect(screen.getByText('read')).toBeInTheDocument();
+ });
+});
 describe('计划模式 composer 入口',()=>{
  it('+ 号立即进入计划模式，chip 可明确退出',async()=>{
   await renderOpenA();

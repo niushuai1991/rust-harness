@@ -527,3 +527,20 @@ button.run-session:hover{color:var(--text);text-decoration:underline}
 .jump-bottom:hover{background:var(--surface)}
 /* 同源重复项目组头标记（合并入口见组头右键菜单）。 */
 .dup-badge{flex:none;font-size:10px;line-height:14px;color:#9a6700;background:#fff8c5;border:1px solid rgba(212,167,44,.4);border-radius:4px;padding:0 4px;margin-left:4px;white-space:nowrap}
+.shell-card>summary .shell-summary-command{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:"Cascadia Code",Consolas,monospace;font-size:11px;color:var(--muted)}
+.shell-card>summary .shell-status{flex:none;white-space:nowrap;color:var(--muted)}
+.shell-card>summary .shell-status.is-error{color:#ad574e}
+.shell-card>summary .chev{flex:none;transition:transform .15s}
+.shell-card[open]>summary .chev{transform:rotate(90deg)}
+.shell-detail{margin:0 12px 12px;padding:12px 14px;border:1px solid var(--border);border-radius:9px;background:var(--surface);min-width:0}
+.shell-command{display:flex;gap:9px;align-items:flex-start;font:12px/1.7 "Cascadia Code",Consolas,monospace}
+.shell-command>span{color:var(--muted)}
+.shell-command-body{min-width:0;flex:1}
+.shell-command-text{white-space:pre-wrap;overflow-wrap:anywhere;max-height:5.1em;overflow:hidden}
+.shell-command-text.expanded{max-height:17em;overflow:auto}
+.shell-command-toggle{border:0;background:transparent;color:var(--muted);font-size:11px;padding:4px 0}
+.shell-output{max-height:12em;overflow:auto;margin-top:10px;color:var(--muted);font:12px/1.7 "Cascadia Code",Consolas,monospace;overflow-wrap:anywhere}
+.shell-output pre{margin:0;padding:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.shell-output pre+pre{margin-top:8px}
+.shell-stderr{color:var(--text)}
+.shell-exit{border-top:1px solid var(--border);padding-top:8px;margin-top:10px;font-size:11px;color:var(--muted)}
