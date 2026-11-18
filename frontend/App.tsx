@@ -830,7 +830,7 @@ function injectModelNotes(events:SessionEvent[],notes:ModelNote[]):SessionEvent[
  return out;
 }
 function Markdown({content}:{content:string}){return <SessionMarkdown content={content}/>}
-// 消息复制按钮：悬停消息时浮现于标签行右端，点击复制原始 markdown 文本；无成功提示，失败静默。
+// 消息复制按钮：常显于消息内容左下方，点击复制原始 markdown 文本；无成功提示，失败静默。
 function MessageCopyButton({text}:{text:string}){
  return <button type="button" className="message-copy" aria-label="复制消息" title="复制" onClick={()=>{void navigator.clipboard?.writeText(text)}}><Copy size={13}/></button>;
 }
@@ -901,8 +901,8 @@ export function EventCard({event,...extras}:{event:SessionEvent}&EventCardExtras
   return <article className="tool-card todo-card"><div className="subagent-row"><ListTodo size={15}/><strong>待办清单</strong></div><TodoList items={items}/></article>;
  }
  if(kind==='plan.state'||kind==='goal.state')return <article className="tool-card"><div className="subagent-row">{kind==='plan.state'?<ListTodo size={15}/>:<Target size={15}/>}<strong>{kind==='plan.state'?'计划':'目标'}</strong></div><div className="prose"><Markdown content={printable(data.content)}/></div></article>;
- if(kind==='user.message')return <article className="message user"><div className="avatar">你</div><div className="message-body"><div className="message-label"><span>你</span><MessageCopyButton text={printable(data.content)}/></div>{Array.isArray(data.quotes)&&data.quotes.map((quote,index)=><blockquote key={index} className="sent-quote" title={String(quote)}><b>引用：</b>{String(quote)}</blockquote>)}<div className="prose"><LinkedText content={printable(data.content)}/></div>{Array.isArray(data.attachments)&&data.attachments.map((a,index)=><ArtifactDownload key={index} sessionId={event.sessionId} artifact={a as ArtifactMetadata}/>)}</div></article>;
- if(kind==='assistant.message'||kind==='assistant.attempt')return <article className="message assistant"><div className="avatar">R</div><div className="message-body"><div className="message-label"><span>Rust Harness</span><MessageCopyButton text={printable(data.content)}/></div>{!!data.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{printable(data.reasoning)}</pre></details>}<div className="prose"><Markdown content={printable(data.content)}/></div>{!!data.error&&<div className="inline-error">{printable(data.error)}</div>}</div></article>;
+ if(kind==='user.message')return <article className="message user"><div className="avatar">你</div><div className="message-body"><div className="message-label">你</div>{Array.isArray(data.quotes)&&data.quotes.map((quote,index)=><blockquote key={index} className="sent-quote" title={String(quote)}><b>引用：</b>{String(quote)}</blockquote>)}<div className="prose"><LinkedText content={printable(data.content)}/></div>{Array.isArray(data.attachments)&&data.attachments.map((a,index)=><ArtifactDownload key={index} sessionId={event.sessionId} artifact={a as ArtifactMetadata}/>)}<MessageCopyButton text={printable(data.content)}/></div></article>;
+ if(kind==='assistant.message'||kind==='assistant.attempt')return <article className="message assistant"><div className="avatar">R</div><div className="message-body"><div className="message-label">Rust Harness</div>{!!data.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{printable(data.reasoning)}</pre></details>}<div className="prose"><Markdown content={printable(data.content)}/></div>{!!data.error&&<div className="inline-error">{printable(data.error)}</div>}<MessageCopyButton text={printable(data.content)}/></div></article>;
  if(kind==='tool.call'||kind==='tool.result'){
   const args=typeof data.arguments==='object'&&data.arguments!==null?data.arguments as Record<string,unknown>:null;
   const toolName=String(data.name);
