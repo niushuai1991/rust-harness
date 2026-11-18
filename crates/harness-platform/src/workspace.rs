@@ -406,6 +406,19 @@ impl WorkspaceManager {
             },
         }
     }
+    /// 无项目会话的执行根：<数据目录>/sessions/<会话 id>/root。懒创建并打沙箱
+    /// 授权（capability 派生自会话 id），幂等；会话 id 必须是 UUID，防止路径注入。
+    /// scratch root 不注册为工作区记录，也不参与差异审阅与同步。
+    pub fn ensure_scratch_root(&self, session_id: &str) -> AppResult<PathBuf> {
+        uuid::Uuid::parse_str(session_id).map_err(|_| AppError::new("INVALID_ID", session_id))?;
+        let root = self.data_dir.join("sessions").join(session_id).join("root");
+        if !root.is_dir() {
+            fs::create_dir_all(&root).map_err(io)?;
+            crate::shell::prepare(&root, session_id)?;
+        }
+        Ok(root)
+    }
+
     /// 读取会话 worktree 登记；未登记返回 None。
     pub fn session_worktree(
         &self,

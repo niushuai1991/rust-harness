@@ -1170,3 +1170,48 @@ async fn workspace_retarget_moves_automation_and_schedule_references() {
     assert_eq!(moved.workspace_id, "ws-target", "定时任务挂到目标工作区");
     assert_eq!(moved.session_id, c.session_id, "定时任务绑定会话不变");
 }
+
+/// 无项目自动化（workspace_id 哨兵空串）：创建、按项目列表过滤与手动执行链路可用；
+/// 绑定无项目会话同样合法（会话归属与哨兵工作区一致）。
+#[tokio::test]
+async fn automation_supports_no_project_workspace_sentinel() {
+    let (_d, r, _c) = setup().await;
+    let i = install(r.clone()).unwrap();
+    i.state.stop.cancel();
+    // 强制模型解析失败：手动执行应走到模型分支而不是 workspace 校验报错。
+    r.store
+        .set(
+            "app.default_selection",
+            &json!({"modelId":"missing-model","effort":null}),
+        )
+        .await
+        .unwrap();
+    let a = i
+        .automation_create(automation_params("", AutomationKind::Daily))
+        .await
+        .unwrap();
+    assert_eq!(a.workspace_id, "");
+    let listed = i.automation_list("").await.unwrap();
+    assert_eq!(listed.len(), 1, "按空串过滤返回无项目自动化");
+    let err = i.automation_run_now(&a.id).await.unwrap_err();
+    assert!(
+        [
+            "AUTOMATION_MODEL",
+            "MODEL_NOT_FOUND",
+            "MODEL_DISABLED",
+            "MODEL_CONFIG"
+        ]
+        .contains(&err.code.as_str())
+    );
+    let session = r.store.create_session("", "无项目会话").await.unwrap();
+    let mut bound = automation_params("", AutomationKind::Once);
+    bound.session_id = Some(session.id.clone());
+    bound.at = Some(automation_utc(2100, 1, 1, 0, 0));
+    let created = i.automation_create(bound).await.unwrap();
+    assert_eq!(created.workspace_id, "");
+    assert_eq!(
+        created.session_id.as_deref(),
+        Some(session.id.as_str()),
+        "绑定无项目会话的自动化创建合法"
+    );
+}

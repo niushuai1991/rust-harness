@@ -158,3 +158,28 @@ describe('upsertSession',()=>{
   expect(next[0].title).toBe('更新后的标题');
  });
 });
+describe('groupByProject 无项目组',()=>{
+ it('哨兵空串会话归入「无项目」组，固定排在全部项目组之后',()=>{
+  const ws=[workspace({id:'ws-1'}),workspace({id:'ws-2',pinned:true})];
+  const list=[
+   session({id:'a',workspaceId:'ws-1',updatedAt:at(2026,11,8,10,0)}),
+   session({id:'n1',workspaceId:'',updatedAt:at(2026,11,8,11,0)}),
+  ];
+  const groups=groupByProject(list,ws,true);
+  expect(groups.map(g=>g.workspace.id)).toEqual(['ws-2','ws-1','']);
+  expect(groups[2].workspace.name).toBe('无项目');
+  expect(groups[2].sessions.map(s=>s.id)).toEqual(['n1']);
+ });
+ it('includeEmpty 时不出现空的无项目组',()=>{
+  const ws=[workspace({id:'ws-1'})];
+  const groups=groupByProject([session({id:'a',workspaceId:'ws-1'})],ws,true);
+  expect(groups.map(g=>g.workspace.id)).toEqual(['ws-1']);
+ });
+ it('搜索过滤场景（includeEmpty=false）：无项目会话有匹配则成组，无匹配不出现',()=>{
+  const ws=[workspace({id:'ws-1'})];
+  const groups=groupByProject([session({id:'n1',workspaceId:'',title:'独立讨论'})],ws);
+  expect(groups.map(g=>g.workspace.id)).toEqual(['']);
+  expect(groups[0].workspace.name).toBe('无项目');
+  expect(groupByProject([session({id:'a',workspaceId:'ws-1'})],ws)).toHaveLength(1);
+ });
+});

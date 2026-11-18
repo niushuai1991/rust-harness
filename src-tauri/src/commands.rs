@@ -324,6 +324,12 @@ pub async fn workspace_diff(
     state: Backend<'_>,
     workspace_id: String,
 ) -> AppResult<Vec<FileChange>> {
+    if workspace_id.is_empty() {
+        return Err(AppError::new(
+            "UNSUPPORTED",
+            "无项目会话不关联项目，没有可同步的变更",
+        ));
+    }
     let manager = state.workspaces.clone();
     tokio::task::spawn_blocking(move || manager.diff(&workspace_id))
         .await
@@ -408,10 +414,15 @@ pub async fn session_active_list(state: Backend<'_>) -> AppResult<Vec<String>> {
 #[specta::specta]
 pub async fn session_create(
     state: Backend<'_>,
-    workspace_id: String,
+    workspace_id: Option<String>,
     title: String,
 ) -> AppResult<SessionInfo> {
-    state.workspaces.get(&workspace_id)?;
+    // workspaceId 缺省或空串表示「无项目」会话（哨兵值）：不校验项目存在，
+    // 执行根由运行时按会话独立分配。
+    let workspace_id = workspace_id.unwrap_or_default();
+    if !workspace_id.is_empty() {
+        state.workspaces.get(&workspace_id)?;
+    }
     state.store.create_session(&workspace_id, &title).await
 }
 /// 查询指定会话的计划模式。
@@ -1019,6 +1030,10 @@ pub async fn preset_remove(state: Backend<'_>, id: String) -> AppResult<()> {
 #[tauri::command]
 #[specta::specta]
 pub async fn skill_list(state: Backend<'_>, workspace_id: String) -> AppResult<Vec<SkillInfo>> {
+    if workspace_id.is_empty() {
+        // 无项目会话：跳过项目扫描，仅返回用户级技能。
+        return state.skills.list(std::path::Path::new("")).await;
+    }
     let info = state.workspaces.get(&workspace_id)?;
     state
         .skills
@@ -1034,7 +1049,10 @@ pub async fn skill_set_enabled(
     path: String,
     enabled: bool,
 ) -> AppResult<()> {
-    state.workspaces.get(&workspace_id)?;
+    // 无项目会话（哨兵空串）沿用全局禁用名单，跳过项目校验。
+    if !workspace_id.is_empty() {
+        state.workspaces.get(&workspace_id)?;
+    }
     state.skills.set_enabled(&path, enabled).await
 }
 #[tauri::command]
@@ -1101,6 +1119,9 @@ pub async fn mcp_connect(
     workspace_id: String,
     config: JsonPayload,
 ) -> AppResult<()> {
+    if workspace_id.is_empty() {
+        return Err(AppError::new("UNSUPPORTED", "无项目会话暂不支持 MCP 连接"));
+    }
     let config = serde_json::from_value(config.0).map_err(error)?;
     state.connect_mcp(&workspace_id, config).await
 }
@@ -1144,6 +1165,9 @@ pub async fn lsp_restart(
     workspace_id: String,
     server_id: String,
 ) -> AppResult<()> {
+    if workspace_id.is_empty() {
+        return Err(AppError::new("UNSUPPORTED", "无项目会话暂不支持语言服务器"));
+    }
     state.lsp_restart(&workspace_id, &server_id).await
 }
 

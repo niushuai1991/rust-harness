@@ -20,6 +20,9 @@ impl Drop for Active<'_> {
 }
 impl Runtime {
     fn prepare_plugin_workspace(&self, workspace: &str) -> AppResult<()> {
+        if workspace.is_empty() {
+            return Err(AppError::new("UNSUPPORTED", "无项目会话暂不支持插件功能"));
+        }
         self.workspaces.get(workspace)?;
         self.plugins.set_workspace_policy(
             workspace,
@@ -67,6 +70,9 @@ impl Runtime {
             ));
         }
         let info = self.store.session(session).await?;
+        if info.workspace_id.is_empty() {
+            return Err(AppError::new("UNSUPPORTED", "无项目会话暂不支持插件功能"));
+        }
         let lease = self.workspaces.acquire(&info.workspace_id)?;
         let declared = self
             .plugin_contributions(&info.workspace_id)?
@@ -127,6 +133,9 @@ impl Runtime {
         }
     }
     pub fn plugin_file_preview(&self, workspace: &str, path: &str) -> AppResult<String> {
+        if workspace.is_empty() {
+            return Err(AppError::new("UNSUPPORTED", "无项目会话暂不支持插件功能"));
+        }
         let info = self.workspaces.get(workspace)?;
         harness_platform::read_file_bounded(Path::new(&info.replica_path), path, 32768)
     }
@@ -136,6 +145,9 @@ impl Runtime {
         workspace: &str,
         path: &str,
     ) -> AppResult<WorkspaceFilePreview> {
+        if workspace.is_empty() {
+            return Err(AppError::new("UNSUPPORTED", "无项目会话暂不支持文件预览"));
+        }
         let info = self.workspaces.get(workspace)?;
         let (content, size, read) =
             harness_platform::read_file_bounded_sized(Path::new(&info.replica_path), path, 32768)?;

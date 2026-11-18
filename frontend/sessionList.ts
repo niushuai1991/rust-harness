@@ -77,6 +77,10 @@ export function groupByTime(sessions:SessionInfo[],now:Date):RecentGroup[]{
 }
 
 export interface ProjectGroup{workspace:WorkspaceInfo;sessions:SessionInfo[];}
+/// 无项目会话（workspaceId 空串哨兵）的虚拟分组名。
+export const NO_PROJECT_NAME='无项目';
+/// 无项目虚拟工作区：不进 workspace_list，仅用于会话列表分组展示。
+export const NO_PROJECT_WORKSPACE:WorkspaceInfo={id:'',sourcePath:'',replicaPath:'',createdAt:'',name:NO_PROJECT_NAME,pinned:false,hidden:false,executionMode:'replica',worktrees:{}};
 /**
  * 工作区成组；置顶排最前，同状态内有会话的按组内最新会话倒序。
  * includeEmpty=true 时无会话的项目也保留组头（排在同状态有会话组之后，空组间按名称排序），
@@ -94,7 +98,12 @@ export function groupByProject(sessions:SessionInfo[],workspaces:WorkspaceInfo[]
   if(list&&list.length)groups.push({workspace,sessions:list});
   else if(includeEmpty)groups.push({workspace,sessions:[]});
  }
+ // 无项目会话（哨兵空串）归入「无项目」组；includeEmpty 时不出现空的无项目组。
+ const unbound=byWorkspace.get('');
+ if(unbound&&unbound.length)groups.push({workspace:NO_PROJECT_WORKSPACE,sessions:unbound});
  return groups.sort((a,b)=>{
+  // 「无项目」组固定排在全部项目组之后。
+  if(a.workspace.id===''||b.workspace.id==='')return a.workspace.id===''?1:-1;
   if(a.workspace.pinned!==b.workspace.pinned)return a.workspace.pinned?-1:1;
   if(!a.sessions.length||!b.sessions.length){
    if(a.sessions.length)return -1;

@@ -658,3 +658,48 @@ fn delete_rejects_while_runtime_lease_held() {
     manager.delete(&info.id).unwrap();
     assert!(manager.list().unwrap().is_empty());
 }
+
+/// 无项目会话执行根：按会话在数据目录下懒建独立 scratch root，幂等且拒绝非法
+/// 会话 id；不注册为工作区记录，不参与差异审阅与同步。
+#[test]
+fn scratch_roots_are_lazy_unique_and_idempotent() {
+    let (temp, _source, manager) = fixture();
+    let sid = "018f0e5b-1111-2222-3333-444455556666";
+    let root = manager.ensure_scratch_root(sid).unwrap();
+    let expected = temp
+        .path()
+        .join("host")
+        .join("sessions")
+        .join(sid)
+        .join("root");
+    assert_eq!(root, expected);
+    assert!(expected.is_dir());
+
+    // 幂等：重复调用返回同一目录且保留既有文件。
+    fs::write(expected.join("keep.txt"), "data").unwrap();
+    let again = manager.ensure_scratch_root(sid).unwrap();
+    assert_eq!(again, expected);
+    assert_eq!(
+        fs::read_to_string(expected.join("keep.txt")).unwrap(),
+        "data"
+    );
+
+    // 每个会话独立 root。
+    let other = manager
+        .ensure_scratch_root("018f0e5b-aaaa-bbbb-cccc-dddd55556666")
+        .unwrap();
+    assert_ne!(other, expected);
+
+    // 非法 id 拒绝（路径注入防线）。
+    assert_eq!(
+        manager.ensure_scratch_root("../escape").unwrap_err().code,
+        "INVALID_ID"
+    );
+    assert_eq!(
+        manager.ensure_scratch_root("not-a-uuid").unwrap_err().code,
+        "INVALID_ID"
+    );
+
+    // scratch root 不注册为工作区记录。
+    assert!(manager.list().unwrap().is_empty());
+}

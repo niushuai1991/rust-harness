@@ -360,8 +360,14 @@ impl Runtime {
             return Ok(());
         }
         if enabled {
-            let workspace = self.workspaces.get(&info.workspace_id)?;
-            if workspace.execution_mode == ExecutionMode::Worktree
+            // 无项目会话（workspace_id 哨兵空串）无 worktree 语义，直接进入计划模式。
+            let workspace = if info.workspace_id.is_empty() {
+                None
+            } else {
+                Some(self.workspaces.get(&info.workspace_id)?)
+            };
+            if let Some(workspace) = &workspace
+                && workspace.execution_mode == ExecutionMode::Worktree
                 && !workspace.worktrees.contains_key(session)
             {
                 return Err(AppError::new(
@@ -944,8 +950,13 @@ impl Runtime {
         let exec = self
             .resolve_exec_root(&session.workspace_id, &session_id)
             .await?;
-        // 租约持有至回合结束（序列化同一工作区的并发运行与同步）。
-        let _lease = self.workspaces.acquire(&session.workspace_id)?;
+        // 租约持有至回合结束（序列化同一工作区的并发运行与同步）；无项目会话没有
+        // 工作区级同步语义，跳过租约（会话队列已串行化同一会话的回合）。
+        let _lease = if session.workspace_id.is_empty() {
+            None
+        } else {
+            Some(self.workspaces.acquire(&session.workspace_id)?)
+        };
         let token_budget = match inherited_budget {
             Some(budget) => budget,
             None => Arc::new(TurnBudget::new(
@@ -1093,7 +1104,8 @@ impl Runtime {
                 )
             })
             .unwrap_or_default();
-        let context = workspace_context(root, exec, &skills_catalog, &global_agents)?;
+        let context = workspace_context(workspace, root, exec, &skills_catalog, &global_agents)?;
+
         self.append(session, "context.snapshot", json!({"content":context}))
             .await?;
         // read-before-edit 状态：并发段成员共享（read 登记为良性竞争），写类工具只在串行屏障执行。
@@ -1505,6 +1517,21 @@ impl Runtime {
         workspace_id: &str,
         session_id: &str,
     ) -> AppResult<ExecContext> {
+        // 无项目会话（workspace_id 哨兵空串）：执行根为数据目录下的会话独立 scratch root，
+        // 沙箱授权派生自会话 id；无隔离副本与同步审阅语义。
+        if workspace_id.is_empty() {
+            let manager = self.workspaces.clone();
+            let sid = session_id.to_owned();
+            let root = tokio::task::spawn_blocking(move || manager.ensure_scratch_root(&sid))
+                .await
+                .map_err(internal)??;
+            return Ok(ExecContext {
+                root,
+                mode: ExecutionMode::Replica,
+                capability_id: session_id.to_owned(),
+                branch: None,
+            });
+        }
         let info = self.workspaces.get(workspace_id)?;
         if info.execution_mode == ExecutionMode::Worktree
             && self.session_plan_get(session_id).await?
@@ -2592,12 +2619,18 @@ fn requires_approval(name: &str) -> bool {
     )
 }
 fn workspace_context(
+    workspace: &str,
     root: &Path,
     exec: &ExecContext,
     skills_catalog: &str,
     global_agents: &str,
 ) -> AppResult<String> {
     let mut context = match exec.mode {
+        // 无项目会话（workspace_id 哨兵空串）：执行根为会话独立工作目录，无项目同步语义。
+        ExecutionMode::Replica if workspace.is_empty() => format!(
+            "你是本地开发助手。这是一个无项目会话：执行根为宿主创建的独立工作目录 {}，不关联任何项目，改动直接保留在该目录，没有同步审阅流程。文件工具只接受相对路径。先读取再编辑。",
+            root.display()
+        ),
         ExecutionMode::Replica => format!(
             "你是本地开发助手。执行根为隔离工作副本 {}。文件工具只接受相对路径。先读取再编辑，原项目变更需用户在差异界面单独确认。",
             root.display()

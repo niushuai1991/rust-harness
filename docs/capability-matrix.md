@@ -4,6 +4,7 @@
 
 |能力|实际状态|验证|
 |---|---|---|
+|无项目会话与无项目自动化|已实现（待验证）|storage 哨兵创建/过滤、platform scratch root 幂等与非法 id 拒绝、runtime 无项目回合独立执行根与上下文标注、orchestration 无项目自动化创建/列表/手动执行、前端 chip「无项目」落点/侧栏分组/面包屑/组头入口收敛等用例已编写；开发会话为嵌套沙箱，依赖 Windows 沙箱 ACL 授权（SetNamedSecurityInfoW）的集成用例本环境不可执行（未改动代码同样失败，已复现确认），待 CI/正常环境全量验证，见[无项目会话规范](specs/no-project-sessions.md)|
 |Rust/Tauri桌面、中文聊天与设置|已实现并验证|0.1.4前端34项测试与生产构建通过；Windows 11 guest 中完成输入、审批、同步、托盘、单实例与重启继续会话|
 |DeepSeek/智谱双供应商与Chat/Responses/Anthropic|已实现并接线|六条固定路由、三协议本地HTTP/SSE工具审批及重启回放、复制兼容与凭据隔离；两供应商六条真实连接及 Agent 工具链路已通过；模型设置两级结构、智谱 Coding Plan 额度卡、模型选择交互的桌面 UI 与真实模型/额度抽查待用户，见[模型设置规范](specs/model-settings.md)、[Coding Plan 额度规范](specs/coding-plan-usage.md)、[模型选择规范](specs/model-selection.md)|
 |ChatGPT 账号供应商（浏览器 OAuth 登录、token 自动刷新与吊销、ChatGPT 后端 Responses 变体、CLI login/logout 与桌面登录卡片）|已实现并接线|OAuth 模块 16 项单测与 6 项 mock issuer e2e（回调保存/state 校验/取消/刷新轮换/永久失败）通过；真实抽查通过：Chrome 授权登录、`login status`、gpt-5.6-luna 真实流式回合、effort 档位、工具闭环（write→审批→read）、桌面已登录状态两端共享。已知缺口：内置模型目录为 codex 全量列表，free 套餐仅部分模型可用（其余 400），待按账号从 /models 过滤；国内访问需代理（CLI 走 HTTPS_PROXY 环境变量，桌面走供应商代理字段）|

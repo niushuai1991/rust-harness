@@ -1,8 +1,9 @@
 # 自动化任务（周期调度）规范
 
-- 日期：2026-11-07（计划拟制）；2026-11-17（修订：任务可选所属项目，列表改为跨项目全量）
+- 日期：2026-11-07（计划拟制）；2026-11-17（修订：任务可选所属项目，列表改为跨项目全量）；2026-11-18（修订：支持无项目自动化，workspace_id 允许空串哨兵）
 - 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
-- 范围：桌面端用户可管理的周期自动化任务：五类周期、创建与编辑时可选所属项目（工作区）、可选绑定会话或自动新建会话投递回合；独立管理面板（跨项目全量列表/启停/编辑/删除/立即执行/运行历史）。
+- 范围：桌面端用户可管理的周期自动化任务：五类周期、创建与编辑时可选所属项目（工作区）或无项目、可选绑定会话或自动新建会话投递回合；独立管理面板（跨项目全量列表/启停/编辑/删除/立即执行/运行历史）。
+
 
 ## 背景与范围
 
@@ -27,7 +28,9 @@
 ### 数据与持久化
 
 - settings KV 新键 `orchestration.automations.v1`（与 `orchestration.schedules.v1` 同模式），存 `Vec<Automation>`；与 schedules 共用 `schedules_lock` 串行化读写。
-- `Automation`（serde camelCase）：`id`（uuid）、`title`（可空，展示回落 prompt 前缀）、`prompt`、`session_id: Option<String>`（绑定目标会话）、`workspace_id`（任务所属项目，创建/编辑时可选，未绑定会话时新建会话归属）、`kind`（`once|daily|weekly|monthly|yearly`）、`at`（once 专用，RFC3339，本地输入转 UTC 存储）、`time`（"HH:MM"，daily/weekly/monthly/yearly 专用）、`weekdays: Option<Vec<u8>>`（weekly 专用，1=周一…7=周日）、`month_day: Option<u8>`（monthly/yearly 专用，1-31）、`month: Option<u8>`（yearly 专用，1-12）、`enabled`、`status`（`active|paused|running|completed|failed|missed|interrupted`）、`next_run_at`（UTC RFC3339）、`last_run_at`、`run_count`、`runs: Vec<AutomationRun>`（内嵌最近 20 条，新记录头插并裁剪）、`created_at`、`updated_at`。
+
+- `Automation`（serde camelCase）：`id`（uuid）、`title`（可空，展示回落 prompt 前缀）、`prompt`、`session_id: Option<String>`（绑定目标会话）、`workspace_id`（任务所属项目，创建/编辑时可选；空串为「无项目」哨兵，未绑定会话时新建无项目会话，见[无项目会话规范](no-project-sessions.md)）、`kind`（`once|daily|weekly|monthly|yearly`）、`at`（once 专用，RFC3339，本地输入转 UTC 存储）、`time`（"HH:MM"，daily/weekly/monthly/yearly 专用）、`weekdays: Option<Vec<u8>>`（weekly 专用，1=周一…7=周日）、`month_day: Option<u8>`（monthly/yearly 专用，1-31）、`month: Option<u8>`（yearly 专用，1-12）、`enabled`、`status`（`active|paused|running|completed|failed|missed|interrupted`）、`next_run_at`（UTC RFC3339）、`last_run_at`、`run_count`、`runs: Vec<AutomationRun>`（内嵌最近 20 条，新记录头插并裁剪）、`created_at`、`updated_at`。
+
 - `AutomationRun`：`id`、`scheduled_at`（本次计划触发时刻）、`triggered_at`、`trigger`（`schedule|manual`）、`status`（`running|succeeded|failed`）、`session_id`、`error`。
 
 ### 下次执行时间计算
@@ -45,7 +48,7 @@
 
 - 复用现有 250ms ticker：`tick()` 处理完 schedules 后串行调用 `tick_automations(recover)`，同一循环天然串行，与 schedules 共用 `schedules_lock`。
 - 到期触发（`enabled && status==active && next_run_at <= now`）：先落库再派发——周期任务先把 `next_run_at` 前推到下一触发点（防重启重复），单次任务先置 `running`。
-- 执行回合复用 `run_owned`：绑定会话直接投递（会话忙时经既有会话队列锁排队，不抢占）；未绑定先 `store.create_session(workspace_id, title)` 再投递。模型解析：读 `app.default_selection`（modelId+effort）→ `build_model_with`；无默认选择时回落第一个启用的模型；均不可用则该次 run 记 failed，不改 next_run_at 语义（周期任务等待下一触发点）。
+- 执行回合复用 `run_owned`：绑定会话直接投递（会话忙时经既有会话队列锁排队，不抢占）；未绑定先 `store.create_session(workspace_id, title)` 再投递（workspace_id 为空串哨兵时新建无项目会话，复用运行时的无项目执行根分支）。模型解析：读 `app.default_selection`（modelId+effort）→ `build_model_with`；无默认选择时回落第一个启用的模型；均不可用则该次 run 记 failed，不改 next_run_at 语义（周期任务等待下一触发点）。
 - 事件：触发时向目标会话 append `automation.triggered`，完成时 append `automation.finished`（含 status/error）；恢复中断 append `automation.interrupted`。创建/更新/删除/启停为纯 KV 操作，不落事件。
 - 恢复语义（启动首轮 recover）：`running` → `interrupted`；once 且已过期 → `missed`；周期且 `next_run_at` 已过 → 重算前推至未来（不补跑、不计 run）。
 - 手动立即执行（run_now）：不改 `next_run_at` 与 status，插入 `trigger=manual` 的 run 记录并派发，完成后仅结算该记录与 run_count；暂停状态允许手动执行。

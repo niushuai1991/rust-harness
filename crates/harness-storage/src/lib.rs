@@ -12,6 +12,7 @@ use std::{
     time::Duration,
 };
 
+/// 无项目会话（workspace_id 空串哨兵）沿用同一 schema；不新增迁移。
 const SCHEMA_VERSION: i64 = 4;
 /// 会话列表「项目」视图置顶工作区集合的 settings KV 键。
 pub const PINNED_WORKSPACES_KEY: &str = "workspace.pinned.v1";
@@ -186,12 +187,10 @@ impl Store {
         Ok(Self { pool, artifact_dir })
     }
 
+    /// 创建会话。`workspace` 为空串表示「无项目」会话（哨兵值）：不挂任何项目，执行根由运行时按会话独立分配；标题校验与状态语义与普通会话一致。
     pub async fn create_session(&self, workspace: &str, title: &str) -> AppResult<SessionInfo> {
-        if workspace.is_empty() || title.len() > 512 {
-            return Err(AppError::new(
-                "INVALID_INPUT",
-                "工作区不能为空，标题不得超过512字节",
-            ));
+        if title.len() > 512 {
+            return Err(AppError::new("INVALID_INPUT", "标题不得超过512字节"));
         }
         let title_state = if title == "新会话" {
             "default"
