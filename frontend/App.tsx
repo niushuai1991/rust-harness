@@ -753,7 +753,7 @@ export default function App(){
     {(!visibleSessions.length&&!(viewMode==='project'&&!query&&workspaces.length))&&<p className="muted empty-small">{query?'无匹配会话。':workspaceId?'还没有会话，点击「新建聊天」开始':'打开工作区后，会话将保存在本机。'}</p>}
     {!visibleSessions.length&&!query&&!workspaceId&&<button className="empty-open" onClick={openWorkspace} disabled={busy||!desktop()}><FolderOpen size={14}/>打开工作区</button>}
    </nav>
-   <div className="sidebar-bottom"><div className="local-badge"><i className="live-dot"/> 本地优先 · 无遥测</div><button onClick={()=>useSidePanel.getState().openPlans()}><Target size={17}/>计划与目标</button><button onClick={()=>setPanel('automations')}><Timer size={17}/>自动化{automationCount!==null&&<span className="count">{automationCount}</span>}</button><button aria-label="设置" onClick={()=>openSettings()}><Settings size={17}/>设置</button></div>
+   <div className="sidebar-bottom"><button onClick={()=>useSidePanel.getState().openPlans()}><Target size={17}/>计划与目标</button><button onClick={()=>setPanel('automations')}><Timer size={17}/>自动化{automationCount!==null&&<span className="count">{automationCount}</span>}</button><button aria-label="设置" onClick={()=>openSettings()}><Settings size={17}/>设置</button></div>
    <div className="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="调整列表宽度" onPointerDown={startSidebarDrag}/>
   </aside>
   {sessionPop&&createPortal(<SessionPopCard title={sessionPop.title} time={sessionPop.time} rect={sessionPop.rect}/>,document.body)}
