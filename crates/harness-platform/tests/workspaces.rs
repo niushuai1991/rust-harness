@@ -4,6 +4,9 @@ use std::{fs, path::PathBuf};
 fn fixture() -> (tempfile::TempDir, PathBuf, WorkspaceManager) {
     let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.cache/tests");
     fs::create_dir_all(&base).unwrap();
+    // 基址先归一化（去掉 `..`），与 WorkspaceManager::new 对数据目录的
+    // canonicalize 保持一致，避免 temp.path() 拼出的期望路径带 `..` 段。
+    let base = dunce::canonicalize(&base).unwrap();
     let temp = tempfile::tempdir_in(base).unwrap();
     let source = temp.path().join("source");
     fs::create_dir(&source).unwrap();

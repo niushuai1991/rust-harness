@@ -122,7 +122,7 @@ it('项目下拉默认当前项目，切换后联动目标会话并提交所选�
   expect((sessionSelect2 as HTMLSelectElement).options[1].textContent).toBe('别处会话');
   fireEvent.change(screen.getByLabelText(/任务内容/),{target:{value:'跨项目任务'}});
   fireEvent.click(screen.getByRole('button',{name:'创建任务'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('automation_create',expect.objectContaining({workspaceId:'w2',sessionId:null})));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('automation_create',{params:expect.objectContaining({workspaceId:'w2',sessionId:null})}));
 });
 
 it('列表展示跨项目任务并标注所属项目',async()=>{
