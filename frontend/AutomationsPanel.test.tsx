@@ -23,6 +23,16 @@ it('列表渲染周期描述、目标会话与运行历史计数',async()=>{
   expect(screen.getByText('暂无执行记录。')).toBeInTheDocument();
 });
 
+it('运行历史的会话短 ID 可点击并携带会话与项目 ID 跳转',async()=>{
+  mocks.command.mockResolvedValue([daily]);
+  const onOpenSession=vi.fn();
+  render(<AutomationsPanel workspaceId="w1" workspaces={workspaces} allSessions={allSessions} onOpenSession={onOpenSession}/>);
+  await screen.findByText(/每天 09:30/);
+  fireEvent.click(screen.getByText(/运行历史（最近 1 次）/));
+  fireEvent.click(screen.getByRole('button',{name:'s1'}));
+  expect(onOpenSession).toHaveBeenCalledWith('s1','w1');
+});
+
 it('新建表单默认每天 09:30，切换单次后默认时间秒归零并提交完整载荷',async()=>{
   mocks.command.mockResolvedValue([daily]);
   renderPanel();

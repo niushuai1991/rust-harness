@@ -9,7 +9,7 @@ import {command,desktop,errorText,send} from './api';
 import {KNOWN_APPROVALS} from './types';
 import {INIT_PROMPT,SLASH_COMMANDS,commandTokenUnderCursor,expandSlashPrompt,filterSlashCommands,type SlashSpec} from './slashCommands';
 import {filterSkillRows,skillRowsFrom,skillTokenUnderCursor,type SkillRow,type SkillToken} from './skills';
-import {GROUP_LABELS,filterByTitle,formatFullTime,groupByProject,groupByTime,relativeLabel,subagentsOf,withoutSubagents,type ViewMode} from './sessionList';
+import {GROUP_LABELS,filterByTitle,formatFullTime,groupByProject,groupByTime,relativeLabel,subagentsOf,upsertSession,withoutSubagents,type ViewMode} from './sessionList';
 import {useChat} from './store';
 import {DiffView,diffStats,parseUnifiedDiff} from './DiffView';
 import {groupFileEdits,summarizeFileEdits,type FileEditGroup} from './fileEdits';
@@ -169,6 +169,20 @@ export default function App(){
   if(!isTauri())return;
   let disposed=false,stop=()=>{};
   listen<string>('web-panel-agent-open',event=>{useSidePanel.getState().openWeb(String(event.payload))}).then(un=>{if(disposed)un();else stop=un}).catch(()=>{});
+  return()=>{disposed=true;stop()};
+ },[]);
+ // 自动化任务到点执行（含手动触发）后同步侧栏：后端推事件，这里拉取单会话增量合入，不自动打开。
+ useEffect(()=>{
+  if(!isTauri())return;
+  let disposed=false,stop=()=>{};
+  listen<string>('automation-session-created',event=>{
+   const id=String(event.payload);
+   if(!id)return;
+   command<SessionInfo>('session_get',{sessionId:id}).then(s=>{
+    setAllSessions(old=>upsertSession(old,s));
+    setSessions(old=>old.some(item=>item.id===s.id)?old:(s.workspaceId===activeWorkspaceId.current?[s,...old]:old));
+   }).catch(()=>{});
+  }).then(un=>{if(disposed)un();else stop=un}).catch(()=>{});
   return()=>{disposed=true;stop()};
  },[]);
  // 侧栏「自动化」徽标：跟随工作区拉取任务数，面板增删后经 onChanged 刷新。
@@ -737,7 +751,7 @@ export default function App(){
   <PluginThemeHost workspaceId={workspaceId} revision={pluginRevision}/>
   {panel==='plugins'&&<PluginPanel workspaceId={workspaceId} sessionId={sessionId} revision={pluginRevision} onChanged={()=>setPluginRevision(v=>v+1)} onClose={()=>setPanel(null)}/>}
 
-  {panel==='automations'&&<Modal title="自动化任务" onClose={()=>setPanel(null)}><AutomationsPanel workspaceId={workspaceId} workspaces={workspaces} allSessions={allSessions} onChanged={()=>{if(workspaceId)command<unknown[]>('automation_list',{workspaceId}).then(list=>setAutomationCount(list.length)).catch(()=>{})}}/></Modal>}
+  {panel==='automations'&&<Modal title="自动化任务" onClose={()=>setPanel(null)}><AutomationsPanel workspaceId={workspaceId} workspaces={workspaces} allSessions={allSessions} onChanged={()=>{if(workspaceId)command<unknown[]>('automation_list',{workspaceId}).then(list=>setAutomationCount(list.length)).catch(()=>{})}} onOpenSession={openFromPanel}/></Modal>}
   {wsDialog&&<Modal title={wsDialog.mode==='create'?'打开工作区':'重命名项目'} onClose={()=>setWsDialog(null)}><form className="settings-form" onSubmit={e=>{e.preventDefault();void (wsDialog.mode==='create'?createWorkspace():renameWorkspace())}}>
    {wsDialog.mode==='create'&&<p className="muted">{wsDialog.path}</p>}
    <label>项目名称<input value={wsDialog.name} onChange={e=>setWsDialog(old=>old&&{...old,name:e.target.value})} placeholder="默认使用目录名"/></label>

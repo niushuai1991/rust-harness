@@ -511,8 +511,7 @@ impl ExternalTool for UnsafeTool {
 }
 
 #[tokio::test]
-async fn plan_denies_auto_write_and_untrusted_approval_exempt_tool_but_allows_read_and_plan_write()
-{
+async fn plan_denies_unsafe_tools_but_allows_read_plan_write_and_research_spawn() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("source");
     std::fs::create_dir(&source).unwrap();
@@ -565,7 +564,7 @@ async fn plan_denies_auto_write_and_untrusted_approval_exempt_tool_but_allows_re
         .await
         .unwrap();
     let events = runtime.store.events(&session.id, 0).await.unwrap();
-    for id in ["write", "custom", "shell", "spawn", "fetch"] {
+    for id in ["write", "custom", "shell", "fetch"] {
         assert!(events.iter().any(|event| event.kind == "tool.result"
             && event.data["callId"] == id
             && event.data["isError"] == true));
@@ -573,6 +572,17 @@ async fn plan_denies_auto_write_and_untrusted_approval_exempt_tool_but_allows_re
     assert!(events.iter().any(|event| event.kind == "tool.result"
         && event.data["callId"] == "read"
         && event.data["isError"] == false));
+    // 计划模式放行调研子代理：spawn 成功执行，子会话强制只读并带 planMode 标记。
+    assert!(events.iter().any(|event| event.kind == "tool.result"
+        && event.data["callId"] == "spawn"
+        && event.data["isError"] == false));
+    let created = events
+        .iter()
+        .find(|event| event.kind == "subagent.created")
+        .expect("应记录 subagent.created");
+    assert_eq!(created.data["planMode"], json!(true));
+    let child = created.data["sessionId"].as_str().unwrap();
+    assert!(runtime.session_plan_get(child).await.unwrap());
     assert!(
         events
             .iter()

@@ -20,7 +20,7 @@ const localTime=(iso:string)=>{const t=Date.parse(iso);return Number.isFinite(t)
 type PanelAction=()=>Promise<unknown>;
 
 /// 侧栏「自动化」面板：周期任务的列表、创建/编辑与运行历史。
-export function AutomationsPanel({workspaceId,workspaces,allSessions,onChanged}:{workspaceId:string;workspaces:WorkspaceInfo[];allSessions:SessionInfo[];onChanged?:()=>void}) {
+export function AutomationsPanel({workspaceId,workspaces,allSessions,onChanged,onOpenSession}:{workspaceId:string;workspaces:WorkspaceInfo[];allSessions:SessionInfo[];onChanged?:()=>void;onOpenSession?:(sessionId:string,workspaceId:string)=>void}) {
   const [items,setItems]=useState<AutomationInfo[]>([]);
   const [error,setError]=useState(''),[busy,setBusy]=useState(false),[loaded,setLoaded]=useState(false);
   const [view,setView]=useState<'list'|'form'>('list');
@@ -114,7 +114,7 @@ export function AutomationsPanel({workspaceId,workspaces,allSessions,onChanged}:
                 <time>{localTime(r.triggeredAt)}</time>
                 <span>{RUN_STATUS[r.status]??r.status}{r.error?`：${r.error}`:''}</span>
                 {r.trigger==='manual'&&<span className="run-manual">手动</span>}
-                <span className="run-session">{r.sessionId.slice(0,8)}</span>
+                {onOpenSession?<button type="button" className="run-session" title="打开会话" onClick={()=>onOpenSession(r.sessionId,a.workspaceId)}>{r.sessionId.slice(0,8)}</button>:<span className="run-session">{r.sessionId.slice(0,8)}</span>}
               </li>)}</ul>:<p className="field-hint">暂无执行记录。</p>}
             </details>
             <div className="plugin-actions">
