@@ -73,7 +73,7 @@ export function AutomationsPanel({workspaceId,sessions,onChanged}:{workspaceId:s
     };
     void action(async()=>{
       if(editing)await command('automation_update',{id:editing.id,params});
-      else await command('automation_create',params);
+      else await command('automation_create',{params});
       backToList();
     });
   }
