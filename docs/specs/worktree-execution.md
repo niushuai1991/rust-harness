@@ -19,19 +19,19 @@
 
 ## 执行模式与执行根
 
-- `WorkspaceInfo`（harness-contracts）新增 `execution_mode: "replica" | "worktree"`，record.json 落盘；旧记录缺字段按 `replica` 解释，行为完全不变。`worktree` 模式仅对 git 仓库开放（源目录含 `.git`），创建工作区时选择，之后可在桌面端项目右键菜单的「编辑」弹窗中切换（见下节「执行模式切换」）。
-- `record.json` 新增 `worktrees` 映射：`session_id -> { path, branch, created_at }`，登记宿主创建的会话 worktree，供清理与查询。
-- worktree 为**会话级**：每个会话一个，路径 `<sourcePath>/.worktrees/harness-<session_id 前 8 位>/`，分支默认 `feat/session-<session_id 前 8 位>`（宿主无法预知任务性质；模型可在提权批准后 `git branch -m` 改名以符合 AGENTS.md 的 feat/fix 约定）。基于创建时刻的源项目 `HEAD` 新建分支。
+- `ExecutionMode` 取值 `direct | replica | worktree`（见[直接执行规范](direct-execution.md)）。`WorkspaceInfo.execution_mode` 表示工作区默认执行位置并落盘 record.json；旧记录缺字段按 `replica` 解释。桌面项目「编辑」弹窗只提供 `direct` / `replica` 两项；`worktree` 改为会话级 opt-in，仅对 git 仓库开放（源目录含 `.git`），新建会话时显式选择。
+- `record.json` 新增 `worktrees` 映射：`session_id -> { path, branch, capability_id, created_at }`，登记宿主创建的会话 worktree，供清理与查询；`capability_id` 为创建者会话 id（子会话复用父登记时保持父值）。
+- worktree 为**会话级**：新建会话时选择 worktree 才创建，路径 `<sourcePath>/.worktrees/harness-<session_id 前 8 位>/`，分支默认 `feat/session-<session_id 前 8 位>`（宿主无法预知任务性质；模型可在提权批准后 `git branch -m` 改名以符合 AGENTS.md 的 feat/fix 约定）。基于创建时刻的源项目 `HEAD` 新建分支。子代理继承父会话执行位置并沿父登记解析同一 worktree（不写自己的登记）；会话 fork 继承执行位置，在首个 turn 懒建自己的 worktree。
 - 创建时机：**会话首个 turn 启动前懒创建**（宿主进程执行 `git worktree add`，不经过 agent 沙箱；`core.hooksPath=NUL` 防源项目 hooks）。创建失败（分支冲突、残留目录等）时本回合报错终止——worktree 模式不建隔离副本，无副本可降级；`.worktrees/` 缺失时先创建该目录。
-- 执行根解析收敛为单一来源：租约新增 `execution_root()`，replica 模式返回 `replica_path`，worktree 模式返回 worktree 路径。文件工具、shell、skills/LSP 扫描、`workspace_context`（`harness-runtime/src/agent.rs`）统一改读该方法。
+- 执行根解析收敛为单一来源：`WorkspaceManager::execution_target()` 按「会话固化值 > 已登记 worktree > 工作区默认」返回执行根、执行位置、capability 派生 id 与分支；文件工具、shell、skills/LSP 扫描、`workspace_context`（`harness-runtime/src/agent.rs`）统一消费。
 - 系统提示改写（worktree 模式）：「执行根为源项目的 worktree 分支 X（路径 Y），你的编辑直接生效于该分支工作区；worktree 已由宿主创建，无需自行 git worktree add。主仓 `.git` 与 main 工作区不可直接写入，commit/push 等操作用 shell 执行 git 命令，被沙箱拦截时会触发提权审批。」——显式声明代建事实以消解 AGENTS.md「必须自建 worktree」条款与运行环境的指令冲突。
 
 ## 执行模式切换（2026-11-18 修订）
 
-- 入口：桌面端项目右键菜单「编辑」弹窗，名称与执行模式在同一表单内一次保存；平台方法 `WorkspaceManager::update(id, name, execution_mode)` 在独占锁下校验并一次原子写入 `record.json`（`rename` 保留为仅改名的委托）。组头不再提供内联编辑按钮。CLI / JSON-RPC / ACP 不暴露切换。
-- 非破坏性：切到 worktree 时保留隔离副本目录、同步基线与 `worktrees` 登记；副本中尚未同步的改动在切换回 replica 后仍可继续审阅。切到 replica 时，若副本目录已存在（曾以 replica 运行过）原样保留目录与基线；若此前没有副本（worktree 创建的项目），按源目录当前快照重建副本与基线。已创建的会话 worktree 目录与分支不删除，切回 worktree 时按登记幂等复用。
-- 约束：切到 worktree 要求源目录是 git 仓库（`INVALID_WORKSPACE`）；名称空白拒绝（`INVALID_NAME`），校验失败时名称与模式均不落盘。运行中回合持共享租约时拒绝（桌面预检返回 `WORKSPACE_RUNNING`，竞态由 `BUSY` 兜底）。
-- 生效时机：执行模式在每个 turn 解析执行根时读取，因此切换从下一回合起生效，无需重启会话。
+- 入口：桌面端项目右键菜单「编辑」弹窗，名称与项目默认执行模式在同一表单内一次保存；平台方法 `WorkspaceManager::update(id, name, execution_mode)` 在独占锁下校验并一次原子写入 `record.json`（`rename` 保留为仅改名的委托）。组头不再提供内联编辑按钮。CLI / JSON-RPC / ACP 不暴露切换。会话级执行位置在新建会话时选择并固化，不在项目弹窗中修改。
+- 非破坏性：切到 `direct` 或 `worktree` 时保留隔离副本目录、同步基线与 `worktrees` 登记；副本中尚未同步的改动在切换回 `replica` 后仍可继续审阅。切到 `replica` 时，若副本目录已存在（曾以 replica 运行过）原样保留目录与基线；若此前没有副本（`direct`/`worktree` 创建的项目），按源目录当前快照重建副本与基线。已创建的会话 worktree 目录与分支不删除，会话再次以 worktree 运行时按登记幂等复用。
+- 约束：切到 `worktree` 要求源目录是 git 仓库（`INVALID_WORKSPACE`）；桌面 UI 已不再产生项目级 `worktree` 值，该分支仅保留给 CLI / JSON-RPC 兼容与旧记录。名称空白拒绝（`INVALID_NAME`），校验失败时名称与模式均不落盘。运行中回合持共享租约时拒绝（桌面预检返回 `WORKSPACE_RUNNING`，竞态由 `BUSY` 兜底）。
+- 生效时机：工作区模式只影响之后新建的会话与历史会话字段为空的会话；已固化的会话执行位置不随工作区设置漂移（解析优先级见[直接执行规范](direct-execution.md)）。
 - 计划模式：已处于计划模式且尚未创建 worktree 的会话，切到 worktree 后仍受既有 `PLAN_MODE_WORKTREE` 限制（需退出计划模式完成一次回合，或先以非计划模式运行一次）。
 
 ## 沙箱租约与授权
@@ -63,16 +63,16 @@
 
 ## 各端接入
 
-- 桌面端：创建工作区弹窗新增执行模式选择（git 仓库可选 worktree）；审批卡片复用现有组件，展示提权 reason；会话头或设置处展示执行模式与 worktree 路径。
-- CLI：`harness` 工作区创建与 `chat` 新增 `--exec-mode` 参数，缺省跟随工作区记录；REPL `/status` 展示执行根。
-- JSON-RPC / ACP：会话创建参数透传执行模式；提权审批沿用既有 permission 请求通道。
+- 桌面端：项目「编辑」弹窗提供 `direct` / `replica` 两项，`worktree` 在新建会话草稿态选择（git 仓库可选）；审批卡片复用现有组件，展示提权 reason；会话头或设置处展示执行模式与 worktree 路径。
+- CLI：`harness` 工作区创建与 `chat` 的 `--exec-mode` 参数缺省 `direct`；REPL `/status` 展示执行根。
+- JSON-RPC / ACP：会话创建沿用工作区默认执行位置；提权审批沿用既有 permission 请求通道。
 
 ## 边界与非目标
 
-- 不做「直接模式」（执行根=源项目目录）：agent 直接改 main 工作区需要重新评估审阅语义与 ACL 侵入，留待后续单独规范。
+- 直接模式（执行根=源项目目录）见[直接执行规范](direct-execution.md)；本规范只描述 worktree 与提权重跑。
 - 不做宿主 git 通道（一键 commit/PR 面板）：git 写操作统一走提权重跑。
-- 副本模式保持默认与全部现有行为：本 spec 全部改动以 `execution_mode` 分流，replica 路径零变化，回归风险收敛在新增分支。
-- 多会话并行同工作区时各自独立 worktree，互不影响；会话删除不删 worktree（保留现场），工作区删除时按登记表清理宿主创建的 worktree。
+- replica 模式保持全部现有行为：本 spec 全部改动以执行位置分流，replica 路径零变化，回归风险收敛在新增分支。
+- 选择 worktree 的会话各自独立 worktree，互不影响；子代理复用父会话 worktree。会话删除不删 worktree（保留现场），工作区删除时按登记表清理宿主创建的 worktree（当前未实现，见[能力状态矩阵](../capability-matrix.md)）。
 - v1 已知限制：stdio MCP 服务器与生产模式语言服务器启动依赖隔离副本的沙箱租约反推，worktree 执行模式下明确报错 `UNSUPPORTED`（test seam 注册的 LSP 连接不受影响）。
 - 风险：提权关键词误判（保守表缓解；中文系统 PowerShell 错误流已强制 UTF-8 输出并覆盖「的访问被拒绝」等措辞）；AGENTS.md 与系统提示残余冲突（代建声明 + 分支改名通道缓解）；worktree 构建冷启动慢（v1 接受）。
 

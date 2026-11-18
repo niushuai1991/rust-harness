@@ -2,17 +2,19 @@ import {useEffect,useRef,useState} from 'react';
 import {AlertTriangle,Check,ChevronDown,FileMinus,FilePen,FilePlus,RefreshCw} from 'lucide-react';
 import {command,errorText} from './api';
 import {DiffView,diffStats,parseUnifiedDiff} from './DiffView';
-import type {FileChange,WorkspaceFileDiff} from './types';
+import type {ExecutionMode,FileChange,WorkspaceFileDiff} from './types';
 type DiffState={loading?:boolean;view?:WorkspaceFileDiff;error?:string};
 const KIND_ICONS:{[kind:string]:typeof FilePen}={modified:FilePen,added:FilePlus,deleted:FileMinus};
 // 改动审阅视图：自 DiffPanel 迁入右侧面板；diff 懒加载，打开期间轮询保留用户勾选。
-// worktree 执行模式改动已直接落盘，审阅只读展示，无同步动作。
-export function ChangesView({workspaceId,executionMode='replica'}:{workspaceId:string;executionMode?:'replica'|'worktree'}) {
+// worktree 与直接模式的改动已直接落盘，审阅只读展示，无同步动作。
+export function ChangesView({workspaceId,executionMode='replica'}:{workspaceId:string;executionMode?:ExecutionMode}) {
+ const direct=executionMode==='direct';
  const [changes,setChanges]=useState<FileChange[]>([]),[selected,setSelected]=useState<string[]>([]),[error,setError]=useState(''),[busy,setBusy]=useState(false),[confirm,setConfirm]=useState(false),[loaded,setLoaded]=useState(false),[status,setStatus]=useState('');
  const [expanded,setExpanded]=useState<Record<string,boolean>>({}),[diffs,setDiffs]=useState<Record<string,DiffState>>({});
  const changesRef=useRef<FileChange[]>([]),expandedRef=useRef<Record<string,boolean>>({});
  expandedRef.current=expanded;
  async function load(resetSelection:boolean) {
+  if(direct)return;
   setError('');
   try{
    const list=await command<FileChange[]>('workspace_diff',{workspaceId});
@@ -27,7 +29,7 @@ export function ChangesView({workspaceId,executionMode='replica'}:{workspaceId:s
    else setSelected(prev=>[...prev.filter(p=>list.some(c=>c.path===p)),...list.filter(c=>!c.conflict&&!oldPaths.has(c.path)).map(c=>c.path)]);
   }catch(e){setError(errorText(e))}
  }
- useEffect(()=>{void load(true);const timer=setInterval(()=>{void load(false)},5000);return()=>clearInterval(timer)},[workspaceId]);
+ useEffect(()=>{if(direct){setChanges([]);changesRef.current=[];setLoaded(true);return}void load(true);const timer=setInterval(()=>{void load(false)},5000);return()=>clearInterval(timer)},[workspaceId,direct]);
  async function apply() {
   setBusy(true);setError('');
   try{
@@ -45,11 +47,12 @@ export function ChangesView({workspaceId,executionMode='replica'}:{workspaceId:s
   catch(e){setDiffs(old=>({...old,[path]:{error:errorText(e)}}))}
  }
  return <>
-  <div className="changes-bar"><p>对比托管工作副本与原项目。展开文件查看行级差异，勾选后同步。</p><button type="button" className="soft" disabled={busy} onClick={()=>void load(true)}><RefreshCw size={14}/>刷新</button></div>
+  <div className="changes-bar"><p>{direct?'直接执行位置：改动已直接写入源项目目录，没有隔离副本可同步。':'对比托管工作副本与原项目。展开文件查看行级差异，勾选后同步。'}</p>{!direct&&<button type="button" className="soft" disabled={busy} onClick={()=>void load(true)}><RefreshCw size={14}/>刷新</button>}</div>
   {error&&<p role="alert" className="inline-error">{error}</p>}
   {status&&<p role="status" className="success">{status}</p>}
   <div className="changes-list">
-   {loaded&&!changes.length&&<div className="diff-empty"><Check size={26}/><h3>工作副本没有待同步更改</h3><p className="muted">下一次改进，从一个想法开始。</p></div>}
+   {direct&&<div className="diff-empty"><Check size={26}/><h3>改动已直接写入源项目</h3><p className="muted">右侧不提供差异同步；如需回滚请使用项目自身的版本控制。</p></div>}
+   {loaded&&!changes.length&&!direct&&<div className="diff-empty"><Check size={26}/><h3>工作副本没有待同步更改</h3><p className="muted">下一次改进，从一个想法开始。</p></div>}
    {changes.map(c=>{
     const state=diffs[c.path],stats=state?.view?.unified?diffStats(parseUnifiedDiff(state.view.unified)):null;
     const Icon=KIND_ICONS[c.kind]??FilePen;
@@ -75,7 +78,8 @@ export function ChangesView({workspaceId,executionMode='replica'}:{workspaceId:s
   </div>
   <div className="changes-foot">
    <span className="muted">已选择 {selected.length} 个文件</span>
-   {executionMode==='worktree'?<span className="muted">worktree 执行模式：改动已直接写入会话 worktree 分支，无需审阅同步。</span>
+   {direct?<span className="muted">直接执行位置：改动已写入源项目，无需审阅同步。</span>
+    :executionMode==='worktree'?<span className="muted">worktree 执行模式：改动已直接写入会话 worktree 分支，无需审阅同步。</span>
     :confirm?<><span>确认写入原项目？</span><button onClick={()=>setConfirm(false)} disabled={busy}>返回审阅</button><button className="primary" onClick={apply} disabled={busy}>{busy?'同步中…':'确认应用更改'}</button></>
     :<button className="primary" disabled={busy||!selected.length} onClick={()=>setConfirm(true)}>同步选中文件</button>}
   </div>

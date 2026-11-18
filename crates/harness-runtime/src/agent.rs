@@ -366,14 +366,25 @@ impl Runtime {
             } else {
                 Some(self.workspaces.get(&info.workspace_id)?)
             };
-            if let Some(workspace) = &workspace
-                && workspace.execution_mode == ExecutionMode::Worktree
-                && !workspace.worktrees.contains_key(session)
-            {
-                return Err(AppError::new(
-                    "PLAN_MODE_WORKTREE",
-                    "只读模式不能创建会话 worktree",
-                ));
+            if let Some(workspace) = &workspace {
+                // 会话固化执行位置优先：直接模式会话进入计划模式不触发 worktree 预建；
+                // 子代理沿父会话登记判断是否已有 worktree。
+                let mode = self.workspaces.resolved_mode(
+                    &info.workspace_id,
+                    session,
+                    info.execution_mode,
+                )?;
+                let parent = self.parents.lock().unwrap().get(session).cloned();
+                let has_worktree = workspace.worktrees.contains_key(session)
+                    || parent
+                        .as_deref()
+                        .is_some_and(|parent| workspace.worktrees.contains_key(parent));
+                if mode == ExecutionMode::Worktree && !has_worktree {
+                    return Err(AppError::new(
+                        "PLAN_MODE_WORKTREE",
+                        "只读模式不能创建会话 worktree",
+                    ));
+                }
             }
             // Older turns have no proof their hooks and external tools left no detached work.
             let events = self.store.events(session, 0).await?;
@@ -475,11 +486,11 @@ impl Runtime {
         match &config {
             ServerConfig::StreamableHttp { .. } => self.mcp.connect_http(&config, true).await?,
             ServerConfig::Stdio { command, args, .. } => {
-                // worktree 执行模式不建隔离副本，沙箱 stdio 反推租约失败；v1 明确不支持。
-                if info.execution_mode == ExecutionMode::Worktree {
+                // 直接模式与 worktree 模式不建隔离副本，沙箱 stdio 反推租约失败；v1 明确不支持。
+                if info.execution_mode != ExecutionMode::Replica {
                     return Err(AppError::new(
                         "UNSUPPORTED",
-                        "worktree 执行模式暂不支持 stdio MCP 服务器",
+                        "直接/worktree 执行位置暂不支持 stdio MCP 服务器",
                     ));
                 }
                 let child = ShellService::spawn_stdio(
@@ -548,11 +559,11 @@ impl Runtime {
             return Ok(existing);
         }
         let info = self.workspaces.get(workspace)?;
-        // worktree 执行模式不建隔离副本，沙箱 stdio 反推租约失败；v1 明确不支持。
-        if info.execution_mode == ExecutionMode::Worktree {
+        // 直接模式与 worktree 模式不建隔离副本，沙箱 stdio 反推租约失败；v1 明确不支持。
+        if info.execution_mode != ExecutionMode::Replica {
             return Err(AppError::new(
                 "UNSUPPORTED",
-                "worktree 执行模式暂不支持生产模式启动语言服务器；可用 test seam 注册连接",
+                "直接/worktree 执行位置暂不支持生产模式启动语言服务器；可用 test seam 注册连接",
             ));
         }
         let replica = PathBuf::from(&info.replica_path);
@@ -947,8 +958,15 @@ impl Runtime {
         }
         // worktree 执行模式：会话首个 turn 前懒建宿主代建的会话 worktree
         // （写主仓 .git 由宿主完成，不经 agent 沙箱）；失败则本回合报错终止。
+        // 子代理沿父会话登记复用父 worktree，避免回合内写记录与共享租约冲突。
+        let parent_session = self.parents.lock().unwrap().get(&session_id).cloned();
         let exec = self
-            .resolve_exec_root(&session.workspace_id, &session_id)
+            .resolve_exec_root(
+                &session.workspace_id,
+                &session_id,
+                session.execution_mode,
+                parent_session.as_deref(),
+            )
             .await?;
         // 租约持有至回合结束（序列化同一工作区的并发运行与同步）；无项目会话没有
         // 工作区级同步语义，跳过租约（会话队列已串行化同一会话的回合）。
@@ -1510,12 +1528,15 @@ impl Runtime {
             step = step.saturating_add(1);
         }
     }
-    /// 解析会话执行根与执行上下文：replica 模式为隔离副本（capability 派生自工作区 id）；
-    /// worktree 模式为宿主代建的会话 worktree（capability 派生自会话 id，与 prepare 授权一致）。
+    /// 解析会话执行根与执行上下文：直接模式为源项目目录（capability 为空、无沙箱）；
+    /// replica 模式为隔离副本（capability 派生自工作区 id）；worktree 模式为宿主代建的
+    /// 会话 worktree（capability 派生自会话 id，与 prepare 授权一致）。
     async fn resolve_exec_root(
         &self,
         workspace_id: &str,
         session_id: &str,
+        session_mode: Option<ExecutionMode>,
+        parent_session: Option<&str>,
     ) -> AppResult<ExecContext> {
         // 无项目会话（workspace_id 哨兵空串）：执行根为数据目录下的会话独立 scratch root，
         // 沙箱授权派生自会话 id；无隔离副本与同步审阅语义。
@@ -1533,35 +1554,36 @@ impl Runtime {
             });
         }
         let info = self.workspaces.get(workspace_id)?;
-        if info.execution_mode == ExecutionMode::Worktree
+        let mode = self
+            .workspaces
+            .resolved_mode(workspace_id, session_id, session_mode)?;
+        let has_worktree = info.worktrees.contains_key(session_id)
+            || parent_session
+                .and_then(|parent| info.worktrees.get(parent))
+                .is_some();
+        if mode == ExecutionMode::Worktree
             && self.session_plan_get(session_id).await?
-            && !info.worktrees.contains_key(session_id)
+            && !has_worktree
         {
             return Err(AppError::new(
                 "PLAN_MODE_WORKTREE",
                 "只读模式不能创建会话 worktree",
             ));
         }
-        if info.execution_mode == ExecutionMode::Replica {
-            return Ok(ExecContext {
-                root: PathBuf::from(&info.replica_path),
-                mode: ExecutionMode::Replica,
-                capability_id: workspace_id.to_owned(),
-                branch: None,
-            });
-        }
         let manager = self.workspaces.clone();
         let wid = workspace_id.to_owned();
         let sid = session_id.to_owned();
-        let worktree =
-            tokio::task::spawn_blocking(move || manager.ensure_session_worktree(&wid, &sid))
-                .await
-                .map_err(internal)??;
+        let parent = parent_session.map(str::to_owned);
+        let target = tokio::task::spawn_blocking(move || {
+            manager.execution_target(&wid, &sid, session_mode, parent.as_deref())
+        })
+        .await
+        .map_err(internal)??;
         Ok(ExecContext {
-            root: PathBuf::from(&worktree.path),
-            mode: ExecutionMode::Worktree,
-            capability_id: session_id.to_owned(),
-            branch: Some(worktree.branch),
+            root: target.root,
+            mode: target.mode,
+            capability_id: target.capability_id,
+            branch: target.branch,
         })
     }
     pub(crate) async fn approve(
@@ -1785,7 +1807,7 @@ impl Runtime {
                 let content = arg(a, "content")?.to_owned();
                 let root = root.to_path_buf();
                 let reads = reads.clone();
-                let worktree = exec.mode == ExecutionMode::Worktree;
+                let replica = exec.mode == ExecutionMode::Replica;
                 let (text, write_diff) = blocking_io(move || {
                     // 文件写入互斥：与并发段隔离（写类工具只在串行屏障执行）。
                     let _mutation = FILE_MUTATION.lock().unwrap();
@@ -1807,7 +1829,7 @@ impl Runtime {
                     let write_diff =
                         harness_platform::diffview::from_texts(&path, before.as_deref(), &content);
                     Ok::<_, AppError>((
-                        format!("已写入{} {path}", if worktree { "" } else { "副本" }),
+                        format!("已写入{} {path}", if replica { "副本" } else { "" }),
                         write_diff,
                     ))
                 })
@@ -1821,7 +1843,7 @@ impl Runtime {
                 let new = arg(a, "newText")?.to_owned();
                 let root = root.to_path_buf();
                 let reads = reads.clone();
-                let worktree = exec.mode == ExecutionMode::Worktree;
+                let replica = exec.mode == ExecutionMode::Replica;
                 let (text, edit_diff) = blocking_io(move || {
                     let _mutation = FILE_MUTATION.lock().unwrap();
                     if !reads.lock().unwrap().contains_key(&path) {
@@ -1846,7 +1868,7 @@ impl Runtime {
                     let edit_diff =
                         harness_platform::diffview::from_texts(&path, Some(&content), &updated);
                     Ok::<_, AppError>((
-                        format!("已修改{} {path}", if worktree { "" } else { "副本" }),
+                        format!("已修改{} {path}", if replica { "副本" } else { "" }),
                         edit_diff,
                     ))
                 })
@@ -1893,7 +1915,11 @@ impl Runtime {
                 let command = arg(a, "command")?;
                 let plan_mode = self.session_plan_get(&session).await?;
                 let mut escalated = false;
-                let output = if plan_mode {
+                let output = if exec.mode == ExecutionMode::Direct {
+                    // 直接模式：不对源项目目录打沙箱授权，宿主令牌直接执行；
+                    // 命令审批已由本调用前的审批策略决定，无需再走提权兜底。
+                    ShellService::run_in(root, "", command, cancel.clone(), false).await?
+                } else if plan_mode {
                     // 计划模式只读命令：单次沙箱内执行，失败按普通失败呈现，不申请提权重跑。
                     ShellService::run_in(root, &exec.capability_id, command, cancel.clone(), true)
                         .await?
@@ -1983,9 +2009,10 @@ impl Runtime {
                 };
                 let child = self
                     .store
-                    .create_session(
+                    .create_session_with_mode(
                         &workspace,
                         a.get("title").and_then(Value::as_str).unwrap_or("子任务"),
+                        Some(exec.mode),
                     )
                     .await?;
                 self.children
@@ -2441,11 +2468,23 @@ impl Runtime {
         let _boundary = self.session_boundary(id).await;
         let original = self.store.session(id).await?;
         let events = self.store.events(id, 0).await?;
+        // 副本会话继承原会话固化的执行位置；worktree 位置由新会话首个 turn 懒建
+        // 自己的 worktree（不在命令内写工作区记录，避免与回合租约冲突）。
+        let mode = if original.workspace_id.is_empty() {
+            original.execution_mode
+        } else {
+            Some(self.workspaces.resolved_mode(
+                &original.workspace_id,
+                id,
+                original.execution_mode,
+            )?)
+        };
         let fork = self
             .store
-            .create_session(
+            .create_session_with_mode(
                 &original.workspace_id,
                 &format!("{} · 副本", original.title),
+                mode,
             )
             .await?;
         for e in events {
@@ -2633,6 +2672,10 @@ fn workspace_context(
         ),
         ExecutionMode::Replica => format!(
             "你是本地开发助手。执行根为隔离工作副本 {}。文件工具只接受相对路径。先读取再编辑，原项目变更需用户在差异界面单独确认。",
+            root.display()
+        ),
+        ExecutionMode::Direct => format!(
+            "你是本地开发助手。执行根为源项目目录 {}，你的文件编辑直接写入源项目，没有隔离副本或 worktree。文件工具只接受相对路径，先读取再编辑。shell 命令以宿主权限执行，受审批策略约束；git 命令会真实影响当前分支与工作区。",
             root.display()
         ),
         ExecutionMode::Worktree => format!(

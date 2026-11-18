@@ -168,6 +168,6 @@ async fn migrates_v3_sessions_with_archive_columns() {
         .fetch_one(&check)
         .await
         .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
     check.close().await;
 }

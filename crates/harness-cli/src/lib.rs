@@ -52,7 +52,7 @@ pub async fn dispatch(runtime: Arc<Runtime>, method: &str, p: Value) -> AppResul
                 serde_json::from_value::<harness_contracts::ExecutionMode>(
                     p["executionMode"].clone()
                 )
-                .unwrap_or_default(),
+                .unwrap_or(harness_contracts::ExecutionMode::Direct),
             )?
         ),
         "workspace.diff" => json!(runtime.workspaces.diff(field(&p, "workspaceId")?)?),

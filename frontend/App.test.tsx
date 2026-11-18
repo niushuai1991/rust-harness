@@ -256,7 +256,7 @@ describe('聊天交互',()=>{
   fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
   fireEvent.change(screen.getByLabelText('消息'),{target:{value:'发给迟到会话'}});
   fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话',executionMode:'replica'}));
   // 创建挂起期间切到 B 的会话：迟到响应不抢占 UI
   fireEvent.click(screen.getByRole('button',{name:/B 的会话/}));
   await screen.findByText('内容 other-session');
@@ -506,7 +506,7 @@ describe('侧栏会话入口',()=>{
   await renderOpenA();
   fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
   fireEvent.click(screen.getByRole('button',{name:'在 B 新建聊天'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'other',title:'新会话'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'other',title:'新会话',executionMode:'replica'}));
   await screen.findByText('内容 created-other');
  });
  it('当前项目组头的新建按钮直接新建会话',async()=>{
@@ -516,7 +516,7 @@ describe('侧栏会话入口',()=>{
   await renderOpenA();
   fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
   fireEvent.click(screen.getByRole('button',{name:'在 project 新建聊天'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话',executionMode:'replica'}));
   await screen.findByText('内容 new-w');
  });
 });
@@ -895,7 +895,7 @@ describe('工作区的首次会话',()=>{
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>{
    if(name==='workspace_list')return [];
-   if(name==='workspace_open')return {id:'fresh',sourcePath:'D:/fresh',replicaPath:'D:/copy-fresh',createdAt:'',name:'fresh',pinned:false};
+   if(name==='workspace_open')return {id:'fresh',sourcePath:'D:/fresh',replicaPath:'D:/copy-fresh',createdAt:'',name:'fresh',pinned:false,executionMode:'direct'};
    if(name==='session_list')return [];
    if(name==='session_create')return {id:'first',workspaceId:'fresh',title:'新会话'};
    if(name==='session_timeline_page')return timeline(args.sessionId,[]);
@@ -910,7 +910,7 @@ describe('工作区的首次会话',()=>{
   const dialog=await screen.findByRole('dialog',{name:'打开工作区'});
   expect(screen.getByLabelText('项目名称')).toHaveValue('fresh');
   fireEvent.click(within(dialog).getByRole('button',{name:'创建'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_open',{path:'D:/fresh',name:'fresh',executionMode:'replica'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_open',{path:'D:/fresh',name:'fresh',executionMode:'direct'}));
   await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_list',{workspaceId:'fresh',allWorkspaces:true}));
   // 创建后进入草稿态：不自动创建会话，欢迎语带项目名，可直接输入
   await waitFor(()=>expect(screen.getByRole('heading',{name:/你想在 fresh 中构建什么/})).toBeInTheDocument());
@@ -919,7 +919,7 @@ describe('工作区的首次会话',()=>{
   fireEvent.change(input,{target:{value:'梳理项目结构'}});
   expect(input).toHaveValue('梳理项目结构');
   fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'fresh',title:'新会话'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'fresh',title:'新会话',executionMode:'direct'}));
   await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('first','梳理项目结构','m',expect.any(Function),undefined,'high'));
  });
  it('启动时无会话的工作区进入草稿态，发送首条消息时才创建',async()=>{
@@ -936,7 +936,7 @@ describe('工作区的首次会话',()=>{
   const input=screen.getByLabelText('消息');
   fireEvent.change(input,{target:{value:'开始干活'}});
   fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话',executionMode:'replica'}));
   await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('restored','开始干活','m',expect.any(Function),undefined,'high'));
  });
  it('草稿首条发送后首轮执行期间，新建聊天按钮与输入框恢复可用',async()=>{
@@ -1013,7 +1013,7 @@ describe('工作区的首次会话',()=>{
   expect(screen.getByRole('heading',{name:/你想在 other-pj 中构建什么/})).toBeInTheDocument();
   fireEvent.change(screen.getByLabelText('消息'),{target:{value:'在别的项目开始'}});
   fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'other',title:'新会话'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'other',title:'新会话',executionMode:'replica'}));
   await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('in-other','在别的项目开始','m',expect.any(Function),undefined,'high'));
   await waitFor(()=>expect(screen.getAllByText('other-pj').length).toBeGreaterThanOrEqual(1));
  });
@@ -1039,7 +1039,7 @@ describe('工作区的首次会话',()=>{
   await screen.findByRole('heading',{name:/你想在 A 中构建什么/});
   fireEvent.change(screen.getByLabelText('消息'),{target:{value:'首个任务'}});
   fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话',executionMode:'replica'}));
   fireEvent.click(screen.getByRole('button',{name:/B 的会话/}));
   await screen.findByText('内容 other-session');
   await act(async()=>resolveCreation({id:'late',workspaceId:'w',title:'A 迟到的会话'}));
@@ -1061,7 +1061,7 @@ describe('工作区的首次会话',()=>{
   await screen.findByText('B 的旧会话');
   fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
   fireEvent.click(screen.getByRole('button',{name:'在 B 新建聊天'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'other',title:'新会话'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'other',title:'新会话',executionMode:'replica'}));
   // 挂起期间重复点击：复用同一创建请求，不重复调 session_create
   fireEvent.click(screen.getByRole('button',{name:'在 B 新建聊天'}));
   await act(async()=>resolveCreation({id:'b2',workspaceId:'other',title:'B 的新会话'}));
@@ -1647,9 +1647,9 @@ describe('会话列表视图',()=>{
 });
 
 describe('项目编辑',()=>{
- function namingBackend(options:{empty?:boolean;updateError?:string}={}){
+ function namingBackend(options:{empty?:boolean;updateError?:string;executionMode?:'direct'|'replica'|'worktree'}={}){
   const original=mocks.command.getMockImplementation()!;
-  const ws={id:'w',sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',name:'alpha',pinned:false,hidden:false,executionMode:'replica',worktrees:{}};
+  const ws={id:'w',sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',name:'alpha',pinned:false,hidden:false,executionMode:options.executionMode??'replica',worktrees:{}};
   mocks.command.mockImplementation(async(name,args)=>{
    if(name==='workspace_list')return options.empty?[]:[ws];
    if(name==='workspace_update'){if(options.updateError)throw new Error(options.updateError);return {...ws,name:args.name,executionMode:args.executionMode}}
@@ -1680,7 +1680,7 @@ describe('项目编辑',()=>{
   expect(screen.getByText('留空则使用目录名「alpha-dir」。')).toBeInTheDocument();
   fireEvent.change(screen.getByLabelText('项目名称'),{target:{value:'  '}});
   fireEvent.click(screen.getByRole('button',{name:'创建'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_open',{path:'D:/alpha-dir',name:null,executionMode:'replica'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_open',{path:'D:/alpha-dir',name:null,executionMode:'direct'}));
   // 后端归一化后的目录名显示在面包屑上
   await waitFor(()=>expect(screen.getAllByText('alpha-dir').length).toBeGreaterThanOrEqual(1));
  });
@@ -1688,6 +1688,7 @@ describe('项目编辑',()=>{
   localStorage.clear();namingBackend();
   const dialog=await openEditDialog();
   expect(screen.getByLabelText('项目名称')).toHaveValue('alpha');
+  expect(screen.getByLabelText('默认执行位置')).toHaveValue('replica');
   fireEvent.change(screen.getByLabelText('项目名称'),{target:{value:'新名字'}});
   fireEvent.click(within(dialog).getByRole('button',{name:'保存'}));
   await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_update',{workspaceId:'w',name:'新名字',executionMode:'replica'}));
@@ -1703,24 +1704,32 @@ describe('项目编辑',()=>{
   await screen.findByText('名称不能为空');
   expect(screen.getByRole('button',{name:/^alpha \d+$/})).toBeInTheDocument();
  });
- it('编辑弹窗默认选中当前执行模式并可切换',async()=>{
+ it('编辑弹窗默认选中当前默认执行位置并可切换',async()=>{
   localStorage.clear();namingBackend();
   const dialog=await openEditDialog();
-  const mode=screen.getByLabelText('执行模式');
+  const mode=screen.getByLabelText('默认执行位置');
   expect(mode).toHaveValue('replica');
-  fireEvent.change(mode,{target:{value:'worktree'}});
-  expect(await screen.findByText(/切换从下一回合起生效/)).toBeInTheDocument();
+  fireEvent.change(mode,{target:{value:'direct'}});
+  expect(await screen.findByText(/切换从下一回合起对未固化执行位置的会话生效/)).toBeInTheDocument();
   fireEvent.click(within(dialog).getByRole('button',{name:'保存'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_update',{workspaceId:'w',name:'alpha',executionMode:'worktree'}));
-  expect(await screen.findByText(/执行模式已切换为worktree/)).toBeInTheDocument();
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_update',{workspaceId:'w',name:'alpha',executionMode:'direct'}));
+  expect(await screen.findByText(/默认执行位置已切换为直接/)).toBeInTheDocument();
  });
- it('执行模式切换失败时展示后端原因',async()=>{
-  localStorage.clear();namingBackend({updateError:'worktree execution mode requires a git repository'});
+ it('默认执行位置切换失败时展示后端原因',async()=>{
+  localStorage.clear();namingBackend({updateError:'隔离副本重建失败'});
   const dialog=await openEditDialog();
-  fireEvent.change(screen.getByLabelText('执行模式'),{target:{value:'worktree'}});
+  fireEvent.change(screen.getByLabelText('默认执行位置'),{target:{value:'direct'}});
   fireEvent.click(within(dialog).getByRole('button',{name:'保存'}));
-  await screen.findByText('worktree execution mode requires a git repository');
+  await screen.findByText('隔离副本重建失败');
   expect(screen.getByRole('button',{name:/^alpha \d+$/})).toBeInTheDocument();
+ });
+ it('旧 worktree 项目编辑时显示直接模式并保留旧会话说明',async()=>{
+  localStorage.clear();namingBackend({executionMode:'worktree'});
+  const dialog=await openEditDialog();
+  expect(screen.getByLabelText('默认执行位置')).toHaveValue('direct');
+  expect(within(dialog).getByText(/旧版 worktree 模式创建/)).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole('button',{name:'保存'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_update',{workspaceId:'w',name:'alpha',executionMode:'direct'}));
  });
  it('中文与空格路径预填目录名并随创建提交',async()=>{
   localStorage.clear();namingBackend({empty:true});
@@ -1733,9 +1742,53 @@ describe('项目编辑',()=>{
   // 预填保留空格与中文；确认后原样携带名称提交
   expect(screen.getByLabelText('项目名称')).toHaveValue('我的 项目');
   fireEvent.click(screen.getByRole('button',{name:'创建'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_open',{path:'D:/我的 项目',name:'我的 项目',executionMode:'replica'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_open',{path:'D:/我的 项目',name:'我的 项目',executionMode:'direct'}));
   // 后端返回的中文名称显示在面包屑上
   await waitFor(()=>expect(screen.getAllByText('我的 项目').length).toBeGreaterThanOrEqual(1));
+ });
+ it('草稿执行位置默认直接并随会话创建提交',async()=>{
+  localStorage.clear();
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/project',replicaPath:'D:/copy',createdAt:'',name:'project',executionMode:'direct',worktrees:{}}];
+   if(name==='session_create')return {id:'direct-1',workspaceId:'w',title:'新会话'};
+   return original(name,args);
+  });
+  await renderOpenA();
+  fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
+  const mode=await screen.findByLabelText('执行位置');
+  expect(mode).toHaveValue('direct');
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'直接改'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话',executionMode:'direct'}));
+ });
+ it('草稿选择 worktree 后会话创建携带 worktree',async()=>{
+  localStorage.clear();
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/project',replicaPath:'D:/copy',createdAt:'',name:'project',executionMode:'direct',worktrees:{}}];
+   if(name==='session_create')return {id:'worktree-1',workspaceId:'w',title:'新会话'};
+   return original(name,args);
+  });
+  await renderOpenA();
+  fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
+  fireEvent.change(await screen.findByLabelText('执行位置'),{target:{value:'worktree'}});
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'隔离改'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话',executionMode:'worktree'}));
+ });
+ it('副本项目的草稿默认副本且可改为直接',async()=>{
+  localStorage.clear();namingBackend();
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_create'?{id:'replica-1',workspaceId:'w',title:'新会话'}:original(name,args));
+  await renderOpenA();
+  fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
+  const mode=await screen.findByLabelText('执行位置');
+  expect(mode).toHaveValue('replica');
+  fireEvent.change(mode,{target:{value:'direct'}});
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'直连'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话',executionMode:'direct'}));
  });
 });
 
@@ -2558,7 +2611,7 @@ describe('无项目会话',()=>{
   expect(mocks.command.mock.calls.filter(([name])=>name==='session_create')).toHaveLength(0);
   fireEvent.change(screen.getByLabelText('消息'),{target:{value:'独立问答'}});
   fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'',title:'新会话'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'',title:'新会话',executionMode:'direct'}));
   await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('np1','独立问答','m',expect.any(Function),undefined,'high'));
  });
  it('无项目会话激活后面包屑显示「无项目」，自动化与技能列表仍可拉取',async()=>{

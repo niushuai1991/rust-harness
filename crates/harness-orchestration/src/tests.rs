@@ -1191,7 +1191,7 @@ async fn automation_supports_no_project_workspace_sentinel() {
         .await
         .unwrap();
     assert_eq!(a.workspace_id, "");
-    let listed = i.automation_list("").await.unwrap();
+    let listed = i.automation_list("", None).await.unwrap();
     assert_eq!(listed.len(), 1, "按空串过滤返回无项目自动化");
     let err = i.automation_run_now(&a.id).await.unwrap_err();
     assert!(

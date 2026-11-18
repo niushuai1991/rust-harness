@@ -744,20 +744,14 @@ impl ExternalTool for Tool {
             "background_run" => {
                 let command = string(&args, "command")?.to_owned();
                 // 无项目会话（workspace_id 哨兵空串）无工作区级同步语义：
-                // 执行根为会话独立 scratch root，不持工作区租约。
+                // 执行根为会话独立 scratch root，不持工作区租约。执行根统一取
+                // ToolContext.root（直接模式/副本/worktree 由运行时解析）。
                 let lease = if context.workspace_id.is_empty() {
                     None
                 } else {
                     Some(r.workspaces.acquire(&context.workspace_id)?)
                 };
-                let root = match &lease {
-                    Some(l) => l.info.replica_path.clone(),
-                    None => r
-                        .workspaces
-                        .ensure_scratch_root(&context.session_id)?
-                        .to_string_lossy()
-                        .into_owned(),
-                };
+                let root = context.root.to_string_lossy().into_owned();
                 let id = new_id();
                 let token = self.state.stop.child_token();
                 r.append(
@@ -943,20 +937,14 @@ impl ExternalTool for Tool {
                     return Err(AppError::new("TERMINAL_LIMIT", "每个会话最多4个终端"));
                 }
                 // 无项目会话（workspace_id 哨兵空串）无工作区级同步语义：
-                // 执行根为会话独立 scratch root，不持工作区租约。
+                // 执行根为会话独立 scratch root，不持工作区租约。执行根统一取
+                // ToolContext.root（直接模式/副本/worktree 由运行时解析）。
                 let lease = if context.workspace_id.is_empty() {
                     None
                 } else {
                     Some(r.workspaces.acquire(&context.workspace_id)?)
                 };
-                let root = match &lease {
-                    Some(l) => l.info.replica_path.clone(),
-                    None => r
-                        .workspaces
-                        .ensure_scratch_root(&context.session_id)?
-                        .to_string_lossy()
-                        .into_owned(),
-                };
+                let root = context.root.to_string_lossy().into_owned();
                 let token = self.state.stop.child_token();
                 let session = match self
                     .state
