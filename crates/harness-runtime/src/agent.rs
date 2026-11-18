@@ -39,7 +39,7 @@ const AUTO_COMPACTION_KEY: &str = "app.auto_compaction";
 /// 预留隐含在 20% 余量中；该默认值未经基准验证，规范要求后续测量后调整。
 const AUTO_COMPACTION_THRESHOLD_RATIO: f64 = 0.8;
 /// 计划模式 system 追加提示（投影重建时重复使用）。
-const PLAN_MODE_HINT: &str = "\n\n当前处于计划模式：只能只读调查，不得产生项目或外部副作用。shell 工具仅允许只读命令（git 查询、文件查看与列表、搜索、系统信息、--version/--help），写文件、重定向、安装、构建、提权命令会被拒绝。请使用 plan_write 记录计划。若需要开始执行，请调用 plan_exit 并等待用户明确批准；用户拒绝或无人在场时继续只读。";
+const PLAN_MODE_HINT: &str = "\n\n当前处于计划模式：只能只读调查，不得产生项目或外部副作用。shell 工具仅允许只读命令（git 查询、文件查看与列表、搜索、系统信息、--version/--help），写文件、重定向、安装、构建、提权命令会被拒绝。请使用 plan_write 记录计划。如需并行调查，可用 agent_spawn 创建只读调研子代理（子代理同样处于计划模式，仅能只读探索），用 agent_wait 等待并收集其报告，agent_status 查询状态、agent_interrupt 中断。若需要开始执行，请调用 plan_exit 并等待用户明确批准；用户拒绝或无人在场时继续只读。";
 
 /// 工具并发上限合法性：必须有界（规范要求并发上限受控），上限 16 足够覆盖本地开发场景。
 fn validate_concurrency_limit(limit: u64) -> AppResult<u32> {
@@ -370,35 +370,55 @@ impl Runtime {
                 ));
             }
             // Older turns have no proof their hooks and external tools left no detached work.
+            let events = self.store.events(session, 0).await?;
             let mut verified_plan = false;
-            for event in self.store.events(session, 0).await? {
+            let mut research_children = std::collections::HashSet::new();
+            for event in &events {
                 if event.kind == "session.plan" {
                     verified_plan = event.data["enabled"].as_bool().unwrap_or(true);
-                } else if !verified_plan
-                    && matches!(
-                        event.kind.as_str(),
-                        "turn.start"
-                            | "tool.call"
-                            | "tool.result"
-                            | "job.started"
-                            | "terminal.opened"
-                            | "schedule.created"
-                            | "subagent.created"
-                            | "plugin.command.started"
-                            | "plugin.command.result"
-                    )
-                {
-                    return Err(AppError::new(
-                        "PLAN_MODE_UNVERIFIED",
-                        "已有回合可能遗留后台工作，请使用新会话",
-                    ));
+                } else {
+                    // 只读调研子代理（计划模式派生）不构成未验证后台工作。
+                    if event.kind == "subagent.created"
+                        && event.data["planMode"].as_bool() == Some(true)
+                        && let Some(id) = event.data["sessionId"].as_str()
+                    {
+                        research_children.insert(id.to_owned());
+                    }
+                    if !verified_plan
+                        && matches!(
+                            event.kind.as_str(),
+                            "turn.start"
+                                | "tool.call"
+                                | "tool.result"
+                                | "job.started"
+                                | "terminal.opened"
+                                | "schedule.created"
+                                | "subagent.created"
+                                | "plugin.command.started"
+                                | "plugin.command.result"
+                        )
+                    {
+                        return Err(AppError::new(
+                            "PLAN_MODE_UNVERIFIED",
+                            "已有回合可能遗留后台工作，请使用新会话",
+                        ));
+                    }
                 }
             }
-            if !self.children_of(session).is_empty() {
-                return Err(AppError::new(
-                    "PLAN_MODE_UNVERIFIED",
-                    "存在既有子代理，请使用新会话",
-                ));
+            let children = self.children_of(session);
+            if !children.is_empty() {
+                // 只读调研子代理无副作用，全部结束即可重新进入；其余子代理仍拒绝。
+                let all_research = children.iter().all(|c| research_children.contains(c));
+                let any_active = {
+                    let active = self.active.lock().unwrap();
+                    children.iter().any(|c| active.contains_key(c))
+                };
+                if !all_research || any_active {
+                    return Err(AppError::new(
+                        "PLAN_MODE_UNVERIFIED",
+                        "存在未完成的子代理，请等待调研子代理结束后再进入",
+                    ));
+                }
             }
         }
         self.append(session, "session.plan", json!({"enabled":enabled}))
@@ -1087,7 +1107,19 @@ impl Runtime {
             }
             token_budget.check_available()?;
             let mut tools = builtin_tools();
-            if !self.session_plan_get(session).await? {
+            let plan_mode = self.session_plan_get(session).await?;
+            if plan_mode {
+                // 计划模式仅额外暴露受信只读编排工具（agent_wait 收集调研子代理报告），
+                // 按注册名过滤，不触碰未受信工具；其余插件/MCP/自定义扩展一律不加载、钩子不执行。
+                tools.extend(
+                    self.custom
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .filter(|(name, _)| name.as_str() == "agent_wait")
+                        .map(|(_, t)| t.definition()),
+                );
+            } else {
                 tools.extend(self.plugins.tool_definitions(workspace)?);
                 tools.extend(self.custom.lock().unwrap().values().map(|t| t.definition()));
                 let scoped_servers = self
@@ -1106,7 +1138,7 @@ impl Runtime {
                         .filter(|t| scoped_servers.iter().any(|p| t.name.starts_with(p))),
                 );
             }
-            let context_hooks = if self.session_plan_get(session).await? {
+            let context_hooks = if plan_mode {
                 Vec::new()
             } else {
                 self.plugins
@@ -1133,7 +1165,6 @@ impl Runtime {
             let projection_started = std::time::Instant::now();
             let mut messages = project_messages(&history);
             benchmark_timing(session, "projection", projection_started);
-            let plan_mode = self.session_plan_get(session).await?;
             if plan_mode {
                 messages[0].content.push_str(PLAN_MODE_HINT);
             }
@@ -1948,6 +1979,13 @@ impl Runtime {
                 if let Some(id) = model_id {
                     created["modelId"] = json!(id);
                 }
+                // 计划模式派生的调研子代理强制只读：直接落子会话计划事件（子会话全新无
+                // 未验证历史，父会话进入计划模式时已过守卫），并标记来源供重进守卫识别。
+                if self.session_plan_get(&session).await? {
+                    self.append(&child.id, "session.plan", json!({"enabled":true}))
+                        .await?;
+                    created["planMode"] = json!(true);
+                }
                 self.append(&session, "subagent.created", created).await?;
                 let runtime = self.clone();
                 let id = child.id.clone();
@@ -2481,7 +2519,9 @@ fn answer_text(answer: &AskAnswer, request: &AskRequest) -> String {
     }
 }
 // This is intentionally independent of approval exemption. Unknown and third-party
-// tools, even those declaring no approval, cannot execute in plan mode.
+// tools, even those declaring no approval, cannot execute in plan mode. The trusted
+// read-only orchestration set below is the only extension exception (same-named
+// registration by a third party follows the existing plugin trust model).
 fn plan_safe_tool(name: &str) -> bool {
     matches!(
         name,
@@ -2492,6 +2532,12 @@ fn plan_safe_tool(name: &str) -> bool {
             | "ask_user"
             | "plan_write"
             | "plan_exit"
+            // 子代理调研闭环：spawn 仅创建会话记录并强制子会话只读；status/wait 纯只读；
+            // interrupt 仅作用于本会话直属子代理。agent_send/agent_fork 不放行。
+            | "agent_spawn"
+            | "agent_status"
+            | "agent_interrupt"
+            | "agent_wait"
     )
 }
 /// 工具批次并发安全白名单：显式能力声明，不凭名称推断。
