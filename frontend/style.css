@@ -540,7 +540,7 @@ button.run-session:hover{color:var(--text);text-decoration:underline}
 .shell-command-text.expanded{max-height:17em;overflow:auto}
 .shell-command-toggle{border:0;background:transparent;color:var(--muted);font-size:11px;padding:4px 0}
 .shell-output{max-height:12em;overflow:auto;margin-top:10px;color:var(--muted);font:12px/1.7 "Cascadia Code",Consolas,monospace;overflow-wrap:anywhere}
-.shell-output pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.shell-output pre{margin:0;padding:0;white-space:pre-wrap;overflow-wrap:anywhere}
 .shell-output pre+pre{margin-top:8px}
 .shell-stderr{color:var(--text)}
 .shell-exit{border-top:1px solid var(--border);padding-top:8px;margin-top:10px;font-size:11px;color:var(--muted)}
