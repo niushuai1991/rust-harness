@@ -751,7 +751,7 @@ export default function App(){
   <PluginThemeHost workspaceId={workspaceId} revision={pluginRevision}/>
   {panel==='plugins'&&<PluginPanel workspaceId={workspaceId} sessionId={sessionId} revision={pluginRevision} onChanged={()=>setPluginRevision(v=>v+1)} onClose={()=>setPanel(null)}/>}
 
-  {panel==='automations'&&<Modal title="自动化任务" onClose={()=>setPanel(null)}><AutomationsPanel workspaceId={workspaceId} sessions={sessions} onChanged={()=>{if(workspaceId)command<unknown[]>('automation_list',{workspaceId}).then(list=>setAutomationCount(list.length)).catch(()=>{})}} onOpenSession={openFromPanel}/></Modal>}
+  {panel==='automations'&&<Modal title="自动化任务" onClose={()=>setPanel(null)}><AutomationsPanel workspaceId={workspaceId} workspaces={workspaces} allSessions={allSessions} onChanged={()=>{if(workspaceId)command<unknown[]>('automation_list',{workspaceId}).then(list=>setAutomationCount(list.length)).catch(()=>{})}} onOpenSession={openFromPanel}/></Modal>}
   {wsDialog&&<Modal title={wsDialog.mode==='create'?'打开工作区':'重命名项目'} onClose={()=>setWsDialog(null)}><form className="settings-form" onSubmit={e=>{e.preventDefault();void (wsDialog.mode==='create'?createWorkspace():renameWorkspace())}}>
    {wsDialog.mode==='create'&&<p className="muted">{wsDialog.path}</p>}
    <label>项目名称<input value={wsDialog.name} onChange={e=>setWsDialog(old=>old&&{...old,name:e.target.value})} placeholder="默认使用目录名"/></label>

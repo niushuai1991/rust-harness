@@ -1256,8 +1256,9 @@ fn build_automation_params(
 pub async fn automation_list(
     orch: Orchestration<'_>,
     workspace_id: String,
+    all_workspaces: Option<bool>,
 ) -> AppResult<Vec<JsonPayload>> {
-    orch.automation_list(&workspace_id)
+    orch.automation_list(&workspace_id, all_workspaces)
         .await?
         .into_iter()
         .map(payload)

@@ -157,15 +157,26 @@ impl Installed {
         let r = self.runtime()?;
         self.state.delete_schedule(&r, session, id).await
     }
+    /// 创建/编辑前确认目标项目存在；隐藏项目仅入口隐藏，记录仍在，可继续被任务引用。
+    fn ensure_workspace(&self, r: &Runtime, workspace: &str) -> AppResult<()> {
+        r.workspaces
+            .get(workspace)
+            .map_err(|_| AppError::new("NOT_FOUND", "项目不存在或已被移除"))
+            .map(|_| ())
+    }
     /// Human panel: automations of one workspace, newest first.
-    pub async fn automation_list(&self, workspace: &str) -> AppResult<Vec<Automation>> {
+    pub async fn automation_list(
+        &self,
+        workspace: &str,
+        all: Option<bool>,
+    ) -> AppResult<Vec<Automation>> {
         self.runtime()?;
         Ok(self
             .state
             .automations()
             .await?
             .into_iter()
-            .filter(|a| a.workspace_id == workspace)
+            .filter(|a| all.unwrap_or(false) || a.workspace_id == workspace)
             .collect())
     }
     /// Human panel: create an automation from validated panel input.
@@ -174,6 +185,7 @@ impl Installed {
         validate_automation(&p)?;
         let _lock = self.state.schedules_lock.lock().await;
         let mut all = self.state.automations().await?;
+        self.ensure_workspace(&r, &p.workspace_id)?;
         if all.len() >= AUTOMATION_LIMIT {
             return Err(AppError::new("AUTOMATION_LIMIT", "自动化任务最多1000项"));
         }
@@ -226,6 +238,8 @@ impl Installed {
             .kind
             .eq(&AutomationKind::Once)
             .then(|| automation_at_utc(&p));
+        self.ensure_workspace(&r, &p.workspace_id)?;
+        a.workspace_id = p.workspace_id;
         a.title = p.title.unwrap_or_default();
         a.prompt = p.prompt;
         a.session_id = p.session_id;
