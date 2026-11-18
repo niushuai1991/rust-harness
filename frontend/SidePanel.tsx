@@ -32,8 +32,8 @@ export function SidePanel({workspaceId,executionMode,currentSessionId='',onOpenS
  return <aside className="side-panel" style={{width}} aria-label="文件面板">
   <header className="side-panel-head">
    <div className="side-panel-tabs" role="tablist" aria-label="面板视图">
-    <button type="button" role="tab" aria-selected={view==='changes'} disabled={!workspaceId} onClick={()=>setView('changes')}>更改</button>
-    <button type="button" role="tab" aria-selected={view==='preview'} disabled={!workspaceId} onClick={()=>setView('preview')}>预览</button>
+    <button type="button" role="tab" aria-selected={view==='changes'} disabled={!workspaceId} title={workspaceId?'':'无项目会话没有关联项目，没有可审阅的变更'} onClick={()=>setView('changes')}>更改</button>
+    <button type="button" role="tab" aria-selected={view==='preview'} disabled={!workspaceId} title={workspaceId?'':'无项目会话没有关联项目'} onClick={()=>setView('preview')}>预览</button>
     <button type="button" role="tab" aria-selected={view==='plans'} onClick={()=>setView('plans')}>计划</button>
     {webUrl&&<button type="button" role="tab" aria-selected={view==='web'} onClick={()=>setView('web')}>网页</button>}
    </div>

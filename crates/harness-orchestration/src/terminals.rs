@@ -69,6 +69,7 @@ impl TerminalSession for PlatformTerminal {
 pub(crate) struct TerminalEntry {
     pub session_id: String,
     pub session: tokio::sync::Mutex<Box<dyn TerminalSession>>,
-    pub _lease: WorkspaceLease,
+    /// 无项目会话（workspace_id 哨兵空串）为 None：无工作区级同步语义，不持租约。
+    pub _lease: Option<WorkspaceLease>,
     pub token: CancellationToken,
 }

@@ -743,7 +743,21 @@ impl ExternalTool for Tool {
         let value = match self.name.as_str() {
             "background_run" => {
                 let command = string(&args, "command")?.to_owned();
-                let lease = r.workspaces.acquire(&context.workspace_id)?;
+                // 无项目会话（workspace_id 哨兵空串）无工作区级同步语义：
+                // 执行根为会话独立 scratch root，不持工作区租约。
+                let lease = if context.workspace_id.is_empty() {
+                    None
+                } else {
+                    Some(r.workspaces.acquire(&context.workspace_id)?)
+                };
+                let root = match &lease {
+                    Some(l) => l.info.replica_path.clone(),
+                    None => r
+                        .workspaces
+                        .ensure_scratch_root(&context.session_id)?
+                        .to_string_lossy()
+                        .into_owned(),
+                };
                 let id = new_id();
                 let token = self.state.stop.child_token();
                 r.append(
@@ -761,12 +775,9 @@ impl ExternalTool for Tool {
                 let sid = context.session_id.clone();
                 let job = id.clone();
                 tokio::spawn(async move {
-                    let result = ShellService::run(
-                        std::path::Path::new(&lease.info.replica_path),
-                        &command,
-                        token.clone(),
-                    )
-                    .await;
+                    let result =
+                        ShellService::run(std::path::Path::new(&root), &command, token.clone())
+                            .await;
                     // ShellService joins process-tree teardown before returning. Never drop the lease on cancellation early.
                     let status = if token.is_cancelled() {
                         "cancelled"
@@ -931,8 +942,21 @@ impl ExternalTool for Tool {
                 if count >= TERMINAL_LIMIT {
                     return Err(AppError::new("TERMINAL_LIMIT", "每个会话最多4个终端"));
                 }
-                let lease = r.workspaces.acquire(&context.workspace_id)?;
-                let root = lease.info.replica_path.clone();
+                // 无项目会话（workspace_id 哨兵空串）无工作区级同步语义：
+                // 执行根为会话独立 scratch root，不持工作区租约。
+                let lease = if context.workspace_id.is_empty() {
+                    None
+                } else {
+                    Some(r.workspaces.acquire(&context.workspace_id)?)
+                };
+                let root = match &lease {
+                    Some(l) => l.info.replica_path.clone(),
+                    None => r
+                        .workspaces
+                        .ensure_scratch_root(&context.session_id)?
+                        .to_string_lossy()
+                        .into_owned(),
+                };
                 let token = self.state.stop.child_token();
                 let session = match self
                     .state

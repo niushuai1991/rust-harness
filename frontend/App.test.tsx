@@ -2506,3 +2506,58 @@ describe('侧栏宽度拖拽',()=>{
   expect(screen.getByRole('complementary',{name:'项目列表'}).style.width).toBe('380px');
  });
 });
+describe('无项目会话',()=>{
+ beforeEach(()=>{localStorage.removeItem('sessionView');localStorage.removeItem('sessionCollapsed')});
+ it('草稿态 chip 菜单可选「无项目」，发送以空串落点创建会话',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_list')return [];
+   if(name==='session_create')return {id:'np1',workspaceId:'',title:'新会话'};
+   if(name==='session_timeline_page')return timeline(args.sessionId,[]);
+   return original(name,args);
+  });
+  render(<App/>);
+  await screen.findByRole('heading',{name:/你想在 project 中构建什么/});
+  fireEvent.click(screen.getByRole('button',{name:'选择项目'}));
+  const menu=screen.getByRole('menu',{name:'选择项目'});
+  fireEvent.click(within(menu).getByRole('menuitem',{name:/无项目/}));
+  await screen.findByRole('heading',{name:/你想在 无项目 中构建什么/});
+  expect(screen.getByPlaceholderText(/发送后将在 无项目 创建会话/)).toBeInTheDocument();
+  expect(mocks.command.mock.calls.filter(([name])=>name==='session_create')).toHaveLength(0);
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'独立问答'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'',title:'新会话'}));
+  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('np1','独立问答','m',expect.any(Function),undefined,'high'));
+ });
+ it('无项目会话激活后面包屑显示「无项目」，自动化与技能列表仍可拉取',async()=>{
+  localStorage.setItem('sessionView','project');
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_list')return [{id:'np1',workspaceId:'',title:'无项目讨论',createdAt:'',updatedAt:new Date().toISOString(),parentId:null},{id:'a',workspaceId:'w',title:'会话 A',createdAt:'',updatedAt:new Date(Date.now()-60000).toISOString(),parentId:null}];
+   if(name==='session_timeline_page')return timeline(args.sessionId,[event('e-np1','np1','1','内容 np1')]);
+   return original(name,args);
+  });
+  render(<App/>);
+  // 「无项目」组固定排在项目组之后
+  const wsNames=screen.getAllByText(/^无项目$/).length;
+  expect(wsNames).toBeGreaterThan(0);
+  fireEvent.click(await screen.findByRole('button',{name:/无项目讨论/}));
+  await screen.findByText('内容 np1');
+  const breadcrumb=document.querySelector('.workspace-name');
+  expect(breadcrumb?.textContent).toBe('无项目');
+ });
+ it('「无项目」组不提供重命名与置顶入口',async()=>{
+  localStorage.setItem('sessionView','project');
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_list')return [{id:'np1',workspaceId:'',title:'无项目讨论',createdAt:'',updatedAt:new Date().toISOString(),parentId:null},{id:'a',workspaceId:'w',title:'会话 A',createdAt:'',updatedAt:new Date(Date.now()-60000).toISOString(),parentId:null}];
+   if(name==='session_timeline_page')return timeline(args.sessionId,[]);
+   return original(name,args);
+  });
+  render(<App/>);
+  const groupHead=await screen.findByRole('button',{name:/^无项目 \d+$/});
+  // 组头内不含重命名/置顶按钮（无项目组只保留折叠与新建）
+  expect(within(groupHead.closest('.ws-head') as HTMLElement).queryByLabelText(/重命名 无项目/)).not.toBeInTheDocument();
+  expect(within(groupHead.closest('.ws-head') as HTMLElement).queryByLabelText(/置顶 无项目/)).not.toBeInTheDocument();
+ });
+});
