@@ -16,9 +16,10 @@ export function parseShellResult(content:unknown):ShellResult {
 }
 
 export function projectShellEvents(events:SessionEvent[]):ShellTimelineNode[] {
- const calls=new Map<string,SessionEvent[]>(),results=new Map<string,SessionEvent[]>();
+ const calls=new Map<string,SessionEvent[]>(),results=new Map<string,SessionEvent[]>(),positions=new Map<SessionEvent,number>();
  const key=(event:SessionEvent,id:string)=>JSON.stringify([event.sessionId,id]);
- for(const event of events){
+ for(const [index,event] of events.entries()){
+  positions.set(event,index);
   if(event.data.name!=='shell')continue;
   const id=event.kind==='tool.call'?event.data.id:event.kind==='tool.result'?event.data.callId:null;
   if(typeof id!=='string'||!id)continue;
@@ -28,7 +29,7 @@ export function projectShellEvents(events:SessionEvent[]):ShellTimelineNode[] {
  const paired=new Map<SessionEvent,SessionEvent>(),used=new Set<SessionEvent>();
  for(const [id,entries] of calls){
   const found=results.get(id);
-  if(entries.length===1&&found?.length===1&&events.indexOf(entries[0])<events.indexOf(found[0])){paired.set(entries[0],found[0]);used.add(found[0])}
+  if(entries.length===1&&found?.length===1&&positions.get(entries[0])!<positions.get(found[0])!){paired.set(entries[0],found[0]);used.add(found[0])}
  }
  const nodes:ShellTimelineNode[]=[];
  for(const event of events){

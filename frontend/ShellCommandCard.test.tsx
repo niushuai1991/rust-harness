@@ -44,4 +44,9 @@ describe('命令卡片',()=>{
   fireEvent.click(screen.getByText('执行命令'));
   expect(screen.getByText('无输出')).toBeVisible();
  });
+ it('超时或取消后结果未知时不误报确定失败',()=>{
+  const unknown={...result,data:{...result.data,status:'unknown',isError:true,content:'结果未知'}};
+  render(<ShellCommandCard node={{kind:'shell',key:'c',call,result:unknown}}/>);
+  expect(screen.getByText('结果未知',{selector:'.shell-status'})).toBeVisible();
+ });
 });

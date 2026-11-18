@@ -8,7 +8,7 @@ export function ShellCommandCard({node,artifact}:{node:ShellNode;artifact?:React
  const args=node.call?.data.arguments;
  const command=args&&typeof args==='object'&&typeof (args as Record<string,unknown>).command==='string'?(args as Record<string,string>).command:'';
  const status=node.result?.data.status;
- const label=!node.result?'等待结果':status==='denied'?'已拒绝':status==='cancelled'?'已取消':node.result.data.isError===true||status==='error'?'执行失败':'已完成';
+ const label=!node.result?'等待结果':status==='denied'?'已拒绝':status==='unknown'?'结果未知':status==='cancelled'?'已取消':node.result.data.isError===true||status==='error'?'执行失败':'已完成';
  const parsed=node.result?parseShellResult(node.result.data.content):null;
  const [expanded,setExpanded]=useState(false),[overflow,setOverflow]=useState(command.split('\n').length>3);
  const commandRef=useRef<HTMLDivElement>(null);

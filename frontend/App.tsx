@@ -13,6 +13,8 @@ import {GROUP_LABELS,NO_PROJECT_NAME,NO_PROJECT_WORKSPACE,filterByTitle,formatFu
 import {useChat} from './store';
 import {DiffView,diffStats,parseUnifiedDiff} from './DiffView';
 import {groupFileEdits,summarizeFileEdits,type FileEditGroup} from './fileEdits';
+import {projectShellEvents,type ShellTimelineNode} from './shellEvents';
+import {ShellCommandCard} from './ShellCommandCard';
 import ModelSelect from './ModelSelect';
 import {UsageRing} from './UsageRing';
 import {PresetsPanel} from './PresetsPanel';
@@ -861,9 +863,18 @@ function ConversationEvents({events,...extras}:{events:SessionEvent[]}&EventCard
  return <>{cards}</>;
 }
 function EventList({events,hideCopy,...extras}:{events:SessionEvent[];hideCopy?:boolean}&EventCardExtras) {
- return <>{groupFileEdits(events).map(node=>node.kind==='group'
-  ?<FileEditGroup key={node.key} group={node.group}/>
-  :<EventCard key={node.event.id} event={node.event} hideCopy={hideCopy} {...extras}/>)}</>;
+ const shells=new Map<SessionEvent,Extract<ShellTimelineNode,{kind:'shell'}>>(),pairedResults=new Set<SessionEvent>();
+ for(const node of projectShellEvents(events))if(node.kind==='shell'){
+  const anchor=node.call??node.result;if(anchor)shells.set(anchor,node);
+  if(node.call&&node.result)pairedResults.add(node.result);
+ }
+ return <>{groupFileEdits(events).map(node=>{
+  if(node.kind==='group')return <FileEditGroup key={node.key} group={node.group}/>;
+  const event=node.event;if(pairedResults.has(event))return null;
+  const shell=shells.get(event);
+  if(shell){const result=shell.result,artifact=result?.data.artifact as ArtifactMetadata|undefined;return <ShellCommandCard key={shell.key} node={shell} artifact={result&&artifact?<ArtifactDownload sessionId={result.sessionId} artifact={artifact}/>:undefined}/>}
+  return <EventCard key={event.id} event={event} hideCopy={hideCopy} {...extras}/>;
+ })}</>;
 }
 function FileEditGroup({group}:{group:FileEditGroup}) {
  const summary=summarizeFileEdits(group);
