@@ -40,12 +40,12 @@ it('新建表单默认每天 09:30，切换单次后默认时间秒归零并提�
   // 未来时间提交，payload 为 ISO 字符串
   fireEvent.change(onceInput,{target:{value:'2099-01-01T08:00:00'}});
   fireEvent.click(screen.getByRole('button',{name:'创建任务'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('automation_create',expect.objectContaining({kind:'once'})));
-  const args=mocks.command.mock.calls.find(c=>c[0]==='automation_create')![1];
-  expect(args.prompt).toBe('到期要做的事');
-  expect(args.sessionId).toBeNull();
-  expect(args.at).toBe(new Date('2099-01-01T08:00:00').toISOString());
-  expect(args.time).toBeNull();
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('automation_create',{params:expect.objectContaining({kind:'once'})}));
+  const args=mocks.command.mock.calls.find(c=>c[0]==='automation_create')![1] as {params:{[k:string]:unknown}};
+  expect(args.params.prompt).toBe('到期要做的事');
+  expect(args.params.sessionId).toBeNull();
+  expect(args.params.at).toBe(new Date('2099-01-01T08:00:00').toISOString());
+  expect(args.params.time).toBeNull();
 });
 
 it('每周模式展示周几多选，未选提交被拦截',async()=>{
@@ -62,7 +62,7 @@ it('每周模式展示周几多选，未选提交被拦截',async()=>{
   fireEvent.click(screen.getByLabelText('一'));
   fireEvent.click(screen.getByLabelText('五'));
   fireEvent.click(screen.getByRole('button',{name:'创建任务'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('automation_create',expect.objectContaining({kind:'weekly',weekdays:[1,5],time:'09:30'})));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('automation_create',{params:expect.objectContaining({kind:'weekly',weekdays:[1,5],time:'09:30'})}));
 });
 
 it('删除走二段确认，启停调用 set_enabled',async()=>{
