@@ -34,7 +34,7 @@ beforeEach(()=>{useChat.setState({events:{},streams:{},statuses:{},timelines:{},
 })});
 afterEach(()=>{cleanup();vi.useRealTimers()});
 describe('Shell 命令时间线',()=>{
- it('完成回合中配对命令与结果，过程和命令分别默认折叠',async()=>{
+ it('完成回合中配对命令与结果，过程默认折叠且命令行收起为内联行',async()=>{
   const original=mocks.command.getMockImplementation()!;
   const events:SessionEvent[]=[
    {id:'start',sessionId:'a',seq:'1',kind:'turn.start',data:{},createdAt:''},
@@ -48,11 +48,29 @@ describe('Shell 命令时间线',()=>{
   render(<App/>);await openSidebarSession(/会话 A/);await screen.findByText('已完成检查');
   const process=screen.getByText('本轮已完成').closest('details')!;
   expect(process.open).toBe(false);fireEvent.click(screen.getByText('本轮已完成'));
-  const card=screen.getByText('执行命令').closest('details')!;
-  expect(card.open).toBe(false);expect(screen.getAllByText('执行命令')).toHaveLength(1);
-  fireEvent.click(screen.getByText('执行命令'));
+  const row=screen.getByRole('button',{name:/已执行/});
+  expect(row).toHaveAttribute('aria-expanded','false');
+  expect(screen.getAllByRole('button',{name:/已执行|正在执行/})).toHaveLength(1);
+  expect(screen.queryByText('已完成')).toBeNull();
+  fireEvent.click(row);
   expect(screen.getByText('测试通过')).toBeVisible();expect(screen.getByText('退出码 0')).toBeVisible();
   expect(screen.getByText('read')).toBeInTheDocument();
+ });
+});
+describe('用户消息气泡',()=>{
+ it('用户消息正文与引用包裹在气泡容器内',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  const events:SessionEvent[]=[
+   {id:'user',sessionId:'a',seq:'1',kind:'user.message',data:{content:'帮我看下状态',quotes:['旧讨论']},createdAt:''},
+   {id:'final',sessionId:'a',seq:'2',kind:'assistant.message',data:{content:'好的'},createdAt:''}
+  ];
+  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,events):original(name,args));
+  render(<App/>);await openSidebarSession(/会话 A/);await screen.findByText('好的');
+  const bubble=document.querySelector('.user-bubble') as HTMLElement|null;
+  expect(bubble).not.toBeNull();
+  expect(within(bubble!).getByText('帮我看下状态')).toBeInTheDocument();
+  expect(within(bubble!).getByText('旧讨论')).toBeInTheDocument();
+  expect(within(bubble!).queryByText('好的')).toBeNull();
  });
 });
 describe('计划模式 composer 入口',()=>{
