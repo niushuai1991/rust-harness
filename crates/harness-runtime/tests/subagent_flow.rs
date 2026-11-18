@@ -279,6 +279,101 @@ async fn agent_spawn_with_model_configures_child_provider_and_records_link() {
     assert_eq!(result.data["isError"], false);
 }
 
+/// 父消息按队列应答；子消息（task 前缀开头）回纯文本立即结束，
+/// 避免子代理回合与父回合竞争同一应答队列。
+struct ChildAwareSpawner {
+    answers: Mutex<VecDeque<ModelAnswer>>,
+}
+#[async_trait]
+impl ModelProvider for ChildAwareSpawner {
+    async fn complete(
+        &self,
+        messages: Vec<ModelMessage>,
+        _: Vec<ToolDefinition>,
+        _: CancellationToken,
+        _: DeltaSink,
+    ) -> AppResult<ModelAnswer> {
+        if messages
+            .iter()
+            .any(|message| message.content.starts_with("批量任务"))
+        {
+            return Ok(ModelAnswer {
+                content: "子任务完成".into(),
+                usage: json!({"prompt_tokens":0,"completion_tokens":0}),
+                ..Default::default()
+            });
+        }
+        let mut answer = self
+            .answers
+            .lock()
+            .unwrap()
+            .pop_front()
+            .ok_or_else(|| AppError::new("FIXTURE", "unexpected extra request"))?;
+        if answer.usage.is_null() {
+            answer.usage = serde_json::json!({"prompt_tokens":0,"completion_tokens":0});
+        }
+        Ok(answer)
+    }
+}
+
+#[tokio::test]
+async fn agent_spawn_limit_only_counts_running_children() {
+    let (_temp, runtime, session) = setup("spawn-limit").await;
+    auto_approve(&runtime);
+    // 连续 9 个回合各 spawn 一个子代理，且每个子代理回合结束后才发起下一回合：
+    // 第 9 次 spawn 时前 8 个均已结束，不得计入上限。
+    for turn in 0..9 {
+        let model = Arc::new(ChildAwareSpawner {
+            answers: Mutex::new(VecDeque::from([
+                call(
+                    &format!("c{turn}"),
+                    "agent_spawn",
+                    json!({"task": format!("批量任务{turn}")}),
+                ),
+                ModelAnswer::default(),
+            ])),
+        });
+        runtime
+            .clone()
+            .run_session(session.clone(), "parent".into(), model)
+            .await
+            .unwrap();
+        let child = runtime.children_of(&session).pop().expect("子会话应已登记");
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if runtime
+                    .store
+                    .events(&child, 0)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|event| event.kind == "turn.end")
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+    let events = runtime.store.events(&session, 0).await.unwrap();
+    let limited = events
+        .iter()
+        .filter(|e| e.kind == "tool.result" && e.data["isError"] == true)
+        .any(|e| {
+            e.data["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("AGENT_LIMIT"))
+        });
+    assert!(!limited, "已结束的子代理不得计入上限");
+    assert_eq!(
+        runtime.children_of(&session).len(),
+        9,
+        "9 个子代理均应登记成功"
+    );
+}
+
 #[tokio::test]
 async fn parent_link_survives_restart_and_decorates_session_list() {
     let (temp, runtime, session) = setup("restart").await;

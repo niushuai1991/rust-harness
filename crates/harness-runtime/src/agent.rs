@@ -1891,15 +1891,27 @@ impl Runtime {
                 a.to_string()
             }
             "agent_spawn" => {
-                let descendants = self
+                // 上限只统计仍在运行的子代理：先取 children 快照释放锁，再对照 active 判活。
+                let child_ids: Vec<String> = self
                     .children
                     .lock()
                     .unwrap()
                     .values()
-                    .map(Vec::len)
-                    .sum::<usize>();
-                if descendants >= 8 {
-                    return Err(AppError::new("AGENT_LIMIT", "当前实例最多8个子代理"));
+                    .flatten()
+                    .cloned()
+                    .collect();
+                let running = {
+                    let active = self.active.lock().unwrap();
+                    child_ids
+                        .iter()
+                        .filter(|id| active.contains_key(*id))
+                        .count()
+                };
+                if running >= 8 {
+                    return Err(AppError::new(
+                        "AGENT_LIMIT",
+                        "当前实例最多同时运行8个子代理",
+                    ));
                 }
                 let model_id = a
                     .get("modelId")
