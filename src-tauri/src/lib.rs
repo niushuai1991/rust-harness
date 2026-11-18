@@ -88,6 +88,31 @@ pub fn run() {
             })?;
             app.manage(browser);
         }
+        // 自动化到点执行（含手动触发）会后台新建/投递会话；durable 事件只经 session_send
+        // 按会话过滤转发，后台会话的事件到不了前端。这里常驻订阅广播，命中 automation.triggered
+        // 时单发窗口事件，前端据此拉取该会话增量合入侧栏列表。
+        let automations_handle = app.handle().clone();
+        let mut automation_events = runtime.subscribe();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                match automation_events.recv().await {
+                    Ok(harness_contracts::LiveEvent::Durable { event }) => {
+                        if event.kind == "automation.triggered" {
+                            let _ = tauri::Emitter::emit_to(
+                                &automations_handle,
+                                "main",
+                                "automation-session-created",
+                                event.session_id,
+                            );
+                        }
+                    }
+                    Ok(_) => {}
+                    // 常驻监听不因积压退出；丢几条事件只影响该次侧栏刷新。
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                }
+            }
+        });
         app.manage(runtime);
         desktop::setup(app)?;
         #[cfg(windows)]
