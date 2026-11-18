@@ -1,16 +1,18 @@
 # ask_user 提问工具（Agent 向用户提问）
 
-- 日期：2026-11-12（计划批准）
+- 日期：2026-11-12（计划批准）；修订：2026-11-19 桌面端呈现改为覆盖输入框的可折叠浮层，新增「发送消息=文本答复」
 - 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
-- 范围：会话中模型向用户提问的 `ask_user` 内置工具：问题+候选项参数契约、挂起等待与自动结算语义、`ask.request`/`ask.resolved` 事件对、CLI chat 交互与 run 非交互结算、JSON-RPC `ask.*`、桌面提问 Modal 与时间线回放卡；ACP 端 v1 以无人在场自动结算，elicitation 转发留待后续。设计参考 zcode AskUserQuestion 模式。
+- 范围：会话中模型向用户提问的 `ask_user` 内置工具：问题+候选项参数契约、挂起等待与自动结算语义、`ask.request`/`ask.resolved` 事件对、CLI chat 交互与 run 非交互结算、JSON-RPC `ask.*`、桌面提问浮层与时间线回放卡；ACP 端 v1 以无人在场自动结算，elicitation 转发留待后续。设计参考 zcode AskUserQuestion 模式。
 
 ## 背景与决策
 
 会话中模型原本只能把疑问写进回复文本结束回合，没有结构化的「暂停等用户决策再继续」机制。2026-11-12 用户确认三项决策：
 
-1. **桌面端提问交互用浮层 Modal**（与审批卡片同形态：轮询 + Modal + 按钮组），不做时间线内嵌交互表单。
+1. **桌面端提问交互用浮层**（轮询 + 按钮组），不做时间线内嵌交互表单。2026-11-19 修订呈现形态：提问卡覆盖在输入框上方（非全屏 Modal，不遮挡消息时间线），可折叠成一行摘要（折叠后输入框露出）；与审批 Modal（全屏遮罩）形态分离。
 2. **ACP 端留待后续**：elicitation/create 转发不在本规范范围（[ACP 规范](acp.md) 的 `elicitation/*` 非目标维持）；ACP 宿主以无人在场自动结算。
 3. **非交互场景自动结算继续跑**：`harness run` 非 TTY stdin 等无人在场环境，提问立即以固定答复结算，不报错不摧毁回合。
+
+2026-11-19 追加决策（桌面端）：**提问挂起时发送消息=文本答复**——当前会话有挂起提问时，输入框发送的消息以原始文本按 `source=text` 结算提问（与 CLI chat stdin 自由答复同语义），不重复入队；带附件/引用时仍走消息排队路径，提问保持挂起。发送按钮在提问挂起期间保持「发送消息」形态（不被「取消生成」取代），回合取消仍走原入口。
 
 ## 工具契约
 
@@ -44,7 +46,7 @@
 | CLI chat（TTY） | `ask.request` 到达后渲染问题+编号选项（stderr），stdin 行读：序号选选项、其余文本为自由答复、空行重试、EOF 视为无人在场结算 |
 | CLI run | 非 TTY stdin 设 `Runtime::set_unattended(true)`：runtime 不经挂起直接落 request+resolved（source=unattended）；TTY run 交互同 chat |
 | JSON-RPC | `ask.list` / `ask.resolve`（仿 `approval.*`）；`ask.request` 经 `session.event` 通知推送 |
-| 桌面 | `question_list` / `question_resolve` 命令；前端 2 秒轮询（与审批同 effect），弹出「Agent 需要你的输入」Modal（选项单选或自由输入，「忽略」按 unattended 提交）；等待提问时隐藏思考指示；时间线 `ask.request` 卡片按 id 配对 `ask.resolved` 显示答复/未答复 |
+| 桌面 | `question_list` / `question_resolve` 命令；前端 2 秒轮询（与审批同 effect），当前会话挂起提问显示「Agent 需要你的输入」浮层卡（覆盖输入框、可折叠成摘要行；选项单选或自由输入，「忽略」按 unattended 提交）；提问挂起时发送消息=按 `text` 来源结算（带附件/引用时除外）；等待提问时隐藏思考指示；时间线 `ask.request` 卡片按 id 配对 `ask.resolved` 显示答复（`text` 来源标注「文本答复」）/未答复 |
 | ACP | v1 不做交互转发：`acp` 子命令构造实例即设 unattended，提问自动结算；`tool.call`/`tool.result` 经既有通用转发展示（标题「提问 …」）；elicitation 转发留待后续专项 |
 
 ## 不变量
