@@ -465,13 +465,18 @@ describe('侧栏会话入口',()=>{
   expect(screen.getByRole('button',{name:'新建聊天'})).toBeEnabled();
  });
  it('不再显示侧栏顶部的工作区选择按钮',async()=>{await renderOpenA();expect(screen.queryByText('托管工作副本')).not.toBeInTheDocument()});
- it('无工作区时欢迎页与侧栏空态提供打开工作区入口',async()=>{
+ it('无工作区时进入无项目草稿态，欢迎语与草稿 chip 显示「无项目」，侧栏空态保留打开入口',async()=>{
   const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='workspace_list'?[]:original(name,args));
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='workspace_list')return [];
+   if(name==='session_list')return [];
+   return original(name,args);
+  });
   render(<App/>);
   await screen.findByLabelText('当前模型');
-  const welcome=screen.getByText('想把什么变成现实？').closest('div')!;
-  expect(within(welcome).getByRole('button',{name:/打开工作区/})).toBeEnabled();
+  // 项目列表为空时按 no-project-sessions.md 直接进入无项目草稿态（不强制先建项目）
+  expect(await screen.findByRole('heading',{name:/你想在 无项目 中构建什么/})).toBeInTheDocument();
+  expect(screen.getByRole('button',{name:'选择项目'})).toHaveTextContent('无项目');
   const nav=screen.getByText('打开工作区后，会话将保存在本机。').closest('nav')!;
   expect(within(nav).getByRole('button',{name:/打开工作区/})).toBeEnabled();
  });
@@ -898,8 +903,9 @@ describe('工作区的首次会话',()=>{
   });
   vi.mocked(open).mockResolvedValueOnce('D:/fresh');
   render(<App/>);await screen.findByLabelText('当前模型');
-  const welcome=screen.getByText('想把什么变成现实？').closest('div')!;
-  fireEvent.click(within(welcome).getByRole('button',{name:/打开工作区/}));
+  // 无工作区进入无项目草稿态：打开工作区入口在侧栏空态，欢迎页不再提供该按钮
+  const nav=screen.getByText('打开工作区后，会话将保存在本机。').closest('nav')!;
+  fireEvent.click(within(nav).getByRole('button',{name:/打开工作区/}));
   // 命名弹窗预填目录名，确认后携带名称创建
   const dialog=await screen.findByRole('dialog',{name:'打开工作区'});
   expect(screen.getByLabelText('项目名称')).toHaveValue('fresh');
@@ -1656,8 +1662,9 @@ describe('项目命名',()=>{
   localStorage.clear();namingBackend({empty:true});
   vi.mocked(open).mockResolvedValueOnce('D:/alpha-dir');
   render(<App/>);await screen.findByLabelText('当前模型');
-  const welcome=screen.getByText('想把什么变成现实？').closest('div')!;
-  fireEvent.click(within(welcome).getByRole('button',{name:/打开工作区/}));
+  // 无项目草稿态：从 chip 菜单的「新建项目」进入打开工作区流程
+  fireEvent.click(screen.getByRole('button',{name:'选择项目'}));
+  fireEvent.click(screen.getByRole('menuitem',{name:/新建项目/}));
   await screen.findByRole('dialog',{name:'打开工作区'});
   expect(screen.getByText('留空则使用目录名「alpha-dir」。')).toBeInTheDocument();
   fireEvent.change(screen.getByLabelText('项目名称'),{target:{value:'  '}});
@@ -1695,8 +1702,9 @@ describe('项目命名',()=>{
   localStorage.clear();namingBackend({empty:true});
   vi.mocked(open).mockResolvedValueOnce('D:/我的 项目');
   render(<App/>);await screen.findByLabelText('当前模型');
-  const welcome=screen.getByText('想把什么变成现实？').closest('div')!;
-  fireEvent.click(within(welcome).getByRole('button',{name:/打开工作区/}));
+  // 无项目草稿态：从 chip 菜单的「新建项目」进入打开工作区流程
+  fireEvent.click(screen.getByRole('button',{name:'选择项目'}));
+  fireEvent.click(screen.getByRole('menuitem',{name:/新建项目/}));
   await screen.findByRole('dialog',{name:'打开工作区'});
   // 预填保留空格与中文；确认后原样携带名称提交
   expect(screen.getByLabelText('项目名称')).toHaveValue('我的 项目');
