@@ -493,6 +493,81 @@ describe('Agent 提问',()=>{
   fireEvent.click(screen.getByText('本轮已完成'));
   expect(screen.getByText(/未获得答复/)).toBeVisible();
  });
+ it('提问挂起时发送按钮保留且发送消息按文本答复结算',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  let questionPending=false,release!:()=>void;
+  mocks.command.mockImplementation(async(name,args)=>name==='question_list'&&questionPending?askPending():original(name,args));
+  mocks.send.mockImplementation(async()=>new Promise<void>(resolve=>release=resolve));
+  await renderOpenA();
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'请求'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  expect(await screen.findByRole('status',{name:'正在思考'})).toBeVisible();
+  questionPending=true;
+  await screen.findByRole('dialog',{name:'Agent 需要你的输入'},{timeout:3500});
+  expect(screen.getByRole('button',{name:'发送消息'})).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'先改 session.rs'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('question_resolve',{id:'q-1',answer:{text:'先改 session.rs',source:'text'}}));
+  expect(mocks.send).toHaveBeenCalledTimes(1);
+  await act(async()=>release());
+ });
+ it('提问挂起且带附件时发送仍走消息路径',async()=>{
+  const attachment={hash:'a'.repeat(64),name:'说明.txt',mediaType:'text/plain',size:12};
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='question_list'?askPending():name==='artifact_import'?attachment:original(name,args));
+  vi.mocked(open).mockResolvedValueOnce('C:/private/说明.txt');
+  render(<App/>);
+  await openSidebarSession(/会话 A/);
+  await screen.findByRole('dialog',{name:'Agent 需要你的输入'});
+  fireEvent.click(screen.getByRole('button',{name:'添加内容'}));
+  fireEvent.click(screen.getByRole('menuitem',{name:/^附件/}));
+  await screen.findByText('说明.txt');
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'读取附件'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','读取附件','m',expect.any(Function),[attachment.hash],'high'));
+  expect(mocks.command).not.toHaveBeenCalledWith('question_resolve',expect.anything());
+ });
+ it('提问卡可折叠展开，折叠后仅保留摘要与忽略入口',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name)=>name==='question_list'?askPending():original(name));
+  render(<App/>);
+  await openSidebarSession(/会话 A/);
+  await screen.findByRole('dialog',{name:'Agent 需要你的输入'});
+  fireEvent.click(screen.getByRole('button',{name:'折叠提问卡'}));
+  expect(screen.queryByLabelText('选项 session.rs')).not.toBeInTheDocument();
+  expect(screen.queryByRole('button',{name:'提交答复'})).not.toBeInTheDocument();
+  expect(screen.getByText('先改哪个文件？')).toBeInTheDocument();
+  expect(screen.getByRole('button',{name:'忽略提问'})).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button',{name:'展开提问卡'}));
+  expect(screen.getByLabelText('选项 session.rs')).toBeInTheDocument();
+  expect(screen.getByRole('button',{name:'提交答复'})).toBeInTheDocument();
+ });
+ it('轮询刷新后提问卡保持折叠状态',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name)=>name==='question_list'?askPending():original(name));
+  render(<App/>);
+  await openSidebarSession(/会话 A/);
+  await screen.findByRole('dialog',{name:'Agent 需要你的输入'});
+  fireEvent.click(screen.getByRole('button',{name:'折叠提问卡'}));
+  expect(screen.queryByLabelText('选项 session.rs')).not.toBeInTheDocument();
+  await act(async()=>{await new Promise(resolve=>setTimeout(resolve,2300))});
+  expect(screen.getByRole('dialog',{name:'Agent 需要你的输入'})).toBeInTheDocument();
+  expect(screen.queryByLabelText('选项 session.rs')).not.toBeInTheDocument();
+ });
+ it('时间线回放标注文本答复来源',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,[
+   {id:'start',sessionId:'a',seq:'1',kind:'turn.start',data:{runId:'r'},createdAt:''},
+   {id:'ask',sessionId:'a',seq:'2',kind:'ask.request',data:{id:'q-4',sessionId:'a',question:'继续吗？',options:[]},createdAt:''},
+   {id:'resolved',sessionId:'a',seq:'3',kind:'ask.resolved',data:{id:'q-4',answer:'都先放一放',source:'text'},createdAt:''},
+   {id:'end',sessionId:'a',seq:'4',kind:'turn.end',data:{runId:'r',status:'completed'},createdAt:''},
+  ]):original(name,args));
+  render(<App/>);
+  await openSidebarSession(/会话 A/);
+  await screen.findByText('继续吗？');
+  fireEvent.click(screen.getByText('本轮已完成'));
+  expect(screen.getByText(/答复：都先放一放（文本答复）/)).toBeVisible();
+ });
 });
 describe('侧栏会话入口',()=>{
  it('多项目时不再显示工作区切换下拉框，新建聊天按钮可用',async()=>{

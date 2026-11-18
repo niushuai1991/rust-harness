@@ -383,12 +383,18 @@ button.run-session:hover{color:var(--text);text-decoration:underline}
 
 .ask-textarea:focus{outline:none;border-color:var(--accent)}
 .ask-textarea::placeholder{color:var(--muted)}
-.ask-popover{position:absolute;bottom:calc(100% + 10px);left:30px;right:30px;background:var(--panel);border:1px solid var(--border);border-radius:12px;box-shadow:0 12px 36px rgba(32,33,36,.18);padding:14px 16px 12px;z-index:30;font-size:12px}
+.ask-popover{position:absolute;bottom:0;left:30px;right:30px;background:var(--panel);border:1px solid var(--border);border-radius:12px;box-shadow:0 12px 36px rgba(32,33,36,.18);padding:14px 16px 12px;z-index:30;font-size:12px;max-height:min(72dvh,42rem);overflow:auto}
 .ask-popover-head{display:flex;align-items:center;gap:8px;color:var(--text);font-size:13.5px;margin-bottom:2px}
-.ask-popover-head strong{flex:1;min-width:0;max-height:40vh;overflow:auto;font-weight:550;overflow-wrap:anywhere;white-space:pre-wrap}
+.ask-popover-head strong{flex:1;min-width:0;font-weight:550;overflow-wrap:anywhere;white-space:pre-wrap}
 .ask-popover-head svg{color:var(--muted);flex-shrink:0}
 .ask-popover-head button{border:0;background:transparent;padding:3px;color:var(--muted)}
 .ask-popover-head button:hover{background:var(--surface);color:var(--text)}
+.ask-popover-head .fold-btn svg{transition:transform .15s;transform:rotate(-180deg)}
+.ask-popover.folded{bottom:calc(100% + 10px);max-height:none;overflow:visible;padding:9px 16px}
+.ask-popover.folded .muted,.ask-popover.folded .ask-options,.ask-popover.folded .ask-textarea,.ask-popover.folded .actions{display:none}
+.ask-popover.folded .ask-popover-head{align-items:center;margin-bottom:0}
+.ask-popover.folded .ask-popover-head strong{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ask-popover.folded .fold-btn svg{transform:rotate(0)}
 .ask-popover .actions{margin-top:12px}
 .ask-popover .ask-textarea{display:block;width:100%;min-height:66px;resize:vertical;border:1px solid var(--border);border-radius:8px;background:var(--panel);color:var(--text);padding:9px 12px;font-size:12.5px;line-height:1.7;margin:6px 0 0}
 .ask-badge{font-style:normal;font-size:9px;color:#8b7946;background:#f2efdf;border-radius:4px;padding:1px 6px;flex-shrink:0}
