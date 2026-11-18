@@ -1640,17 +1640,28 @@ describe('会话列表视图',()=>{
  });
 });
 
-describe('项目命名',()=>{
- function namingBackend(options:{empty?:boolean;renameError?:string}={}){
+describe('项目编辑',()=>{
+ function namingBackend(options:{empty?:boolean;updateError?:string}={}){
   const original=mocks.command.getMockImplementation()!;
+  const ws={id:'w',sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',name:'alpha',pinned:false,hidden:false,executionMode:'replica',worktrees:{}};
   mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return options.empty?[]:[{id:'w',sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',name:'alpha'}];
-   if(name==='workspace_rename'){if(options.renameError)throw new Error(options.renameError);return {id:args.workspaceId,sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',name:args.name}}
-   if(name==='workspace_open')return {id:'fresh',sourcePath:args.path,replicaPath:'D:/copy',createdAt:'',name:args.name||'alpha-dir'};
+   if(name==='workspace_list')return options.empty?[]:[ws];
+   if(name==='workspace_update'){if(options.updateError)throw new Error(options.updateError);return {...ws,name:args.name,executionMode:args.executionMode}}
+   if(name==='workspace_open')return {id:'fresh',sourcePath:args.path,replicaPath:'D:/copy',createdAt:'',name:args.name||'alpha-dir',executionMode:args.executionMode};
    if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A',createdAt:'',updatedAt:new Date().toISOString(),parentId:null}];
    if(name==='session_timeline_page')return timeline(args.sessionId,[event(`e-${args.sessionId}`,args.sessionId,'1',`内容 ${args.sessionId}`)]);
    return original(name,args);
   });
+ }
+ async function openEditDialog(){
+  await renderOpenA();
+  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
+  const sessionNav=screen.getByRole('navigation',{name:'会话列表'});
+  // 组头不再提供内联编辑按钮，编辑入口只在右键菜单。
+  expect(screen.queryByRole('button',{name:'编辑 alpha'})).not.toBeInTheDocument();
+  fireEvent.contextMenu(within(sessionNav).getByText('alpha'));
+  fireEvent.click(await screen.findByRole('menuitem',{name:'编辑'}));
+  return screen.findByRole('dialog',{name:'编辑项目'});
  }
  it('打开工作区时名称留空则回退目录名',async()=>{
   localStorage.clear();namingBackend({empty:true});
@@ -1666,29 +1677,42 @@ describe('项目命名',()=>{
   // 后端归一化后的目录名显示在面包屑上
   await waitFor(()=>expect(screen.getAllByText('alpha-dir').length).toBeGreaterThanOrEqual(1));
  });
- it('项目组头可重命名并立即显示新名称',async()=>{
+ it('项目右键菜单可编辑并立即显示新名称',async()=>{
   localStorage.clear();namingBackend();
-  await renderOpenA();
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
-  expect(screen.getByRole('button',{name:/^alpha \d+$/})).toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button',{name:'重命名 alpha'}));
-  const dialog=await screen.findByRole('dialog',{name:'重命名项目'});
+  const dialog=await openEditDialog();
   expect(screen.getByLabelText('项目名称')).toHaveValue('alpha');
   fireEvent.change(screen.getByLabelText('项目名称'),{target:{value:'新名字'}});
   fireEvent.click(within(dialog).getByRole('button',{name:'保存'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_rename',{workspaceId:'w',name:'新名字'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_update',{workspaceId:'w',name:'新名字',executionMode:'replica'}));
   expect(screen.getByRole('button',{name:/^新名字 \d+$/})).toBeInTheDocument();
   expect(screen.queryByRole('button',{name:/^alpha \d+$/})).not.toBeInTheDocument();
+  expect(await screen.findByText('项目已重命名为「新名字」。')).toBeInTheDocument();
  });
- it('重命名留空提交时显示后端错误且名称不变',async()=>{
-  localStorage.clear();namingBackend({renameError:'名称不能为空'});
-  await renderOpenA();
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
-  fireEvent.click(screen.getByRole('button',{name:'重命名 alpha'}));
-  await screen.findByRole('dialog',{name:'重命名项目'});
+ it('编辑留空提交时显示后端错误且名称不变',async()=>{
+  localStorage.clear();namingBackend({updateError:'名称不能为空'});
+  const dialog=await openEditDialog();
   fireEvent.change(screen.getByLabelText('项目名称'),{target:{value:'  '}});
-  fireEvent.click(screen.getByRole('button',{name:'保存'}));
+  fireEvent.click(within(dialog).getByRole('button',{name:'保存'}));
   await screen.findByText('名称不能为空');
+  expect(screen.getByRole('button',{name:/^alpha \d+$/})).toBeInTheDocument();
+ });
+ it('编辑弹窗默认选中当前执行模式并可切换',async()=>{
+  localStorage.clear();namingBackend();
+  const dialog=await openEditDialog();
+  const mode=screen.getByLabelText('执行模式');
+  expect(mode).toHaveValue('replica');
+  fireEvent.change(mode,{target:{value:'worktree'}});
+  expect(await screen.findByText(/切换从下一回合起生效/)).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole('button',{name:'保存'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_update',{workspaceId:'w',name:'alpha',executionMode:'worktree'}));
+  expect(await screen.findByText(/执行模式已切换为worktree/)).toBeInTheDocument();
+ });
+ it('执行模式切换失败时展示后端原因',async()=>{
+  localStorage.clear();namingBackend({updateError:'worktree execution mode requires a git repository'});
+  const dialog=await openEditDialog();
+  fireEvent.change(screen.getByLabelText('执行模式'),{target:{value:'worktree'}});
+  fireEvent.click(within(dialog).getByRole('button',{name:'保存'}));
+  await screen.findByText('worktree execution mode requires a git repository');
   expect(screen.getByRole('button',{name:/^alpha \d+$/})).toBeInTheDocument();
  });
  it('中文与空格路径预填目录名并随创建提交',async()=>{

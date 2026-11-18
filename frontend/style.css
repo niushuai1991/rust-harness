@@ -283,9 +283,6 @@ button.run-session:hover{color:var(--text);text-decoration:underline}
 .ws-count{font-size:10px;color:var(--muted);background:var(--surface);border-radius:4px;padding:1px 6px;flex-shrink:0}
 .ws-add{border:0;background:transparent;color:var(--muted);width:26px;height:26px;padding:0;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
 .ws-add:hover{background:var(--surface);color:var(--accent)}
-.ws-rename{border:0;background:transparent;color:var(--muted);width:26px;height:26px;padding:0;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;opacity:0;flex-shrink:0}
-.ws-head:hover .ws-rename,.ws-rename:focus-visible{opacity:1}
-.ws-rename:hover{background:var(--surface);color:var(--accent)}
 .ws-pin{border:0;background:transparent;color:var(--muted);width:26px;height:26px;padding:0;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;opacity:0;flex-shrink:0}
 .ws-head:hover .ws-pin,.ws-pin.on,.ws-pin:focus-visible{opacity:1}
 .ws-pin.on{color:var(--accent)}

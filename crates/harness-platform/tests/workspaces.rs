@@ -703,3 +703,162 @@ fn scratch_roots_are_lazy_unique_and_idempotent() {
     // scratch root 不注册为工作区记录。
     assert!(manager.list().unwrap().is_empty());
 }
+
+#[test]
+fn update_renames_and_switches_mode_in_one_operation() {
+    let (_temp, source, manager) = fixture();
+    git_commit_source(&source);
+    let info = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
+    let updated = manager
+        .update(&info.id, "新名字".into(), ExecutionMode::Worktree)
+        .unwrap();
+    assert_eq!(updated.name, "新名字");
+    assert_eq!(updated.execution_mode, ExecutionMode::Worktree);
+    let reloaded = manager.get(&info.id).unwrap();
+    assert_eq!(reloaded.name, "新名字");
+    assert_eq!(reloaded.execution_mode, ExecutionMode::Worktree);
+    // 切到 worktree 不删除隔离副本。
+    assert!(
+        std::path::Path::new(&info.replica_path)
+            .join("a.txt")
+            .is_file()
+    );
+}
+
+#[test]
+fn update_rejects_blank_name_without_switching_mode() {
+    let (_temp, source, manager) = fixture();
+    git_commit_source(&source);
+    let info = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
+    assert_eq!(
+        manager
+            .update(&info.id, "   ".into(), ExecutionMode::Worktree)
+            .unwrap_err()
+            .code,
+        "INVALID_NAME"
+    );
+    let unchanged = manager.get(&info.id).unwrap();
+    assert_eq!(unchanged.name, info.name);
+    assert_eq!(unchanged.execution_mode, ExecutionMode::Replica);
+}
+
+#[test]
+fn update_rejects_worktree_switch_on_non_git_source_without_partial_write() {
+    let (_temp, source, manager) = fixture();
+    let info = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
+    assert_eq!(
+        manager
+            .update(&info.id, "新名字".into(), ExecutionMode::Worktree)
+            .unwrap_err()
+            .code,
+        "INVALID_WORKSPACE"
+    );
+    // 名字与模式均不落盘（先在内存完成校验，失败不保存）。
+    let unchanged = manager.get(&info.id).unwrap();
+    assert_eq!(unchanged.name, info.name);
+    assert_eq!(unchanged.execution_mode, ExecutionMode::Replica);
+}
+
+#[test]
+fn switching_to_worktree_preserves_replica_changes_for_switch_back() {
+    let (_temp, source, manager) = fixture();
+    git_commit_source(&source);
+    let info = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
+    let root = std::path::Path::new(&info.replica_path);
+    write_file(root, "a.txt", "edited").unwrap();
+    manager
+        .update(&info.id, info.name.clone(), ExecutionMode::Worktree)
+        .unwrap();
+    // worktree 模式差异走 git status，不展示副本改动，但副本内容原样保留。
+    assert!(manager.diff(&info.id).unwrap().is_empty());
+    assert_eq!(read_file(root, "a.txt").unwrap(), "edited");
+    // 切回 replica 后未同步改动仍可审阅。
+    let back = manager
+        .update(&info.id, info.name.clone(), ExecutionMode::Replica)
+        .unwrap();
+    assert_eq!(back.execution_mode, ExecutionMode::Replica);
+    let changes = manager.diff(&info.id).unwrap();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].path, "a.txt");
+    assert!(!changes[0].conflict);
+}
+
+#[test]
+fn switching_to_replica_rebuilds_replica_from_source() {
+    let (_temp, source, manager) = fixture();
+    git_commit_source(&source);
+    let info = manager
+        .create(&source, None, ExecutionMode::Worktree)
+        .unwrap();
+    // worktree 模式创建的项目没有隔离副本。
+    assert!(!std::path::Path::new(&info.replica_path).exists());
+    let root = std::path::PathBuf::from(&info.replica_path);
+    let updated = manager
+        .update(&info.id, info.name.clone(), ExecutionMode::Replica)
+        .unwrap();
+    assert_eq!(updated.execution_mode, ExecutionMode::Replica);
+    assert_eq!(read_file(&root, "a.txt").unwrap(), "initial");
+    // 基线为源目录快照：未改动时无差异；切回后审阅同步恢复可用。
+    assert!(manager.diff(&info.id).unwrap().is_empty());
+    write_file(&root, "a.txt", "edited").unwrap();
+    manager.apply(&info.id, &["a.txt".into()]).unwrap();
+    assert_eq!(fs::read_to_string(source.join("a.txt")).unwrap(), "edited");
+}
+
+#[test]
+fn switching_back_to_worktree_reuses_registered_session_worktree() {
+    let (_temp, source, manager) = fixture();
+    git_commit_source(&source);
+    let info = manager
+        .create(&source, None, ExecutionMode::Worktree)
+        .unwrap();
+    let worktree = manager
+        .ensure_session_worktree(&info.id, "sess1a2b")
+        .unwrap();
+    manager
+        .update(&info.id, info.name.clone(), ExecutionMode::Replica)
+        .unwrap();
+    // 切到 replica 不清理登记：已有 worktree 路径保留。
+    assert_eq!(
+        manager.get(&info.id).unwrap().worktrees["sess1a2b"].path,
+        worktree.path
+    );
+    manager
+        .update(&info.id, info.name.clone(), ExecutionMode::Worktree)
+        .unwrap();
+    assert_eq!(
+        manager.execution_root(&info.id, "sess1a2b").unwrap(),
+        PathBuf::from(&worktree.path)
+    );
+}
+
+#[test]
+fn update_rejects_while_lease_held_and_noop_is_stable() {
+    let (_temp, source, manager) = fixture();
+    let info = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
+    let lease = manager.acquire(&info.id).unwrap();
+    assert_eq!(
+        manager
+            .update(&info.id, "x".into(), ExecutionMode::Replica)
+            .unwrap_err()
+            .code,
+        "BUSY"
+    );
+    drop(lease);
+    // 名称与模式都未变化：不写入即可返回当前记录。
+    let same = manager
+        .update(&info.id, info.name.clone(), ExecutionMode::Replica)
+        .unwrap();
+    assert_eq!(same.name, info.name);
+    assert_eq!(same.execution_mode, ExecutionMode::Replica);
+}

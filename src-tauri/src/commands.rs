@@ -278,16 +278,38 @@ pub async fn workspace_open(
         .await
         .map_err(error)?
 }
-/// 项目重命名；空白名称由平台层拒绝（INVALID_NAME），返回更新后的工作区信息。
+/// 编辑项目：名称与执行模式一次保存。执行模式变化时先拒绝运行中的会话；
+/// 空白名称由平台层拒绝（INVALID_NAME），非 git 源目录切 worktree 由平台层
+/// 拒绝（INVALID_WORKSPACE），返回更新后的工作区信息。
 #[tauri::command]
 #[specta::specta]
-pub async fn workspace_rename(
+pub async fn workspace_update(
     state: Backend<'_>,
     workspace_id: String,
     name: String,
+    execution_mode: ExecutionMode,
 ) -> AppResult<WorkspaceInfo> {
+    let current = state.workspaces.get(&workspace_id)?;
+    if current.execution_mode != execution_mode {
+        let running: Vec<String> = state
+            .list_sessions(Some(&workspace_id), None)
+            .await?
+            .into_iter()
+            .map(|s| s.id)
+            .filter(|id| state.is_active(id))
+            .collect();
+        if !running.is_empty() {
+            return Err(AppError::new(
+                "WORKSPACE_RUNNING",
+                format!(
+                    "项目还有 {} 个会话正在运行，请等待结束或停止后再切换执行模式",
+                    running.len()
+                ),
+            ));
+        }
+    }
     let manager = state.workspaces.clone();
-    tokio::task::spawn_blocking(move || manager.rename(&workspace_id, name))
+    tokio::task::spawn_blocking(move || manager.update(&workspace_id, name, execution_mode))
         .await
         .map_err(error)?
 }
@@ -1348,7 +1370,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         workspace_remove,
         workspace_reveal_hidden,
         workspace_merge,
-        workspace_rename,
+        workspace_update,
         workspace_open_dir,
         workspace_set_pinned,
         workspace_diff,
