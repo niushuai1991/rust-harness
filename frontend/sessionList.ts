@@ -57,6 +57,11 @@ export function subagentsOf(sessions:SessionInfo[],sessionId:string|null|undefin
  return sessions.filter(s=>s.parentId===sessionId);
 }
 
+/// 去重插入单条会话并保持 updatedAt 倒序；供后台事件推送（如自动化新建会话）做增量更新。
+export function upsertSession(sessions:SessionInfo[],session:SessionInfo):SessionInfo[]{
+ return [...sessions.filter(s=>s.id!==session.id),session].sort((a,b)=>Date.parse(b.updatedAt)-Date.parse(a.updatedAt));
+}
+
 export interface RecentGroup{group:TimeGroup;sessions:SessionInfo[];}
 /** 输入需已按 updatedAt 倒序（后端保证）；相邻同组合并，避免打乱组内顺序。 */
 export function groupByTime(sessions:SessionInfo[],now:Date):RecentGroup[]{

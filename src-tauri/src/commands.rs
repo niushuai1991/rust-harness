@@ -393,6 +393,12 @@ pub async fn session_list(
     }
     state.list_sessions(Some(&workspace_id), archived).await
 }
+/// 按拉取单条会话；供自动化后台建会话的推送事件增量合入侧栏列表。
+#[tauri::command]
+#[specta::specta]
+pub async fn session_get(state: Backend<'_>, session_id: String) -> AppResult<SessionInfo> {
+    state.store.session(&session_id).await
+}
 #[tauri::command]
 #[specta::specta]
 pub async fn session_active_list(state: Backend<'_>) -> AppResult<Vec<String>> {
@@ -1326,6 +1332,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         workspace_apply,
         workspace_refresh,
         session_list,
+        session_get,
         session_active_list,
         session_create,
         session_plan_get,

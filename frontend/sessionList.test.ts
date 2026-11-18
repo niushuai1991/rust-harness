@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {filterByTitle,formatFullTime,groupByProject,groupByTime,relativeLabel,subagentsOf,timeGroupOf,withoutSubagents} from './sessionList';
+import {filterByTitle,formatFullTime,groupByProject,groupByTime,relativeLabel,subagentsOf,timeGroupOf,upsertSession,withoutSubagents} from './sessionList';
 import type {SessionInfo,WorkspaceInfo} from './types';
 
 // 固定"现在"：本地时区 2026-11-08（周日）12:00，避免测试随真实时间漂移。
@@ -138,5 +138,23 @@ describe('groupByProject',()=>{
   const list=[session({id:'a',workspaceId:'ws-1'})];
   const groups=groupByProject(list,ws,true);
   expect(groups.map(g=>g.workspace.id)).toEqual(['ws-2','ws-1']);
+ });
+});
+
+describe('upsertSession',()=>{
+ it('新会话按 updatedAt 倒序插入到正确位置',()=>{
+  const list=[session({id:'a',updatedAt:at(2026,11,8,10,0)}),session({id:'b',updatedAt:at(2026,11,8,8,0)})];
+  const next=upsertSession(list,session({id:'new',updatedAt:at(2026,11,8,9,0)}));
+  expect(next.map(s=>s.id)).toEqual(['a','new','b']);
+ });
+ it('比所有会话都新时置顶',()=>{
+  const list=[session({id:'a',updatedAt:at(2026,11,8,10,0)})];
+  expect(upsertSession(list,session({id:'new',updatedAt:at(2026,11,8,11,0)})).map(s=>s.id)).toEqual(['new','a']);
+ });
+ it('已有会话更新时去重并按新 updatedAt 重排',()=>{
+  const list=[session({id:'a',updatedAt:at(2026,11,8,10,0)}),session({id:'b',updatedAt:at(2026,11,8,8,0)})];
+  const next=upsertSession(list,session({id:'b',updatedAt:at(2026,11,8,11,0),title:'更新后的标题'}));
+  expect(next.map(s=>s.id)).toEqual(['b','a']);
+  expect(next[0].title).toBe('更新后的标题');
  });
 });
