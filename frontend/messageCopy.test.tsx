@@ -32,15 +32,17 @@ function installClipboard(){
 }
 async function openA(){render(<App/>);fireEvent.click(await screen.findByRole('button',{name:/会话 A/}));await screen.findByText('回复内容')}
 describe('消息复制按钮',()=>{
- it('助手消息提供复制按钮，点击复制原文且不改变按钮状态',async()=>{
+ it('助手消息复制按钮位于消息体末尾（左下角），点击复制原文且不改变按钮状态',async()=>{
   const copy=installClipboard();
   await openA();
   const button=await screen.findByRole('button',{name:'复制消息'});
   fireEvent.click(button);
   await waitFor(()=>expect(copy).toHaveBeenCalledWith('回复内容'));
   expect(screen.getByRole('button',{name:'复制消息'})).toBe(button);
+  const body=button.closest('.message-body')!;
+  expect(body.lastElementChild).toBe(button);
  });
- it('用户消息同样提供复制按钮并复制原文',async()=>{
+ it('用户消息复制按钮同样位于消息体末尾并复制原文',async()=>{
   const copy=installClipboard();
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,[
@@ -52,6 +54,7 @@ describe('消息复制按钮',()=>{
   await screen.findByText('用户的问题');
   const buttons=screen.getAllByRole('button',{name:'复制消息'});
   expect(buttons).toHaveLength(2);
+  for(const button of buttons)expect(button.closest('.message-body')!.lastElementChild).toBe(button);
   fireEvent.click(buttons[0]);
   await waitFor(()=>expect(copy).toHaveBeenCalledWith('用户的问题'));
   fireEvent.click(buttons[1]);
