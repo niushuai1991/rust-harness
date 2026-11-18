@@ -1,5 +1,5 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
-import {cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
+import {act,cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
 import App from './App';
 import {useChat} from './store';
 import {useSidePanel} from './sidePanelStore';
@@ -59,5 +59,71 @@ describe('消息复制按钮',()=>{
   await waitFor(()=>expect(copy).toHaveBeenCalledWith('用户的问题'));
   fireEvent.click(buttons[1]);
   await waitFor(()=>expect(copy).toHaveBeenCalledWith('回复内容'));
+ });
+});
+
+const turnEvent=(id:string,seq:string,kind:string,data:Record<string,unknown>={}):SessionEvent=>({id,sessionId:'a',seq,kind,data,createdAt:''});
+const start=()=>turnEvent('start','1','turn.start');
+const user=()=>turnEvent('user','2','user.message',{content:'用户提问'});
+const middle=()=>turnEvent('middle','3','assistant.message',{content:'中间说明',reasoning:'秘密思考'});
+const attempt=()=>turnEvent('attempt','4','assistant.attempt',{content:'失败半截'});
+const tool=()=>turnEvent('tool','5','tool.result',{name:'shell',content:'工具输出'});
+const final=()=>turnEvent('final','6','assistant.message',{content:'最终总结'});
+const end=(status='completed')=>turnEvent('end','7','turn.end',{status});
+async function openEvents(events:SessionEvent[],hasOlder=false){
+ const original=mocks.command.getMockImplementation()!;
+ mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?{...timeline(args.sessionId,events),hasOlder,olderCursor:hasOlder?events[0].seq:null}:original(name,args));
+ render(<App/>);fireEvent.click(await screen.findByRole('button',{name:/会话 A/}));
+}
+describe('完整回合复制',()=>{
+ it('默认收起过程，仅最终助手按钮复制整轮正文',async()=>{
+  const copy=installClipboard();await openEvents([start(),user(),middle(),attempt(),tool(),final(),end()]);
+  const summary=await screen.findByText('本轮已完成');const details=summary.closest('details')!;
+  expect(details.open).toBe(false);expect(screen.getByText('最终总结')).toBeVisible();
+  fireEvent.click(summary);expect(details.open).toBe(true);
+  expect(within(details).queryByRole('button',{name:'复制消息'})).not.toBeInTheDocument();
+  const userCard=screen.getByText('用户提问').closest('article')!;
+  fireEvent.click(within(userCard).getByRole('button',{name:'复制消息'}));
+  expect(copy).toHaveBeenLastCalledWith('用户提问');
+  const finalCard=screen.getByText('最终总结').closest('article')!;
+  fireEvent.click(within(finalCard).getByRole('button',{name:'复制消息'}));
+  expect(copy).toHaveBeenLastCalledWith('中间说明\n\n最终总结');
+ });
+ it('最终助手按钮合并所有助手正文，不包含失败内容和工具输出',async()=>{
+  const copy=installClipboard();await openEvents([start(),user(),middle(),attempt(),tool(),final(),end()]);
+  fireEvent.click(within((await screen.findByText('最终总结')).closest('article')!).getByRole('button',{name:'复制消息'}));
+  expect(copy).toHaveBeenCalledWith('中间说明\n\n最终总结');
+ });
+ it('单条助手消息仅复制自身，无助手消息不显示总结复制按钮',async()=>{
+  const copy=installClipboard();await openEvents([start(),user(),final(),end()]);
+  fireEvent.click(within((await screen.findByText('最终总结')).closest('article')!).getByRole('button',{name:'复制消息'}));
+  expect(copy).toHaveBeenCalledWith('最终总结');
+  act(()=>useChat.getState().replaceTimelinePage('a',timeline('a',[start(),user(),tool(),end()])));
+  expect(screen.queryByText('最终总结')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByText('本轮已完成'));
+  expect(screen.getAllByRole('button',{name:'复制消息'})).toHaveLength(1);
+ });
+ it.each(['error','cancelled'])('异常终态 %s 保持平铺与逐条复制',async(status)=>{
+  await openEvents([start(),user(),middle(),attempt(),final(),end(status)]);
+  expect(await screen.findByText('中间说明')).toBeVisible();
+  expect(screen.queryByText('本轮已完成')).not.toBeInTheDocument();
+  expect(screen.getAllByRole('button',{name:'复制消息'})).toHaveLength(4);
+ });
+ it('运行中平铺，收到完成事件后折叠并复制整轮',async()=>{
+  const copy=installClipboard();await openEvents([start(),user(),middle(),final()]);
+  expect(await screen.findByText('中间说明')).toBeVisible();
+  act(()=>useChat.getState().receive({type:'durable',event:end()}));
+  expect(screen.getByText('本轮已完成').closest('details')!.open).toBe(false);
+  fireEvent.click(within(screen.getByText('最终总结').closest('article')!).getByRole('button',{name:'复制消息'}));
+  expect(copy).toHaveBeenCalledWith('中间说明\n\n最终总结');
+ });
+ it('跨页回合加载起点前平铺，加载后合并复制',async()=>{
+  const copy=installClipboard();await openEvents([middle(),final(),end()],true);
+  expect(await screen.findByText('中间说明')).toBeVisible();
+  expect(screen.queryByText('本轮已完成')).not.toBeInTheDocument();
+  act(()=>useChat.getState().prependTimelinePage('a',timeline('a',[start(),user()])));
+  expect(screen.getByText('本轮已完成').closest('details')!.open).toBe(false);
+  fireEvent.click(within(screen.getByText('最终总结').closest('article')!).getByRole('button',{name:'复制消息'}));
+  expect(copy).toHaveBeenCalledWith('中间说明\n\n最终总结');
  });
 });
