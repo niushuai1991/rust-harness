@@ -1,6 +1,6 @@
 # 宿主代建 worktree 执行模式与沙箱提权重跑
 
-- 日期：2026-11-10（计划拟制）
+- 日期：2026-11-10（计划拟制）；2026-11-18 修订（执行模式支持创建后编辑）
 - 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
 - 范围：工作区「worktree 执行模式」——宿主在真实项目 `.worktrees/` 代建 git worktree 并将会话执行根切换过去，文件编辑直落真实分支工作区；shell 沙箱「提权重跑」——命令被沙箱拦截经审批后无沙箱重跑一次。主仓 `.git` 保持对 agent 只读。设计参考 codex（真实 cwd + OS 沙箱 + escalation）与 zcode（`isolation: "worktree"` 契约）。
 
@@ -19,12 +19,20 @@
 
 ## 执行模式与执行根
 
-- `WorkspaceInfo`（harness-contracts）新增 `execution_mode: "replica" | "worktree"`，record.json 落盘；旧记录缺字段按 `replica` 解释，行为完全不变。`worktree` 模式仅对 git 仓库开放（源目录含 `.git`），创建工作区时选择，之后不可变更。
+- `WorkspaceInfo`（harness-contracts）新增 `execution_mode: "replica" | "worktree"`，record.json 落盘；旧记录缺字段按 `replica` 解释，行为完全不变。`worktree` 模式仅对 git 仓库开放（源目录含 `.git`），创建工作区时选择，之后可在桌面端项目右键菜单的「编辑」弹窗中切换（见下节「执行模式切换」）。
 - `record.json` 新增 `worktrees` 映射：`session_id -> { path, branch, created_at }`，登记宿主创建的会话 worktree，供清理与查询。
 - worktree 为**会话级**：每个会话一个，路径 `<sourcePath>/.worktrees/harness-<session_id 前 8 位>/`，分支默认 `feat/session-<session_id 前 8 位>`（宿主无法预知任务性质；模型可在提权批准后 `git branch -m` 改名以符合 AGENTS.md 的 feat/fix 约定）。基于创建时刻的源项目 `HEAD` 新建分支。
 - 创建时机：**会话首个 turn 启动前懒创建**（宿主进程执行 `git worktree add`，不经过 agent 沙箱；`core.hooksPath=NUL` 防源项目 hooks）。创建失败（分支冲突、残留目录等）时本回合报错终止——worktree 模式不建隔离副本，无副本可降级；`.worktrees/` 缺失时先创建该目录。
 - 执行根解析收敛为单一来源：租约新增 `execution_root()`，replica 模式返回 `replica_path`，worktree 模式返回 worktree 路径。文件工具、shell、skills/LSP 扫描、`workspace_context`（`harness-runtime/src/agent.rs`）统一改读该方法。
 - 系统提示改写（worktree 模式）：「执行根为源项目的 worktree 分支 X（路径 Y），你的编辑直接生效于该分支工作区；worktree 已由宿主创建，无需自行 git worktree add。主仓 `.git` 与 main 工作区不可直接写入，commit/push 等操作用 shell 执行 git 命令，被沙箱拦截时会触发提权审批。」——显式声明代建事实以消解 AGENTS.md「必须自建 worktree」条款与运行环境的指令冲突。
+
+## 执行模式切换（2026-11-18 修订）
+
+- 入口：桌面端项目右键菜单「编辑」弹窗，名称与执行模式在同一表单内一次保存；平台方法 `WorkspaceManager::update(id, name, execution_mode)` 在独占锁下校验并一次原子写入 `record.json`（`rename` 保留为仅改名的委托）。组头不再提供内联编辑按钮。CLI / JSON-RPC / ACP 不暴露切换。
+- 非破坏性：切到 worktree 时保留隔离副本目录、同步基线与 `worktrees` 登记；副本中尚未同步的改动在切换回 replica 后仍可继续审阅。切到 replica 时，若副本目录已存在（曾以 replica 运行过）原样保留目录与基线；若此前没有副本（worktree 创建的项目），按源目录当前快照重建副本与基线。已创建的会话 worktree 目录与分支不删除，切回 worktree 时按登记幂等复用。
+- 约束：切到 worktree 要求源目录是 git 仓库（`INVALID_WORKSPACE`）；名称空白拒绝（`INVALID_NAME`），校验失败时名称与模式均不落盘。运行中回合持共享租约时拒绝（桌面预检返回 `WORKSPACE_RUNNING`，竞态由 `BUSY` 兜底）。
+- 生效时机：执行模式在每个 turn 解析执行根时读取，因此切换从下一回合起生效，无需重启会话。
+- 计划模式：已处于计划模式且尚未创建 worktree 的会话，切到 worktree 后仍受既有 `PLAN_MODE_WORKTREE` 限制（需退出计划模式完成一次回合，或先以非计划模式运行一次）。
 
 ## 沙箱租约与授权
 

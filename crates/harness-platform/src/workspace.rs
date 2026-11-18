@@ -44,6 +44,95 @@ fn snapshot(root: &Path) -> AppResult<Snapshot> {
         .map(|p| paths::bytes(root, &p).map(|b| (p, b)))
         .collect()
 }
+/// 准备隔离副本：git 源走无 checkout 克隆并补录追踪文件（含被 ignore 规则覆盖
+/// 但仍被 git 跟踪的文件），其他目录直接建空目录；随后把基线内容写入副本并打
+/// 沙箱授权。baseline 由调用方先以源目录快照初始化。
+fn prepare_replica(id: &str, source: &Path, root: &Path, baseline: &mut Snapshot) -> AppResult<()> {
+    if source.join(".git").exists() {
+        paths::check(&source.join(".git"))?;
+        let clone = Command::new("git")
+            .args([
+                "-c",
+                "core.hooksPath=NUL",
+                "clone",
+                "--no-local",
+                "--no-hardlinks",
+                "--no-checkout",
+                "--",
+            ])
+            .arg(source)
+            .arg(root)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "NUL")
+            .output();
+        match clone {
+            Ok(out) if out.status.success() => {
+                let has_head = Command::new("git")
+                    .arg("-C")
+                    .arg(root)
+                    .args(["rev-parse", "--verify", "HEAD"])
+                    .env("GIT_CONFIG_NOSYSTEM", "1")
+                    .env("GIT_CONFIG_GLOBAL", "NUL")
+                    .output()
+                    .map_err(io)?
+                    .status
+                    .success();
+                let output = Command::new("git")
+                    .arg("-C")
+                    .arg(root)
+                    .args(["read-tree", if has_head { "HEAD" } else { "--empty" }])
+                    .env("GIT_CONFIG_NOSYSTEM", "1")
+                    .env("GIT_CONFIG_GLOBAL", "NUL")
+                    .output()
+                    .map_err(io)?;
+                if !output.status.success() {
+                    return Err(AppError::new(
+                        "GIT",
+                        String::from_utf8_lossy(&output.stderr),
+                    ));
+                }
+                // Git tracks files even when a later ignore rule matches.
+                // Query only our fresh replica config, then read original
+                // bytes through guarded paths (never run source hooks).
+                let tracked = Command::new("git")
+                    .arg("-C")
+                    .arg(root)
+                    .args(["ls-files", "-z"])
+                    .env("GIT_CONFIG_NOSYSTEM", "1")
+                    .env("GIT_CONFIG_GLOBAL", "NUL")
+                    .output()
+                    .map_err(io)?;
+                if !tracked.status.success() {
+                    return Err(AppError::new(
+                        "GIT",
+                        String::from_utf8_lossy(&tracked.stderr),
+                    ));
+                }
+                for raw in tracked.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()) {
+                    let path = std::str::from_utf8(raw).map_err(io)?;
+                    let guard = paths::guarded(source, path, false)?;
+                    if guard.path.is_file() {
+                        baseline.insert(path.into(), paths::bytes(source, path)?);
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir_all(root).map_err(io)?;
+            }
+            Ok(out) => {
+                return Err(AppError::new("GIT", String::from_utf8_lossy(&out.stderr)));
+            }
+            Err(e) => return Err(io(e)),
+        }
+    } else {
+        fs::create_dir_all(root).map_err(io)?;
+    }
+    for (path, data) in baseline.iter() {
+        paths::replace(root, path, data)?;
+    }
+    crate::shell::prepare(root, id)?;
+    Ok(())
+}
 fn snapshot_with_baseline(root: &Path, baseline: &Snapshot) -> AppResult<Snapshot> {
     let mut current = snapshot(root)?;
     for path in baseline.keys() {
@@ -180,89 +269,7 @@ impl WorkspaceManager {
                 })?;
                 return Ok(info);
             }
-            if source.join(".git").exists() {
-                paths::check(&source.join(".git"))?;
-                let clone = Command::new("git")
-                    .args([
-                        "-c",
-                        "core.hooksPath=NUL",
-                        "clone",
-                        "--no-local",
-                        "--no-hardlinks",
-                        "--no-checkout",
-                        "--",
-                    ])
-                    .arg(&source)
-                    .arg(&root)
-                    .env("GIT_CONFIG_NOSYSTEM", "1")
-                    .env("GIT_CONFIG_GLOBAL", "NUL")
-                    .output();
-                match clone {
-                    Ok(out) if out.status.success() => {
-                        let has_head = Command::new("git")
-                            .arg("-C")
-                            .arg(&root)
-                            .args(["rev-parse", "--verify", "HEAD"])
-                            .env("GIT_CONFIG_NOSYSTEM", "1")
-                            .env("GIT_CONFIG_GLOBAL", "NUL")
-                            .output()
-                            .map_err(io)?
-                            .status
-                            .success();
-                        let output = Command::new("git")
-                            .arg("-C")
-                            .arg(&root)
-                            .args(["read-tree", if has_head { "HEAD" } else { "--empty" }])
-                            .env("GIT_CONFIG_NOSYSTEM", "1")
-                            .env("GIT_CONFIG_GLOBAL", "NUL")
-                            .output()
-                            .map_err(io)?;
-                        if !output.status.success() {
-                            return Err(AppError::new(
-                                "GIT",
-                                String::from_utf8_lossy(&output.stderr),
-                            ));
-                        }
-                        // Git tracks files even when a later ignore rule matches.
-                        // Query only our fresh replica config, then read original
-                        // bytes through guarded paths (never run source hooks).
-                        let tracked = Command::new("git")
-                            .arg("-C")
-                            .arg(&root)
-                            .args(["ls-files", "-z"])
-                            .env("GIT_CONFIG_NOSYSTEM", "1")
-                            .env("GIT_CONFIG_GLOBAL", "NUL")
-                            .output()
-                            .map_err(io)?;
-                        if !tracked.status.success() {
-                            return Err(AppError::new(
-                                "GIT",
-                                String::from_utf8_lossy(&tracked.stderr),
-                            ));
-                        }
-                        for raw in tracked.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()) {
-                            let path = std::str::from_utf8(raw).map_err(io)?;
-                            let guard = paths::guarded(&source, path, false)?;
-                            if guard.path.is_file() {
-                                baseline.insert(path.into(), paths::bytes(&source, path)?);
-                            }
-                        }
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        fs::create_dir_all(&root).map_err(io)?;
-                    }
-                    Ok(out) => {
-                        return Err(AppError::new("GIT", String::from_utf8_lossy(&out.stderr)));
-                    }
-                    Err(e) => return Err(io(e)),
-                }
-            } else {
-                fs::create_dir_all(&root).map_err(io)?;
-            }
-            for (path, data) in &baseline {
-                paths::replace(&root, path, data)?;
-            }
-            crate::shell::prepare(&root, &id)?;
+            prepare_replica(&id, &source, &root, &mut baseline)?;
             let info = WorkspaceInfo {
                 id: id.clone(),
                 source_path: source.to_string_lossy().into_owned(),
@@ -308,16 +315,82 @@ impl WorkspaceManager {
     pub fn get(&self, id: &str) -> AppResult<WorkspaceInfo> {
         Ok(self.load(id)?.info)
     }
+    /// 编辑项目：名称与执行模式在同一独占锁内一次保存，空白名称拒绝
+    /// （INVALID_NAME）。执行模式切换不删除隔离副本、同步基线或已登记的会话
+    /// worktree；切到 worktree 要求源目录是 git 仓库（INVALID_WORKSPACE），
+    /// 切到 replica 且此前没有副本时从源目录重建。运行中回合持有共享租约时
+    /// 返回 BUSY。
+    pub fn update(
+        &self,
+        id: &str,
+        name: String,
+        execution_mode: ExecutionMode,
+    ) -> AppResult<WorkspaceInfo> {
+        self.write_update(id, Some(name), Some(execution_mode))
+    }
     /// 项目重命名；空白名称拒绝（INVALID_NAME），返回更新后的工作区信息。
     pub fn rename(&self, id: &str, name: String) -> AppResult<WorkspaceInfo> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(AppError::new("INVALID_NAME", "名称不能为空"));
-        }
+        self.write_update(id, Some(name), None)
+    }
+    fn write_update(
+        &self,
+        id: &str,
+        name: Option<String>,
+        execution_mode: Option<ExecutionMode>,
+    ) -> AppResult<WorkspaceInfo> {
+        let name = name
+            .map(|name| {
+                let name = name.trim().to_owned();
+                if name.is_empty() {
+                    Err(AppError::new("INVALID_NAME", "名称不能为空"))
+                } else {
+                    Ok(name)
+                }
+            })
+            .transpose()?;
         let _lock = self.lock(id, true)?;
         let mut record = self.load(id)?;
-        record.info.name = name.to_owned();
-        self.save(&record)?;
+        let mut changed = false;
+        if let Some(name) = name
+            && record.info.name != name
+        {
+            record.info.name = name;
+            changed = true;
+        }
+        if let Some(mode) = execution_mode
+            && record.info.execution_mode != mode
+        {
+            if let ExecutionMode::Worktree = mode {
+                // 与 create 同口径：只有 git 仓库可切到 worktree。
+                if !Path::new(&record.info.source_path).join(".git").exists() {
+                    return Err(AppError::new(
+                        "INVALID_WORKSPACE",
+                        "worktree execution mode requires a git repository",
+                    ));
+                }
+            } else {
+                let root = PathBuf::from(&record.info.replica_path);
+                if !root.exists() {
+                    // worktree 模式创建的项目没有隔离副本；切到 replica 时按
+                    // 源目录当前状态重建副本与基线，失败清理本次新建目录。
+                    let source = PathBuf::from(&record.info.source_path);
+                    let mut baseline = snapshot(&source)?;
+                    let result = prepare_replica(id, &source, &root, &mut baseline);
+                    if result.is_err() {
+                        let _ = fs::remove_dir_all(&root);
+                    }
+                    result?;
+                    record.baseline = baseline;
+                }
+                // 副本已存在（曾以 replica 运行过）：保留目录与基线，避免
+                // 覆盖尚未同步的改动。
+            }
+            record.info.execution_mode = mode;
+            changed = true;
+        }
+        if changed {
+            self.save(&record)?;
+        }
         Ok(record.info)
     }
     /// 删除项目记录目录（合并同源重复项目时清理被并入方）：确认无运行时或
