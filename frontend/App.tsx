@@ -846,7 +846,8 @@ function CompletedTurn({events,...extras}:{events:SessionEvent[]}&EventCardExtra
  const process=events.filter((event,index)=>index!==finalIndex&&!['turn.start','turn.end','user.message'].includes(event.kind));
  const user=events.find(event=>event.kind==='user.message'),final=finalIndex>=0?events[finalIndex]:undefined;
  const start=events.find(event=>event.kind==='turn.start'),end=events.at(-1);
- return <>{user&&<EventCard event={user} {...extras}/>} {process.length>0&&<details className="turn-details" open><summary>{durationLabel(start,end)}<ChevronDown size={14}/></summary><EventList events={process} {...extras}/></details>} {final&&<EventCard event={final} {...extras}/>}</>;
+ const copyText=events.filter(event=>event.kind==='assistant.message').map(event=>printable(event.data.content)).join('\n\n');
+ return <>{user&&<EventCard event={user} {...extras}/>} {process.length>0&&<details className="turn-details"><summary>{durationLabel(start,end)}<ChevronDown size={14}/></summary><EventList events={process} hideCopy {...extras}/></details>} {final&&<EventCard event={final} copyText={copyText} {...extras}/>}</>;
 }
 function ConversationEvents({events,...extras}:{events:SessionEvent[]}&EventCardExtras){
  const cards:ReactNode[]=[];let start=-1,loose:SessionEvent[]=[];const flushLoose=()=>{if(!loose.length)return;cards.push(<EventList key={`loose-${loose[0].id}`} events={loose} {...extras}/>);loose=[]};
@@ -859,10 +860,10 @@ function ConversationEvents({events,...extras}:{events:SessionEvent[]}&EventCard
  flushLoose();if(start>=0)cards.push(<EventList key={`open-${events[start].id}`} events={events.slice(start)} {...extras}/>);
  return <>{cards}</>;
 }
-function EventList({events,...extras}:{events:SessionEvent[]}&EventCardExtras) {
+function EventList({events,hideCopy,...extras}:{events:SessionEvent[];hideCopy?:boolean}&EventCardExtras) {
  return <>{groupFileEdits(events).map(node=>node.kind==='group'
   ?<FileEditGroup key={node.key} group={node.group}/>
-  :<EventCard key={node.event.id} event={node.event} {...extras}/>)}</>;
+  :<EventCard key={node.event.id} event={node.event} hideCopy={hideCopy} {...extras}/>)}</>;
 }
 function FileEditGroup({group}:{group:FileEditGroup}) {
  const summary=summarizeFileEdits(group);
@@ -888,7 +889,7 @@ function FileEditGroup({group}:{group:FileEditGroup}) {
   </div>
  </details>;
 }
-export function EventCard({event,...extras}:{event:SessionEvent}&EventCardExtras) {
+export function EventCard({event,copyText,hideCopy,...extras}:{event:SessionEvent;copyText?:string;hideCopy?:boolean}&EventCardExtras) {
  const {kind,data}=event;
  if(kind==='ui.model_note')return <div className="model-note" role="status">{printable(data.text)}</div>;
  if(kind==='subagent.created'||kind==='subagent.message_sent'){
@@ -902,7 +903,7 @@ export function EventCard({event,...extras}:{event:SessionEvent}&EventCardExtras
  }
  if(kind==='plan.state'||kind==='goal.state')return <article className="tool-card"><div className="subagent-row">{kind==='plan.state'?<ListTodo size={15}/>:<Target size={15}/>}<strong>{kind==='plan.state'?'计划':'目标'}</strong></div><div className="prose"><Markdown content={printable(data.content)}/></div></article>;
  if(kind==='user.message')return <article className="message user"><div className="avatar">你</div><div className="message-body"><div className="message-label">你</div>{Array.isArray(data.quotes)&&data.quotes.map((quote,index)=><blockquote key={index} className="sent-quote" title={String(quote)}><b>引用：</b>{String(quote)}</blockquote>)}<div className="prose"><LinkedText content={printable(data.content)}/></div>{Array.isArray(data.attachments)&&data.attachments.map((a,index)=><ArtifactDownload key={index} sessionId={event.sessionId} artifact={a as ArtifactMetadata}/>)}<MessageCopyButton text={printable(data.content)}/></div></article>;
- if(kind==='assistant.message'||kind==='assistant.attempt')return <article className="message assistant"><div className="avatar">R</div><div className="message-body"><div className="message-label">Rust Harness</div>{!!data.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{printable(data.reasoning)}</pre></details>}<div className="prose"><Markdown content={printable(data.content)}/></div>{!!data.error&&<div className="inline-error">{printable(data.error)}</div>}<MessageCopyButton text={printable(data.content)}/></div></article>;
+ if(kind==='assistant.message'||kind==='assistant.attempt')return <article className="message assistant"><div className="avatar">R</div><div className="message-body"><div className="message-label">Rust Harness</div>{!!data.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{printable(data.reasoning)}</pre></details>}<div className="prose"><Markdown content={printable(data.content)}/></div>{!!data.error&&<div className="inline-error">{printable(data.error)}</div>}{!hideCopy&&<MessageCopyButton text={copyText??printable(data.content)}/>}</div></article>;
  if(kind==='tool.call'||kind==='tool.result'){
   const args=typeof data.arguments==='object'&&data.arguments!==null?data.arguments as Record<string,unknown>:null;
   const toolName=String(data.name);

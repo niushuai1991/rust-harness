@@ -349,10 +349,10 @@ describe('聊天交互',()=>{
   await openSidebarSession(/会话 A/);
   await screen.findByRole('heading',{name:'最终总结',level:2});
   expect(screen.getByText('本轮已完成，用时3分22秒')).toBeVisible();
-  expect(screen.getByText('正在检查。')).toBeVisible();
+  expect(screen.getByText('正在检查。')).not.toBeVisible();
   fireEvent.click(screen.getByText('本轮已完成，用时3分22秒'));
   expect(screen.getByText('最终总结')).toBeVisible();
-  expect(screen.getByText('正在检查。')).not.toBeVisible();
+  expect(screen.getByText('正在检查。')).toBeVisible();
  });
  it('发送期间合并增量，结束后读取持久化事件',async()=>{let release!:()=>void;mocks.send.mockImplementation(async(_id:string,_text:string,_model:string,receive:(e:LiveEvent)=>void)=>{receive({type:'delta',sessionId:'a',requestId:'r',index:0,text:'正在输出',reasoning:false});await new Promise<void>(r=>release=r)});await renderOpenA();fireEvent.change(screen.getByLabelText('消息'),{target:{value:'你好'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));await screen.findByText('正在输出');expect(screen.getByRole('button',{name:'取消生成'})).toBeInTheDocument();release();await waitFor(()=>expect(screen.queryByText('正在输出')).not.toBeInTheDocument());expect(mocks.send).toHaveBeenCalledWith('a','你好','m',expect.any(Function),undefined,'high')});
  it('首段输出前显示思考状态，流式内容到达后由其接替',async()=>{
@@ -435,6 +435,7 @@ describe('Agent 提问',()=>{
   render(<App/>);
   await openSidebarSession(/会话 A/);
   await screen.findByText('先改哪个文件？');
+  fireEvent.click(screen.getByText('本轮已完成'));
   expect(screen.getByText('session.rs')).toBeVisible();
   expect(screen.getByText(/答复：session\.rs/)).toBeVisible();
  });
@@ -449,6 +450,7 @@ describe('Agent 提问',()=>{
   render(<App/>);
   await openSidebarSession(/会话 A/);
   await screen.findByText('继续吗？');
+  fireEvent.click(screen.getByText('本轮已完成'));
   expect(screen.getByText(/未获得答复/)).toBeVisible();
  });
 });
