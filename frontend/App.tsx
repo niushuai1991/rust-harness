@@ -205,7 +205,9 @@ export default function App(){
  const panelWorkspaceId=workspaceId||draftWorkspaceId||'';
  const subagentSessions=useMemo(()=>subagentsOf(allSessions,sessionId),[allSessions,sessionId]);
  const runningSubagentCount=subagentSessions.reduce((count,s)=>count+((activeIds.has(s.id)||running[s.id])?1:0),0);
- const projectName=(id:string)=>workspaces.find(x=>x.id===id)?.name??'';
+ // 空串是无项目会话的哨兵工作区（见 no-project-sessions.md）：界面上统一显示「无项目」，
+ // 而不是查不到记录时回退成空名字（欢迎语、草稿 chip、占位文案与会话行都用它取名）。
+ const projectName=(id:string)=>id===''?NO_PROJECT_NAME:workspaces.find(x=>x.id===id)?.name??'';
  // 可见项目：隐藏（已移除）项目不进「按项目」分组与草稿候选，其余显示点照常。
  const visibleWorkspaces=useMemo(()=>workspaces.filter(w=>!w.hidden),[workspaces]);
  // 同源重复项目：同一源目录存在多条项目记录（常见于数据目录迁移后重开项目）；
