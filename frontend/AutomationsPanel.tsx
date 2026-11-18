@@ -2,16 +2,16 @@ import {useEffect,useMemo,useState} from 'react';
 import {CalendarClock,ChevronDown,Clock,Pencil,Play,Plus,Trash2} from 'lucide-react';
 import {command,errorText} from './api';
 import {AUTOMATION_KINDS,defaultOnceValue,fmtDateTime,fmtDateTimeSec,fmtLocalInput,fmtSchedule,nextRunAt} from './automations';
-import type {AutomationInfo,AutomationKind,SessionInfo} from './types';
+import type {AutomationInfo,AutomationKind,SessionInfo,WorkspaceInfo} from './types';
 
 export const AUTOMATION_STATUS:{[status:string]:string}={active:'启用中',paused:'已暂停',running:'执行中',completed:'已完成',failed:'失败',missed:'已错过',interrupted:'已中断'};
 const RUN_STATUS:{[status:string]:string}={running:'执行中',succeeded:'成功',failed:'失败'};
 const WD_LABELS=['一','二','三','四','五','六','日'] as const;
 
-type Draft={title:string;prompt:string;sessionId:string;kind:AutomationKind;at:string;time:string;weekdays:number[];monthDay:number;month:number};
-const emptyDraft=():Draft=>({title:'',prompt:'',sessionId:'',kind:'daily',at:defaultOnceValue(),time:'09:30',weekdays:[],monthDay:1,month:1});
+type Draft={workspaceId:string;title:string;prompt:string;sessionId:string;kind:AutomationKind;at:string;time:string;weekdays:number[];monthDay:number;month:number};
+const emptyDraft=(workspaceId:string):Draft=>({workspaceId,title:'',prompt:'',sessionId:'',kind:'daily',at:defaultOnceValue(),time:'09:30',weekdays:[],monthDay:1,month:1});
 const draftOf=(a:AutomationInfo):Draft=>({
-  title:a.title,prompt:a.prompt,sessionId:a.sessionId??'',kind:a.kind,
+  workspaceId:a.workspaceId,title:a.title,prompt:a.prompt,sessionId:a.sessionId??'',kind:a.kind,
   at:a.at?fmtLocalInput(new Date(a.at)):defaultOnceValue(),
   time:a.time??'09:30',weekdays:a.weekdays??[],monthDay:a.monthDay??1,month:a.month??1,
 });
@@ -20,24 +20,26 @@ const localTime=(iso:string)=>{const t=Date.parse(iso);return Number.isFinite(t)
 type PanelAction=()=>Promise<unknown>;
 
 /// 侧栏「自动化」面板：周期任务的列表、创建/编辑与运行历史。
-export function AutomationsPanel({workspaceId,sessions,onChanged}:{workspaceId:string;sessions:SessionInfo[];onChanged?:()=>void}) {
+export function AutomationsPanel({workspaceId,workspaces,allSessions,onChanged}:{workspaceId:string;workspaces:WorkspaceInfo[];allSessions:SessionInfo[];onChanged?:()=>void}) {
   const [items,setItems]=useState<AutomationInfo[]>([]);
   const [error,setError]=useState(''),[busy,setBusy]=useState(false),[loaded,setLoaded]=useState(false);
   const [view,setView]=useState<'list'|'form'>('list');
   const [editing,setEditing]=useState<AutomationInfo|null>(null);
-  const [draft,setDraft]=useState<Draft>(emptyDraft);
+  const [draft,setDraft]=useState<Draft>(()=>emptyDraft(workspaceId));
   const [formError,setFormError]=useState('');
   const [removeId,setRemoveId]=useState('');
+  const projectOptions=useMemo(()=>workspaces.filter(w=>!w.hidden||w.id===draft.workspaceId),[workspaces,draft]);
+  const projectNameOf=(id:string)=>workspaces.find(w=>w.id===id)?.name??'项目已移除';
   async function load(){
     setError('');
     try{
-      setItems(await command<AutomationInfo[]>('automation_list',{workspaceId}));
+      setItems(await command<AutomationInfo[]>('automation_list',{workspaceId,allWorkspaces:true}));
       setLoaded(true);
     }catch(e){setError(errorText(e))}
   }
   useEffect(()=>{void load();const timer=setInterval(()=>void load(),2000);return()=>clearInterval(timer)},[workspaceId]);
   async function action(fn:PanelAction){setBusy(true);setError('');try{await fn();await load();onChanged?.()}catch(e){setError(errorText(e))}finally{setBusy(false)}}
-  function openCreate(){setEditing(null);setDraft(emptyDraft());setFormError('');setView('form')}
+  function openCreate(){setEditing(null);setDraft(emptyDraft(workspaceId));setFormError('');setView('form')}
   function openEdit(a:AutomationInfo){setEditing(a);setDraft(draftOf(a));setFormError('');setView('form')}
   function backToList(){setView('list');setEditing(null);setFormError('')}
   const preview=useMemo(()=>{
@@ -46,9 +48,9 @@ export function AutomationsPanel({workspaceId,sessions,onChanged}:{workspaceId:s
     if(draft.kind==='once'&&!draft.at)return '填写后显示首次执行时间';
     const t=nextRunAt(like);
     if(!t)return '填写后显示首次执行时间';
-    const target=draft.sessionId?`，投递到会话「${sessions.find(s=>s.id===draft.sessionId)?.title??draft.sessionId}」`:'，每次新建会话';
+    const target=draft.sessionId?`，投递到会话「${allSessions.find(s=>s.id===draft.sessionId)?.title??draft.sessionId}」`:'，每次新建会话';
     return `将首先执行于 ${draft.kind==='once'?fmtDateTimeSec(t):fmtDateTime(t)}${target}`;
-  },[draft,sessions]);
+  },[draft,allSessions]);
   function submit(e:React.FormEvent){
     e.preventDefault();
     if(!draft.prompt.trim()){setFormError('请填写任务内容。');return}
@@ -60,7 +62,7 @@ export function AutomationsPanel({workspaceId,sessions,onChanged}:{workspaceId:s
       if(at.getTime()<=Date.now()){setFormError('执行时间必须在未来。');return}
     }
     const params={
-      workspaceId,
+      workspaceId:draft.workspaceId,
       title:draft.title.trim(),
       prompt:draft.prompt,
       sessionId:draft.sessionId||null,
@@ -99,7 +101,7 @@ export function AutomationsPanel({workspaceId,sessions,onChanged}:{workspaceId:s
                 <input type="checkbox" checked={a.enabled} disabled={busy} onChange={e=>void action(()=>command('automation_set_enabled',{id:a.id,enabled:e.target.checked}))}/>
               </label>
             </div>
-            <p>{fmtSchedule(a)} · {sessionLabel(a,sessions)} · 已执行 {a.runCount} 次</p>
+            <p>{fmtSchedule(a)} · {projectNameOf(a.workspaceId)} · {sessionLabel(a,allSessions)} · 已执行 {a.runCount} 次</p>
             <p className="next">{a.enabled?(Number.isFinite(next)?<>下次执行 <b>{fmtDateTime(new Date(next))}</b></>:'等待调度'):'已暂停，不触发执行'}</p>
             {removeId===a.id&&<div className="confirm">确定删除该自动化任务？删除后不再触发。
               <button disabled={busy} onClick={()=>setRemoveId('')}>取消</button>
@@ -128,12 +130,18 @@ export function AutomationsPanel({workspaceId,sessions,onChanged}:{workspaceId:s
     {view==='form'&&<form className="settings-form" onSubmit={submit}>
       <label>标题<input value={draft.title} onChange={e=>setDraft(d=>({...d,title:e.target.value}))} placeholder="例：每日代码评审（可留空）"/></label>
       <label>任务内容<textarea value={draft.prompt} onChange={e=>setDraft(d=>({...d,prompt:e.target.value}))} placeholder="到期时要执行什么，将作为消息发送到目标会话…"/></label>
+      <label>项目
+        <select value={draft.workspaceId} onChange={e=>setDraft(d=>({...d,workspaceId:e.target.value,sessionId:''}))}>
+          {projectOptions.map(w=><option key={w.id} value={w.id}>{w.name}</option>)}
+        </select>
+        <span className="field-hint">到期后将在所选项目中执行：绑定会话时投递到该项目下的会话，未绑定时每次在该项目新建会话。</span>
+      </label>
       <label>目标会话
         <select value={draft.sessionId} onChange={e=>setDraft(d=>({...d,sessionId:e.target.value}))}>
           <option value="">每次新建会话</option>
-          {sessions.map(s=><option key={s.id} value={s.id}>{s.title||s.id.slice(0,8)}</option>)}
+          {allSessions.filter(s=>s.workspaceId===draft.workspaceId).map(s=><option key={s.id} value={s.id}>{s.title||s.id.slice(0,8)}</option>)}
         </select>
-        <span className="field-hint">仅列出当前工作区的会话；绑定的会话正忙时，任务将排队等待当前回合结束。</span>
+        <span className="field-hint">仅列出所选项目的会话；绑定的会话正忙时，任务将排队等待当前回合结束。</span>
       </label>
       <label>执行周期
         <select value={draft.kind} onChange={e=>setDraft(d=>({...d,kind:e.target.value as AutomationKind}))}>
