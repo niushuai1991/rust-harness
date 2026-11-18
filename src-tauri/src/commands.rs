@@ -5,7 +5,10 @@ use harness_runtime::chatgpt::LoginHandle;
 use harness_runtime::model::ModelMessage;
 use harness_runtime::request_timing::RequestTiming;
 use serde::Deserialize;
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tauri::{State, ipc::Channel};
 use tauri_plugin_opener::OpenerExt;
 use tokio_util::sync::CancellationToken;
@@ -273,7 +276,7 @@ pub async fn workspace_open(
     execution_mode: Option<ExecutionMode>,
 ) -> AppResult<WorkspaceInfo> {
     let manager = state.workspaces.clone();
-    let mode = execution_mode.unwrap_or(ExecutionMode::Replica);
+    let mode = execution_mode.unwrap_or(ExecutionMode::Direct);
     tokio::task::spawn_blocking(move || manager.create(&PathBuf::from(path), name, mode))
         .await
         .map_err(error)?
@@ -438,14 +441,37 @@ pub async fn session_create(
     state: Backend<'_>,
     workspace_id: Option<String>,
     title: String,
+    execution_mode: Option<ExecutionMode>,
 ) -> AppResult<SessionInfo> {
     // workspaceId 缺省或空串表示「无项目」会话（哨兵值）：不校验项目存在，
     // 执行根由运行时按会话独立分配。
     let workspace_id = workspace_id.unwrap_or_default();
     if !workspace_id.is_empty() {
-        state.workspaces.get(&workspace_id)?;
+        let info = state.workspaces.get(&workspace_id)?;
+        match execution_mode {
+            Some(ExecutionMode::Worktree) => {
+                if !Path::new(&info.source_path).join(".git").exists() {
+                    return Err(AppError::new(
+                        "INVALID_WORKSPACE",
+                        "worktree 执行位置需要 git 仓库",
+                    ));
+                }
+            }
+            Some(ExecutionMode::Replica) => {
+                if !Path::new(&info.replica_path).is_dir() {
+                    return Err(AppError::new(
+                        "INVALID_WORKSPACE",
+                        "隔离副本不存在；请先将项目执行模式切到 replica",
+                    ));
+                }
+            }
+            Some(ExecutionMode::Direct) | None => {}
+        }
     }
-    state.store.create_session(&workspace_id, &title).await
+    state
+        .store
+        .create_session_with_mode(&workspace_id, &title, execution_mode)
+        .await
 }
 /// 查询指定会话的计划模式。
 #[tauri::command]

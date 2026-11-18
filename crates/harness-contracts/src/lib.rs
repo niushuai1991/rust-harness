@@ -46,10 +46,14 @@ impl std::fmt::Display for AppError {
 impl std::error::Error for AppError {}
 pub type AppResult<T> = Result<T, AppError>;
 
-/// 工作区执行模式：隔离副本（默认，改动经审阅同步）或宿主代建会话 worktree（改动直落真实分支工作区）。
+/// 工作区默认执行位置与会话执行位置：直接写入源项目（新项目默认）、隔离副本
+/// （改动经审阅同步）或宿主代建会话 worktree（改动直落真实分支工作区）。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum ExecutionMode {
+    /// 直接以源项目目录为执行根：不复制、不建 worktree、shell 无沙箱。
+    Direct,
+    /// 隔离副本（旧记录缺字段时的兼容默认）：改动经差异审阅后同步回源项目。
     #[default]
     Replica,
     Worktree,
@@ -61,6 +65,9 @@ pub enum ExecutionMode {
 pub struct SessionWorktree {
     pub path: String,
     pub branch: String,
+    /// 沙箱 capability 派生用的会话 id：创建者会话；子代理复用时保持父会话值。
+    #[serde(default)]
+    pub capability_id: String,
     pub created_at: String,
 }
 
@@ -81,10 +88,10 @@ pub struct WorkspaceInfo {
     /// 工作区记录本身不落库，由桌面端从 settings KV 派生注入。
     #[serde(default)]
     pub hidden: bool,
-    /// 执行模式；旧记录缺省为隔离副本。
+    /// 工作区默认执行位置；旧记录缺省为隔离副本（兼容语义），新建项目由调用方显式传直接模式。
     #[serde(default)]
     pub execution_mode: ExecutionMode,
-    /// 宿主代建的会话 worktree 登记，键为会话 id；replica 模式恒为空。
+    /// 宿主代建的会话 worktree 登记，键为会话 id；未选择 worktree 的会话不在其中。
     #[serde(default)]
     pub worktrees: std::collections::BTreeMap<String, SessionWorktree>,
 }
@@ -135,6 +142,9 @@ pub struct SessionInfo {
     /// 归档时刻（RFC3339）；None 表示未归档。归档只是桌面侧列表隐藏，不影响事件与跨端同步。
     #[serde(default)]
     pub archived_at: Option<String>,
+    /// 会话固化的执行位置；None 表示跟随工作区默认（历史会话兼容）。
+    #[serde(default)]
+    pub execution_mode: Option<ExecutionMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

@@ -84,7 +84,7 @@
 ## 边界与非目标
 
 - 副本+apply 边界、Windows 沙箱、免审批只读白名单、审批 600 秒超时兜底均不变。
-- 不做 codex 式沙箱档位（workspace-write/danger-full-access）与"直写原项目"档位；如需绕过副本另行立项。
+- 不做额外的沙箱档位与「直写原项目」审批档位；直接执行模式（执行根=源项目目录、shell 无沙箱）见[直接执行规范](direct-execution.md)。
 - 危险命令识别基于字符串启发式，动态片段保守询问兜底；不承诺穷尽危险命令。
 - 会话策略不落库：会话内切换重启后回到默认档（与 CLI `/approval` 会话内切换同语义）。
 - JSON-RPC（`harness rpc`）保持 `approval.list`/`approval.resolve` 交互式通道，不新增策略参数。

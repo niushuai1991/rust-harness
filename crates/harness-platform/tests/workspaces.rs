@@ -558,11 +558,15 @@ fn worktree_mode_creates_and_registers_session_worktree() {
     let reloaded = manager.get(&info.id).unwrap();
     assert_eq!(reloaded.worktrees["sess1a2b"], worktree);
     assert_eq!(
-        manager.execution_root(&info.id, "sess1a2b").unwrap(),
+        manager
+            .execution_root(&info.id, "sess1a2b", None, None)
+            .unwrap(),
         expected
     );
     // 其他会话懒建各自的 worktree。
-    let other = manager.execution_root(&info.id, "sess3c4d").unwrap();
+    let other = manager
+        .execution_root(&info.id, "sess3c4d", None, None)
+        .unwrap();
     assert_ne!(other, expected);
     assert!(other.join(".git").exists());
 }
@@ -574,7 +578,9 @@ fn worktree_mode_diff_tracks_real_changes_without_source_hash() {
     let info = manager
         .create(&source, None, ExecutionMode::Worktree)
         .unwrap();
-    let worktree = manager.execution_root(&info.id, "sess1a2b").unwrap();
+    let worktree = manager
+        .execution_root(&info.id, "sess1a2b", None, None)
+        .unwrap();
     fs::write(worktree.join("a.txt"), "edited").unwrap();
     fs::write(worktree.join("new.txt"), "added").unwrap();
     let changes = manager.diff(&info.id).unwrap();
@@ -599,7 +605,9 @@ fn worktree_mode_apply_is_rejected_and_refresh_is_noop() {
     let info = manager
         .create(&source, None, ExecutionMode::Worktree)
         .unwrap();
-    let worktree = manager.execution_root(&info.id, "sess1a2b").unwrap();
+    let worktree = manager
+        .execution_root(&info.id, "sess1a2b", None, None)
+        .unwrap();
     fs::write(worktree.join("a.txt"), "edited").unwrap();
     assert_eq!(
         manager.apply(&info.id, &["a.txt".into()]).unwrap_err().code,
@@ -620,7 +628,9 @@ fn worktree_mode_diff_view_renders_unified() {
     let info = manager
         .create(&source, None, ExecutionMode::Worktree)
         .unwrap();
-    let worktree = manager.execution_root(&info.id, "sess1a2b").unwrap();
+    let worktree = manager
+        .execution_root(&info.id, "sess1a2b", None, None)
+        .unwrap();
     fs::write(worktree.join("a.txt"), "edited").unwrap();
     let view = manager.diff_view(&info.id, "a.txt").unwrap();
     let unified = view.unified.unwrap();
@@ -838,7 +848,9 @@ fn switching_back_to_worktree_reuses_registered_session_worktree() {
         .update(&info.id, info.name.clone(), ExecutionMode::Worktree)
         .unwrap();
     assert_eq!(
-        manager.execution_root(&info.id, "sess1a2b").unwrap(),
+        manager
+            .execution_root(&info.id, "sess1a2b", None, None)
+            .unwrap(),
         PathBuf::from(&worktree.path)
     );
 }
@@ -864,4 +876,163 @@ fn update_rejects_while_lease_held_and_noop_is_stable() {
         .unwrap();
     assert_eq!(same.name, info.name);
     assert_eq!(same.execution_mode, ExecutionMode::Replica);
+}
+
+#[test]
+fn direct_mode_creates_no_replica_and_resolves_source_root() {
+    let (_temp, source, manager) = fixture();
+    let info = manager
+        .create(&source, None, ExecutionMode::Direct)
+        .unwrap();
+    assert_eq!(info.execution_mode, ExecutionMode::Direct);
+    // 直接模式不建隔离副本，replica_path 仅为记录占位。
+    assert!(!std::path::Path::new(&info.replica_path).exists());
+    assert!(!source.join(".worktrees").exists());
+
+    let target = manager
+        .execution_target(&info.id, "sess-direct", None, None)
+        .unwrap();
+    assert_eq!(target.root, PathBuf::from(&info.source_path));
+    assert_eq!(target.mode, ExecutionMode::Direct);
+    assert!(target.capability_id.is_empty());
+    assert!(target.branch.is_none());
+    // 无副本审阅语义：差异为空，apply 拒绝。
+    assert!(manager.diff(&info.id).unwrap().is_empty());
+    assert_eq!(
+        manager.apply(&info.id, &["a.txt".into()]).unwrap_err().code,
+        "APPLY_NOT_SUPPORTED"
+    );
+    assert!(!source.join(".worktrees").exists());
+}
+
+#[test]
+fn session_execution_position_overrides_workspace_default() {
+    let (_temp, source, manager) = fixture();
+    git_commit_source(&source);
+    let info = manager
+        .create(&source, None, ExecutionMode::Worktree)
+        .unwrap();
+    // 会话固化直接模式：不建 worktree，执行根为源项目目录。
+    let direct = manager
+        .execution_target(&info.id, "sessdirect", Some(ExecutionMode::Direct), None)
+        .unwrap();
+    assert_eq!(direct.mode, ExecutionMode::Direct);
+    assert_eq!(direct.root, PathBuf::from(&info.source_path));
+    assert!(!source.join(".worktrees").exists());
+    assert!(manager.get(&info.id).unwrap().worktrees.is_empty());
+
+    // 未固化模式的会话仍按工作区默认懒建 worktree。
+    let worktree = manager
+        .execution_target(&info.id, "sessworktree", None, None)
+        .unwrap();
+    assert_eq!(worktree.mode, ExecutionMode::Worktree);
+    assert!(source.join(".worktrees").join("harness-sesswork").exists());
+}
+
+#[test]
+fn shared_worktree_reuses_parent_registration() {
+    let (_temp, source, manager) = fixture();
+    git_commit_source(&source);
+    let info = manager
+        .create(&source, None, ExecutionMode::Direct)
+        .unwrap();
+    let parent = manager
+        .ensure_session_worktree(&info.id, "sessparent")
+        .unwrap();
+    assert_eq!(parent.capability_id, "sessparent");
+
+    let shared = manager
+        .share_session_worktree(&info.id, "sessparent", "sesschild")
+        .unwrap()
+        .unwrap();
+    assert_eq!(shared.path, parent.path);
+    assert_eq!(shared.branch, parent.branch);
+    assert_eq!(shared.capability_id, "sessparent");
+    // 幂等。
+    assert_eq!(
+        manager
+            .share_session_worktree(&info.id, "sessparent", "sesschild")
+            .unwrap()
+            .unwrap(),
+        shared
+    );
+
+    let child = manager
+        .execution_target(&info.id, "sesschild", Some(ExecutionMode::Worktree), None)
+        .unwrap();
+    assert_eq!(child.root, PathBuf::from(&parent.path));
+    assert_eq!(child.capability_id, "sessparent");
+    // 父会话未登记时返回 None。
+    assert!(
+        manager
+            .share_session_worktree(&info.id, "missing", "sessother")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn child_execution_target_reuses_parent_worktree_without_registration() {
+    let (_temp, source, manager) = fixture();
+    git_commit_source(&source);
+    let info = manager
+        .create(&source, None, ExecutionMode::Direct)
+        .unwrap();
+    let parent = manager
+        .ensure_session_worktree(&info.id, "sessparent")
+        .unwrap();
+    // 子代理沿父会话解析：不写子登记、不新建 worktree，capability 用父会话 id。
+    let child = manager
+        .execution_target(
+            &info.id,
+            "sesschild",
+            Some(ExecutionMode::Worktree),
+            Some("sessparent"),
+        )
+        .unwrap();
+    assert_eq!(child.root, PathBuf::from(&parent.path));
+    assert_eq!(child.capability_id, "sessparent");
+    assert_eq!(child.branch, Some(parent.branch.clone()));
+    let reloaded = manager.get(&info.id).unwrap();
+    assert!(!reloaded.worktrees.contains_key("sesschild"));
+    assert_eq!(
+        std::fs::read_dir(source.join(".worktrees"))
+            .unwrap()
+            .count(),
+        1
+    );
+    // 无父参数时仍按会话自身懒建独立 worktree。
+    let own = manager
+        .execution_target(&info.id, "sesschild", Some(ExecutionMode::Worktree), None)
+        .unwrap();
+    assert_ne!(own.root, PathBuf::from(&parent.path));
+}
+
+#[test]
+fn switching_to_direct_mode_keeps_existing_replica() {
+    let (_temp, source, manager) = fixture();
+    let info = manager
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
+    let replica = PathBuf::from(&info.replica_path);
+    assert!(replica.exists());
+
+    let updated = manager
+        .update(&info.id, info.name.clone(), ExecutionMode::Direct)
+        .unwrap();
+    assert_eq!(updated.execution_mode, ExecutionMode::Direct);
+    assert!(replica.exists(), "切到直接模式保留副本目录");
+    assert_eq!(
+        manager
+            .execution_target(&info.id, "s", None, None)
+            .unwrap()
+            .root,
+        PathBuf::from(&info.source_path)
+    );
+
+    let back = manager
+        .update(&info.id, info.name.clone(), ExecutionMode::Replica)
+        .unwrap();
+    assert_eq!(back.execution_mode, ExecutionMode::Replica);
+    assert!(replica.exists(), "切回副本复用既有目录");
 }

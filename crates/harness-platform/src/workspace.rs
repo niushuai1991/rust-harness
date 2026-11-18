@@ -25,6 +25,15 @@ pub struct WorkspaceLease {
     _lock: File,
     pub info: WorkspaceInfo,
 }
+/// 会话执行目标：执行根、有效执行位置、shell 沙箱 capability 派生 id 与
+/// worktree 分支名（直接模式与副本模式无分支）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionTarget {
+    pub root: PathBuf,
+    pub mode: ExecutionMode,
+    pub capability_id: String,
+    pub branch: Option<String>,
+}
 fn hash(data: Option<&Vec<u8>>) -> Option<String> {
     data.map(|b| hex::encode(Sha256::digest(b)))
 }
@@ -235,11 +244,11 @@ impl WorkspaceManager {
                 "worktree execution mode requires a git repository",
             ));
         }
-        let mut baseline = if execution_mode == ExecutionMode::Worktree {
-            // worktree 模式不走审阅同步，baseline 恒为空。
-            Snapshot::new()
-        } else {
+        let mut baseline = if execution_mode == ExecutionMode::Replica {
             snapshot(&source)?
+        } else {
+            // 直接模式与 worktree 模式都不走副本审阅同步，baseline 恒为空。
+            Snapshot::new()
         };
         let id = new_id();
         let dir = self.dir(&id)?;
@@ -248,10 +257,10 @@ impl WorkspaceManager {
         File::create(dir.join("sync.lock")).map_err(io)?;
         let _lock = self.lock(&id, true)?;
         let result = (|| {
-            if execution_mode == ExecutionMode::Worktree {
-                // worktree 模式不建隔离副本；replica_path 仅作记录占位（加载校验依赖
-                // 其指向数据目录），会话执行根为源项目 .worktrees/ 下宿主懒建的
-                // 会话 worktree（ensure_session_worktree）。
+            if execution_mode != ExecutionMode::Replica {
+                // 直接模式以源项目目录为执行根、worktree 模式在 .worktrees/ 下代建，
+                // 两者都不建隔离副本；replica_path 仅作记录占位（加载校验依赖其
+                // 指向数据目录）。
                 let info = WorkspaceInfo {
                     id: id.clone(),
                     source_path: source.to_string_lossy().into_owned(),
@@ -360,30 +369,36 @@ impl WorkspaceManager {
         if let Some(mode) = execution_mode
             && record.info.execution_mode != mode
         {
-            if let ExecutionMode::Worktree = mode {
-                // 与 create 同口径：只有 git 仓库可切到 worktree。
-                if !Path::new(&record.info.source_path).join(".git").exists() {
-                    return Err(AppError::new(
-                        "INVALID_WORKSPACE",
-                        "worktree execution mode requires a git repository",
-                    ));
-                }
-            } else {
-                let root = PathBuf::from(&record.info.replica_path);
-                if !root.exists() {
-                    // worktree 模式创建的项目没有隔离副本；切到 replica 时按
-                    // 源目录当前状态重建副本与基线，失败清理本次新建目录。
-                    let source = PathBuf::from(&record.info.source_path);
-                    let mut baseline = snapshot(&source)?;
-                    let result = prepare_replica(id, &source, &root, &mut baseline);
-                    if result.is_err() {
-                        let _ = fs::remove_dir_all(&root);
+            match mode {
+                ExecutionMode::Worktree => {
+                    // 与 create 同口径：只有 git 仓库可切到 worktree。
+                    if !Path::new(&record.info.source_path).join(".git").exists() {
+                        return Err(AppError::new(
+                            "INVALID_WORKSPACE",
+                            "worktree execution mode requires a git repository",
+                        ));
                     }
-                    result?;
-                    record.baseline = baseline;
                 }
-                // 副本已存在（曾以 replica 运行过）：保留目录与基线，避免
-                // 覆盖尚未同步的改动。
+                ExecutionMode::Replica => {
+                    let root = PathBuf::from(&record.info.replica_path);
+                    if !root.exists() {
+                        // 直接模式/worktree 模式创建的项目没有隔离副本；切到 replica
+                        // 时按源目录当前状态重建副本与基线，失败清理本次新建目录。
+                        let source = PathBuf::from(&record.info.source_path);
+                        let mut baseline = snapshot(&source)?;
+                        let result = prepare_replica(id, &source, &root, &mut baseline);
+                        if result.is_err() {
+                            let _ = fs::remove_dir_all(&root);
+                        }
+                        result?;
+                        record.baseline = baseline;
+                    }
+                    // 副本已存在（曾以 replica 运行过）：保留目录与基线，避免
+                    // 覆盖尚未同步的改动。
+                }
+                ExecutionMode::Direct => {
+                    // 直接模式无准备动作：保留既有副本与 worktree 登记，切换非破坏性。
+                }
             }
             record.info.execution_mode = mode;
             changed = true;
@@ -409,7 +424,7 @@ impl WorkspaceManager {
         fs::remove_dir_all(dir).map_err(io)?;
         Ok(())
     }
-    /// 宿主为会话代建 worktree（worktree 执行模式，会话首个 turn 前懒调用）。
+    /// 宿主为会话代建 worktree（会话选择 worktree 执行位置，首个 turn 前懒调用）。
     ///
     /// 幂等：已登记的会话直接返回。路径为 `<源项目>/.worktrees/harness-<会话 id 前 8 位>`，
     /// 分支 `feat/session-<同前缀>`，基于创建时刻的源项目 HEAD；成功后对 worktree 目录
@@ -421,14 +436,14 @@ impl WorkspaceManager {
     ) -> AppResult<SessionWorktree> {
         let _lock = self.lock(id, true)?;
         let mut record = self.load(id)?;
-        if record.info.execution_mode != ExecutionMode::Worktree {
-            return Err(AppError::new(
-                "INVALID_WORKSPACE",
-                "worktree sessions require the worktree execution mode",
-            ));
-        }
         if let Some(existing) = record.info.worktrees.get(session_id) {
             return Ok(existing.clone());
+        }
+        if !Path::new(&record.info.source_path).join(".git").exists() {
+            return Err(AppError::new(
+                "INVALID_WORKSPACE",
+                "worktree execution position requires a git repository",
+            ));
         }
         let prefix = &session_id[..session_id.len().min(8)];
         let source = PathBuf::from(&record.info.source_path);
@@ -456,6 +471,7 @@ impl WorkspaceManager {
         let worktree = SessionWorktree {
             path: root.to_string_lossy().into_owned(),
             branch,
+            capability_id: session_id.to_owned(),
             created_at: now(),
         };
         record
@@ -465,19 +481,123 @@ impl WorkspaceManager {
         self.save(&record)?;
         Ok(worktree)
     }
-    /// 会话执行根：replica 模式为隔离副本；worktree 模式为宿主代建的会话
-    /// worktree（未建则懒建）。
-    pub fn execution_root(&self, id: &str, session_id: &str) -> AppResult<PathBuf> {
-        let info = self.get(id)?;
-        match info.execution_mode {
-            ExecutionMode::Replica => Ok(PathBuf::from(info.replica_path)),
-            ExecutionMode::Worktree => match info.worktrees.get(session_id) {
-                Some(existing) => Ok(PathBuf::from(&existing.path)),
-                None => Ok(PathBuf::from(
-                    self.ensure_session_worktree(id, session_id)?.path,
-                )),
-            },
+    /// 子代理/会话 fork 复用父会话 worktree：把父登记复制到子会话键下（同路径、
+    /// 同分支、同 capability_id），幂等；父会话未登记时返回 None。
+    ///
+    /// 调用方必须不持有工作区共享租约（该操作取独占锁写记录）；回合内的
+    /// 子代理改用 `execution_target` 的父会话参数解析，不写登记。
+    pub fn share_session_worktree(
+        &self,
+        id: &str,
+        parent_session: &str,
+        child_session: &str,
+    ) -> AppResult<Option<SessionWorktree>> {
+        let _lock = self.lock(id, true)?;
+        let mut record = self.load(id)?;
+        let Some(parent) = record.info.worktrees.get(parent_session).cloned() else {
+            return Ok(None);
+        };
+        let mut worktree = parent;
+        if worktree.capability_id.is_empty() {
+            worktree.capability_id = parent_session.to_owned();
         }
+        record
+            .info
+            .worktrees
+            .insert(child_session.to_owned(), worktree.clone());
+        self.save(&record)?;
+        Ok(Some(worktree))
+    }
+
+    /// 会话有效执行位置：会话固化值优先；历史会话为空时若已登记 worktree 则沿用
+    /// 登记（存量会话不漂移），否则回退工作区默认。
+    pub fn resolved_mode(
+        &self,
+        id: &str,
+        session_id: &str,
+        session_mode: Option<ExecutionMode>,
+    ) -> AppResult<ExecutionMode> {
+        let info = self.get(id)?;
+        Ok(session_mode
+            .or_else(|| {
+                info.worktrees
+                    .contains_key(session_id)
+                    .then_some(ExecutionMode::Worktree)
+            })
+            .unwrap_or(info.execution_mode))
+    }
+
+    /// 解析会话执行根与执行上下文：直接模式为源项目目录（无准备动作）；
+    /// replica 为隔离副本；worktree 为已登记的会话 worktree（子代理沿父会话
+    /// 登记复用，避免在回合内写记录触发租约冲突），未登记时懒建。
+    pub fn execution_target(
+        &self,
+        id: &str,
+        session_id: &str,
+        session_mode: Option<ExecutionMode>,
+        parent_session: Option<&str>,
+    ) -> AppResult<ExecutionTarget> {
+        let mode = self.resolved_mode(id, session_id, session_mode)?;
+        let info = self.get(id)?;
+        match mode {
+            ExecutionMode::Direct => Ok(ExecutionTarget {
+                root: PathBuf::from(&info.source_path),
+                mode,
+                capability_id: String::new(),
+                branch: None,
+            }),
+            ExecutionMode::Replica => {
+                let root = PathBuf::from(&info.replica_path);
+                if !root.is_dir() {
+                    return Err(AppError::new(
+                        "INVALID_WORKSPACE",
+                        "隔离副本不存在；请先将项目执行模式切到 replica",
+                    ));
+                }
+                Ok(ExecutionTarget {
+                    root,
+                    mode,
+                    capability_id: id.to_owned(),
+                    branch: None,
+                })
+            }
+            ExecutionMode::Worktree => {
+                // 子代理不写自己的登记（回合持有共享租约时写记录会冲突），
+                // 直接复用父会话的 worktree 与 capability。
+                let registered = info
+                    .worktrees
+                    .get(session_id)
+                    .or_else(|| parent_session.and_then(|parent| info.worktrees.get(parent)));
+                let worktree = match registered {
+                    Some(existing) => existing.clone(),
+                    None => self.ensure_session_worktree(id, session_id)?,
+                };
+                let capability_id = if worktree.capability_id.is_empty() {
+                    session_id.to_owned()
+                } else {
+                    worktree.capability_id.clone()
+                };
+                Ok(ExecutionTarget {
+                    root: PathBuf::from(&worktree.path),
+                    mode,
+                    capability_id,
+                    branch: Some(worktree.branch),
+                })
+            }
+        }
+    }
+
+    /// 会话执行根（解析规则见 [`Self::execution_target`]）。
+    pub fn execution_root(
+        &self,
+        id: &str,
+        session_id: &str,
+        session_mode: Option<ExecutionMode>,
+        parent_session: Option<&str>,
+    ) -> AppResult<PathBuf> {
+        Ok(self
+            .execution_target(id, session_id, session_mode, parent_session)?
+            .root)
     }
     /// 无项目会话的执行根：<数据目录>/sessions/<会话 id>/root。懒创建并打沙箱
     /// 授权（capability 派生自会话 id），幂等；会话 id 必须是 UUID，防止路径注入。
@@ -534,19 +654,22 @@ impl WorkspaceManager {
     pub fn diff(&self, id: &str) -> AppResult<Vec<FileChange>> {
         let _lock = self.lock(id, false)?;
         let record = self.load(id)?;
-        if record.info.execution_mode == ExecutionMode::Worktree {
-            return self.worktree_changes(&record);
+        match record.info.execution_mode {
+            ExecutionMode::Worktree => self.worktree_changes(&record),
+            // 直接模式改动已落源项目，源项目本身可能带有用户未提交改动，
+            // 无法区分归属，不提供差异列表。
+            ExecutionMode::Direct => Ok(Vec::new()),
+            ExecutionMode::Replica => Ok(self.changes(&record)?.0),
         }
-        Ok(self.changes(&record)?.0)
     }
     /// 单文件 unified diff 视图（桌面端右侧面板懒加载）；未变更的文件返回 NOT_FOUND。
     pub fn diff_view(&self, id: &str, path: &str) -> AppResult<WorkspaceFileDiff> {
         let _lock = self.lock(id, false)?;
         let record = self.load(id)?;
-        let change = if record.info.execution_mode == ExecutionMode::Worktree {
-            self.worktree_changes(&record)?
-        } else {
-            self.changes(&record)?.0
+        let change = match record.info.execution_mode {
+            ExecutionMode::Worktree => self.worktree_changes(&record)?,
+            ExecutionMode::Direct => Vec::new(),
+            ExecutionMode::Replica => self.changes(&record)?.0,
         }
         .into_iter()
         .find(|c| c.path == path)
@@ -594,6 +717,12 @@ impl WorkspaceManager {
             return Err(AppError::new(
                 "APPLY_NOT_SUPPORTED",
                 "worktree 模式改动已直接落盘，无需审阅同步",
+            ));
+        }
+        if record.info.execution_mode == ExecutionMode::Direct {
+            return Err(AppError::new(
+                "APPLY_NOT_SUPPORTED",
+                "直接模式改动已写入源项目，无隔离副本可同步",
             ));
         }
         for path in paths {
@@ -704,8 +833,8 @@ impl WorkspaceManager {
     pub fn refresh(&self, id: &str) -> AppResult<WorkspaceInfo> {
         let _lock = self.lock(id, true)?;
         let mut record = self.load(id)?;
-        if record.info.execution_mode == ExecutionMode::Worktree {
-            // worktree 模式改动即真实落盘，无副本可同步。
+        if record.info.execution_mode != ExecutionMode::Replica {
+            // worktree/直接模式改动即真实落盘，无副本可同步。
             return Ok(record.info);
         }
         let source = snapshot_with_baseline(Path::new(&record.info.source_path), &record.baseline)?;

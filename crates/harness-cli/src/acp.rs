@@ -309,7 +309,7 @@ async fn run_connection(
                 let workspace = match new_session.runtime.workspaces.create(
                     &request.cwd,
                     None,
-                    harness_contracts::ExecutionMode::Replica,
+                    harness_contracts::ExecutionMode::Direct,
                 ) {
                     Ok(workspace) => workspace,
                     Err(e) => {

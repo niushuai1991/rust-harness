@@ -5,11 +5,12 @@ import {ChangesView} from './ChangesView';
 import {PreviewView} from './PreviewView';
 import {WebPanel} from './WebPanel';
 import {PlansPanel} from './PlansPanel';
+import type {ExecutionMode} from './types';
 const WIDTH_KEY='side-panel-width';
 const MIN_WIDTH=280;
 function savedWidth(){const value=Number(localStorage.getItem(WIDTH_KEY));return Number.isFinite(value)&&value>=MIN_WIDTH?value:430}
 // 右侧面板容器：更改审阅 + 文件预览；宽度手写 pointer 拖拽并记忆（避免整树重渲染）。
-export function SidePanel({workspaceId,executionMode,currentSessionId='',onOpenSession=()=>{}}:{workspaceId:string;executionMode?:'replica'|'worktree';currentSessionId?:string;onOpenSession?:(sessionId:string,workspaceId:string)=>void}) {
+export function SidePanel({workspaceId,executionMode,currentSessionId='',onOpenSession=()=>{}}:{workspaceId:string;executionMode?:ExecutionMode;currentSessionId?:string;onOpenSession?:(sessionId:string,workspaceId:string)=>void}) {
  const open=useSidePanel(s=>s.open),view=useSidePanel(s=>s.view),previewPath=useSidePanel(s=>s.previewPath),webUrl=useSidePanel(s=>s.webUrl),setView=useSidePanel(s=>s.setView),close=useSidePanel(s=>s.close);
  const [width,setWidth]=useState(savedWidth);
  const widthRef=useRef(width);widthRef.current=width;

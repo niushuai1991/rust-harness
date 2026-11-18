@@ -31,7 +31,8 @@
 | [每回合 Token 预算](specs/token-usage-budget.md) | 每条用户消息独立累计输出与未缓存输入 token，父子代理共享额度，默认 1M 且可调。 |
 | [权限模式（五档审批策略）](specs/permission-modes.md) | 五档权限模式统一定义（ask/edit/auto/never/guarded）与 CLI/ACP/预设/桌面四端接入。 |
 | [工作区（项目）命名](specs/workspace-naming.md) | 工作区显示名随 `record.json` 持久化，桌面命名弹窗与重命名入口，各显示点统一消费名称字段。 |
-| [宿主代建 worktree 执行模式与沙箱提权重跑](specs/worktree-execution.md) | 工作区 worktree 执行模式：宿主代建会话 worktree、执行根切换与 shell 沙箱提权重跑。 |
+| [宿主代建 worktree 执行模式与沙箱提权重跑](specs/worktree-execution.md) | 会话级 worktree 执行模式：宿主代建会话 worktree、执行根切换与 shell 沙箱提权重跑。 |
+| [直接执行模式与会话级执行位置](specs/direct-execution.md) | 新增直接模式（执行根=源项目目录、shell 无沙箱）作为新建项目默认，worktree 改为会话级 opt-in。 |
 | [长会话时间线性能与有界渲染](specs/long-session-timeline.md) | 桌面长会话的事件分页、正文惰性读取与虚拟时间线，作为 Tauri 与后续 GPUI 共用的时间线契约。 |
 | [ask_user 提问工具](specs/ask-user.md) | 会话中模型向用户提问的 `ask_user` 内置工具：挂起等待与无人在场/超时自动结算，四端接入与时间线回放。 |
 | [会话计划模式](specs/plan-mode.md) | 会话级计划模式、明确审批与拒绝反馈、右侧只读计划抽屉；shell 按正向只读白名单放行。 |

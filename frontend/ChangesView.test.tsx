@@ -108,4 +108,23 @@ describe('改动审阅视图（右侧面板）',()=>{
   fireEvent.click(screen.getByRole('button',{name:'刷新'}));
   await screen.findByText('查询失败');
  });
+ it('直接执行位置不请求差异，只显示只读提示',async()=>{
+  mocks.command.mockImplementation(async(name:string)=>{
+   if(name==='workspace_diff')throw new Error('不应请求差异');
+   return [];
+  });
+  render(<ChangesView workspaceId="w" executionMode="direct"/>);
+  await screen.findByText('改动已直接写入源项目');
+  expect(screen.queryByRole('button',{name:'刷新'})).not.toBeInTheDocument();
+  expect(screen.queryByRole('button',{name:'同步选中文件'})).not.toBeInTheDocument();
+  expect(screen.getByText(/直接执行位置：改动已写入源项目，无需审阅同步/)).toBeInTheDocument();
+  expect(mocks.command).not.toHaveBeenCalledWith('workspace_diff',expect.anything());
+ });
+ it('worktree 执行位置保留刷新但不显示同步动作',async()=>{
+  mockBackend([]);
+  render(<ChangesView workspaceId="w" executionMode="worktree"/>);
+  await screen.findByText('工作副本没有待同步更改');
+  expect(screen.getByRole('button',{name:'刷新'})).toBeInTheDocument();
+  expect(screen.queryByRole('button',{name:'同步选中文件'})).not.toBeInTheDocument();
+ });
 });

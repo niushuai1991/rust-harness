@@ -13,7 +13,7 @@ use std::{
 };
 
 /// 无项目会话（workspace_id 空串哨兵）沿用同一 schema；不新增迁移。
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 /// 会话列表「项目」视图置顶工作区集合的 settings KV 键。
 pub const PINNED_WORKSPACES_KEY: &str = "workspace.pinned.v1";
 /// 已移除项目登记（重开同源路径时挂回旧会话与自动化）的 settings KV 键。
@@ -182,6 +182,19 @@ impl Store {
                 .map_err(db_error)?;
             tx.commit().await.map_err(db_error)?;
         }
+        if version <= 4 {
+            let mut tx = pool.begin().await.map_err(db_error)?;
+            // 会话固化的执行位置；历史行保持 NULL，运行时按旧优先级回退。
+            sqlx::query("ALTER TABLE sessions ADD COLUMN execution_mode TEXT")
+                .execute(&mut *tx)
+                .await
+                .map_err(db_error)?;
+            sqlx::query("PRAGMA user_version = 5")
+                .execute(&mut *tx)
+                .await
+                .map_err(db_error)?;
+            tx.commit().await.map_err(db_error)?;
+        }
         let artifact_dir = path.parent().unwrap_or(Path::new(".")).join("artifacts");
         std::fs::create_dir_all(&artifact_dir).map_err(db_error)?;
         Ok(Self { pool, artifact_dir })
@@ -189,6 +202,15 @@ impl Store {
 
     /// 创建会话。`workspace` 为空串表示「无项目」会话（哨兵值）：不挂任何项目，执行根由运行时按会话独立分配；标题校验与状态语义与普通会话一致。
     pub async fn create_session(&self, workspace: &str, title: &str) -> AppResult<SessionInfo> {
+        self.create_session_with_mode(workspace, title, None).await
+    }
+    /// 创建会话并固化执行位置；`None` 表示跟随工作区默认（历史调用方与兼容路径）。
+    pub async fn create_session_with_mode(
+        &self,
+        workspace: &str,
+        title: &str,
+        execution_mode: Option<ExecutionMode>,
+    ) -> AppResult<SessionInfo> {
         if title.len() > 512 {
             return Err(AppError::new("INVALID_INPUT", "标题不得超过512字节"));
         }
@@ -205,21 +227,23 @@ impl Store {
             created_at: now(),
             updated_at: now(),
             parent_id: None,
+            execution_mode,
         };
-        sqlx::query("INSERT INTO sessions(id,workspace_id,title,created_at,updated_at,title_state) VALUES(?,?,?,?,?,?)")
+        sqlx::query("INSERT INTO sessions(id,workspace_id,title,created_at,updated_at,title_state,execution_mode) VALUES(?,?,?,?,?,?,?)")
             .bind(&s.id)
             .bind(&s.workspace_id)
             .bind(&s.title)
             .bind(&s.created_at)
             .bind(&s.updated_at)
             .bind(title_state)
+            .bind(execution_mode.map(mode_text))
             .execute(&self.pool)
             .await
             .map_err(db_error)?;
         Ok(s)
     }
     pub async fn session(&self, id: &str) -> AppResult<SessionInfo> {
-        sqlx::query("SELECT id,workspace_id,title,created_at,updated_at,archived_at FROM sessions WHERE id=?")
+        sqlx::query("SELECT id,workspace_id,title,created_at,updated_at,archived_at,execution_mode FROM sessions WHERE id=?")
             .bind(id)
             .fetch_optional(&self.pool)
             .await
@@ -336,7 +360,7 @@ impl Store {
         archived: Option<bool>,
     ) -> AppResult<Vec<SessionInfo>> {
         let rows = sqlx::query(
-            "SELECT id,workspace_id,title,created_at,updated_at,archived_at FROM sessions \
+            "SELECT id,workspace_id,title,created_at,updated_at,archived_at,execution_mode FROM sessions \
              WHERE (? IS NULL OR workspace_id=?)
               AND ((? IS NULL AND archived=0) OR (? = 1 AND archived=1) OR (? = 0)) \
              ORDER BY updated_at DESC",
@@ -690,6 +714,8 @@ impl Store {
             created_at: now(),
             updated_at: now(),
             parent_id: None,
+            // 导入会话不带执行位置，跟随导入后工作区的默认值。
+            execution_mode: None,
         };
         let mut tx = self.pool.begin().await.map_err(db_error)?;
         sqlx::query("INSERT INTO sessions(id,workspace_id,title,created_at,updated_at,title_state) VALUES(?,?,?,?,?,'manual')")
@@ -788,6 +814,29 @@ fn session_row(r: &sqlx::sqlite::SqliteRow) -> SessionInfo {
         updated_at: r.get("updated_at"),
         archived_at: r.get("archived_at"),
         parent_id: None,
+        execution_mode: r
+            .get::<Option<String>, _>("execution_mode")
+            .as_deref()
+            .and_then(mode_from_text),
+    }
+}
+
+/// 执行位置在库内的稳定文本表示（与 serde camelCase 一致）。
+fn mode_text(mode: ExecutionMode) -> &'static str {
+    match mode {
+        ExecutionMode::Direct => "direct",
+        ExecutionMode::Replica => "replica",
+        ExecutionMode::Worktree => "worktree",
+    }
+}
+
+/// 解析库内执行位置；未知值（未来版本写入）按 None 处理，回退到工作区默认。
+fn mode_from_text(text: &str) -> Option<ExecutionMode> {
+    match text {
+        "direct" => Some(ExecutionMode::Direct),
+        "replica" => Some(ExecutionMode::Replica),
+        "worktree" => Some(ExecutionMode::Worktree),
+        _ => None,
     }
 }
 

@@ -55,7 +55,7 @@ pub struct Args {
     /// 能力预设（模型/档位/审批策略的命名组合；显式参数优先于预设字段）
     #[arg(long)]
     pub preset: Option<String>,
-    /// 执行模式：副本（默认）或 worktree（改动直落原项目的会话 worktree 分支，需 git 仓库）
+    /// 执行位置：直接写入项目（默认）、隔离副本或 worktree（需 git 仓库）
     #[arg(long = "exec-mode", value_enum)]
     pub exec_mode: Option<ExecModeArg>,
     /// 颜色输出
@@ -66,6 +66,7 @@ pub struct Args {
 /// CLI 的执行模式取值（映射 harness_contracts::ExecutionMode）。
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum ExecModeArg {
+    Direct,
     Replica,
     Worktree,
 }
@@ -73,6 +74,7 @@ pub enum ExecModeArg {
 impl ExecModeArg {
     pub fn mode(self) -> harness_contracts::ExecutionMode {
         match self {
+            Self::Direct => harness_contracts::ExecutionMode::Direct,
             Self::Replica => harness_contracts::ExecutionMode::Replica,
             Self::Worktree => harness_contracts::ExecutionMode::Worktree,
         }
@@ -138,7 +140,9 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<i32> {
         args.workspace.as_deref(),
         args.session.as_deref(),
         &prompt,
-        args.exec_mode.map(ExecModeArg::mode).unwrap_or_default(),
+        args.exec_mode
+            .map(ExecModeArg::mode)
+            .unwrap_or(harness_contracts::ExecutionMode::Direct),
     )
     .await?;
     if let Some(warning) = &reuse_warning {

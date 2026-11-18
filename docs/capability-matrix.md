@@ -40,6 +40,7 @@
 |搜索provider/Office预览|未实现|不能计为P2/P3完成|
 |脚本工作流/签名插件市场|未实现|不能计为P3完成|
 |Agent 执行性能优化（工具批次并发调度、请求前自动压缩、HTTP 连接复用）|已实现并接线|并发段重叠/上限/屏障/取消 unknown 结算/read-before-edit（6 项）、自动压缩阈值触发/投影重置/失败语义/预算记账（4 项）、连接 keep-alive 复用与传输配置隔离（3 项）集成测试通过；桌面设置「性能」选项卡 5 项前端测试通过；真实模型收益基准对照待用户；流式提前执行未实施（待预算规范修订），见[Agent 执行性能优化规范](specs/agent-execution-performance.md)|
+|直接执行模式与会话级执行位置|已实现并接线|新建项目默认直接模式（不复制、不 prepare、不建 worktree），worktree 改为会话级 opt-in；会话固化执行位置、子代理复用父 worktree；直接模式 shell 走宿主令牌与五档审批。平台/存储/运行时/前端用例见[直接执行规范](specs/direct-execution.md)；桌面真实会话抽查待用户|
 |会话计划模式（只读探索、只读 shell 放行、子代理调研放行）|已实现并接线|持久化/重启恢复/worktree 拒绝/未验证历史/无人值守 plan_exit 等会话计划 15 项测试、只读 shell 免审批放行/写命令与重定向拒绝/提权拒绝/沙箱不提权重跑测试、子代理调研放行 6 项测试（spawn 免审批放行与子会话强制只读、受信 agent_wait 按名暴露且未受信扩展不可执行、真实 agent_wait 报告回流、运行中调研子代理拒绝重进、结束后放行重进、非计划模式审批不变）通过；fmt/clippy/test/build 全量通过；真实模型与桌面 UI 抽查待用户，见[会话计划模式规范](specs/plan-mode.md)|
 
 数据目录为宿主独占，桌面打开时headless需使用独立数据目录，避免另一个进程执行恢复时破坏活动会话。WASM采用每次调用独立Store，activate→execute/hook→deactivate，KV成功后提交；不承诺长期驻留实例状态。
