@@ -1263,6 +1263,23 @@ describe('模型选择',()=>{
   fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
   await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','你好','custom',expect.any(Function),undefined,'high'));
  });
+ it('切换标记锚定切换点：后续回复渲染在标记之后，不再跟随最新回复',async()=>{
+  mocks.send.mockImplementation(async(_id,_text,_model,receive)=>receive({type:'durable',event:{id:'reply-2',sessionId:'a',seq:'2',kind:'assistant.message',data:{content:'切换后的回复'},createdAt:''}}));
+  modelApp();await renderOpenA();
+  fireEvent.click(screen.getByLabelText('当前模型'));
+  fireEvent.click(within(screen.getByRole('listbox',{name:'选择模型'})).getByText('自定义 GLM'));
+  const noteText=/模型已切换：DeepSeek Flash → 自定义 GLM · 档位 max/;
+  expect(screen.getByText(noteText)).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'你好'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await screen.findByText('切换后的回复');
+  expect(screen.getAllByText(noteText)).toHaveLength(1);
+  const note=screen.getByText(noteText);
+  const history=screen.getByText('内容 a');
+  const reply=screen.getByText('切换后的回复');
+  expect(history.compareDocumentPosition(note)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(note.compareDocumentPosition(reply)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+ });
  it('点击当前模型行关闭卡片，Esc 亦可关闭',async()=>{
   modelApp();render(<App/>);
   fireEvent.click(await screen.findByLabelText('当前模型'));

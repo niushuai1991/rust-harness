@@ -151,7 +151,8 @@ export default function App(){
  const [wsDialog,setWsDialog]=useState<{mode:'create';path:string;name:string;execMode:ExecutionMode}|{mode:'edit';id:string;name:string;execMode:ExecutionMode;currentMode:ExecutionMode}|null>(null);
  // 模型浮层卡片与切换标记（仅内存：切换模型在会话流里的临时提示，不落库）。
  const [modelMenuOpen,setModelMenuOpen]=useState(false);
- const [modelNotes,setModelNotes]=useState<{sessionId:string;text:string}[]>([]);
+ const [modelNotes,setModelNotes]=useState<ModelNote[]>([]);
+ const modelNoteSeq=useRef(0);
  const sessionTitleOverrides=useRef(new Map<string,string>()),manualSessionTitles=useRef(new Set<string>());
  useEffect(()=>{if(!plusOpen)return;const close=(e:MouseEvent)=>{if(!(e.target as Element|null)?.closest?.('.composer-plus-wrap'))setPlusOpen(false)};const esc=(e:KeyboardEvent)=>{if(e.key==='Escape')setPlusOpen(false)};document.addEventListener('mousedown',close);document.addEventListener('keydown',esc);return()=>{document.removeEventListener('mousedown',close);document.removeEventListener('keydown',esc)}},[plusOpen]);
  useEffect(()=>{if(!pjMenuOpen)return;const close=(e:MouseEvent)=>{if(!(e.target as Element|null)?.closest?.('.chip-row'))setPjMenuOpen(false)};const esc=(e:KeyboardEvent)=>{if(e.key==='Escape')setPjMenuOpen(false)};document.addEventListener('mousedown',close);document.addEventListener('keydown',esc);return()=>{document.removeEventListener('mousedown',close);document.removeEventListener('keydown',esc)}},[pjMenuOpen]);
@@ -467,7 +468,13 @@ export default function App(){
   if(from&&from.id!==id&&sessionId)addModelNote(`模型已切换：${from.name||from.model} → ${next?.name||next?.model||id} · 档位 ${kept??'默认'}`);
  }
  function chooseEffort(value:string){setPresetId('');const next=value===''?null:value;setEffort(next);void command('default_selection_save',{selection:{modelId,effort:next,workspaceId:workspaceId||null}}).catch(()=>{})}
- function addModelNote(text:string){const id=sessionId;if(id)setModelNotes(old=>[...old,{sessionId:id,text}])}
+ function addModelNote(text:string){
+  const id=sessionId;if(!id)return;
+  // 锚定切换时刻时间线最后一条事件的 seq：标记固定在切换点，后续回复渲染在标记之后，不再跟随最新回复。
+  const anchorSeq=useChat.getState().events[id]?.at(-1)?.seq??'0';
+  const noteId=`model-note-${++modelNoteSeq.current}`;
+  setModelNotes(old=>[...old,{id:noteId,sessionId:id,text,anchorSeq}]);
+ }
  // 选择预设：以预设字段填充级联（级联持久化沿用上次模型选择）；手改级联即放弃预设。
  function choosePreset(id:string){
   setPresetId(id);
@@ -757,7 +764,7 @@ export default function App(){
    <div className="chat-body">
    <section ref={conversationRef} className="conversation" aria-label="聊天消息" onScroll={event=>{const node=event.currentTarget;const atBottom=node.scrollHeight-node.scrollTop-node.clientHeight<80;autoFollow.current=atBottom;setShowJumpBottom(!atBottom);if(node.scrollTop<=8)void loadOlderTimeline()}}>
     {!timelineLoading&&!events.length&&!stream&&<div className="welcome"><span className="welcome-icon"><Terminal size={35}/></span><div className="eyebrow">BUILD WITH CONFIDENCE</div><h1>{drafting&&draftWorkspaceId!==null?<>你想在 <em className="pj-name">{projectName(draftWorkspaceId)}</em> 中构建什么？</>:'想把什么变成现实？'}</h1><p>理解代码、探索想法，或完成下一次改进。<br/>在独立的工作副本中协作，每一处更改都由你掌控。</p>{!workspaceId&&!drafting&&!sessionId&&<button className="primary welcome-open" onClick={openWorkspace} disabled={busy||!desktop()}><FolderOpen size={15}/>打开工作区</button>}<div className="suggestions">{['梳理项目结构和关键模块','检查代码，找出值得改进的地方','帮我规划并实现一个新功能'].map((s,i)=><button key={s} onClick={()=>setText(s)} disabled={!sessionId&&!drafting}><span>0{i+1}</span>{s}<ArrowUp size={14}/></button>)}</div><div className="welcome-foot"><ShieldCheck size={15}/>工作副本隔离 · 操作可审批 · 更改可预览</div></div>}
-    <div className="messages" onContextMenu={event=>{event.preventDefault();setMsgContextMenu({x:event.clientX,y:event.clientY,text:window.getSelection()?.toString().trim()??''})}}>{timeline?.hasOlder?<div className="timeline-page-control"><button type="button" onClick={()=>void loadOlderTimeline()} disabled={olderTimelineLoading}>{olderTimelineLoading?'正在加载更早消息…':'加载更早消息'}</button></div>:timeline&&timeline.loadedOlder?<div className="timeline-page-control"><small>已到会话开头</small></div>:null}<ConversationEvents events={events} workspaceId={workspaceId} onOpenSession={openSession} activeIds={activeIds} askAnswers={askAnswers}/>{modelNotes.filter(n=>n.sessionId===sessionId).map((note,index)=><div key={`${note.sessionId}-${index}`} className="model-note" role="status">{note.text}</div>)}{thinkingVisible&&<article className="message assistant thinking-indicator" role="status" aria-label="正在思考"><div className="avatar" aria-hidden="true">R</div><div className="message-body"><div className="message-label">Rust Harness</div><div className="thinking-line"><span>正在思考</span><span className="thinking-dots" aria-hidden="true"><i/><i/><i/></span></div></div></article>}{stream&&<article className="message assistant"><div className="avatar">R</div><div className="message-body"><div className="message-label">Rust Harness <span className="stream-label">正在思考与执行</span></div>{stream.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{stream.reasoning}</pre></details>}<div className="prose"><Markdown content={stream.text||'正在处理…'}/><span className="cursor"/></div></div></article>}<div ref={end}/></div>
+    <div className="messages" onContextMenu={event=>{event.preventDefault();setMsgContextMenu({x:event.clientX,y:event.clientY,text:window.getSelection()?.toString().trim()??''})}}>{timeline?.hasOlder?<div className="timeline-page-control"><button type="button" onClick={()=>void loadOlderTimeline()} disabled={olderTimelineLoading}>{olderTimelineLoading?'正在加载更早消息…':'加载更早消息'}</button></div>:timeline&&timeline.loadedOlder?<div className="timeline-page-control"><small>已到会话开头</small></div>:null}<ConversationEvents events={injectModelNotes(events,modelNotes.filter(n=>n.sessionId===sessionId))} workspaceId={workspaceId} onOpenSession={openSession} activeIds={activeIds} askAnswers={askAnswers}/>{thinkingVisible&&<article className="message assistant thinking-indicator" role="status" aria-label="正在思考"><div className="avatar" aria-hidden="true">R</div><div className="message-body"><div className="message-label">Rust Harness</div><div className="thinking-line"><span>正在思考</span><span className="thinking-dots" aria-hidden="true"><i/><i/><i/></span></div></div></article>}{stream&&<article className="message assistant"><div className="avatar">R</div><div className="message-body"><div className="message-label">Rust Harness <span className="stream-label">正在思考与执行</span></div>{stream.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{stream.reasoning}</pre></details>}<div className="prose"><Markdown content={stream.text||'正在处理…'}/><span className="cursor"/></div></div></article>}<div ref={end}/></div>
    </section>
    {showJumpBottom&&<button type="button" className="jump-bottom" aria-label="滚动到底部" title="滚动到底部" onClick={jumpToBottom}><ArrowDown size={16}/></button>}
    </div>
@@ -805,6 +812,23 @@ function QuestionCard({question,sessionTitle,onSubmit}:{question:AskRequest;sess
  const canSubmit=hasOptions?choice!==null&&(choice!==otherIndex||!!freeText.trim()):!!freeText.trim();
  return <section className="ask-popover" role="dialog" aria-modal="false" aria-label="Agent 需要你的输入"><header className="ask-popover-head"><MessageSquare size={15}/><strong>{question.question}</strong><button type="button" aria-label="忽略提问" title="忽略（模型将自行决策继续）" onClick={decline}><X size={15}/></button></header><p className="muted">会话：{sessionTitle}</p>{hasOptions&&<div role="radiogroup" aria-label="选项">{question.options.map((option,index)=><label key={option.label} className="ask-option"><input type="radio" name={`ask-${question.id}`} aria-label={`选项 ${option.label}`} checked={choice===index} onChange={()=>setChoice(index)}/><span>{option.label}{option.description?`（${option.description}）`:''}</span></label>)}<label className="ask-option"><input type="radio" name={`ask-${question.id}`} aria-label="选项 其他" checked={choice===otherIndex} onChange={()=>setChoice(otherIndex)}/><span>其他（自定义答复）</span></label></div>}{(!hasOptions||choice===otherIndex)&&<textarea className="ask-textarea" aria-label="自定义答复" placeholder="输入答复文本…" autoFocus value={freeText} onChange={e=>setFreeText(e.target.value)}/>}<div className="actions"><button onClick={decline}>忽略</button><button className="primary" disabled={!canSubmit} onClick={submit}>提交答复</button></div></section>}
 const EMPTY_EVENTS:SessionEvent[]=[];
+// 模型切换标记（内存伪事件）：锚定切换时刻的 seq 注入时间线渲染；不落库、刷新即逝。
+type ModelNote={id:string;sessionId:string;text:string;anchorSeq:string};
+function modelNoteEvent(note:ModelNote):SessionEvent{
+ return {id:note.id,sessionId:note.sessionId,seq:note.anchorSeq,kind:'ui.model_note',data:{text:note.text},createdAt:''};
+}
+// 标记插到锚点（切换时最后事件）之后、第一个更大 seq 的事件之前；锚点晚于全部事件（如历史页未加载）时附加末尾。
+function injectModelNotes(events:SessionEvent[],notes:ModelNote[]):SessionEvent[]{
+ if(!notes.length)return events;
+ const ordered=[...notes].sort((a,b)=>BigInt(a.anchorSeq)<BigInt(b.anchorSeq)?-1:1);
+ const out:SessionEvent[]=[];let next=0;
+ for(const event of events){
+  while(next<ordered.length&&BigInt(ordered[next].anchorSeq)<BigInt(event.seq))out.push(modelNoteEvent(ordered[next++]));
+  out.push(event);
+ }
+ while(next<ordered.length)out.push(modelNoteEvent(ordered[next++]));
+ return out;
+}
 function Markdown({content}:{content:string}){return <SessionMarkdown content={content}/>}
 function durationLabel(start?:SessionEvent,end?:SessionEvent){
  const startAt=Date.parse(start?.createdAt??''),endAt=Date.parse(end?.createdAt??'');
@@ -862,6 +886,7 @@ function FileEditGroup({group}:{group:FileEditGroup}) {
 }
 export function EventCard({event,...extras}:{event:SessionEvent}&EventCardExtras) {
  const {kind,data}=event;
+ if(kind==='ui.model_note')return <div className="model-note" role="status">{printable(data.text)}</div>;
  if(kind==='subagent.created'||kind==='subagent.message_sent'){
   const childId=typeof data.sessionId==='string'?data.sessionId:'';
   const sent=kind==='subagent.message_sent';
