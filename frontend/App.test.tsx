@@ -1,4 +1,4 @@
-import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
+﻿import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {act,cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
 import App from './App';
 import './style.css';
@@ -1506,6 +1506,89 @@ describe('斜杠命令补全',()=>{
   fireEvent.change(input,{target:{value:'/he'}});
   fireEvent.keyDown(input,{key:'Enter'});
   expect(await screen.findByText(/可用命令：/)).toBeInTheDocument();
+ });
+});
+describe('草稿内容保留',()=>{
+ it('草稿输入在切换会话再新建聊天后保留，可继续编辑',async()=>{
+  render(<App/>);
+  await screen.findByRole('heading',{name:/你想在 project 中构建什么/});
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'帮我梳理导出模块'}});
+  fireEvent.click(screen.getByRole('button',{name:/会话 A/}));
+  await screen.findByText('内容 a');
+  expect(input).toHaveValue('');
+  fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
+  expect(screen.getByRole('heading',{name:/你想在 project 中构建什么/})).toBeInTheDocument();
+  expect(screen.getByLabelText('消息')).toHaveValue('帮我梳理导出模块');
+ });
+ it('草稿发送成功后草稿内容清空，不再恢复',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.send.mockResolvedValue(undefined);
+  mocks.command.mockImplementation(async(name:string,args:any)=>{
+   if(name==='session_create')return {id:'fresh',workspaceId:'w',title:'新会话'};
+   if(name==='session_timeline_page')return timeline(args.sessionId,[]);
+   return original(name,args);
+  });
+  render(<App/>);
+  await screen.findByRole('heading',{name:/你想在 project 中构建什么/});
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'首条任务'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('fresh','首条任务','m',expect.any(Function),undefined,'high'));
+  fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
+  await screen.findByRole('heading',{name:/你想在 project 中构建什么/});
+  expect(screen.getByLabelText('消息')).toHaveValue('');
+ });
+ it('草稿内容按落点项目分桶，切换落点互不覆盖',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name:string,args:any)=>{
+   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/A',replicaPath:'D:/ca',createdAt:'',name:'project',pinned:false},{id:'other',sourcePath:'D:/B',replicaPath:'D:/cb',createdAt:'',name:'other-pj',pinned:false}];
+   return original(name,args);
+  });
+  render(<App/>);
+  await screen.findByRole('heading',{name:/你想在 project 中构建什么/});
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'A 项目的问题'}});
+  fireEvent.click(screen.getByRole('button',{name:'选择项目'}));
+  fireEvent.click(within(screen.getByRole('menu',{name:'选择项目'})).getByRole('menuitem',{name:/other-pj/}));
+  expect(screen.getByRole('heading',{name:/你想在 other-pj 中构建什么/})).toBeInTheDocument();
+  expect(input).toHaveValue('');
+  fireEvent.change(input,{target:{value:'B 项目的问题'}});
+  fireEvent.click(screen.getByRole('button',{name:'选择项目'}));
+  fireEvent.click(within(screen.getByRole('menu',{name:'选择项目'})).getByRole('menuitem',{name:/project/}));
+  expect(input).toHaveValue('A 项目的问题');
+  fireEvent.click(screen.getByRole('button',{name:'选择项目'}));
+  fireEvent.click(within(screen.getByRole('menu',{name:'选择项目'})).getByRole('menuitem',{name:/other-pj/}));
+  expect(input).toHaveValue('B 项目的问题');
+ });
+ it('跨工作区切换后各项目草稿独立保留',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  const now=new Date().toISOString();
+  mocks.command.mockImplementation(async(name:string,args:any)=>{
+   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/A',replicaPath:'D:/ca',createdAt:'',name:'project',pinned:false},{id:'other',sourcePath:'D:/B',replicaPath:'D:/cb',createdAt:'',name:'other-pj',pinned:false}];
+   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A',createdAt:'',updatedAt:now,parentId:null},{id:'other-session',workspaceId:'other',title:'B 的会话',createdAt:'',updatedAt:now,parentId:null}];
+   return original(name,args);
+  });
+  render(<App/>);
+  await screen.findByRole('heading',{name:/你想在 project 中构建什么/});
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'A 的草稿'}});
+  fireEvent.click(screen.getByRole('button',{name:/B 的会话/}));
+  await screen.findByText('内容 other-session');
+  expect(input).toHaveValue('');
+  fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
+  expect(screen.getByRole('heading',{name:/你想在 other-pj 中构建什么/})).toBeInTheDocument();
+  fireEvent.change(input,{target:{value:'B 的草稿'}});
+  fireEvent.click(screen.getByRole('button',{name:/会话 A/}));
+  await screen.findByText('内容 a');
+  fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
+  expect(screen.getByRole('heading',{name:/你想在 project 中构建什么/})).toBeInTheDocument();
+  expect(screen.getByLabelText('消息')).toHaveValue('A 的草稿');
+  fireEvent.click(screen.getByRole('button',{name:/B 的会话/}));
+  await screen.findByText('内容 other-session');
+  fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
+  expect(screen.getByRole('heading',{name:/你想在 other-pj 中构建什么/})).toBeInTheDocument();
+  expect(screen.getByLabelText('消息')).toHaveValue('B 的草稿');
  });
 });
 describe('草稿态技能补全',()=>{
