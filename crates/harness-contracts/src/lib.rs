@@ -180,6 +180,16 @@ pub struct TimelinePage {
     pub older_cursor: Option<String>,
     pub through_seq: String,
     pub has_older: bool,
+    pub turns: Vec<TimelineTurn>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineTurn {
+    pub start_seq: String,
+    pub end_seq: Option<String>,
+    pub status: Option<String>,
+    pub final_message_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

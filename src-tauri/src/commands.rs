@@ -618,6 +618,24 @@ pub async fn session_timeline_page(
         )
         .await
 }
+
+#[tauri::command]
+#[specta::specta]
+pub async fn session_turn_assistant_content(
+    state: Backend<'_>,
+    session_id: String,
+    start_seq: String,
+    end_seq: String,
+) -> AppResult<Vec<serde_json::Value>> {
+    state
+        .store
+        .turn_assistant_content(
+            &session_id,
+            start_seq.parse::<u64>().map_err(error)?,
+            end_seq.parse::<u64>().map_err(error)?,
+        )
+        .await
+}
 #[tauri::command]
 #[specta::specta]
 pub async fn session_send(
@@ -1416,6 +1434,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         session_title_generate,
         session_events,
         session_timeline_page,
+        session_turn_assistant_content,
         session_send,
         session_cancel,
         session_export,

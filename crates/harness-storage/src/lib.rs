@@ -195,6 +195,12 @@ impl Store {
                 .map_err(db_error)?;
             tx.commit().await.map_err(db_error)?;
         }
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS events_session_kind_seq ON events(session_id,kind,seq)",
+        )
+        .execute(&pool)
+        .await
+        .map_err(db_error)?;
         let artifact_dir = path.parent().unwrap_or(Path::new(".")).join("artifacts");
         std::fs::create_dir_all(&artifact_dir).map_err(db_error)?;
         Ok(Self { pool, artifact_dir })
@@ -421,6 +427,43 @@ impl Store {
             .map_err(db_error)?;
         rows.iter().map(event_row).collect()
     }
+    pub async fn turn_assistant_content(
+        &self,
+        session: &str,
+        start: u64,
+        end: u64,
+    ) -> AppResult<Vec<Value>> {
+        let start = i64::try_from(start).map_err(db_error)?;
+        let end = i64::try_from(end).map_err(db_error)?;
+        let start_exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM events WHERE session_id=? AND seq=? AND kind='turn.start')")
+            .bind(session).bind(start).fetch_one(&self.pool).await.map_err(db_error)?;
+        let boundary = sqlx::query("SELECT * FROM (SELECT * FROM events INDEXED BY events_session_kind_seq WHERE session_id=? AND kind='turn.start' AND seq>? ORDER BY seq LIMIT 1) UNION ALL SELECT * FROM (SELECT * FROM events INDEXED BY events_session_kind_seq WHERE session_id=? AND kind='turn.end' AND seq>? ORDER BY seq LIMIT 1) ORDER BY seq LIMIT 1")
+            .bind(session).bind(start).bind(session).bind(start).fetch_optional(&self.pool).await.map_err(db_error)?
+            .as_ref().map(event_row).transpose()?;
+        if !start_exists
+            || !boundary.as_ref().is_some_and(|e| {
+                e.kind == "turn.end" && e.seq == end.to_string() && e.data["status"] == "completed"
+            })
+        {
+            return Err(AppError::new("INVALID_TURN", "无法确认完整回合"));
+        }
+        let bytes: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(LENGTH(CAST(data AS BLOB))),0) FROM events WHERE session_id=? AND kind='assistant.message' AND seq>? AND seq<?")
+            .bind(session).bind(start).bind(end).fetch_one(&self.pool).await.map_err(db_error)?;
+        if bytes > 8 * 1024 * 1024 {
+            return Err(AppError::new(
+                "TURN_COPY_TOO_LARGE",
+                "回合内容过大，无法复制（上限 8 MiB）",
+            ));
+        }
+        let rows: Vec<String> = sqlx::query_scalar("SELECT data FROM events WHERE session_id=? AND kind='assistant.message' AND seq>? AND seq<? ORDER BY seq")
+            .bind(session).bind(start).bind(end).fetch_all(&self.pool).await.map_err(db_error)?;
+        rows.iter()
+            .map(|raw| {
+                let data: Value = serde_json::from_str(raw).map_err(db_error)?;
+                Ok(data.get("content").cloned().unwrap_or(Value::Null))
+            })
+            .collect()
+    }
     /// Returns a bounded durable-event window for the desktop timeline.
     pub async fn timeline_page(
         &self,
@@ -442,6 +485,7 @@ impl Store {
                 older_cursor: None,
                 through_seq: "0".into(),
                 has_older: false,
+                turns: vec![],
             });
         }
         let before = before
@@ -477,12 +521,51 @@ impl Store {
                 .seq
                 .clone()
         });
+        let mut starts = Vec::new();
+        if let Some(first) = events.first() {
+            let first_seq = first.seq.parse::<i64>().map_err(db_error)?;
+            let prior = sqlx::query("SELECT * FROM (SELECT * FROM events INDEXED BY events_session_kind_seq WHERE session_id=? AND kind='turn.start' AND seq<? ORDER BY seq DESC LIMIT 1) UNION ALL SELECT * FROM (SELECT * FROM events INDEXED BY events_session_kind_seq WHERE session_id=? AND kind='turn.end' AND seq<? ORDER BY seq DESC LIMIT 1) ORDER BY seq DESC LIMIT 1")
+                .bind(session).bind(first_seq).bind(session).bind(first_seq).fetch_optional(&self.pool).await.map_err(db_error)?;
+            if let Some(row) = prior {
+                let event = event_row(&row)?;
+                if event.kind == "turn.start" {
+                    starts.push(event);
+                }
+            }
+        }
+        starts.extend(events.iter().filter(|e| e.kind == "turn.start").cloned());
+        let mut turns = Vec::new();
+        for start in starts {
+            let seq = start.seq.parse::<i64>().map_err(db_error)?;
+            let boundary = sqlx::query("SELECT * FROM (SELECT * FROM events INDEXED BY events_session_kind_seq WHERE session_id=? AND kind='turn.start' AND seq>? AND seq<=? ORDER BY seq LIMIT 1) UNION ALL SELECT * FROM (SELECT * FROM events INDEXED BY events_session_kind_seq WHERE session_id=? AND kind='turn.end' AND seq>? AND seq<=? ORDER BY seq LIMIT 1) ORDER BY seq LIMIT 1")
+                .bind(session).bind(seq).bind(through).bind(session).bind(seq).bind(through).fetch_optional(&self.pool).await.map_err(db_error)?
+                .as_ref().map(event_row).transpose()?;
+            let end = boundary.filter(|event| event.kind == "turn.end");
+            let final_message_id = if let Some(ref end) = end {
+                let end_seq = end.seq.parse::<i64>().map_err(db_error)?;
+                sqlx::query_scalar::<_, String>("SELECT id FROM events WHERE session_id=? AND kind='assistant.message' AND seq>? AND seq<? ORDER BY seq DESC LIMIT 1")
+                    .bind(session).bind(seq).bind(end_seq).fetch_optional(&self.pool).await.map_err(db_error)?
+            } else {
+                None
+            };
+            turns.push(TimelineTurn {
+                start_seq: start.seq,
+                end_seq: end.as_ref().map(|e| e.seq.clone()),
+                status: end
+                    .as_ref()
+                    .and_then(|e| e.data.get("status"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                final_message_id,
+            });
+        }
         Ok(TimelinePage {
             session_id: session.into(),
             events,
             older_cursor,
             through_seq: through.to_string(),
             has_older,
+            turns,
         })
     }
     /// Called before accepting work. Recovery records uncertainty, never invokes a tool.

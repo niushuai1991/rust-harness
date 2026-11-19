@@ -243,3 +243,99 @@ async fn timeline_page_reads_latest_then_strictly_older_bounded_windows() {
     assert!(!page.has_older);
     assert_eq!(page.older_cursor, None);
 }
+
+#[tokio::test]
+async fn timeline_page_identifies_completed_turn_across_page_boundary() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Store::open(&dir.path().join("events.db")).await.unwrap();
+    let s = db.create_session("w", "cross-page").await.unwrap();
+    let start = db
+        .append(&s.id, "turn.start", json!({"runId":"r"}))
+        .await
+        .unwrap();
+    db.append(&s.id, "assistant.message", json!({"content":"early"}))
+        .await
+        .unwrap();
+    for _ in 0..85 {
+        db.append(&s.id, "tool.result", json!({})).await.unwrap();
+    }
+    let final_message = db
+        .append(&s.id, "assistant.message", json!({"content":"final"}))
+        .await
+        .unwrap();
+    let end = db
+        .append(&s.id, "turn.end", json!({"status":"completed"}))
+        .await
+        .unwrap();
+    let page = db.timeline_page(&s.id, None, None).await.unwrap();
+    assert!(page.has_older);
+    assert_eq!(page.turns.len(), 1);
+    assert_eq!(page.turns[0].start_seq, start.seq);
+    assert_eq!(page.turns[0].end_seq.as_deref(), Some(end.seq.as_str()));
+    assert_eq!(
+        page.turns[0].final_message_id.as_deref(),
+        Some(final_message.id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn turn_copy_reads_only_assistant_content_for_completed_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Store::open(&dir.path().join("events.db")).await.unwrap();
+    let s = db.create_session("w", "copy").await.unwrap();
+    let start = db.append(&s.id, "turn.start", json!({})).await.unwrap();
+    db.append(
+        &s.id,
+        "assistant.message",
+        json!({"content":"first","reasoning":"secret"}),
+    )
+    .await
+    .unwrap();
+    db.append(&s.id, "tool.result", json!({"content":"tool"}))
+        .await
+        .unwrap();
+    db.append(&s.id, "assistant.attempt", json!({"content":"failed"}))
+        .await
+        .unwrap();
+    db.append(&s.id, "assistant.message", json!({"content":"last"}))
+        .await
+        .unwrap();
+    let end = db
+        .append(&s.id, "turn.end", json!({"status":"completed"}))
+        .await
+        .unwrap();
+    let content = db
+        .turn_assistant_content(&s.id, start.seq.parse().unwrap(), end.seq.parse().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(content, vec![json!("first"), json!("last")]);
+    assert!(
+        db.turn_assistant_content(&s.id, 2, end.seq.parse().unwrap())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn turn_copy_rejects_excessive_payload_without_partial_result() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Store::open(&dir.path().join("events.db")).await.unwrap();
+    let s = db.create_session("w", "large").await.unwrap();
+    let start = db.append(&s.id, "turn.start", json!({})).await.unwrap();
+    db.append(
+        &s.id,
+        "assistant.message",
+        json!({"content":"x".repeat(8*1024*1024+1)}),
+    )
+    .await
+    .unwrap();
+    let end = db
+        .append(&s.id, "turn.end", json!({"status":"completed"}))
+        .await
+        .unwrap();
+    assert!(
+        db.turn_assistant_content(&s.id, start.seq.parse().unwrap(), end.seq.parse().unwrap())
+            .await
+            .is_err()
+    );
+}
