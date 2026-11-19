@@ -3,7 +3,7 @@ import {open,save} from '@tauri-apps/plugin-dialog';
 import {isTauri} from '@tauri-apps/api/core';
 import {listen} from '@tauri-apps/api/event';
 import {createPortal} from 'react-dom';
-import {Archive,ArrowDown,ArrowUp,Bot,CalendarClock,Check,ChevronDown,ChevronRight,Copy,FileCode,FilePlus,Folder,FolderOpen,GitCompareArrows,ListTodo,MessageSquare,Paperclip,Pencil,Pin,Plus,Quote,Search,Send,Settings,ShieldCheck,Square,Sparkles,Target,Terminal,Timer,Trash2,Unplug,X,Download} from 'lucide-react';
+import {Archive,Activity,ArrowDown,ArrowUp,Bot,CalendarClock,Check,ChevronDown,ChevronRight,Copy,FileCode,FilePlus,Folder,FolderOpen,GitCompareArrows,ListTodo,MessageSquare,Paperclip,Pencil,Pin,Plus,Quote,Search,Send,Settings,ShieldCheck,Square,Sparkles,Target,Terminal,Timer,Trash2,Unplug,X,Download} from 'lucide-react';
 import {SessionMarkdown,LinkedText} from './SessionLinks';
 import {command,desktop,errorText,send} from './api';
 import {KNOWN_APPROVALS} from './types';
@@ -800,7 +800,7 @@ const lastRunWorkspaceId=useRef<string|null>(null); // workspace effect 实际�
    <div className="chat-body">
    <section ref={conversationRef} className="conversation" aria-label="聊天消息" onScroll={event=>{const node=event.currentTarget;const atBottom=node.scrollHeight-node.scrollTop-node.clientHeight<80;autoFollow.current=atBottom;setShowJumpBottom(!atBottom);if(node.scrollTop<=8)void loadOlderTimeline()}}>
     {!timelineLoading&&!events.length&&!stream&&<div className="welcome"><span className="welcome-icon"><Terminal size={35}/></span><div className="eyebrow">BUILD WITH CONFIDENCE</div><h1>{drafting&&draftWorkspaceId!==null?<>你想在 <em className="pj-name">{projectName(draftWorkspaceId)}</em> 中构建什么？</>:'想把什么变成现实？'}</h1><p>理解代码、探索想法，或完成下一次改进。<br/>在独立的工作副本中协作，每一处更改都由你掌控。</p>{!workspaceId&&!drafting&&!sessionId&&<button className="primary welcome-open" onClick={openWorkspace} disabled={busy||!desktop()}><FolderOpen size={15}/>打开工作区</button>}<div className="suggestions">{['梳理项目结构和关键模块','检查代码，找出值得改进的地方','帮我规划并实现一个新功能'].map((s,i)=><button key={s} onClick={()=>setComposerText(s)} disabled={!sessionId&&!drafting}><span>0{i+1}</span>{s}<ArrowUp size={14}/></button>)}</div><div className="welcome-foot"><ShieldCheck size={15}/>工作副本隔离 · 操作可审批 · 更改可预览</div></div>}
-    <div className="messages" onContextMenu={event=>{event.preventDefault();setMsgContextMenu({x:event.clientX,y:event.clientY,text:window.getSelection()?.toString().trim()??''})}}>{timeline?.hasOlder?<div className="timeline-page-control"><button type="button" onClick={()=>void loadOlderTimeline()} disabled={olderTimelineLoading}>{olderTimelineLoading?'正在加载更早消息…':'加载更早消息'}</button></div>:timeline&&timeline.loadedOlder?<div className="timeline-page-control"><small>已到会话开头</small></div>:null}<ConversationEvents events={injectModelNotes(events,modelNotes.filter(n=>n.sessionId===sessionId))} workspaceId={workspaceId} onOpenSession={openSession} activeIds={activeIds} askAnswers={askAnswers}/>{thinkingVisible&&<article className="message assistant thinking-indicator" role="status" aria-label="正在思考"><div className="avatar" aria-hidden="true">R</div><div className="message-body"><div className="message-label">Rust Harness</div><div className="thinking-line"><span>正在思考</span><span className="thinking-dots" aria-hidden="true"><i/><i/><i/></span></div></div></article>}{stream&&<article className="message assistant"><div className="avatar">R</div><div className="message-body"><div className="message-label">Rust Harness <span className="stream-label">正在思考与执行</span></div>{stream.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{stream.reasoning}</pre></details>}<div className="prose"><Markdown content={stream.text||'正在处理…'}/><span className="cursor"/></div></div></article>}<div ref={end}/></div>
+    <div className="messages" onContextMenu={event=>{event.preventDefault();setMsgContextMenu({x:event.clientX,y:event.clientY,text:window.getSelection()?.toString().trim()??''})}}>{timeline?.hasOlder?<div className="timeline-page-control"><button type="button" onClick={()=>void loadOlderTimeline()} disabled={olderTimelineLoading}>{olderTimelineLoading?'正在加载更早消息…':'加载更早消息'}</button></div>:timeline&&timeline.loadedOlder?<div className="timeline-page-control"><small>已到会话开头</small></div>:null}<ConversationEvents events={injectModelNotes(events,modelNotes.filter(n=>n.sessionId===sessionId))} workspaceId={workspaceId} onOpenSession={openSession} activeIds={activeIds} askAnswers={askAnswers}/>{thinkingVisible&&<div className="message assistant thinking-indicator" role="status" aria-label="正在思考"><div className="message-body"><div className="thinking-line"><span>正在思考</span><span className="thinking-dots" aria-hidden="true"><i/><i/><i/></span></div></div></div>}{stream&&<article className="message assistant"><div className="message-body"><div className="stream-tag">正在思考与执行</div>{stream.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{stream.reasoning}</pre></details>}<div className="prose"><Markdown content={stream.text||'正在处理…'}/><span className="cursor"/></div></div></article>}<div ref={end}/></div>
    </section>
    {showJumpBottom&&<button type="button" className="jump-bottom" aria-label="滚动到底部" title="滚动到底部" onClick={jumpToBottom}><ArrowDown size={16}/></button>}
    </div>
@@ -870,11 +870,24 @@ function Markdown({content}:{content:string}){return <SessionMarkdown content={c
 function MessageCopyButton({text}:{text:string}){
  return <button type="button" className="message-copy" aria-label="复制消息" title="复制" onClick={()=>{void navigator.clipboard?.writeText(text)}}><Copy size={13}/></button>;
 }
-function durationLabel(start?:SessionEvent,end?:SessionEvent){
+function durationText(start?:SessionEvent,end?:SessionEvent){
  const startAt=Date.parse(start?.createdAt??''),endAt=Date.parse(end?.createdAt??'');
- if(!Number.isFinite(startAt)||!Number.isFinite(endAt)||endAt<startAt)return '本轮已完成';
+ if(!Number.isFinite(startAt)||!Number.isFinite(endAt)||endAt<startAt)return '';
  const seconds=Math.floor((endAt-startAt)/1000),hours=Math.floor(seconds/3600),minutes=Math.floor(seconds%3600/60),remaining=seconds%60;
- return `本轮已完成，用时${hours?`${hours}小时`:''}${hours||minutes?`${minutes}分`:''}${remaining}秒`;
+ return `${hours?`${hours}小时`:''}${hours||minutes?`${minutes}分`:''}${remaining}秒`;
+}
+// 合并组统计口径：shell 调用计命令数，write/edit 调用计编辑数（按 tool.call 计，孤儿结果不计）。
+function processStats(events:SessionEvent[]){let commands=0,edits=0;for(const event of events){if(event.kind!=='tool.call')continue;const name=String(event.data.name);if(name==='shell')commands++;else if(name==='write'||name==='edit')edits++}return {commands,edits}}
+// 过程合并组：运行中组头统计扫光，完成后统计收起；纯对话回合（无命令无编辑）回退「本轮已完成」文案。
+function ProcessGroup({events,running,durationText:duration,hideCopy,...extras}:{events:SessionEvent[];running:boolean;durationText?:string;hideCopy?:boolean}&EventCardExtras){
+ const {commands,edits}=processStats(events);
+ const stat=[commands?`${commands} 条命令`:'',edits?`${edits} 次编辑`:''].filter(Boolean).join(' · ');
+ const label=running?`正在执行${stat?` · ${stat}`:'…'}`:stat?`已执行 · ${stat}${duration?` · 用时${duration}`:''}`:`本轮已完成${duration?`，用时${duration}`:''}`;
+ // 运行中组始终展开（open 属性随重渲染强制复位，保证进度可见）；完成后不设 open，默认收起且不干扰手动展开。
+ return <details className={`process-group${running?' is-running':''}`} open={running||undefined}>
+  <summary><span className="process-head-icon" aria-hidden="true"><Activity size={15}/></span><span className={`process-stat${running?' is-running':''}`}>{label}</span><ChevronRight size={14} className="chev" aria-hidden="true"/></summary>
+  <div className="process-body"><EventList events={events} hideCopy={hideCopy} {...extras}/></div>
+ </details>;
 }
 type EventCardExtras={workspaceId?:string;onOpenSession?:(id:string)=>void;activeIds?:Set<string>;askAnswers?:Record<string,{answer:string;source:string}>};
 function CompletedTurn({events,...extras}:{events:SessionEvent[]}&EventCardExtras){
@@ -883,17 +896,26 @@ function CompletedTurn({events,...extras}:{events:SessionEvent[]}&EventCardExtra
  const user=events.find(event=>event.kind==='user.message'),final=finalIndex>=0?events[finalIndex]:undefined;
  const start=events.find(event=>event.kind==='turn.start'),end=events.at(-1);
  const copyText=events.filter(event=>event.kind==='assistant.message').map(event=>printable(event.data.content)).join('\n\n');
- return <>{user&&<EventCard event={user} {...extras}/>} {process.length>0&&<details className="turn-details"><summary>{durationLabel(start,end)}<ChevronDown size={14}/></summary><EventList events={process} hideCopy {...extras}/></details>} {final&&<EventCard event={final} copyText={copyText} {...extras}/>}</>;
+ return <>{user&&<EventCard event={user} {...extras}/>} {process.length>0&&<ProcessGroup events={process} running={false} durationText={durationText(start,end)} hideCopy {...extras}/>} {final&&<EventCard event={final} copyText={copyText} {...extras}/>}</>;
+}
+// 运行中（或未闭合）回合：用户消息常驻，其余过程收进合并组。
+function OpenTurnSection({events,...extras}:{events:SessionEvent[]}&EventCardExtras){
+ const user=events.find(event=>event.kind==='user.message');
+ const rest=events.filter(event=>!['turn.start','user.message'].includes(event.kind));
+ return <Fragment>
+  {user&&<EventCard event={user} {...extras}/>}
+  {rest.length>0&&<ProcessGroup events={rest} running hideCopy {...extras}/>}
+ </Fragment>;
 }
 function ConversationEvents({events,...extras}:{events:SessionEvent[]}&EventCardExtras){
  const cards:ReactNode[]=[];let start=-1,loose:SessionEvent[]=[];const flushLoose=()=>{if(!loose.length)return;cards.push(<EventList key={`loose-${loose[0].id}`} events={loose} {...extras}/>);loose=[]};
  for(let index=0;index<events.length;index++){
   const event=events[index];
-  if(event.kind==='turn.start'){flushLoose();if(start>=0)cards.push(<EventList key={`open-${events[start].id}`} events={events.slice(start,index)} {...extras}/>);start=index;continue}
+  if(event.kind==='turn.start'){flushLoose();if(start>=0)cards.push(<OpenTurnSection key={`open-${events[start].id}`} events={events.slice(start,index)} {...extras}/>);start=index;continue}
   if(event.kind==='turn.end'&&start>=0){flushLoose();const turn=events.slice(start,index+1);cards.push(event.data.status==='completed'?<CompletedTurn key={event.id} events={turn} {...extras}/>:<EventList key={event.id} events={turn} {...extras}/>);start=-1;continue}
   if(start<0)loose.push(event);
  }
- flushLoose();if(start>=0)cards.push(<EventList key={`open-${events[start].id}`} events={events.slice(start)} {...extras}/>);
+ flushLoose();if(start>=0)cards.push(<OpenTurnSection key={`open-${events[start].id}`} events={events.slice(start)} {...extras}/>);
  return <>{cards}</>;
 }
 function EventList({events,hideCopy,...extras}:{events:SessionEvent[];hideCopy?:boolean}&EventCardExtras) {
@@ -947,8 +969,16 @@ export function EventCard({event,copyText,hideCopy,...extras}:{event:SessionEven
   return <article className="tool-card todo-card"><div className="subagent-row"><ListTodo size={15}/><strong>待办清单</strong></div><TodoList items={items}/></article>;
  }
  if(kind==='plan.state'||kind==='goal.state')return <article className="tool-card"><div className="subagent-row">{kind==='plan.state'?<ListTodo size={15}/>:<Target size={15}/>}<strong>{kind==='plan.state'?'计划':'目标'}</strong></div><div className="prose"><Markdown content={printable(data.content)}/></div></article>;
- if(kind==='user.message')return <article className="message user"><div className="avatar">你</div><div className="message-body"><div className="message-label">你</div><div className="user-bubble">{Array.isArray(data.quotes)&&data.quotes.map((quote,index)=><blockquote key={index} className="sent-quote" title={String(quote)}><b>引用：</b>{String(quote)}</blockquote>)}<div className="prose"><LinkedText content={printable(data.content)}/></div>{Array.isArray(data.attachments)&&data.attachments.map((a,index)=><ArtifactDownload key={index} sessionId={event.sessionId} artifact={a as ArtifactMetadata}/>)}</div><MessageCopyButton text={printable(data.content)}/></div></article>;
- if(kind==='assistant.message'||kind==='assistant.attempt')return <article className="message assistant"><div className="avatar">R</div><div className="message-body"><div className="message-label">Rust Harness</div>{!!data.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{printable(data.reasoning)}</pre></details>}<div className="prose"><Markdown content={printable(data.content)}/></div>{!!data.error&&<div className="inline-error">{printable(data.error)}</div>}{!hideCopy&&<MessageCopyButton text={copyText??printable(data.content)}/>}</div></article>;
+ if(kind==='user.message')return <article className="message user"><div className="message-body"><div className="user-bubble">{Array.isArray(data.quotes)&&data.quotes.map((quote,index)=><blockquote key={index} className="sent-quote" title={String(quote)}><b>引用：</b>{String(quote)}</blockquote>)}<div className="prose"><LinkedText content={printable(data.content)}/></div>{Array.isArray(data.attachments)&&data.attachments.map((a,index)=><ArtifactDownload key={index} sessionId={event.sessionId} artifact={a as ArtifactMetadata}/>)}</div></div></article>;
+ if(kind==='assistant.message'||kind==='assistant.attempt'){
+  const content=printable(data.content)??'';
+  const hasBody=content.trim().length>0;
+  // 中间消息（hideCopy）：空正文且无思考不渲染；有正文弱化为小字说明，不占完整消息形态。
+  if(hideCopy&&!hasBody&&!data.reasoning)return null;
+  const reasoning=!!data.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{printable(data.reasoning)}</pre></details>;
+  const body=hasBody&&(hideCopy?<div className="proc-note prose"><Markdown content={content}/></div>:<div className="prose"><Markdown content={content}/></div>);
+  return <article className="message assistant"><div className="message-body">{reasoning}{body}{!!data.error&&<div className="inline-error">{printable(data.error)}</div>}{!hideCopy&&<MessageCopyButton text={copyText??content}/>}</div></article>;
+ }
  if(kind==='tool.call'||kind==='tool.result'){
   const args=typeof data.arguments==='object'&&data.arguments!==null?data.arguments as Record<string,unknown>:null;
   const toolName=String(data.name);

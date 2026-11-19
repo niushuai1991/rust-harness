@@ -46,8 +46,8 @@ describe('Shell 命令时间线',()=>{
   ];
   mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,events):original(name,args));
   render(<App/>);await openSidebarSession(/会话 A/);await screen.findByText('已完成检查');
-  const process=screen.getByText('本轮已完成').closest('details')!;
-  expect(process.open).toBe(false);fireEvent.click(screen.getByText('本轮已完成'));
+  const process=screen.getByText('已执行 · 1 条命令').closest('details')!;
+  expect(process.open).toBe(false);fireEvent.click(screen.getByText('已执行 · 1 条命令'));
   const row=screen.getByRole('button',{name:/已执行/});
   expect(row).toHaveAttribute('aria-expanded','false');
   expect(screen.getAllByRole('button',{name:/已执行|正在执行/})).toHaveLength(1);
@@ -71,6 +71,64 @@ describe('用户消息气泡',()=>{
   expect(within(bubble!).getByText('帮我看下状态')).toBeInTheDocument();
   expect(within(bubble!).getByText('旧讨论')).toBeInTheDocument();
   expect(within(bubble!).queryByText('好的')).toBeNull();
+ });
+});
+describe('过程合并组',()=>{
+ const baseEvents=(extra:SessionEvent[]):SessionEvent[]=>[
+  {id:'start',sessionId:'a',seq:'1',kind:'turn.start',data:{},createdAt:'2026-11-19T00:00:00Z'},
+  {id:'user',sessionId:'a',seq:'2',kind:'user.message',data:{content:'跑一下测试'},createdAt:'2026-11-19T00:00:01Z'},
+  ...extra,
+ ];
+ const shellCall={id:'call',sessionId:'a',seq:'3',kind:'tool.call',data:{id:'c1',name:'shell',arguments:{command:'npm test'}},createdAt:'2026-11-19T00:00:10Z'};
+ const shellResult={id:'result',sessionId:'a',seq:'4',kind:'tool.result',data:{callId:'c1',name:'shell',content:JSON.stringify({stdout:'ok',stderr:'',exit_code:0}),status:'completed'},createdAt:'2026-11-19T00:00:40Z'};
+ it('运行中回合过程收进合并组，组头统计带扫光且可折叠',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  const events=baseEvents([shellCall,shellResult,
+   {id:'empty',sessionId:'a',seq:'5',kind:'assistant.message',data:{},createdAt:'2026-11-19T00:00:45Z'},
+   {id:'note',sessionId:'a',seq:'6',kind:'assistant.message',data:{content:'测试通过，继续检查。'},createdAt:'2026-11-19T00:00:50Z'},
+  ]);
+  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,events):original(name,args));
+  render(<App/>);await openSidebarSession(/会话 A/);await screen.findByText('跑一下测试');
+  const head=screen.getByText('正在执行 · 1 条命令');
+  expect(head.closest('.process-group')!.querySelector('.process-stat')).toHaveClass('is-running');
+  expect(screen.queryByText('测试通过，继续检查。')).toBeVisible();
+  expect(screen.queryByText('正在思考与执行')).not.toBeInTheDocument();
+  fireEvent.click(head);
+  expect((head.closest('.process-group') as HTMLDetailsElement)!.open).toBe(false);
+  fireEvent.click(head);
+  expect(screen.getByText('测试通过，继续检查。')).toBeVisible();
+ });
+ it('完成回合组头为统计加用时，纯对话回合回退本轮已完成',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  const withTool=baseEvents([shellCall,shellResult,
+   {id:'final',sessionId:'a',seq:'5',kind:'assistant.message',data:{content:'全部通过'},createdAt:'2026-11-19T00:01:10Z'},
+   {id:'end',sessionId:'a',seq:'6',kind:'turn.end',data:{status:'completed'},createdAt:'2026-11-19T00:01:22Z'},
+  ]);
+  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,withTool):original(name,args));
+  render(<App/>);await openSidebarSession(/会话 A/);await screen.findByText('全部通过');
+  expect(screen.getByText('已执行 · 1 条命令 · 用时1分22秒')).toBeVisible();
+  expect(screen.queryByText('正在执行')).not.toBeInTheDocument();
+  // replaceTimelinePage 会保留 seq 大于 throughSeq 的旧事件：plain 的 seq 须整体高于 withTool 才能整回合替换。
+  const plain=[
+   {id:'p-start',sessionId:'a',seq:'10',kind:'turn.start',data:{},createdAt:'2026-11-19T00:02:00Z'},
+   {id:'p-user',sessionId:'a',seq:'11',kind:'user.message',data:{content:'纯对话'},createdAt:'2026-11-19T00:02:01Z'},
+   {id:'p-mid',sessionId:'a',seq:'12',kind:'assistant.message',data:{content:'思考中'},createdAt:'2026-11-19T00:02:10Z'},
+   {id:'p-final',sessionId:'a',seq:'13',kind:'assistant.message',data:{content:'纯对话总结'},createdAt:'2026-11-19T00:02:20Z'},
+   {id:'p-end',sessionId:'a',seq:'14',kind:'turn.end',data:{status:'completed'},createdAt:'2026-11-19T00:02:40Z'},
+  ];
+  act(()=>useChat.getState().replaceTimelinePage('a',timeline('a',plain)));
+  expect(screen.getByText('本轮已完成，用时40秒')).toBeVisible();
+ });
+ it('用户消息与轮尾总结不显示头像列',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  const events=baseEvents([
+   {id:'final',sessionId:'a',seq:'3',kind:'assistant.message',data:{content:'好的'},createdAt:'2026-11-19T00:00:30Z'},
+   {id:'end',sessionId:'a',seq:'4',kind:'turn.end',data:{status:'completed'},createdAt:'2026-11-19T00:00:40Z'},
+  ]);
+  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,events):original(name,args));
+  render(<App/>);await openSidebarSession(/会话 A/);await screen.findByText('好的');
+  expect(document.querySelector('.avatar')).toBeNull();
+  expect(screen.queryByText('Rust Harness')).not.toBeInTheDocument();
  });
 });
 describe('计划模式 composer 入口',()=>{
@@ -388,9 +446,9 @@ describe('聊天交互',()=>{
   render(<App/>);
   await openSidebarSession(/会话 A/);
   await screen.findByRole('heading',{name:'最终总结',level:2});
-  expect(screen.getByText('本轮已完成，用时3分22秒')).toBeVisible();
+  expect(screen.getByText('已执行 · 1 条命令 · 用时3分22秒')).toBeVisible();
   expect(screen.getByText('正在检查。')).not.toBeVisible();
-  fireEvent.click(screen.getByText('本轮已完成，用时3分22秒'));
+  fireEvent.click(screen.getByText('已执行 · 1 条命令 · 用时3分22秒'));
   expect(screen.getByText('最终总结')).toBeVisible();
   expect(screen.getByText('正在检查。')).toBeVisible();
  });
