@@ -586,9 +586,9 @@ button.run-session:hover{color:var(--text);text-decoration:underline}
 .proc-note>:last-child{margin-bottom:0}
 
 /* 回合导航为消息预留空间，按聊天区宽度渐进调整。 */
-.chat-body{container-type:inline-size;--turn-nav-width:clamp(24px,calc((100cqw - 450px)*.24),124px)}
-.chat-body.has-turn-nav .conversation{margin-left:calc(var(--turn-nav-width) + 24px)}
-.turn-nav{position:absolute;left:12px;top:50%;transform:translateY(-50%);width:var(--turn-nav-width);max-height:calc(100% - 6rem);z-index:10}
+.chat-body{container-type:inline-size;--turn-nav-width:clamp(24px,calc((100cqw - 450px)*.16),64px)}
+.chat-body.has-turn-nav .conversation{margin-left:calc(var(--turn-nav-width) + 12px)}
+.turn-nav{position:absolute;left:8px;top:50%;transform:translateY(-50%);width:var(--turn-nav-width);max-height:calc(100% - 6rem);z-index:10}
 .turn-nav-list{overflow-y:auto;overflow-x:hidden;max-height:calc(100vh - 180px);scrollbar-width:none}.turn-nav-list::-webkit-scrollbar{display:none}
 .turn-nav-item,.turn-nav-more{display:block;width:100%;height:27px;text-align:left;white-space:nowrap;overflow:hidden;border:0;background:transparent;padding:4px 2px;color:var(--muted);font-size:11px;transform-origin:left center;transition:transform .15s,color .15s}
 .turn-nav-item span{display:block;overflow:hidden;white-space:nowrap}.turn-nav-item[aria-current]{color:var(--text)}.turn-nav-item:hover,.turn-nav-item:focus-visible{background:transparent;color:var(--text);transform:translateX(2px) scale(1.12)}
