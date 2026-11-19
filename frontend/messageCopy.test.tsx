@@ -42,7 +42,7 @@ describe('消息复制按钮',()=>{
   const body=button.closest('.message-body')!;
   expect(body.lastElementChild).toBe(button);
  });
- it('用户消息复制按钮同样位于消息体末尾并复制原文',async()=>{
+ it('用户消息不渲染复制按钮，复制入口仅轮尾总结一处',async()=>{
   const copy=installClipboard();
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,[
@@ -53,11 +53,8 @@ describe('消息复制按钮',()=>{
   fireEvent.click(await screen.findByRole('button',{name:/会话 A/}));
   await screen.findByText('用户的问题');
   const buttons=screen.getAllByRole('button',{name:'复制消息'});
-  expect(buttons).toHaveLength(2);
-  for(const button of buttons)expect(button.closest('.message-body')!.lastElementChild).toBe(button);
+  expect(buttons).toHaveLength(1);
   fireEvent.click(buttons[0]);
-  await waitFor(()=>expect(copy).toHaveBeenCalledWith('用户的问题'));
-  fireEvent.click(buttons[1]);
   await waitFor(()=>expect(copy).toHaveBeenCalledWith('回复内容'));
  });
 });
@@ -83,8 +80,7 @@ describe('完整回合复制',()=>{
   fireEvent.click(summary);expect(details.open).toBe(true);
   expect(within(details).queryByRole('button',{name:'复制消息'})).not.toBeInTheDocument();
   const userCard=screen.getByText('用户提问').closest('article')!;
-  fireEvent.click(within(userCard).getByRole('button',{name:'复制消息'}));
-  expect(copy).toHaveBeenLastCalledWith('用户提问');
+  expect(within(userCard).queryByRole('button',{name:'复制消息'})).not.toBeInTheDocument();
   const finalCard=screen.getByText('最终总结').closest('article')!;
   fireEvent.click(within(finalCard).getByRole('button',{name:'复制消息'}));
   expect(copy).toHaveBeenLastCalledWith('中间说明\n\n最终总结');
@@ -101,13 +97,13 @@ describe('完整回合复制',()=>{
   act(()=>useChat.getState().replaceTimelinePage('a',timeline('a',[start(),user(),tool(),end()])));
   expect(screen.queryByText('最终总结')).not.toBeInTheDocument();
   fireEvent.click(screen.getByText('本轮已完成'));
-  expect(screen.getAllByRole('button',{name:'复制消息'})).toHaveLength(1);
+  expect(screen.queryByRole('button',{name:'复制消息'})).not.toBeInTheDocument();
  });
  it.each(['error','cancelled'])('异常终态 %s 保持平铺与逐条复制',async(status)=>{
   await openEvents([start(),user(),middle(),attempt(),final(),end(status)]);
   expect(await screen.findByText('中间说明')).toBeVisible();
   expect(screen.queryByText('本轮已完成')).not.toBeInTheDocument();
-  expect(screen.getAllByRole('button',{name:'复制消息'})).toHaveLength(4);
+  expect(screen.getAllByRole('button',{name:'复制消息'})).toHaveLength(3);
  });
  it('运行中平铺，收到完成事件后折叠并复制整轮',async()=>{
   const copy=installClipboard();await openEvents([start(),user(),middle(),final()]);
