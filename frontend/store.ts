@@ -1,9 +1,9 @@
 import {create} from 'zustand';
-import type {SessionEvent,LiveEvent,TimelinePage} from './types';
+import type {SessionEvent,LiveEvent,TimelinePage,TimelineTurn} from './types';
 
 const MAX_TIMELINE_SESSIONS=3,MAX_EVENTS_PER_PAGE=200;
 export interface Stream {requestId:string;text:string;reasoning:string;seen:string[]}
-export interface TimelineState {olderCursor:string|null;hasOlder:boolean;throughSeq:string;pagesLoaded:number;loadedOlder:boolean;pages:SessionEvent[][]}
+export interface TimelineState {olderCursor:string|null;hasOlder:boolean;throughSeq:string;pagesLoaded:number;loadedOlder:boolean;pages:SessionEvent[][];turns:TimelineTurn[]}
 interface State {
  events:Record<string,SessionEvent[]>;timelines:Record<string,TimelineState>;timelineLru:string[];streams:Record<string,Stream>;statuses:Record<string,string>;
  replace:(id:string,events:SessionEvent[])=>void;replaceTimelinePage:(id:string,page:TimelinePage)=>void;prependTimelinePage:(id:string,page:TimelinePage)=>void;activateTimeline:(id:string)=>void;timeline:(id:string)=>TimelineState|undefined;
@@ -19,7 +19,7 @@ export const useChat=create<State>((set,get)=>({events:{},timelines:{},timelineL
  prependTimelinePage:(id,page)=>set(state=>{
   const current=state.timelines[id];if(!current)return state;
   const pages=[page.events,...current.pages];
-  return storeTimeline(state,id,{...current,pages,olderCursor:page.olderCursor,hasOlder:page.hasOlder,pagesLoaded:pages.length,loadedOlder:true});
+  return storeTimeline(state,id,{...current,pages,turns:[...new Map([...(page.turns??[]),...current.turns].map(turn=>[turn.startSeq,turn])).values()],olderCursor:page.olderCursor,hasOlder:page.hasOlder,pagesLoaded:pages.length,loadedOlder:true});
  }),
  activateTimeline:(id)=>set(state=>storeTimeline(state,id,state.timelines[id]??emptyTimeline())),
  timeline:(id)=>get().timelines[id],
@@ -42,9 +42,9 @@ export const useChat=create<State>((set,get)=>({events:{},timelines:{},timelineL
 
 function timelineFromPage(page:TimelinePage,newer:SessionEvent[]=[]):TimelineState {
  const all=mergeEvents(page.events,newer),pages=chunkEvents(all);
- return {olderCursor:page.olderCursor,hasOlder:page.hasOlder,throughSeq:all.reduce((seq,event)=>maxSeq(seq,event.seq),page.throughSeq),pagesLoaded:pages.length,loadedOlder:false,pages}
+ return {olderCursor:page.olderCursor,hasOlder:page.hasOlder,throughSeq:all.reduce((seq,event)=>maxSeq(seq,event.seq),page.throughSeq),pagesLoaded:pages.length,loadedOlder:false,pages,turns:page.turns??[]}
 }
-function emptyTimeline():TimelineState {return {olderCursor:null,hasOlder:false,throughSeq:'0',pagesLoaded:0,loadedOlder:false,pages:[]}}
+function emptyTimeline():TimelineState {return {olderCursor:null,hasOlder:false,throughSeq:'0',pagesLoaded:0,loadedOlder:false,pages:[],turns:[]}}
 function storeTimeline(state:State,id:string,timeline:TimelineState){
  const lru=[id,...state.timelineLru.filter(item=>item!==id)],events={...state.events,[id]:flattenPages(timeline.pages)},timelines={...state.timelines,[id]:timeline};
  for(const evicted of lru.slice(MAX_TIMELINE_SESSIONS)){delete events[evicted];delete timelines[evicted]}

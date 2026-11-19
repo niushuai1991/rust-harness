@@ -1,6 +1,6 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {act,cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
-import App from './App';
+import App, {ConversationEvents} from './App';
 import {useChat} from './store';
 import {useSidePanel} from './sidePanelStore';
 import type {SessionEvent} from './types';
@@ -16,7 +16,7 @@ beforeEach(()=>{useChat.setState({events:{},streams:{},statuses:{},timelines:{},
   if(name==='provider_list')return [{id:'custom',name:'自定义供应商',builtin:false,compatibility:'standard',endpoints:[{apiMode:'chatCompletions',baseUrl:'https://example.test'}],defaultModel:'m',credentialRef:'',proxy:null,enabled:true,builtinModels:[],disabledModels:[]}];
   if(name==='default_selection_get')return null;
   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A'}];
-  if(name==='session_timeline_page')return timeline(args.sessionId,[event(`e-${args.sessionId}`,args.sessionId,'1','回复内容')]);
+  if(name==='session_timeline_page')return timeline(args.sessionId,[{id:'s',sessionId:args.sessionId,seq:'1',kind:'turn.start',data:{},createdAt:''},event(`e-${args.sessionId}`,args.sessionId,'2','回复内容'),{id:'end',sessionId:args.sessionId,seq:'3',kind:'turn.end',data:{status:'completed'},createdAt:''}]);
   if(name==='approval_list'||name==='question_list')return [];
   if(name==='approval_mode_get')return 'ask';
   if(name==='session_plan_get')return false;
@@ -46,8 +46,10 @@ describe('消息复制按钮',()=>{
   const copy=installClipboard();
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,[
+   {id:'s',sessionId:'a',seq:'0',kind:'turn.start',data:{},createdAt:''},
    {id:'u',sessionId:'a',seq:'1',kind:'user.message',data:{content:'用户的问题'},createdAt:''},
    event(`e-${args.sessionId}`,args.sessionId,'2','回复内容'),
+   {id:'end',sessionId:'a',seq:'3',kind:'turn.end',data:{status:'completed'},createdAt:''},
   ]):original(name,args));
   render(<App/>);
   fireEvent.click(await screen.findByRole('button',{name:/会话 A/}));
@@ -99,11 +101,11 @@ describe('完整回合复制',()=>{
   fireEvent.click(screen.getByText('本轮已完成'));
   expect(screen.queryByRole('button',{name:'复制消息'})).not.toBeInTheDocument();
  });
- it.each(['error','cancelled'])('异常终态 %s 保持平铺与逐条复制',async(status)=>{
+ it.each(['error','cancelled'])('异常终态 %s 保持平铺但不显示复制按钮',async(status)=>{
   await openEvents([start(),user(),middle(),attempt(),final(),end(status)]);
   expect(await screen.findByText('中间说明')).toBeVisible();
   expect(screen.queryByText('本轮已完成')).not.toBeInTheDocument();
-  expect(screen.getAllByRole('button',{name:'复制消息'})).toHaveLength(3);
+  expect(screen.queryByRole('button',{name:'复制消息'})).not.toBeInTheDocument();
  });
  it('运行中平铺，收到完成事件后折叠并复制整轮',async()=>{
   const copy=installClipboard();await openEvents([start(),user(),middle(),final()]);
@@ -122,4 +124,95 @@ describe('完整回合复制',()=>{
   fireEvent.click(within(screen.getByText('最终总结').closest('article')!).getByRole('button',{name:'复制消息'}));
   expect(copy).toHaveBeenCalledWith('中间说明\n\n最终总结');
  });
+});
+
+it('跨页完成回合仅总结可复制并读取完整正文',async()=>{
+ const copy=installClipboard();
+ const original=mocks.command.getMockImplementation()!;
+ mocks.command.mockImplementation(async(name,args)=>{
+  if(name==='session_timeline_page')return {...timeline(args.sessionId,[middle(),final(),end()]),hasOlder:true,olderCursor:'3',turns:[{startSeq:'1',endSeq:'7',status:'completed',finalMessageId:'final'}]};
+  if(name==='session_turn_assistant_content')return ['更早说明','中间说明','最终总结'];
+  return original(name,args);
+ });
+ render(<App/>);fireEvent.click(await screen.findByRole('button',{name:/会话 A/}));
+ const summary=await screen.findByText('最终总结');
+ expect(screen.getAllByRole('button',{name:'复制消息'})).toHaveLength(1);
+ fireEvent.click(within(summary.closest('article')!).getByRole('button',{name:'复制消息'}));
+ await waitFor(()=>expect(copy).toHaveBeenCalledWith('更早说明\n\n中间说明\n\n最终总结'));
+});
+
+it('异常回合及无法确认归属的散消息不显示复制按钮',async()=>{
+ await openEvents([start(),user(),middle(),final(),end('error')]);
+ expect(await screen.findByText('最终总结')).toBeVisible();
+ expect(screen.queryByRole('button',{name:'复制消息'})).not.toBeInTheDocument();
+ act(()=>useChat.getState().replaceTimelinePage('a',timeline('a',[middle(),final()])));
+ expect(screen.queryByRole('button',{name:'复制消息'})).not.toBeInTheDocument();
+});
+
+it('跨页运行回合收到完成事件后显示总结复制入口',async()=>{
+ const original=mocks.command.getMockImplementation()!;
+ mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?{...timeline(args.sessionId,[middle(),final()]),hasOlder:true,olderCursor:'3',turns:[{startSeq:'1',endSeq:null,status:null,finalMessageId:null}]}:original(name,args));
+ render(<App/>);fireEvent.click(await screen.findByRole('button',{name:/会话 A/}));
+ await screen.findByText('最终总结');expect(screen.queryByRole('button',{name:'复制消息'})).not.toBeInTheDocument();
+ act(()=>useChat.getState().receive({type:'durable',event:end()}));
+ expect(screen.getAllByRole('button',{name:'复制消息'})).toHaveLength(1);
+});
+
+it('跨页复制读取失败时提示并允许重试',async()=>{
+ const copy=installClipboard();let attempts=0;
+ const original=mocks.command.getMockImplementation()!;
+ mocks.command.mockImplementation(async(name,args)=>{
+  if(name==='session_timeline_page')return {...timeline(args.sessionId,[middle(),final(),end()]),hasOlder:true,olderCursor:'3',turns:[{startSeq:'1',endSeq:'7',status:'completed',finalMessageId:'final'}]};
+  if(name==='session_turn_assistant_content'){if(++attempts===1)throw new Error('read');return ['正文'];}
+  return original(name,args);
+ });
+ render(<App/>);fireEvent.click(await screen.findByRole('button',{name:/会话 A/}));
+ const button=await screen.findByRole('button',{name:'复制消息'});fireEvent.click(button);
+ expect(await screen.findByRole('alert')).toHaveTextContent('复制失败');expect(copy).not.toHaveBeenCalled();
+ fireEvent.click(button);await waitFor(()=>expect(copy).toHaveBeenCalledWith('正文'));expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+});
+
+it('跨页过程提示更早步骤尚未加载',async()=>{
+ const original=mocks.command.getMockImplementation()!;
+ mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?{...timeline(args.sessionId,[middle(),final(),end()]),hasOlder:true,olderCursor:'3',turns:[{startSeq:'1',endSeq:'7',status:'completed',finalMessageId:'final'}]}:original(name,args));
+ render(<App/>);fireEvent.click(await screen.findByRole('button',{name:/会话 A/}));
+ expect(await screen.findByText('更早步骤尚未加载')).toBeInTheDocument();
+});
+
+it('空的轮尾助手消息不显示复制按钮',async()=>{
+ await openEvents([start(),user(),middle(),turnEvent('empty','6','assistant.message',{content:''}),end()]);
+ await screen.findByText('本轮已完成');
+ expect(screen.queryByRole('button',{name:'复制消息'})).not.toBeInTheDocument();
+});
+
+it('模型切换提示不会遮蔽跨页回合起点',()=>{
+ const note=turnEvent('note','0','ui.model_note',{text:'切换模型'});
+ render(<ConversationEvents turns={[{startSeq:'1',endSeq:'7',status:'completed',finalMessageId:'final'}]} events={[note,middle(),final(),end()]}/>);
+ expect(screen.getAllByRole('button',{name:'复制消息'})).toHaveLength(1);
+ expect(screen.getByText('最终总结')).toBeVisible();
+});
+
+
+it('历史空正文不显示 null，也不生成总结复制按钮',()=>{
+ const empty=turnEvent('empty','6','assistant.message',{content:null,reasoning:'thought'});
+ render(<ConversationEvents turns={[]} events={[start(),user(),empty,end()]}/>);
+ expect(screen.queryByText('null')).not.toBeInTheDocument();
+ expect(screen.queryByRole('button',{name:'复制消息'})).not.toBeInTheDocument();
+});
+it('跨页复制将历史空正文视为空文本',async()=>{
+ const copy=installClipboard();const original=mocks.command.getMockImplementation()!;
+ mocks.command.mockImplementation(async(name,args)=>name==='session_turn_assistant_content'?[null,'最终总结']:original(name,args));
+ render(<ConversationEvents turns={[{startSeq:'1',endSeq:'7',status:'completed',finalMessageId:'final'}]} events={[middle(),final(),end()]}/>);
+ fireEvent.click(screen.getByRole('button',{name:'复制消息'}));
+ await waitFor(()=>expect(copy).toHaveBeenCalledWith('\n\n最终总结'));
+});
+
+it('切换会话后尚未完成的复制不会写入剪贴板',async()=>{
+ const copy=installClipboard();let finish!:(value:string[])=>void;
+ const original=mocks.command.getMockImplementation()!;
+ mocks.command.mockImplementation(async(name,args)=>name==='session_turn_assistant_content'?new Promise<string[]>(resolve=>{finish=resolve}):original(name,args));
+ const view=render(<ConversationEvents turns={[{startSeq:'1',endSeq:'7',status:'completed',finalMessageId:'final'}]} events={[middle(),final(),end()]}/>);
+ fireEvent.click(screen.getByRole('button',{name:'复制消息'}));view.unmount();
+ await act(async()=>{finish(['完成']);await Promise.resolve()});
+ expect(copy).not.toHaveBeenCalled();
 });

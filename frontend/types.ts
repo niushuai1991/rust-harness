@@ -12,7 +12,8 @@ export interface WorkspaceRevealSummary {workspaceId:string;revealed:number}
 export interface WorkspaceMergeSummary {fromWorkspaceId:string;toWorkspaceId:string;movedSessions:number;movedAutomations:number;movedSchedules:number;leftoverWorktrees:string[]}
 export interface SessionInfo {id:string;workspaceId:string;title:string;createdAt:string;updatedAt:string;parentId?:string|null;archivedAt?:string|null;executionMode?:ExecutionMode|null}
 export interface SessionEvent {id:string;sessionId:string;seq:string;kind:string;data:Record<string,unknown>;createdAt:string}
-export interface TimelinePage {sessionId:string;events:SessionEvent[];olderCursor:string|null;throughSeq:string;hasOlder:boolean}
+export interface TimelineTurn {startSeq:string;endSeq:string|null;status:string|null;finalMessageId:string|null}
+export interface TimelinePage {sessionId:string;events:SessionEvent[];olderCursor:string|null;throughSeq:string;hasOlder:boolean;turns?:TimelineTurn[]}
 export type LiveEvent = {type:'durable';event:SessionEvent}|{type:'delta';sessionId:string;requestId:string;index:number;text:string;reasoning:boolean}|{type:'status';sessionId:string;status:string};
 export type ApiMode='chatCompletions'|'responses'|'anthropic';
 export type ProviderCompatibility='standard'|'deepSeek'|'bigModel';

@@ -29,7 +29,7 @@ import {SettingsPage,type SettingsCategoryId} from './SettingsPage';
 import {AutomationsPanel} from './AutomationsPanel';
 import {SidePanel} from './SidePanel';
 import {useSidePanel} from './sidePanelStore';
-import type {WorkspaceInfo,SessionInfo,SessionEvent,TimelinePage,ModelConfig,ProviderInfo,DefaultSelection,ApprovalRequest,ApprovalPolicy,AskRequest,AskAnswer,PluginInfo,ArtifactMetadata,PresetInfo,SkillInfo,WorkspaceRemovalSummary,WorkspaceRevealSummary,WorkspaceMergeSummary,LiveEvent,ExecutionMode} from './types';
+import type {WorkspaceInfo,SessionInfo,SessionEvent,TimelinePage,TimelineTurn,ModelConfig,ProviderInfo,DefaultSelection,ApprovalRequest,ApprovalPolicy,AskRequest,AskAnswer,PluginInfo,ArtifactMetadata,PresetInfo,SkillInfo,WorkspaceRemovalSummary,WorkspaceRevealSummary,WorkspaceMergeSummary,LiveEvent,ExecutionMode} from './types';
 
 type Panel='presets'|'skills'|'plugins'|'tasks'|'automations'|null;
 type SessionContextMenu={sessionId:string;x:number;y:number};
@@ -800,7 +800,7 @@ const lastRunWorkspaceId=useRef<string|null>(null); // workspace effect 实际�
    <div className="chat-body">
    <section ref={conversationRef} className="conversation" aria-label="聊天消息" onScroll={event=>{const node=event.currentTarget;const atBottom=node.scrollHeight-node.scrollTop-node.clientHeight<80;autoFollow.current=atBottom;setShowJumpBottom(!atBottom);if(node.scrollTop<=8)void loadOlderTimeline()}}>
     {!timelineLoading&&!events.length&&!stream&&<div className="welcome"><span className="welcome-icon"><Terminal size={35}/></span><div className="eyebrow">BUILD WITH CONFIDENCE</div><h1>{drafting&&draftWorkspaceId!==null?<>你想在 <em className="pj-name">{projectName(draftWorkspaceId)}</em> 中构建什么？</>:'想把什么变成现实？'}</h1><p>理解代码、探索想法，或完成下一次改进。<br/>在独立的工作副本中协作，每一处更改都由你掌控。</p>{!workspaceId&&!drafting&&!sessionId&&<button className="primary welcome-open" onClick={openWorkspace} disabled={busy||!desktop()}><FolderOpen size={15}/>打开工作区</button>}<div className="suggestions">{['梳理项目结构和关键模块','检查代码，找出值得改进的地方','帮我规划并实现一个新功能'].map((s,i)=><button key={s} onClick={()=>setComposerText(s)} disabled={!sessionId&&!drafting}><span>0{i+1}</span>{s}<ArrowUp size={14}/></button>)}</div><div className="welcome-foot"><ShieldCheck size={15}/>工作副本隔离 · 操作可审批 · 更改可预览</div></div>}
-    <div className="messages" onContextMenu={event=>{event.preventDefault();setMsgContextMenu({x:event.clientX,y:event.clientY,text:window.getSelection()?.toString().trim()??''})}}>{timeline?.hasOlder?<div className="timeline-page-control"><button type="button" onClick={()=>void loadOlderTimeline()} disabled={olderTimelineLoading}>{olderTimelineLoading?'正在加载更早消息…':'加载更早消息'}</button></div>:timeline&&timeline.loadedOlder?<div className="timeline-page-control"><small>已到会话开头</small></div>:null}<ConversationEvents events={injectModelNotes(events,modelNotes.filter(n=>n.sessionId===sessionId))} workspaceId={workspaceId} onOpenSession={openSession} activeIds={activeIds} askAnswers={askAnswers}/>{thinkingVisible&&<div className="message assistant thinking-indicator" role="status" aria-label="正在思考"><div className="message-body"><div className="thinking-line"><span>正在思考</span><span className="thinking-dots" aria-hidden="true"><i/><i/><i/></span></div></div></div>}{stream&&<article className="message assistant"><div className="message-body"><div className="stream-tag">正在思考与执行</div>{stream.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{stream.reasoning}</pre></details>}<div className="prose"><Markdown content={stream.text||'正在处理…'}/><span className="cursor"/></div></div></article>}<div ref={end}/></div>
+    <div className="messages" onContextMenu={event=>{event.preventDefault();setMsgContextMenu({x:event.clientX,y:event.clientY,text:window.getSelection()?.toString().trim()??''})}}>{timeline?.hasOlder?<div className="timeline-page-control"><button type="button" onClick={()=>void loadOlderTimeline()} disabled={olderTimelineLoading}>{olderTimelineLoading?'正在加载更早消息…':'加载更早消息'}</button></div>:timeline&&timeline.loadedOlder?<div className="timeline-page-control"><small>已到会话开头</small></div>:null}<ConversationEvents turns={timeline?.turns??[]} events={injectModelNotes(events,modelNotes.filter(n=>n.sessionId===sessionId))} workspaceId={workspaceId} onOpenSession={openSession} activeIds={activeIds} askAnswers={askAnswers}/>{thinkingVisible&&<div className="message assistant thinking-indicator" role="status" aria-label="正在思考"><div className="message-body"><div className="thinking-line"><span>正在思考</span><span className="thinking-dots" aria-hidden="true"><i/><i/><i/></span></div></div></div>}{stream&&<article className="message assistant"><div className="message-body"><div className="stream-tag">正在思考与执行</div>{stream.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{stream.reasoning}</pre></details>}<div className="prose"><Markdown content={stream.text||'正在处理…'}/><span className="cursor"/></div></div></article>}<div ref={end}/></div>
    </section>
    {showJumpBottom&&<button type="button" className="jump-bottom" aria-label="滚动到底部" title="滚动到底部" onClick={jumpToBottom}><ArrowDown size={16}/></button>}
    </div>
@@ -866,9 +866,12 @@ function injectModelNotes(events:SessionEvent[],notes:ModelNote[]):SessionEvent[
  return out;
 }
 function Markdown({content}:{content:string}){return <SessionMarkdown content={content}/>}
-// 消息复制按钮：常显于消息内容左下方，点击复制原始 markdown 文本；无成功提示，失败静默。
-function MessageCopyButton({text}:{text:string}){
- return <button type="button" className="message-copy" aria-label="复制消息" title="复制" onClick={()=>{void navigator.clipboard?.writeText(text)}}><Copy size={13}/></button>;
+// 总结复制按钮按需读取完整回合正文；失败时允许重试。
+function MessageCopyButton({text,turn}:{text:string;turn?:{sessionId:string;startSeq:string;endSeq:string}}){
+ const [failure,setFailure]=useState(''),[busy,setBusy]=useState(false);
+ const mounted=useRef(true);useEffect(()=>{mounted.current=true;return()=>{mounted.current=false}},[]);
+ async function copy(){if(busy)return;setBusy(true);setFailure('');try{const parts=turn?await command<unknown[]>('session_turn_assistant_content',turn):null;if(!mounted.current)return;const value=parts?parts.map(part=>part==null?'':printable(part)??'').join('\n\n'):text;if(!navigator.clipboard)throw new Error('clipboard');await navigator.clipboard.writeText(value)}catch(error){if(mounted.current){const message=errorText(error);setFailure(message.includes('上限 8 MiB')?message:'复制失败，请重试')}}finally{if(mounted.current)setBusy(false)}}
+ return <><button type="button" className="message-copy" aria-label="复制消息" title="复制" disabled={busy} onClick={()=>void copy()}><Copy size={13}/></button>{failure&&<span role="alert" className="inline-error">{failure}</span>}</>;
 }
 function durationText(start?:SessionEvent,end?:SessionEvent){
  const startAt=Date.parse(start?.createdAt??''),endAt=Date.parse(end?.createdAt??'');
@@ -890,13 +893,13 @@ function ProcessGroup({events,running,durationText:duration,hideCopy,...extras}:
  </details>;
 }
 type EventCardExtras={workspaceId?:string;onOpenSession?:(id:string)=>void;activeIds?:Set<string>;askAnswers?:Record<string,{answer:string;source:string}>};
-function CompletedTurn({events,...extras}:{events:SessionEvent[]}&EventCardExtras){
- const finalIndex=events.map(e=>e.kind).lastIndexOf('assistant.message');
+function CompletedTurn({events,turn,...extras}:{events:SessionEvent[];turn?:TimelineTurn}&EventCardExtras){
+ const finalIndex=turn?events.findIndex(e=>e.id===turn.finalMessageId):events.map(e=>e.kind).lastIndexOf('assistant.message');
  const process=events.filter((event,index)=>index!==finalIndex&&!['turn.start','turn.end','user.message'].includes(event.kind));
  const user=events.find(event=>event.kind==='user.message'),final=finalIndex>=0?events[finalIndex]:undefined;
  const start=events.find(event=>event.kind==='turn.start'),end=events.at(-1);
- const copyText=events.filter(event=>event.kind==='assistant.message').map(event=>printable(event.data.content)).join('\n\n');
- return <>{user&&<EventCard event={user} {...extras}/>} {process.length>0&&<ProcessGroup events={process} running={false} durationText={durationText(start,end)} hideCopy {...extras}/>} {final&&<EventCard event={final} copyText={copyText} {...extras}/>}</>;
+ const copyText=events.filter(event=>event.kind==='assistant.message').map(event=>event.data.content==null?'':printable(event.data.content)).join('\n\n');
+ return <>{user&&<EventCard event={user} {...extras}/>} {start?.id.startsWith('synthetic-start-')&&<small className="muted">更早步骤尚未加载</small>} {process.length>0&&<ProcessGroup events={process} running={false} durationText={durationText(start,end)} hideCopy {...extras}/>} {final&&<EventCard event={final} copyEnabled copyText={copyText} copyTurn={turn?.endSeq?{sessionId:final.sessionId,startSeq:turn.startSeq,endSeq:turn.endSeq}:undefined} {...extras}/>}</>;
 }
 // 运行中（或未闭合）回合：用户消息常驻，其余过程收进合并组。
 function OpenTurnSection({events,...extras}:{events:SessionEvent[]}&EventCardExtras){
@@ -904,15 +907,27 @@ function OpenTurnSection({events,...extras}:{events:SessionEvent[]}&EventCardExt
  const rest=events.filter(event=>!['turn.start','user.message'].includes(event.kind));
  return <Fragment>
   {user&&<EventCard event={user} {...extras}/>}
+  {events[0]?.id.startsWith('synthetic-start-')&&<small className="muted">更早步骤尚未加载</small>}
   {rest.length>0&&<ProcessGroup events={rest} running hideCopy {...extras}/>}
  </Fragment>;
 }
-function ConversationEvents({events,...extras}:{events:SessionEvent[]}&EventCardExtras){
+export function ConversationEvents({events,turns,...extras}:{events:SessionEvent[];turns:TimelineTurn[]}&EventCardExtras){
+ const durable=events.filter(event=>event.kind!=='ui.model_note');
+ if(durable.length&&turns.length){
+  const first=BigInt(durable[0].seq),last=BigInt(durable[durable.length-1].seq),existing=new Set(durable.map(event=>event.seq));
+  const synthetic:SessionEvent[]=[];
+  for(const turn of turns){
+   const start=BigInt(turn.startSeq),end=turn.endSeq?BigInt(turn.endSeq):null;
+   if(start<first&&(end===null||end>=first))synthetic.push({id:`synthetic-start-${turn.startSeq}`,sessionId:events[0].sessionId,seq:turn.startSeq,kind:'turn.start',data:{},createdAt:''});
+   if(end!==null&&end>last&&start<=last&&!existing.has(turn.endSeq!))synthetic.push({id:`synthetic-end-${turn.endSeq}`,sessionId:events[0].sessionId,seq:turn.endSeq!,kind:'turn.end',data:{status:turn.status},createdAt:''});
+  }
+  events=[...events,...synthetic].sort((a,b)=>BigInt(a.seq)<BigInt(b.seq)?-1:BigInt(a.seq)>BigInt(b.seq)?1:0);
+ }
  const cards:ReactNode[]=[];let start=-1,loose:SessionEvent[]=[];const flushLoose=()=>{if(!loose.length)return;cards.push(<EventList key={`loose-${loose[0].id}`} events={loose} {...extras}/>);loose=[]};
  for(let index=0;index<events.length;index++){
   const event=events[index];
   if(event.kind==='turn.start'){flushLoose();if(start>=0)cards.push(<OpenTurnSection key={`open-${events[start].id}`} events={events.slice(start,index)} {...extras}/>);start=index;continue}
-  if(event.kind==='turn.end'&&start>=0){flushLoose();const turn=events.slice(start,index+1);cards.push(event.data.status==='completed'?<CompletedTurn key={event.id} events={turn} {...extras}/>:<EventList key={event.id} events={turn} {...extras}/>);start=-1;continue}
+  if(event.kind==='turn.end'&&start>=0){flushLoose();const turn=events.slice(start,index+1);let meta=turns.find(item=>item.startSeq===turn[0].seq);if(meta&&!meta.endSeq)meta={...meta,endSeq:event.seq,status:String(event.data.status),finalMessageId:turn.filter(e=>e.kind==='assistant.message').at(-1)?.id??null};cards.push(event.data.status==='completed'?<CompletedTurn key={event.id} events={turn} turn={meta} {...extras}/>:<EventList key={event.id} events={turn} {...extras}/>);start=-1;continue}
   if(start<0)loose.push(event);
  }
  flushLoose();if(start>=0)cards.push(<OpenTurnSection key={`open-${events[start].id}`} events={events.slice(start)} {...extras}/>);
@@ -956,7 +971,7 @@ function FileEditGroup({group}:{group:FileEditGroup}) {
   </div>
  </details>;
 }
-export function EventCard({event,copyText,hideCopy,...extras}:{event:SessionEvent;copyText?:string;hideCopy?:boolean}&EventCardExtras) {
+export function EventCard({event,copyText,copyTurn,copyEnabled,hideCopy,...extras}:{event:SessionEvent;copyText?:string;copyTurn?:{sessionId:string;startSeq:string;endSeq:string};copyEnabled?:boolean;hideCopy?:boolean}&EventCardExtras) {
  const {kind,data}=event;
  if(kind==='ui.model_note')return <div className="model-note" role="status">{printable(data.text)}</div>;
  if(kind==='subagent.created'||kind==='subagent.message_sent'){
@@ -971,13 +986,13 @@ export function EventCard({event,copyText,hideCopy,...extras}:{event:SessionEven
  if(kind==='plan.state'||kind==='goal.state')return <article className="tool-card"><div className="subagent-row">{kind==='plan.state'?<ListTodo size={15}/>:<Target size={15}/>}<strong>{kind==='plan.state'?'计划':'目标'}</strong></div><div className="prose"><Markdown content={printable(data.content)}/></div></article>;
  if(kind==='user.message')return <article className="message user"><div className="message-body"><div className="user-bubble">{Array.isArray(data.quotes)&&data.quotes.map((quote,index)=><blockquote key={index} className="sent-quote" title={String(quote)}><b>引用：</b>{String(quote)}</blockquote>)}<div className="prose"><LinkedText content={printable(data.content)}/></div>{Array.isArray(data.attachments)&&data.attachments.map((a,index)=><ArtifactDownload key={index} sessionId={event.sessionId} artifact={a as ArtifactMetadata}/>)}</div></div></article>;
  if(kind==='assistant.message'||kind==='assistant.attempt'){
-  const content=printable(data.content)??'';
+  const content=data.content==null?'':printable(data.content)??'';
   const hasBody=content.trim().length>0;
   // 中间消息（hideCopy）：空正文且无思考不渲染；有正文弱化为小字说明，不占完整消息形态。
   if(hideCopy&&!hasBody&&!data.reasoning)return null;
   const reasoning=!!data.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{printable(data.reasoning)}</pre></details>;
   const body=hasBody&&(hideCopy?<div className="proc-note prose"><Markdown content={content}/></div>:<div className="prose"><Markdown content={content}/></div>);
-  return <article className="message assistant"><div className="message-body">{reasoning}{body}{!!data.error&&<div className="inline-error">{printable(data.error)}</div>}{!hideCopy&&<MessageCopyButton text={copyText??content}/>}</div></article>;
+  return <article className="message assistant"><div className="message-body">{reasoning}{body}{!!data.error&&<div className="inline-error">{printable(data.error)}</div>}{copyEnabled&&hasBody&&<MessageCopyButton text={copyText??content} turn={copyTurn}/>}</div></article>;
  }
  if(kind==='tool.call'||kind==='tool.result'){
   const args=typeof data.arguments==='object'&&data.arguments!==null?data.arguments as Record<string,unknown>:null;
@@ -1055,6 +1070,3 @@ function PluginPanel({workspaceId,sessionId,revision,onChanged,onClose}:{workspa
  async function action(fn:()=>Promise<unknown>){setBusy(true);setError('');try{await fn();await load()}catch(e){setError(errorText(e))}finally{setBusy(false)}}
  return <Modal title="插件与权限" onClose={onClose}><p className="muted">从本地导入 WASM 插件。插件仅获得声明、授权与工作区策略的交集权限。</p>{error&&<p role="alert" className="inline-error">{error}</p>}<form className="settings-form" onSubmit={e=>{e.preventDefault();void action(()=>command('plugin_install',{path,permissions:permissions.split(',').map(s=>s.trim()).filter(Boolean)}))}}><label>插件目录或 ZIP 路径<div className="input-row"><input required value={path} onChange={e=>setPath(e.target.value)} placeholder="输入插件完整路径"/><button type="button" disabled={!desktop()} onClick={async()=>{try{const result=await open({multiple:false,directory:true});if(result)setPath(result)}catch(e){setError(errorText(e))}}}>浏览目录</button></div></label><label>授予权限（逗号分隔，默认无权限）<input value={permissions} onChange={e=>setPermissions(e.target.value)} placeholder="按插件清单填写能力名称"/></label><button className="primary" disabled={busy||!desktop()}>导入并授权</button></form><div className="plugin-list">{!plugins.length&&<p className="empty-small muted">暂无已安装插件。</p>}{plugins.map(p=><article key={p.id}><div className="plugin-heading"><Unplug size={19}/><strong>{p.name}</strong><small>{p.version} · {p.kind}</small></div><p>{p.description}</p><div className="permission-tags">{p.permissions.length?p.permissions.map(x=><code key={x}>{x}</code>):<span>无额外授权</span>}</div><div className="plugin-actions"><small>{p.status}</small><button disabled={busy} onClick={()=>action(()=>command('plugin_enable',{id:p.id,enabled:!p.enabled}))}>{p.enabled?'停用':'启用'}</button><button className="danger" disabled={busy} onClick={()=>setRemoveId(p.id)}>移除</button></div>{removeId===p.id&&<div className="confirm">确定移除此插件？<button onClick={()=>setRemoveId('')}>取消</button><button className="danger" onClick={()=>action(async()=>{await command('plugin_remove',{id:p.id});setRemoveId('')})}>确认移除</button></div>}</article>)}</div><PluginContributionsPanel workspaceId={workspaceId} sessionId={sessionId} revision={revision}/><McpPanel workspaceId={workspaceId}/></Modal>
 }
-
-
-
