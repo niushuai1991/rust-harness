@@ -72,3 +72,12 @@ describe('timeline page cache',()=>{
   expect(useChat.getState().timeline('a')?.throughSeq).toBe('2');
  });
 });
+
+it('刷新最新消息时保留已加载的历史与游标',()=>{
+ const state=useChat.getState();
+ state.replaceTimelinePage('a',page('a',81,160,'81',true));
+ state.prependTimelinePage('a',page('a',1,80,null,false));
+ state.mergeLatestTimelinePages('a',[page('a',101,180,'101',true)]);
+ expect(useChat.getState().events.a.map(item=>item.seq)).toEqual(Array.from({length:180},(_,index)=>String(index+1)));
+ expect(useChat.getState().timeline('a')).toMatchObject({olderCursor:null,hasOlder:false,loadedOlder:true,throughSeq:'180'});
+});

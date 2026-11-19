@@ -171,6 +171,22 @@ pub struct PurgeSummary {
     pub bytes: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnNavigatorEntry {
+    pub event_id: String,
+    pub seq: String,
+    pub preview: String,
+    pub preview_truncated: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnNavigatorPage {
+    pub entries: Vec<TurnNavigatorEntry>,
+    pub older_cursor: Option<String>,
+    pub has_older: bool,
+}
+
 /// A bounded, cursor-addressable window into one session's durable event log.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]

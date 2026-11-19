@@ -41,6 +41,7 @@
 | [Agent 执行性能优化](specs/agent-execution-performance.md) | 工具批次并发调度、请求前自动压缩与模型 HTTP 连接复用，设置入口在桌面「性能」选项卡。 |
 | [全局指令文件](specs/global-agents-md.md) | 数据目录（默认 `~/.RustHarness`）下的 `AGENTS.md` 自动注入所有会话系统提示，缺失静默跳过。 |
 | [无项目会话与无项目自动化](specs/no-project-sessions.md) | 桌面端允许不选择项目创建会话与自动化（`workspace_id` 空串哨兵）：会话独立 scratch 执行根，草稿态「无项目」落点与侧栏「无项目」分组。 |
+| [会话回合导航](specs/turn-navigator.md) | 用户消息摘要导航、自适应宽度、悬停预览及跨页历史跳转。 |
 | [回合回复呈现](specs/turn-reply-presentation.md) | 一个回合视为一个回复单元：完成回合过程区默认折叠，复制入口收敛到轮尾总结并复制整轮文本合并。 |
 
 

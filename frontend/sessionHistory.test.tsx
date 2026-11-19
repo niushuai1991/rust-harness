@@ -1,6 +1,6 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
-import App from './App';
+import App, {ConversationEvents} from './App';
 import {useChat} from './store';
 import {useSidePanel} from './sidePanelStore';
 import type {SessionEvent} from './types';
@@ -68,4 +68,62 @@ describe('会话历史不限页数',()=>{
   expect(await screen.findByText('更早消息')).toBeTruthy();
   expect(screen.getByText('已到会话开头')).toBeTruthy();
  });
+});
+
+describe('回合导航历史跳转',()=>{
+ it('加载目标所在历史页并定位用户消息',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_turn_navigator_page')return {entries:[{eventId:'u1',seq:'1',preview:'早先的问题',previewTruncated:false}],olderCursor:null,hasOlder:false};
+   if(name==='session_timeline_page'&&args.beforeSeq==='4')return {...olderPage,events:[{...event('u1','a','1','早先的问题'),kind:'user.message'}]};
+   return original(name,args);
+  });
+  await openA();
+  fireEvent.click(await screen.findByRole('button',{name:'跳转到：早先的问题'}));
+  expect(await screen.findByText('早先的问题')).toBeTruthy();
+  expect(mocks.command.mock.calls.some(([name,args])=>name==='session_timeline_page'&&args.beforeSeq==='4')).toBe(true);
+ });
+});
+
+it('同一回合内的每条用户消息均可作为导航锚点',()=>{
+ const events:SessionEvent[]=[{...event('start','a','1',''),kind:'turn.start'},{...event('u1','a','2','第一条'),kind:'user.message'},{...event('u2','a','3','第二条'),kind:'user.message'},{...event('end','a','4',''),kind:'turn.end',data:{status:'completed'}}];
+ render(<ConversationEvents events={events} turns={[]}/>);
+ expect(document.querySelector('[data-message-id="u1"]')).toBeTruthy();
+ expect(document.querySelector('[data-message-id="u2"]')).toBeTruthy();
+});
+
+it('导航目录加载失败后可以重试',async()=>{
+ const original=mocks.command.getMockImplementation()!;
+ let attempts=0;
+ mocks.command.mockImplementation(async(name,args)=>{
+  if(name==='session_turn_navigator_page'){
+   if(attempts++===0)throw new Error('目录读取失败');
+   return {entries:[{eventId:'u1',seq:'1',preview:'早先的问题',previewTruncated:false}],olderCursor:null,hasOlder:false};
+  }
+  return original(name,args);
+ });
+ await openA();
+ fireEvent.click(await screen.findByRole('button',{name:'重试加载回合导航'}));
+ expect(await screen.findByRole('button',{name:'跳转到：早先的问题'})).toBeTruthy();
+});
+
+it('回复完成刷新最新消息时保留正在阅读的历史',async()=>{
+ const original=mocks.command.getMockImplementation()!;
+ let finish!:()=>void;
+ mocks.send.mockImplementation(()=>new Promise<void>(resolve=>{finish=resolve}));
+ mocks.command.mockImplementation(async(name,args)=>{
+  if(name==='session_turn_navigator_page')return {entries:[{eventId:'u1',seq:'1',preview:'旧问题',previewTruncated:false}],olderCursor:null,hasOlder:false};
+  if(name==='session_timeline_page'&&args.beforeSeq==='4')return {...olderPage,events:[{...event('u1','a','1','旧问题'),kind:'user.message'}]};
+  return original(name,args);
+ });
+ await openA();
+ await waitFor(()=>expect(screen.getByRole('button',{name:'计划模式'})).not.toBeDisabled());
+ fireEvent.change(screen.getByLabelText('消息'),{target:{value:'继续任务'}});
+ fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+ await waitFor(()=>expect(finish).toBeTypeOf('function'));
+ fireEvent.click(await screen.findByRole('button',{name:'跳转到：旧问题'}));
+ await waitFor(()=>expect(document.querySelector('[data-message-id="u1"]')).toBeTruthy());
+ await act(async()=>finish());
+ await waitFor(()=>expect(mocks.command.mock.calls.filter(([name,args])=>name==='session_timeline_page'&&!args.beforeSeq).length).toBeGreaterThan(1));
+ expect(document.querySelector('[data-message-id="u1"]')).toBeTruthy();
 });
