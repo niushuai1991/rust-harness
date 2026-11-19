@@ -81,7 +81,7 @@ describe('完整回合复制',()=>{
   expect(details.open).toBe(false);expect(screen.getByText('最终总结')).toBeVisible();
   fireEvent.click(summary);expect(details.open).toBe(true);
   expect(within(details).queryByRole('button',{name:'复制消息'})).not.toBeInTheDocument();
-  const userCard=screen.getByText('用户提问').closest('article')!;
+  const userCard=within(screen.getByLabelText('聊天消息')).getByText('用户提问').closest('article')!;
   expect(within(userCard).queryByRole('button',{name:'复制消息'})).not.toBeInTheDocument();
   const finalCard=screen.getByText('最终总结').closest('article')!;
   fireEvent.click(within(finalCard).getByRole('button',{name:'复制消息'}));

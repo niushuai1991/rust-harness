@@ -339,3 +339,69 @@ async fn turn_copy_rejects_excessive_payload_without_partial_result() {
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn turn_navigator_directory_pages_and_summarizes_user_messages() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Store::open(&dir.path().join("nav.db")).await.unwrap();
+    let session = db.create_session("work-a", "nav").await.unwrap();
+    let other = db.create_session("work-a", "other").await.unwrap();
+    let first = db
+        .append(
+            &session.id,
+            "user.message",
+            json!({"content":"  第一条\n 消息  "}),
+        )
+        .await
+        .unwrap();
+    db.append(
+        &session.id,
+        "assistant.message",
+        json!({"content":"不要显示"}),
+    )
+    .await
+    .unwrap();
+    let second = db
+        .append(
+            &session.id,
+            "user.message",
+            json!({"attachments":[{"name":"file"}]}),
+        )
+        .await
+        .unwrap();
+    let third = db
+        .append(
+            &session.id,
+            "user.message",
+            json!({"content":"🧑‍💻".repeat(161)}),
+        )
+        .await
+        .unwrap();
+    db.append(&other.id, "user.message", json!({"content":"其他会话"}))
+        .await
+        .unwrap();
+    let latest = db
+        .turn_navigator_page(&session.id, None, Some(2))
+        .await
+        .unwrap();
+    assert_eq!(
+        latest
+            .entries
+            .iter()
+            .map(|e| e.event_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![second.id.as_str(), third.id.as_str()]
+    );
+    assert_eq!(latest.entries[0].preview, "用户输入");
+    assert!(latest.entries[1].preview_truncated);
+    assert_eq!(latest.entries[1].preview, "🧑‍💻".repeat(160));
+    assert!(latest.has_older);
+    let earlier = db
+        .turn_navigator_page(&session.id, Some(second.seq.parse().unwrap()), Some(2))
+        .await
+        .unwrap();
+    assert_eq!(earlier.entries.len(), 1);
+    assert_eq!(earlier.entries[0].event_id, first.id);
+    assert_eq!(earlier.entries[0].preview, "第一条 消息");
+    assert!(!earlier.has_older);
+}

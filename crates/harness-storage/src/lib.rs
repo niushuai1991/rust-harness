@@ -11,6 +11,7 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+use unicode_segmentation::UnicodeSegmentation;
 
 /// 无项目会话（workspace_id 空串哨兵）沿用同一 schema；不新增迁移。
 const SCHEMA_VERSION: i64 = 5;
@@ -463,6 +464,61 @@ impl Store {
                 Ok(data.get("content").cloned().unwrap_or(Value::Null))
             })
             .collect()
+    }
+    /// User message previews in ascending sequence order, bounded by an exclusive cursor.
+    pub async fn turn_navigator_page(
+        &self,
+        session: &str,
+        before: Option<u64>,
+        limit: Option<u16>,
+    ) -> AppResult<TurnNavigatorPage> {
+        let before = before
+            .map(|v| i64::try_from(v).map_err(|_| AppError::new("INVALID_CURSOR", "游标溢出")))
+            .transpose()?;
+        let limit = limit.unwrap_or(100).clamp(1, 200);
+        let mut rows = sqlx::query("SELECT id, seq, data FROM events INDEXED BY events_session_kind_seq WHERE session_id=? AND kind='user.message' AND (? IS NULL OR seq<?) ORDER BY seq DESC LIMIT ?")
+            .bind(session).bind(before).bind(before).bind(i64::from(limit)+1).fetch_all(&self.pool).await.map_err(db_error)?;
+        let has_older = rows.len() > usize::from(limit);
+        if has_older {
+            rows.pop();
+        }
+        rows.reverse();
+        let mut entries = Vec::with_capacity(rows.len());
+        for row in rows {
+            let data: Value =
+                serde_json::from_str(row.try_get::<&str, _>("data").map_err(db_error)?)
+                    .map_err(db_error)?;
+            let normalized = data
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            let text = if normalized.is_empty() {
+                "用户输入"
+            } else {
+                &normalized
+            };
+            let mut graphemes = text.graphemes(true);
+            let preview = graphemes.by_ref().take(160).collect::<String>();
+            entries.push(TurnNavigatorEntry {
+                event_id: row.try_get("id").map_err(db_error)?,
+                seq: row.try_get::<i64, _>("seq").map_err(db_error)?.to_string(),
+                preview,
+                preview_truncated: graphemes.next().is_some(),
+            });
+        }
+        let older_cursor = if has_older {
+            entries.first().map(|e| e.seq.clone())
+        } else {
+            None
+        };
+        Ok(TurnNavigatorPage {
+            entries,
+            older_cursor,
+            has_older,
+        })
     }
     /// Returns a bounded durable-event window for the desktop timeline.
     pub async fn timeline_page(

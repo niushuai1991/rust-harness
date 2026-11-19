@@ -1,3 +1,5 @@
+import {createSessionLoadLock,waitForMessage} from './turnNavigatorText';
+import {TurnNavigator} from './TurnNavigator';
 import {Fragment,useEffect,useLayoutEffect,useMemo,useRef,useState,type FormEvent,type MouseEvent as ReactMouseEvent,type ReactNode} from 'react';
 import {open,save} from '@tauri-apps/plugin-dialog';
 import {isTauri} from '@tauri-apps/api/core';
@@ -29,7 +31,7 @@ import {SettingsPage,type SettingsCategoryId} from './SettingsPage';
 import {AutomationsPanel} from './AutomationsPanel';
 import {SidePanel} from './SidePanel';
 import {useSidePanel} from './sidePanelStore';
-import type {WorkspaceInfo,SessionInfo,SessionEvent,TimelinePage,TimelineTurn,ModelConfig,ProviderInfo,DefaultSelection,ApprovalRequest,ApprovalPolicy,AskRequest,AskAnswer,PluginInfo,ArtifactMetadata,PresetInfo,SkillInfo,WorkspaceRemovalSummary,WorkspaceRevealSummary,WorkspaceMergeSummary,LiveEvent,ExecutionMode} from './types';
+import type {WorkspaceInfo,SessionInfo,SessionEvent,TimelinePage,TimelineTurn,TurnNavigatorEntry,TurnNavigatorPage,ModelConfig,ProviderInfo,DefaultSelection,ApprovalRequest,ApprovalPolicy,AskRequest,AskAnswer,PluginInfo,ArtifactMetadata,PresetInfo,SkillInfo,WorkspaceRemovalSummary,WorkspaceRevealSummary,WorkspaceMergeSummary,LiveEvent,ExecutionMode} from './types';
 
 type Panel='presets'|'skills'|'plugins'|'tasks'|'automations'|null;
 type SessionContextMenu={sessionId:string;x:number;y:number};
@@ -202,6 +204,9 @@ const draftingRef=useRef(drafting);draftingRef.current=drafting; // 供异步 co
  const skillWorkspaceId=drafting?(draftWorkspaceId??workspaceId):workspaceId;
  useEffect(()=>{if(!desktop()){setSkills([]);return}let alive=true;command<SkillInfo[]>('skill_list',{workspaceId:skillWorkspaceId}).then(list=>{if(alive)setSkills(Array.isArray(list)?list:[])}).catch(()=>{if(alive)setSkills([])});return()=>{alive=false}},[skillWorkspaceId]);
  const events=useChat(s=>s.events[sessionId]??EMPTY_EVENTS),timeline=useChat(s=>s.timelines[sessionId]),stream=useChat(s=>s.streams[sessionId]);
+ const [navState,setNavState]=useState<{id:string;entries:TurnNavigatorEntry[];cursor:string|null;hasOlder:boolean}>({id:'',entries:[],cursor:null,hasOlder:false});
+ const [navLoading,setNavLoading]=useState(false),[navError,setNavError]=useState(false),[navActive,setNavActive]=useState<string|null>(null),[jumping,setJumping]=useState(false);
+ const navRequest=useRef(0),jumpRequest=useRef(0),olderLock=useRef(createSessionLoadLock()),navLock=useRef(false);
  const [timelineLoading,setTimelineLoading]=useState(false),[olderTimelineLoading,setOlderTimelineLoading]=useState(false);
  const thinkingVisible=running[sessionId]&&!stream&&!approvals.some(approval=>approval.sessionId===sessionId)&&!questions.some(question=>question.sessionId===sessionId);
  // 时间线 ask.request 卡片的回放配对：questionId → 结算数据（跨页翻页时不跨页取）。
@@ -330,6 +335,11 @@ const lastRunWorkspaceId=useRef<string|null>(null); // workspace effect 实际�
   })();
   return()=>{disposed=true};
  },[workspaceId,workspacesLoaded]);
+ useEffect(()=>{const id=sessionId,request=++navRequest.current;++jumpRequest.current;setJumping(false);setNavError(false);setNavActive(null);setNavState({id,entries:[],cursor:null,hasOlder:false});navLock.current=false;setNavLoading(false);if(!id||!desktop())return;
+  void loadLatestNav(id,request);
+  return()=>{++navRequest.current;++jumpRequest.current};
+ },[sessionId]);
+ useEffect(()=>{if(!sessionId)return;const entries=events.filter(e=>e.kind==='user.message').map(navFromEvent);if(entries.length)setNavState(old=>old.id===sessionId?{...old,entries:mergeNav(old.entries,entries)}:old)},[events,sessionId]);
  useEffect(()=>{if(!sessionId)return;autoFollow.current=true;setShowJumpBottom(false);void loadLatestTimeline(sessionId)},[sessionId]);
  useEffect(()=>{
   const id=sessionId,revision=++planRevision.current;
@@ -540,20 +550,34 @@ const lastRunWorkspaceId=useRef<string|null>(null); // workspace effect 实际�
  }
  async function loadLatestTimeline(id:string){
   const request=++timelineRequest.current;if(activeSessionId.current===id){setTimelineLoading(true);setOlderTimelineLoading(false)}useChat.getState().activateTimeline(id);
-  try{const page=await command<TimelinePage>('session_timeline_page',{sessionId:id});if(request!==timelineRequest.current||activeSessionId.current!==id)return;useChat.getState().replaceTimelinePage(id,page)}
+  try{const page=await command<TimelinePage>('session_timeline_page',{sessionId:id});if(request!==timelineRequest.current||activeSessionId.current!==id)return;
+   const existing=useChat.getState().timeline(id);if(!autoFollow.current&&existing?.pages.some(p=>p.length)){
+    const pages=[page],through=BigInt(existing.throughSeq);let oldest=page;
+    while(oldest.events.length&&BigInt(oldest.events[0].seq)>through+1n){if(!oldest.hasOlder||!oldest.olderCursor)throw new Error('无法补齐最新消息，请重试。');const before=oldest.olderCursor;oldest=await command<TimelinePage>('session_timeline_page',{sessionId:id,beforeSeq:before});if(request!==timelineRequest.current||activeSessionId.current!==id)return;if(!oldest.events.length||oldest.olderCursor===before)throw new Error('无法补齐最新消息，请重试。');pages.push(oldest)}
+    useChat.getState().mergeLatestTimelinePages(id,pages);
+   }else useChat.getState().replaceTimelinePage(id,page)}
   catch(e){if(request===timelineRequest.current&&activeSessionId.current===id)setError(errorText(e))}
   finally{if(request===timelineRequest.current&&activeSessionId.current===id)setTimelineLoading(false)}
  }
- async function loadOlderTimeline(){
-  const id=sessionId,current=useChat.getState().timeline(sessionId);if(!id||!current||olderTimelineLoading)return;
-  // 历史不限页数：不再有 3 页上限，继续用 olderCursor 向前加载到会话开头。
-  if(!current.hasOlder||!current.olderCursor)return;
+ async function loadOlderTimeline():Promise<boolean>{
+  const id=sessionId;return olderLock.current.run(id,async()=>{
+  const current=useChat.getState().timeline(id);if(!id||!current?.hasOlder||!current.olderCursor)return false;
   const request=++timelineRequest.current,node=conversationRef.current,height=node?.scrollHeight??0,top=node?.scrollTop??0,before=current.olderCursor;
   autoFollow.current=false;setOlderTimelineLoading(true);
-  try{const page=await command<TimelinePage>('session_timeline_page',{sessionId:id,beforeSeq:before});if(request!==timelineRequest.current||activeSessionId.current!==id||useChat.getState().timeline(id)?.olderCursor!==before)return;useChat.getState().prependTimelinePage(id,page);requestAnimationFrame(()=>{if(node)node.scrollTop=top+node.scrollHeight-height})}
-  catch(e){if(request===timelineRequest.current&&activeSessionId.current===id)setError(errorText(e))}
-  finally{if(request===timelineRequest.current&&activeSessionId.current===id)setOlderTimelineLoading(false)}
+  const pending=(async()=>{try{const page=await command<TimelinePage>('session_timeline_page',{sessionId:id,beforeSeq:before});if(request!==timelineRequest.current||activeSessionId.current!==id||useChat.getState().timeline(id)?.olderCursor!==before)return false;useChat.getState().prependTimelinePage(id,page);requestAnimationFrame(()=>{if(node&&activeSessionId.current===id)node.scrollTop=top+node.scrollHeight-height});return true}
+   catch(e){if(request===timelineRequest.current&&activeSessionId.current===id)setError(errorText(e));return false}
+   finally{if(request===timelineRequest.current&&activeSessionId.current===id)setOlderTimelineLoading(false)}})();
+  return pending;
+  });
  }
+ async function loadLatestNav(id:string,request:number){try{const page=await command<TurnNavigatorPage>('session_turn_navigator_page',{sessionId:id});if(request!==navRequest.current||activeSessionId.current!==id||!Array.isArray(page.entries))return;setNavError(false);setNavState(old=>old.id===id?{id,entries:mergeNav(page.entries,old.entries),cursor:page.olderCursor,hasOlder:page.hasOlder}:old)}catch(e){if(request===navRequest.current&&activeSessionId.current===id){setNavError(true);setError(errorText(e))}}}
+ async function loadOlderNav(){const id=sessionId,request=navRequest.current,cursor=navState.cursor;if(!id||navLock.current||!cursor||!navState.hasOlder)return;navLock.current=true;setNavLoading(true);try{const page=await command<TurnNavigatorPage>('session_turn_navigator_page',{sessionId:id,beforeSeq:cursor});if(request!==navRequest.current||activeSessionId.current!==id)return;setNavState(old=>old.id===id&&old.cursor===cursor?{...old,entries:mergeNav(page.entries,old.entries),cursor:page.olderCursor,hasOlder:page.hasOlder}:old)}catch(e){if(request===navRequest.current)setError(errorText(e))}finally{if(request===navRequest.current){navLock.current=false;setNavLoading(false)}}}
+ async function jumpToTurn(id:string){const task=++jumpRequest.current,session=sessionId;autoFollow.current=false;setJumping(true);setNavActive(id);
+  try{while(!useChat.getState().events[session]?.some(e=>e.id===id)){if(task!==jumpRequest.current||activeSessionId.current!==session)return;if(!await loadOlderTimeline()){if(task===jumpRequest.current)setError('无法加载目标消息，请重试。');return}}
+   const isCurrent=()=>task===jumpRequest.current&&activeSessionId.current===session;const target=await waitForMessage(()=>Array.from(conversationRef.current?.querySelectorAll<HTMLElement>('[data-message-id]')??[]).find(el=>el.dataset.messageId===id)??null,isCurrent);if(!isCurrent())return;if(!target){setError('目标消息尚未显示，请重试。');return}target.scrollIntoView?.({block:'start',behavior:'smooth'});
+  }finally{if(task===jumpRequest.current)setJumping(false)}
+ }
+ function syncNavPosition(node:HTMLElement){const top=node.getBoundingClientRect().top;let current:string|null=null;node.querySelectorAll<HTMLElement>('[data-message-id]').forEach(el=>{if(el.getBoundingClientRect().top<=top+110)current=el.dataset.messageId??null});if(current)setNavActive(current)}
  // 一键回底：恢复自动跟随并平滑滚动到最新内容；此后流式追加由自动跟随接管。
  function jumpToBottom(){const node=conversationRef.current;if(!node)return;autoFollow.current=true;setShowJumpBottom(false);node.scrollTo({top:node.scrollHeight,behavior:'smooth'})}
  function receiveEvent(event:LiveEvent){
@@ -797,8 +821,11 @@ const lastRunWorkspaceId=useRef<string|null>(null); // workspace effect 实际�
    {!desktop()&&<div className="host-banner"><Terminal size={16}/>当前为界面预览，需要桌面宿主才能访问工作区和模型。</div>}
    {error&&<div role="alert" className="alert"><span>{error}</span><button aria-label="关闭错误" onClick={()=>setError('')}><X size={16}/></button></div>}
    {notice&&<div role="status" className="notice"><Check size={15}/>{notice}<button aria-label="关闭提示" onClick={()=>setNotice('')}><X size={15}/></button></div>}
-   <div className="chat-body">
-   <section ref={conversationRef} className="conversation" aria-label="聊天消息" onScroll={event=>{const node=event.currentTarget;const atBottom=node.scrollHeight-node.scrollTop-node.clientHeight<80;autoFollow.current=atBottom;setShowJumpBottom(!atBottom);if(node.scrollTop<=8)void loadOlderTimeline()}}>
+   <div className={`chat-body${navState.id===sessionId&&navState.entries.length?' has-turn-nav':''}`}>
+   {navState.id===sessionId&&<TurnNavigator entries={navState.entries} activeId={navActive} onJump={id=>void jumpToTurn(id)} onLoadOlder={()=>void loadOlderNav()} hasOlder={navState.hasOlder} loading={navLoading}/>}
+   {navError&&<button className="turn-nav-retry" onClick={()=>void loadLatestNav(sessionId,navRequest.current)}>重试加载回合导航</button>}
+   {jumping&&<button className="turn-nav-cancel" onClick={()=>{++jumpRequest.current;setJumping(false)}}>取消跳转</button>}
+   <section ref={conversationRef} className="conversation" aria-label="聊天消息" onScroll={event=>{const node=event.currentTarget;syncNavPosition(node);const atBottom=node.scrollHeight-node.scrollTop-node.clientHeight<80;autoFollow.current=atBottom;setShowJumpBottom(!atBottom);if(node.scrollTop<=8)void loadOlderTimeline()}}>
     {!timelineLoading&&!events.length&&!stream&&<div className="welcome"><span className="welcome-icon"><Terminal size={35}/></span><div className="eyebrow">BUILD WITH CONFIDENCE</div><h1>{drafting&&draftWorkspaceId!==null?<>你想在 <em className="pj-name">{projectName(draftWorkspaceId)}</em> 中构建什么？</>:'想把什么变成现实？'}</h1><p>理解代码、探索想法，或完成下一次改进。<br/>在独立的工作副本中协作，每一处更改都由你掌控。</p>{!workspaceId&&!drafting&&!sessionId&&<button className="primary welcome-open" onClick={openWorkspace} disabled={busy||!desktop()}><FolderOpen size={15}/>打开工作区</button>}<div className="suggestions">{['梳理项目结构和关键模块','检查代码，找出值得改进的地方','帮我规划并实现一个新功能'].map((s,i)=><button key={s} onClick={()=>setComposerText(s)} disabled={!sessionId&&!drafting}><span>0{i+1}</span>{s}<ArrowUp size={14}/></button>)}</div><div className="welcome-foot"><ShieldCheck size={15}/>工作副本隔离 · 操作可审批 · 更改可预览</div></div>}
     <div className="messages" onContextMenu={event=>{event.preventDefault();setMsgContextMenu({x:event.clientX,y:event.clientY,text:window.getSelection()?.toString().trim()??''})}}>{timeline?.hasOlder?<div className="timeline-page-control"><button type="button" onClick={()=>void loadOlderTimeline()} disabled={olderTimelineLoading}>{olderTimelineLoading?'正在加载更早消息…':'加载更早消息'}</button></div>:timeline&&timeline.loadedOlder?<div className="timeline-page-control"><small>已到会话开头</small></div>:null}<ConversationEvents turns={timeline?.turns??[]} events={injectModelNotes(events,modelNotes.filter(n=>n.sessionId===sessionId))} workspaceId={workspaceId} onOpenSession={openSession} activeIds={activeIds} askAnswers={askAnswers}/>{thinkingVisible&&<div className="message assistant thinking-indicator" role="status" aria-label="正在思考"><div className="message-body"><div className="thinking-line"><span>正在思考</span><span className="thinking-dots" aria-hidden="true"><i/><i/><i/></span></div></div></div>}{stream&&<article className="message assistant"><div className="message-body"><div className="stream-tag">正在思考与执行</div>{stream.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{stream.reasoning}</pre></details>}<div className="prose"><Markdown content={stream.text||'正在处理…'}/><span className="cursor"/></div></div></article>}<div ref={end}/></div>
    </section>
@@ -896,17 +923,17 @@ type EventCardExtras={workspaceId?:string;onOpenSession?:(id:string)=>void;activ
 function CompletedTurn({events,turn,...extras}:{events:SessionEvent[];turn?:TimelineTurn}&EventCardExtras){
  const finalIndex=turn?events.findIndex(e=>e.id===turn.finalMessageId):events.map(e=>e.kind).lastIndexOf('assistant.message');
  const process=events.filter((event,index)=>index!==finalIndex&&!['turn.start','turn.end','user.message'].includes(event.kind));
- const user=events.find(event=>event.kind==='user.message'),final=finalIndex>=0?events[finalIndex]:undefined;
+ const users=events.filter(event=>event.kind==='user.message'),final=finalIndex>=0?events[finalIndex]:undefined;
  const start=events.find(event=>event.kind==='turn.start'),end=events.at(-1);
  const copyText=events.filter(event=>event.kind==='assistant.message').map(event=>event.data.content==null?'':printable(event.data.content)).join('\n\n');
- return <>{user&&<EventCard event={user} {...extras}/>} {start?.id.startsWith('synthetic-start-')&&<small className="muted">更早步骤尚未加载</small>} {process.length>0&&<ProcessGroup events={process} running={false} durationText={durationText(start,end)} hideCopy {...extras}/>} {final&&<EventCard event={final} copyEnabled copyText={copyText} copyTurn={turn?.endSeq?{sessionId:final.sessionId,startSeq:turn.startSeq,endSeq:turn.endSeq}:undefined} {...extras}/>}</>;
+ return <>{users.map(user=><EventCard key={user.id} event={user} {...extras}/>)} {start?.id.startsWith('synthetic-start-')&&<small className="muted">更早步骤尚未加载</small>} {process.length>0&&<ProcessGroup events={process} running={false} durationText={durationText(start,end)} hideCopy {...extras}/>} {final&&<EventCard event={final} copyEnabled copyText={copyText} copyTurn={turn?.endSeq?{sessionId:final.sessionId,startSeq:turn.startSeq,endSeq:turn.endSeq}:undefined} {...extras}/>}</>;
 }
 // 运行中（或未闭合）回合：用户消息常驻，其余过程收进合并组。
 function OpenTurnSection({events,...extras}:{events:SessionEvent[]}&EventCardExtras){
- const user=events.find(event=>event.kind==='user.message');
+ const users=events.filter(event=>event.kind==='user.message');
  const rest=events.filter(event=>!['turn.start','user.message'].includes(event.kind));
  return <Fragment>
-  {user&&<EventCard event={user} {...extras}/>}
+  {users.map(user=><EventCard key={user.id} event={user} {...extras}/>)}
   {events[0]?.id.startsWith('synthetic-start-')&&<small className="muted">更早步骤尚未加载</small>}
   {rest.length>0&&<ProcessGroup events={rest} running hideCopy {...extras}/>}
  </Fragment>;
@@ -984,7 +1011,7 @@ export function EventCard({event,copyText,copyTurn,copyEnabled,hideCopy,...extra
   return <article className="tool-card todo-card"><div className="subagent-row"><ListTodo size={15}/><strong>待办清单</strong></div><TodoList items={items}/></article>;
  }
  if(kind==='plan.state'||kind==='goal.state')return <article className="tool-card"><div className="subagent-row">{kind==='plan.state'?<ListTodo size={15}/>:<Target size={15}/>}<strong>{kind==='plan.state'?'计划':'目标'}</strong></div><div className="prose"><Markdown content={printable(data.content)}/></div></article>;
- if(kind==='user.message')return <article className="message user"><div className="message-body"><div className="user-bubble">{Array.isArray(data.quotes)&&data.quotes.map((quote,index)=><blockquote key={index} className="sent-quote" title={String(quote)}><b>引用：</b>{String(quote)}</blockquote>)}<div className="prose"><LinkedText content={printable(data.content)}/></div>{Array.isArray(data.attachments)&&data.attachments.map((a,index)=><ArtifactDownload key={index} sessionId={event.sessionId} artifact={a as ArtifactMetadata}/>)}</div></div></article>;
+ if(kind==='user.message')return <article className="message user" data-message-id={event.id}><div className="message-body"><div className="user-bubble">{Array.isArray(data.quotes)&&data.quotes.map((quote,index)=><blockquote key={index} className="sent-quote" title={String(quote)}><b>引用：</b>{String(quote)}</blockquote>)}<div className="prose"><LinkedText content={printable(data.content)}/></div>{Array.isArray(data.attachments)&&data.attachments.map((a,index)=><ArtifactDownload key={index} sessionId={event.sessionId} artifact={a as ArtifactMetadata}/>)}</div></div></article>;
  if(kind==='assistant.message'||kind==='assistant.attempt'){
   const content=data.content==null?'':printable(data.content)??'';
   const hasBody=content.trim().length>0;
@@ -1070,3 +1097,6 @@ function PluginPanel({workspaceId,sessionId,revision,onChanged,onClose}:{workspa
  async function action(fn:()=>Promise<unknown>){setBusy(true);setError('');try{await fn();await load()}catch(e){setError(errorText(e))}finally{setBusy(false)}}
  return <Modal title="插件与权限" onClose={onClose}><p className="muted">从本地导入 WASM 插件。插件仅获得声明、授权与工作区策略的交集权限。</p>{error&&<p role="alert" className="inline-error">{error}</p>}<form className="settings-form" onSubmit={e=>{e.preventDefault();void action(()=>command('plugin_install',{path,permissions:permissions.split(',').map(s=>s.trim()).filter(Boolean)}))}}><label>插件目录或 ZIP 路径<div className="input-row"><input required value={path} onChange={e=>setPath(e.target.value)} placeholder="输入插件完整路径"/><button type="button" disabled={!desktop()} onClick={async()=>{try{const result=await open({multiple:false,directory:true});if(result)setPath(result)}catch(e){setError(errorText(e))}}}>浏览目录</button></div></label><label>授予权限（逗号分隔，默认无权限）<input value={permissions} onChange={e=>setPermissions(e.target.value)} placeholder="按插件清单填写能力名称"/></label><button className="primary" disabled={busy||!desktop()}>导入并授权</button></form><div className="plugin-list">{!plugins.length&&<p className="empty-small muted">暂无已安装插件。</p>}{plugins.map(p=><article key={p.id}><div className="plugin-heading"><Unplug size={19}/><strong>{p.name}</strong><small>{p.version} · {p.kind}</small></div><p>{p.description}</p><div className="permission-tags">{p.permissions.length?p.permissions.map(x=><code key={x}>{x}</code>):<span>无额外授权</span>}</div><div className="plugin-actions"><small>{p.status}</small><button disabled={busy} onClick={()=>action(()=>command('plugin_enable',{id:p.id,enabled:!p.enabled}))}>{p.enabled?'停用':'启用'}</button><button className="danger" disabled={busy} onClick={()=>setRemoveId(p.id)}>移除</button></div>{removeId===p.id&&<div className="confirm">确定移除此插件？<button onClick={()=>setRemoveId('')}>取消</button><button className="danger" onClick={()=>action(async()=>{await command('plugin_remove',{id:p.id});setRemoveId('')})}>确认移除</button></div>}</article>)}</div><PluginContributionsPanel workspaceId={workspaceId} sessionId={sessionId} revision={revision}/><McpPanel workspaceId={workspaceId}/></Modal>
 }
+
+function mergeNav(a:TurnNavigatorEntry[],b:TurnNavigatorEntry[]):TurnNavigatorEntry[]{return [...new Map([...a,...b].map(item=>[item.eventId,item])).values()].sort((x,y)=>BigInt(x.seq)<BigInt(y.seq)?-1:BigInt(x.seq)>BigInt(y.seq)?1:0)}
+function navFromEvent(event:SessionEvent):TurnNavigatorEntry{const text=typeof event.data.content==='string'?event.data.content.trim().replace(/\s+/gu,' '):'';const chars=Array.from(new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(text||'用户输入'),part=>part.segment);return {eventId:event.id,seq:event.seq,preview:chars.slice(0,160).join(''),previewTruncated:chars.length>160}}

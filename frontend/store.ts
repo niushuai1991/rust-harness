@@ -6,7 +6,7 @@ export interface Stream {requestId:string;text:string;reasoning:string;seen:stri
 export interface TimelineState {olderCursor:string|null;hasOlder:boolean;throughSeq:string;pagesLoaded:number;loadedOlder:boolean;pages:SessionEvent[][];turns:TimelineTurn[]}
 interface State {
  events:Record<string,SessionEvent[]>;timelines:Record<string,TimelineState>;timelineLru:string[];streams:Record<string,Stream>;statuses:Record<string,string>;
- replace:(id:string,events:SessionEvent[])=>void;replaceTimelinePage:(id:string,page:TimelinePage)=>void;prependTimelinePage:(id:string,page:TimelinePage)=>void;activateTimeline:(id:string)=>void;timeline:(id:string)=>TimelineState|undefined;
+ replace:(id:string,events:SessionEvent[])=>void;replaceTimelinePage:(id:string,page:TimelinePage)=>void;mergeLatestTimelinePages:(id:string,pages:TimelinePage[])=>void;prependTimelinePage:(id:string,page:TimelinePage)=>void;activateTimeline:(id:string)=>void;timeline:(id:string)=>TimelineState|undefined;
  receive:(event:LiveEvent)=>void;clearStream:(id:string)=>void
 }
 export const useChat=create<State>((set,get)=>({events:{},timelines:{},timelineLru:[],streams:{},statuses:{},
@@ -14,6 +14,13 @@ export const useChat=create<State>((set,get)=>({events:{},timelines:{},timelineL
  replaceTimelinePage:(id,page)=>set(state=>{
   const newer=(state.events[id]??[]).filter(event=>BigInt(event.seq)>BigInt(page.throughSeq));
   return storeTimeline(state,id,timelineFromPage(page,newer));
+ }),
+ mergeLatestTimelinePages:(id,incoming)=>set(state=>{
+  const current=state.timelines[id];if(!current||!incoming.length)return state;
+  const all=incoming.reduce((events,page)=>mergeEvents(events,page.events),state.events[id]??[]),pages=chunkEvents(all);
+  const turns=[...new Map([...current.turns,...[...incoming].reverse().flatMap(page=>page.turns??[])].map(turn=>[turn.startSeq,turn])).values()];
+  const throughSeq=incoming.reduce((seq,page)=>maxSeq(seq,page.throughSeq),current.throughSeq);
+  return storeTimeline(state,id,{...current,pages,pagesLoaded:pages.length,turns,throughSeq});
  }),
  // 历史不限页数：用户加载多少页就保留多少页，直到切出会话。
  prependTimelinePage:(id,page)=>set(state=>{

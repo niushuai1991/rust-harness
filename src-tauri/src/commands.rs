@@ -603,6 +603,24 @@ pub async fn session_events(
 }
 #[tauri::command]
 #[specta::specta]
+pub async fn session_turn_navigator_page(
+    state: Backend<'_>,
+    session_id: String,
+    before_seq: Option<String>,
+    limit: Option<u16>,
+) -> AppResult<TurnNavigatorPage> {
+    state
+        .store
+        .turn_navigator_page(
+            &session_id,
+            parse_timeline_before(before_seq.as_deref())?,
+            limit,
+        )
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn session_timeline_page(
     state: Backend<'_>,
     session_id: String,
@@ -1434,6 +1452,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         session_title_generate,
         session_events,
         session_timeline_page,
+        session_turn_navigator_page,
         session_turn_assistant_content,
         session_send,
         session_cancel,

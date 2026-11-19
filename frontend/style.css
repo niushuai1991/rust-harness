@@ -584,3 +584,18 @@ button.run-session:hover{color:var(--text);text-decoration:underline}
 .process-body .proc-note::before{content:"";position:absolute;left:-11px;top:9px;width:5px;height:5px;border-radius:50%;background:var(--border)}
 .proc-note p{margin:0 0 6px}
 .proc-note>:last-child{margin-bottom:0}
+
+/* 回合导航为消息预留空间，按聊天区宽度渐进调整。 */
+.chat-body{container-type:inline-size;--turn-nav-width:clamp(24px,calc((100cqw - 450px)*.24),124px)}
+.chat-body.has-turn-nav .conversation{margin-left:calc(var(--turn-nav-width) + 24px)}
+.turn-nav{position:absolute;left:12px;top:50%;transform:translateY(-50%);width:var(--turn-nav-width);max-height:calc(100% - 6rem);z-index:10}
+.turn-nav-list{overflow-y:auto;overflow-x:hidden;max-height:calc(100vh - 180px);scrollbar-width:none}.turn-nav-list::-webkit-scrollbar{display:none}
+.turn-nav-item,.turn-nav-more{display:block;width:100%;height:27px;text-align:left;white-space:nowrap;overflow:hidden;border:0;background:transparent;padding:4px 2px;color:var(--muted);font-size:11px;transform-origin:left center;transition:transform .15s,color .15s}
+.turn-nav-item span{display:block;overflow:hidden;white-space:nowrap}.turn-nav-item[aria-current]{color:var(--text)}.turn-nav-item:hover,.turn-nav-item:focus-visible{background:transparent;color:var(--text);transform:translateX(2px) scale(1.12)}
+.turn-nav-tooltip{position:fixed;z-index:1000;width:320px;max-width:calc(100vw - 24px);padding:12px;background:var(--panel);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 25px #20212422;font-size:12px;line-height:1.6;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:6;overflow:hidden;pointer-events:none}
+.turn-nav-cancel{position:absolute;left:12px;bottom:10px;z-index:11;font-size:10px;padding:4px}
+@container(max-width:319px){.turn-nav{display:none}.chat-body.has-turn-nav .conversation{margin-left:0}}
+@media(prefers-reduced-motion:reduce){.turn-nav-item{transition:none}}
+.turn-nav-retry{position:absolute;left:12px;top:8px;z-index:11;font-size:11px;padding:5px}
+.turn-nav{display:flex;flex-direction:column;overflow:hidden}
+.turn-nav-list{max-height:none;min-height:0;flex:0 1 auto}
