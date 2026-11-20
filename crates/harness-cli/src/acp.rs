@@ -120,7 +120,7 @@ fn delta_update(text: &str, reasoning: bool) -> SessionUpdate {
 
 /// `tool.call` 持久事件 → `tool_call` 初始通知。
 fn tool_call_update(data: &Value) -> Option<SessionUpdate> {
-    let id = data["id"].as_str()?;
+    let id = data["id"].as_str().filter(|id| !id.is_empty())?;
     let name = data["name"].as_str().unwrap_or_default();
     Some(SessionUpdate::ToolCall(
         ToolCall::new(id.to_owned(), tool_title(name, &data["arguments"]))
@@ -133,7 +133,9 @@ fn tool_call_update(data: &Value) -> Option<SessionUpdate> {
 
 /// `tool.result` 持久事件 → `tool_call_update` 终态通知。
 fn tool_result_update(data: &Value) -> Option<SessionUpdate> {
-    let call_id = data["callId"].as_str()?;
+    let call_id = data["callId"]
+        .as_str()
+        .filter(|call_id| !call_id.is_empty())?;
     let status = if data["isError"].as_bool() == Some(true) {
         ToolCallStatus::Failed
     } else {
@@ -539,7 +541,7 @@ async fn pump(
                 state.touch(&event);
                 match event.kind.as_str() {
                     "tool.call" => {
-                        if let Some(id) = event.data["id"].as_str() {
+                        if let Some(id) = event.data["id"].as_str().filter(|id| !id.is_empty()) {
                             state
                                 .pending_calls
                                 .lock()

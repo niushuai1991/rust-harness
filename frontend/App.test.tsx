@@ -54,7 +54,7 @@ describe('Shell 命令时间线',()=>{
   expect(screen.queryByText('已完成')).toBeNull();
   fireEvent.click(row);
   expect(screen.getByText('测试通过')).toBeVisible();expect(screen.getByText('退出码 0')).toBeVisible();
-  expect(screen.getByText('read')).toBeInTheDocument();
+  expect(screen.getByText('读取',{selector:'.t-title'})).toBeInTheDocument();
  });
 });
 describe('用户消息气泡',()=>{
@@ -779,7 +779,7 @@ describe('右侧面板',()=>{
   await screen.findByRole('button',{name:'main.rs'});
   fireEvent.click(screen.getByRole('button',{name:'main.rs'}));
   await screen.findByText('fn main(){}');
-  expect(screen.getByText('src/main.rs')).toBeInTheDocument();
+  expect(screen.getAllByText('src/main.rs').length).toBe(2);
   expect(screen.getByRole('tab',{name:'预览'})).toHaveAttribute('aria-selected','true');
  });
  it('edit 工具显示行级差异：调用行收敛，结果卡带统计与 diff 展开',async()=>{
@@ -791,15 +791,15 @@ describe('右侧面板',()=>{
    ]):original(name,args));
   render(<App/>);
   await openSidebarSession(/会话 A/);
-  expect((await screen.findAllByText('编辑')).length).toBe(2);
-  expect(screen.getAllByRole('button',{name:'config.ts'})).toHaveLength(2);
+  expect((await screen.findAllByText('编辑')).length).toBe(1);
+  expect(screen.getAllByRole('button',{name:'config.ts'})).toHaveLength(1);
   expect(screen.queryByText('调用中')).not.toBeInTheDocument();
-  expect(screen.getAllByText('src')).toHaveLength(2);
+  expect(screen.getAllByText('src')).toHaveLength(1);
   expect(screen.getByText('+2')).toBeInTheDocument();
   expect(screen.getByText('-1')).toBeInTheDocument();
   fireEvent.click(screen.getByText('已完成'));
   expect(await screen.findByText('+const b=3;')).toBeVisible();
-  expect(screen.queryByText(/oldText/)).not.toBeInTheDocument();
+  expect(screen.getByText(/"oldText"/,{selector:'.t-sec pre'})).toBeVisible();
  });
  it('edit 失败结果无 diff，展开显示错误内容',async()=>{
   const original=mocks.command.getMockImplementation()!;
@@ -865,9 +865,9 @@ describe('右侧面板',()=>{
   ]):original(name,args));
   render(<App/>);
   await openSidebarSession(/会话 A/);
-  expect(await screen.findAllByRole('button',{name:'config.ts'})).toHaveLength(4);
+  expect(await screen.findAllByRole('button',{name:'config.ts'})).toHaveLength(2);
   expect(screen.queryByText('编辑 ×2')).not.toBeInTheDocument();
-  expect(screen.getAllByText('编辑')).toHaveLength(4);
+  expect(screen.getAllByText('编辑',{selector:'.t-title'})).toHaveLength(2);
  });
  it('合并卡显示部分失败状态并只聚合成功 diff 的增删',async()=>{
   const original=mocks.command.getMockImplementation()!;

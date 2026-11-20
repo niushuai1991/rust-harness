@@ -292,11 +292,10 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<()> {
                 match runtime.session_plan_set(&session_id, enabled).await {
                     Ok(()) => {
                         eprintln!("计划模式已{}。", if enabled { "开启" } else { "退出" });
-                        if let Some(task) = task {
-                            if let Err(error) = run::turn_once(runtime.clone(), context, task).await
-                            {
-                                eprintln!("回合发起失败：{error}");
-                            }
+                        if let Some(task) = task
+                            && let Err(error) = run::turn_once(runtime.clone(), context, task).await
+                        {
+                            eprintln!("回合发起失败：{error}");
                         }
                     }
                     Err(error) => eprintln!("切换计划模式失败：{error}"),

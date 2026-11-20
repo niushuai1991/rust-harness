@@ -599,3 +599,31 @@ button.run-session:hover{color:var(--text);text-decoration:underline}
 .turn-nav-retry{position:absolute;left:12px;top:8px;z-index:11;font-size:11px;padding:5px}
 .turn-nav{display:flex;flex-direction:column;overflow:hidden}
 .turn-nav-list{max-height:none;min-height:0;flex:0 1 auto}
+
+/* ---- 通用工具调用单卡（tcard）：tool.call+tool.result 按 callId 合并展示，状态徽章随执行阶段翻转 ---- */
+.tcard{margin:12px 0;border:1px solid var(--border);border-radius:8px;background:var(--panel);font-size:12px;overflow:hidden;transition:border-color .25s,box-shadow .25s}
+.tcard>summary{padding:10px 14px;display:flex;align-items:center;gap:9px;cursor:pointer;user-select:none;list-style:none;min-width:0}
+.tcard>summary::-webkit-details-marker{display:none}
+.tcard>summary:hover{background:var(--surface)}
+.tcard>summary .t-icon{flex-shrink:0;color:var(--muted)}
+.tcard>summary .t-title{flex-shrink:0;font-weight:600;font-size:12px;color:var(--text)}
+.tcard>summary .t-detail{flex:1;min-width:0;display:flex;align-items:center;gap:8px;font-family:"Cascadia Code",Consolas,monospace;font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tcard>summary .t-time{flex-shrink:0;font-size:10px;color:var(--muted);font-family:"Cascadia Code",Consolas,monospace}
+.tcard>summary .chev{flex-shrink:0;color:var(--muted);opacity:0;transform:rotate(0deg);transition:opacity .15s,transform .18s}
+.tcard>summary:hover .chev,.tcard[open]>summary .chev{opacity:1}
+.tcard[open]>summary .chev{transform:rotate(90deg)}
+@media(hover:none){.tcard>summary .chev{opacity:.55}}
+.tcard.is-running{border-color:#d9cba8;box-shadow:0 0 0 3px #f2efdf66}
+.tcard-body{padding:2px 14px 13px;border-top:1px solid var(--surface)}
+.tcard .tool-diff{margin:0}
+.t-sec{margin-top:11px}
+.t-sec h5{margin:0 0 6px;font-size:9.5px;font-weight:600;letter-spacing:1.5px;color:var(--muted)}
+.t-sec pre{margin:0;background:var(--surface);border-radius:6px;padding:10px 12px;font-size:11.5px;line-height:1.7;max-height:220px;overflow:auto;color:var(--text)}
+.t-sec pre.is-err{background:#faeae5;color:#a53e3a}
+.t-sec pre.muted{color:var(--muted)}
+.pill{flex-shrink:0;display:inline-flex;align-items:center;gap:5px;border-radius:99px;padding:2px 9px 2px 7px;font-size:10px;font-weight:550;line-height:1.5;transition:background .25s,color .25s}
+.pill .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.pill.completed{background:#e4edd8;color:#5f7c48}.pill.completed .dot{background:#5f7c48}
+.pill.running{background:#f2efdf;color:#8b7946}.pill.running .dot{background:#8b7946;animation:pulse 1.1s infinite}
+.pill.failed{background:#faeae5;color:#a53e3a}.pill.failed .dot{background:#a53e3a}
+.tcard>summary .t-stats{flex-shrink:0}
