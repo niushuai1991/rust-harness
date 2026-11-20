@@ -329,13 +329,18 @@ describe('设置入口',()=>{
 });
 describe('聊天交互',()=>{
  it('导出成功提示自动关闭，重复导出重新计时',async()=>{
-  vi.mocked(save).mockResolvedValueOnce('D:/export.json').mockResolvedValueOnce('D:/export.json');
+  vi.mocked(save).mockResolvedValue('D:/export.json');
   await renderOpenA();
   vi.useFakeTimers();
-  await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'导出会话'}))});
+  // 顶栏不再提供导出按钮，导出入口是会话行右键菜单的「导出会话」项。
+  expect(screen.queryByRole('button',{name:'导出会话'})).not.toBeInTheDocument();
+  await act(async()=>{fireEvent.contextMenu(screen.getByRole('button',{name:/会话 A/}))});
+  await act(async()=>{fireEvent.click(screen.getByRole('menuitem',{name:'导出会话'}))});
+  expect(mocks.command).toHaveBeenCalledWith('session_export',{sessionId:'a',path:'D:/export.json'});
   expect(screen.getByText('会话已导出。')).toBeInTheDocument();
   act(()=>vi.advanceTimersByTime(2000));
-  await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'导出会话'}))});
+  fireEvent.contextMenu(screen.getByRole('button',{name:/会话 A/}));
+  await act(async()=>{fireEvent.click(screen.getByRole('menuitem',{name:'导出会话'}))});
   act(()=>vi.advanceTimersByTime(2000));
   expect(screen.getByText('会话已导出。')).toBeInTheDocument();
   act(()=>vi.advanceTimersByTime(1000));
