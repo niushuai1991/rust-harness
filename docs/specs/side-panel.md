@@ -1,6 +1,6 @@
 # 右侧面板（文件预览、改动审阅、网页浏览与计划抽屉）规范
 
-- 日期：2026-11-07（计划拟制）；2026-11-12（网页浏览）修订；2026-11-16（网页视图承载可视浏览器）修订
+- 日期：2026-11-07（计划拟制）；2026-11-12（网页浏览）修订；2026-11-16（网页视图承载可视浏览器）修订；2026-11-20（计划视图联动与消息流计划卡）修订
 - 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
 - 范围：主界面右侧面板统一承载「更改审阅」、工作副本文件预览、会话网页浏览与只读计划抽屉；计划模式与抽屉改动的实现和验证仍在进行。
 
@@ -48,6 +48,16 @@
 - `PreviewView.tsx`：`workspace_file_preview` 内容 + 行号 gutter（sticky）+ 截断提示条 + 二进制占位；未选文件显示引导空态。
 - `App.tsx`：`Panel` 类型移除 `'diff'`，删除 Modal 版 DiffPanel；顶栏「查看更改」与 `/diff` 斜杠命令改走 `useSidePanel`；`EventCard` 对内置 `write`/`edit` 工具从 `arguments.path` 提取路径渲染文件按钮（`preventDefault` 防止折叠工具卡），点击 `openPreview`；挂载右侧面板并提供会话跳转回调，切换工作区重置面板；「计划与目标」入口打开只读计划视图。
 - 样式沿用现有 design token（`--border`/`--panel`/`--accent`），diff 增删行用项目既有红绿语义色衍生，无新增依赖。
+
+
+## 计划视图联动与消息流计划卡（2026-11-20 修订）
+
+- 联动：`receiveEvent` 收到 `plan_write` 产生的 `plan.state` 实时事件后自动弹出「计划」视图（对齐可视浏览器「模型操作时自动弹出网页视图」先例）；收到任意 `todo.state`/`plan.state`/`goal.state` 时递增 `planPanelRevision` 并经 `SidePanel` 透传给 `PlansPanel`，打开期间事件驱动重拉 `plan_overview`（无轮询）。
+- 事件覆盖边界：`session_send` 的实时通道按会话过滤，联动仅覆盖当前交互会话；子代理/自动化会话的写入不触发实时联动，打开抽屉时 `plan_overview` 重拉保证最新。
+- 自动弹出为强切语义：面板在其他视图（更改/预览/网页）时切换到「计划」，已在计划视图时幂等。
+- 消息流 `plan.state`/`goal.state` 事件卡重构为 zcode 式计划 Markdown 卡（对齐 zcode `switch-mode` 渲染）：白卡（12px 圆角 + 1px 边框）+ 头部（NotepadText/Target 图标 +「计划/目标」+ 复制按钮，复制带 ✓ 反馈）+ 正文预览（256px 上限 + 底部渐隐 mask）+ 悬浮胶囊按钮「查看完整计划 →」；整卡点击打开「计划」抽屉。
+- 消息流 `todo.state` 事件卡对齐 zcode 待办卡：无框折叠头（图标 +「待办清单」+ 当前项 + `完成/总数`）+ 展开态淡灰内衬状态行（✓ 划线 / → 当前项 / ○ 待办）；实时收到的新卡默认展开（`liveTodoIds` 集合判定，上限 64 整体清空），历史回放收起。
+- 样式新增 `.zc-plan`/`.zc-card` 系列，全部沿用现有 design token，无新增依赖；卡片样式详见 `frontend/style.css` 末尾注释块。
 
 ## 边界
 

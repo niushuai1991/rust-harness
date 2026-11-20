@@ -5,7 +5,7 @@ import {open,save} from '@tauri-apps/plugin-dialog';
 import {isTauri} from '@tauri-apps/api/core';
 import {listen} from '@tauri-apps/api/event';
 import {createPortal} from 'react-dom';
-import {Archive,Activity,ArrowDown,ArrowUp,Bot,CalendarClock,Check,ChevronDown,ChevronRight,Copy,FileCode,FilePlus,Folder,FolderOpen,GitCompareArrows,ListTodo,MessageSquare,Paperclip,Pencil,Pin,Plus,Quote,Search,Send,Settings,ShieldCheck,Square,Sparkles,Target,Terminal,Timer,Trash2,Unplug,X,Download} from 'lucide-react';
+import {Archive,Activity,ArrowDown,ArrowRight,ArrowUp,Bot,CalendarClock,Check,ChevronDown,ChevronRight,CircleCheck,Copy,FileCode,FilePlus,Folder,FolderOpen,GitCompareArrows,ListTodo,MessageSquare,NotepadText,Paperclip,Pencil,Pin,Plus,Quote,Search,Send,Settings,ShieldCheck,Square,Sparkles,Target,Terminal,Timer,Trash2,Unplug,X,Download} from 'lucide-react';
 import {SessionMarkdown,LinkedText} from './SessionLinks';
 import {command,desktop,errorText,send} from './api';
 import {KNOWN_APPROVALS} from './types';
@@ -109,6 +109,8 @@ export default function App(){
  const [draftPlan,setDraftPlan]=useState(false);
  // 草稿态执行位置覆盖：null 表示跟随项目默认；切换项目时清空覆盖。
  const [draftExecOverride,setDraftExecOverride]=useState<ExecutionMode|null>(null);
+ // 计划抽屉联动：收到 todo/plan/goal 状态事件时递增，驱动打开中的「计划」视图重新拉取汇总。
+ const [planPanelRevision,setPlanPanelRevision]=useState(0);
  const planRevision=useRef(0),planPending=useRef(new Set<string>());
  const exportNoticeTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
  useEffect(()=>()=>{if(exportNoticeTimer.current!==null)clearTimeout(exportNoticeTimer.current)},[]);
@@ -587,6 +589,13 @@ const lastRunWorkspaceId=useRef<string|null>(null); // workspace effect 实际�
   if(event.type==='durable'&&event.event.kind==='session.plan'&&event.event.sessionId===activeSessionId.current&&typeof event.event.data.enabled==='boolean'){
    ++planRevision.current;setPlanState({id:event.event.sessionId,enabled:event.event.data.enabled,busy:planPending.current.has(event.event.sessionId)});
   }
+  // 计划抽屉联动：plan_write 写入计划后自动弹出「计划」视图（仿网页视图先例）；
+  // 待办/目标只驱动刷新。事件仅来自当前交互会话（session_send 按会话过滤）。
+  if(event.type==='durable'&&PLAN_STATE_KINDS.includes(event.event.kind)){
+   if(event.event.kind==='todo.state')noteLiveStateEvent(event.event);
+   if(event.event.kind==='plan.state')useSidePanel.getState().openPlans();
+   setPlanPanelRevision(v=>v+1);
+  }
  }
  async function dispatchText(id:string,input:string,hashes:string[],messageQuotes:string[]=[]){setRunning(old=>({...old,[id]:true}));await attempt(async()=>{
   // 无引用时保持原参数个数，避免既有 send 断言与调用形态漂移。
@@ -835,7 +844,7 @@ const lastRunWorkspaceId=useRef<string|null>(null); // workspace effect 实际�
    </div>
    <footer className="composer-area">{drafting&&<div className="chip-row"><button type="button" className="chip" aria-haspopup="menu" aria-expanded={pjMenuOpen} aria-label="选择项目" onClick={()=>setPjMenuOpen(v=>!v)}><Folder size={13} aria-hidden="true"/><span className="nm">{draftWorkspaceId!==null?projectName(draftWorkspaceId):'选择项目'}</span><ChevronDown size={13} aria-hidden="true"/></button>{draftWorkspaceId&&<div className="mode-select"><select aria-label="执行位置" value={draftExecMode} onChange={e=>setDraftExecOverride(e.target.value as ExecutionMode)}><option value="direct">直接写入项目</option>{workspaces.find(w=>w.id===draftWorkspaceId)?.executionMode==='replica'&&<option value="replica">隔离副本（审阅后同步）</option>}<option value="worktree">独立 worktree（需 git）</option></select></div>}{pjMenuOpen&&<div className="pj-menu" role="menu" aria-label="选择项目"><div className="pj-search"><Search size={13} aria-hidden="true"/><input value={pjQuery} onChange={e=>setPjQuery(e.target.value)} placeholder="搜索项目" aria-label="搜索项目"/></div><button type="button" role="menuitem" className={draftWorkspaceId===''?'current':''} onClick={()=>{setDraftWorkspaceId('');setDraftExecOverride(null);setPjMenuOpen(false)}}><MessageSquare size={13} aria-hidden="true"/><span className="nm">无项目</span><span className="pj-sub">不关联目录的独立会话</span>{draftWorkspaceId===''&&<Check size={14} aria-hidden="true"/>}</button><div className="pj-list">{pjCandidates.map(ws=><button type="button" key={ws.id} role="menuitem" className={ws.id===draftWorkspaceId?'current':''} onClick={()=>{setDraftWorkspaceId(ws.id);setDraftExecOverride(null);setPjMenuOpen(false)}}><Folder size={13} aria-hidden="true"/><span className="nm">{ws.name}</span>{ws.pinned&&<Pin size={11} aria-hidden="true"/>}{ws.id===draftWorkspaceId&&<Check size={14} aria-hidden="true"/>}</button>)}{!pjCandidates.length&&<p className="pj-empty">没有匹配的项目</p>}</div><div className="pj-sep"/><button type="button" role="menuitem" onClick={()=>{setPjMenuOpen(false);void openWorkspace()}}><Plus size={13} aria-hidden="true"/><span className="nm">新建项目</span><span className="pj-sub">打开文件夹</span></button></div>}</div>}{quotes.length>0&&<div className="quote-row">{quotes.map((quote,index)=><span key={`${index}-${quote.slice(0,12)}`} className="quote-chip" title={quote}><Quote size={11} className="q-ico" aria-hidden="true"/><span className="q-txt">{quote}</span><button type="button" className="q-x" aria-label={`删除引用 ${index+1}`} onClick={()=>setQuotes(old=>old.filter((_,i)=>i!==index))}><X size={9}/></button></span>)}</div>}{currentQuestion&&<QuestionCard key={currentQuestion.id} question={currentQuestion} sessionTitle={sessions.find(s=>s.id===currentQuestion.sessionId)?.title??currentQuestion.sessionId} onSubmit={answer=>void resolveQuestion(currentQuestion.id,answer)}/>}<form className="composer" onSubmit={submit}>{activeSkill&&<div className="slash-menu" role="listbox" aria-label="技能补全">{activeSkill.items.map((row,index)=>{const selected=index===Math.min(slashIndex,activeSkill.items.length-1);return <button type="button" key={row.name} role="option" aria-selected={selected} ref={selected?selectedOptionRef:undefined} className={selected?'selected':undefined} onMouseDown={e=>{e.preventDefault();applySkillCompletion(row,activeSkill.tok)}}><strong>${row.name}</strong><span>{row.description||'（无描述）'}</span></button>})}</div>}{activeSlash&&<div className="slash-menu" role="listbox" aria-label="斜杠命令补全">{activeSlash.items.map((spec,index)=>{const selected=index===Math.min(slashIndex,activeSlash.items.length-1);return <button type="button" key={spec.name} role="option" aria-selected={selected} ref={selected?selectedOptionRef:undefined} className={selected?'selected':undefined} onMouseDown={e=>{e.preventDefault();void executeSlash(spec)}}><strong>/{spec.name}</strong><span>{spec.description}</span></button>})}</div>}<textarea aria-label="消息" ref={textareaRef} placeholder={sessionCreating?'正在准备会话…':sessionId?'描述任务，或继续你的想法…（输入 / 唤出命令）':drafting&&draftWorkspaceId!==null?`描述任务，发送后将在 ${projectName(draftWorkspaceId)} 创建会话（输入 / 唤出命令）`:'选择项目后开始协作'} value={composerText} onChange={e=>{setComposerText(e.target.value);setCursor(e.currentTarget.selectionStart??0)}} onSelect={e=>setCursor(e.currentTarget.selectionStart??0)} disabled={sessionCreating||(!sessionId&&!drafting)} onKeyDown={e=>{const menu=activeSlash,menuSkill=activeSkill;if(menu){if(e.key==='ArrowDown'){e.preventDefault();setSlashIndex(menu.items.length?(slashIndex+1)%menu.items.length:0);return}if(e.key==='ArrowUp'){e.preventDefault();setSlashIndex(menu.items.length?(slashIndex-1+menu.items.length)%menu.items.length:0);return}if(e.key==='Tab'){e.preventDefault();applyCompletion(menu.items[Math.min(slashIndex,menu.items.length-1)],menu.token);return}if(e.key==='Escape'){e.preventDefault();setDismissedToken(menu.token);return}if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();const spec=menu.items[Math.min(slashIndex,menu.items.length-1)];if(spec)void executeSlash(spec);return}}if(menuSkill){if(e.key==='ArrowDown'){e.preventDefault();setSlashIndex(menuSkill.items.length?(slashIndex+1)%menuSkill.items.length:0);return}if(e.key==='ArrowUp'){e.preventDefault();setSlashIndex(menuSkill.items.length?(slashIndex-1+menuSkill.items.length)%menuSkill.items.length:0);return}if(e.key==='Tab'||e.key==='Enter'){e.preventDefault();const row=menuSkill.items[Math.min(slashIndex,menuSkill.items.length-1)];if(row)applySkillCompletion(row,menuSkill.tok);return}if(e.key==='Escape'){e.preventDefault();setDismissedToken(menuSkill.tok.token);return}}if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit()}}}/>{attachments.length>0&&<div className="permission-tags">{attachments.map(a=><span key={a.hash}>{a.name} <button type="button" aria-label={`移除附件 ${a.name}`} onClick={()=>setAttachments(old=>old.filter(item=>item.hash!==a.hash))}><X size={12}/></button></span>)}</div>}<div className="composer-bottom"><div className="composer-plus-wrap"><button type="button" className="composer-plus" aria-label="添加内容" aria-haspopup="menu" aria-expanded={plusOpen} disabled={(!sessionId&&!drafting)||sessionCreating||!!running[sessionId]} onClick={()=>setPlusOpen(v=>!v)}><Plus size={17}/></button>{plusOpen&&<div className="plus-menu" role="menu" aria-label="添加内容"><button type="button" role="menuitem" disabled={!sessionId||importing||attachments.length>=20} onClick={()=>{setPlusOpen(false);void addAttachment()}}><Paperclip size={15}/><span><strong>附件</strong><small>选择本地文件，随消息发送（最多 20 MiB）</small></span></button><button type="button" role="menuitem" disabled={!!sessionId&&(planState.id!==sessionId||planState.enabled===null||planState.busy)} onClick={()=>{setPlusOpen(false);if(!sessionId){setDraftPlan(true);setNotice('草稿将在发送时启用计划模式。')}else if(planState.id===sessionId&&planState.enabled===false&&!planState.busy)void setPlanMode(sessionId,true)}}><ListTodo size={15}/><span><strong>进入计划模式</strong><small>为当前会话启用计划模式</small></span></button><button type="button" role="menuitem" onClick={()=>insertPlusCommand('goal')}><Target size={15}/><span><strong>目标</strong><small>插入 /goal，为本会话设定一个目标</small></span></button></div>}</div><div className="composer-subagent-wrap"><button type="button" className="composer-subagent" aria-label="子代理" title="子代理" aria-haspopup="dialog" aria-controls="subagent-popover" aria-expanded={subagentOpen} disabled={!panelWorkspaceId} onClick={()=>setSubagentOpen(v=>!v)}><Bot size={17}/>{runningSubagentCount>0&&<span className="subagent-count">{runningSubagentCount>9?'9+':runningSubagentCount}</span>}</button>{subagentOpen&&<SubagentPanel sessions={subagentSessions} activeIds={activeIds} onOpen={s=>void openFromSidebar(s)} onCancel={id=>void cancelSubagent(id)} onClose={()=>setSubagentOpen(false)}/>}</div><div className="model-select"><button type="button" className="plan-mode-chip" aria-label="计划模式" aria-pressed={sessionId&&planState.id===sessionId&&planState.enabled!==null?planState.enabled:undefined} disabled={sessionCreating||!!running[sessionId]||(!sessionId&&!drafting)||(!!sessionId&&(planState.id!==sessionId||planState.enabled===null||planState.busy))} onClick={()=>void togglePlanMode()}>{!sessionId?(draftPlan?'计划模式（草稿待启用）':'计划模式（草稿）'):planState.id!==sessionId||planState.enabled===null?'计划模式（未知）':planState.enabled?'计划模式：已开启':'计划模式：已关闭'}</button><div className="mode-select"><select aria-label="权限模式" value={sessionId?approvalModeForSession(sessionId):approvalMode} onChange={e=>chooseApprovalMode(e.target.value as ApprovalPolicy)}>{APPROVAL_MODES.map(m=><option key={m.value} value={m.value} title={m.description}>{m.label}</option>)}</select></div><select aria-label="能力预设" value={presetId} onChange={e=>choosePreset(e.target.value)}><option value="">不使用预设</option>{presets.filter(p=>p.id!=='builtin:default').map(p=><option key={p.id} value={p.id} disabled={!!p.broken}>{p.name}{p.broken?'（不可用）':''}</option>)}</select><ModelSelect models={models} providers={providers} modelId={modelId} effort={effort} open={modelMenuOpen} onOpenChange={setModelMenuOpen} onPickModel={chooseModel} onPickEffort={chooseEffort} onOpenManage={()=>openSettings('models')}/></div><UsageRing models={models} providers={providers} modelId={modelId} sessionId={sessionId}/><div className="send-controls"><span>Enter 发送 · Shift + Enter 换行</span>{running[sessionId]&&!currentQuestion?<button type="button" className="send" aria-label="取消生成" onClick={cancel}><Square size={16}/></button>:<button className="send" type="submit" aria-label="发送消息" disabled={sessionCreating||importing||planState.busy||(!composerText.trim()&&!attachments.length&&!quotes.length)||(!sessionId&&(!drafting||draftWorkspaceId===null))||(!modelId&&!/^\/plan\s*$/.test(composerText.trim()))}><ArrowUp size={19}/></button>}</div></div></form></footer>
   </main>
-  <SidePanel workspaceId={workspaceId} executionMode={sessionExecMode(session)} currentSessionId={sessionId} onOpenSession={(id,workspace)=>{useSidePanel.getState().close();openFromPanel(id,workspace)}}/>
+  <SidePanel workspaceId={workspaceId} executionMode={sessionExecMode(session)} currentSessionId={sessionId} planRevision={planPanelRevision} onOpenSession={(id,workspace)=>{useSidePanel.getState().close();openFromPanel(id,workspace)}}/>
   {wsContextMenu&&<div className="session-context-menu" role="menu" aria-label="项目操作" style={{left:wsContextMenu.x,top:wsContextMenu.y}} onContextMenu={event=>event.preventDefault()}><button type="button" role="menuitem" onClick={()=>{const ws=workspaces.find(candidate=>candidate.id===wsContextMenu.workspaceId);if(ws)void command('workspace_open_dir',{workspaceId:ws.id}).catch(err=>setError(errorText(err)));setWsContextMenu(null)}}><FolderOpen size={14}/>打开项目目录</button><button type="button" role="menuitem" onClick={()=>{const ws=workspaces.find(candidate=>candidate.id===wsContextMenu.workspaceId);if(ws)setWsDialog({mode:'edit',id:ws.id,name:ws.name,execMode:ws.executionMode==='worktree'?'direct':ws.executionMode,currentMode:ws.executionMode});setWsContextMenu(null)}}><Pencil size={14}/>编辑</button><button type="button" role="menuitem" onClick={()=>{const ws=workspaces.find(candidate=>candidate.id===wsContextMenu.workspaceId);if(ws)void togglePinned(ws);setWsContextMenu(null)}}><Pin size={14}/>{workspaces.find(candidate=>candidate.id===wsContextMenu.workspaceId)?.pinned?'取消置顶':'置顶'}</button>{duplicateSourcePaths.has(workspaces.find(candidate=>candidate.id===wsContextMenu.workspaceId)?.sourcePath??'')&&<button type="button" role="menuitem" onClick={()=>{const ws=workspaces.find(candidate=>candidate.id===wsContextMenu.workspaceId);if(ws)openMergeConfirm(ws);setWsContextMenu(null)}}><GitCompareArrows size={14}/>合并同源项目…</button>}<button type="button" role="menuitem" onClick={()=>{const ws=workspaces.find(candidate=>candidate.id===wsContextMenu.workspaceId);if(ws)openRemoveConfirm(ws);setWsContextMenu(null)}}><Trash2 size={14}/>移除项目</button></div>}{wsRemove&&<Modal title={`移除项目「${wsRemove.name}」`} onClose={()=>setWsRemove(null)}><p className="muted">项目入口将从任务列表隐藏；磁盘上的原项目、会话与自动化数据全部保留，不受影响。</p><p className="muted">重新打开同一目录的项目时会重新显示它。</p>{wsRemove.running&&<p role="alert" className="inline-error">该项目还有运行中的对话或 Agent，移除会停止并释放相关运行状态。</p>}<div className="actions"><button type="button" onClick={()=>setWsRemove(null)}>取消</button><button className="danger" type="button" onClick={()=>void removeWorkspace()}>移除项目{wsRemove.running?'（移除并停止运行）':''}</button></div></Modal>}{wsMerge&&<Modal title="合并同源项目" onClose={()=>setWsMerge(null)}>
    <p className="muted">同一源目录存在多条项目记录（常见于数据目录迁移后重新打开项目）。合并会把重复项目的会话（含归档）、自动化与定时任务挂到保留项目，并删除重复项目的记录与隔离副本。</p>
    <p className="muted">保留项目：<strong>{projectName(wsMergeKeepId)}</strong>（自动选择创建时间最早的项目，其余同源项目全部并入）。</p>
@@ -1007,6 +1016,51 @@ function FileEditGroup({group}:{group:FileEditGroup}) {
   </div>
  </details>;
 }
+// 消息流 zcode 风格计划/待办卡。PLAN_STATE_KINDS 供 receiveEvent 判断计划抽屉联动。
+const PLAN_STATE_KINDS=['todo.state','plan.state','goal.state'];
+// 实时收到的待办事件 id：仅这些卡默认展开（历史回放收起），超上限整体清空防泄漏。
+const liveTodoIds=new Set<string>();
+function noteLiveStateEvent(event:SessionEvent){
+ if(liveTodoIds.size>=64)liveTodoIds.clear();
+ liveTodoIds.add(event.id);
+}
+const todoDone=(item:Record<string,unknown>)=>item.done===true||item.completed===true||item.status==='completed';
+function TodoStateCard({event,items}:{event:SessionEvent;items:Record<string,unknown>[]}){
+ const done=items.filter(todoDone).length;
+ const current=items.findIndex(item=>!todoDone(item));
+ const active=String(items[current]?.text??items.at(-1)?.text??'当前任务');
+ return <details className="zc-card" open={liveTodoIds.has(event.id)}>
+  <summary><ListTodo size={15}/><strong>待办清单</strong><span className="zc-primary">{active}</span><span className="zc-meta">{done}/{items.length}</span><span className="zc-chev"><ChevronRight size={13}/></span></summary>
+  <div className="zc-body"><div className="zc-body-inner"><div className="zc-rows">
+   {items.map((item,index)=>{
+    const isDone=todoDone(item);
+    const ico=isDone?<span className="zc-ico ok"><CircleCheck size={14}/></span>:index===current?<span className="zc-ico cur"><ArrowRight size={14}/></span>:<span className="zc-ico pending"><span className="zc-circle"/></span>;
+    return <div key={index} className={`zc-row ${isDone?'done':index===current?'current':'pending'}`}>{ico}<span>{String(item.text??'')}</span></div>;
+   })}
+  </div></div></div>
+ </details>;
+}
+// 计划/目标 Markdown 卡（对齐 zcode switch-mode 形态）：白卡预览 + 渐隐 + 悬浮「查看完整计划」；
+// 整卡点击打开右侧「计划」抽屉（onOpenPlanDetail 语义映射到 openPlans）。
+function PlanStateCard({kind,content}:{kind:string;content:string}){
+ const isGoal=kind==='goal.state';
+ const [copied,setCopied]=useState(false);
+ const openPlans=()=>useSidePanel.getState().openPlans();
+ const copyPlan=()=>{
+  navigator.clipboard?.writeText(content).then(()=>{setCopied(true);setTimeout(()=>setCopied(false),1500)}).catch(()=>{});
+ };
+ return <article className="zc-plan" tabIndex={0} aria-label={isGoal?'目标卡片，查看完整目标':'计划卡片，查看完整计划'} onClick={openPlans} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openPlans()}}}>
+  <div className="zc-plan-head">
+   {isGoal?<Target size={16}/>:<NotepadText size={16}/>}
+   <strong className="zc-plan-title">{isGoal?'目标':'计划'}</strong>
+   <button type="button" className={`zc-plan-copy${copied?' ok':''}`} aria-label="复制计划" title={copied?'已复制':'复制计划'} onClick={e=>{e.stopPropagation();copyPlan()}}>{copied?<Check size={14}/>:<Copy size={14}/>}</button>
+  </div>
+  <div className="zc-plan-body">
+   <div className="zc-plan-preview"><div className="prose"><Markdown content={content}/></div></div>
+   <button type="button" className="zc-plan-full" onClick={e=>{e.stopPropagation();openPlans()}}>查看完整计划 <ArrowRight size={15}/></button>
+  </div>
+ </article>;
+}
 export function EventCard({event,copyText,copyTurn,copyEnabled,hideCopy,...extras}:{event:SessionEvent;copyText?:string;copyTurn?:{sessionId:string;startSeq:string;endSeq:string};copyEnabled?:boolean;hideCopy?:boolean}&EventCardExtras) {
  const {kind,data}=event;
  if(kind==='ui.model_note')return <div className="model-note" role="status">{printable(data.text)}</div>;
@@ -1017,9 +1071,9 @@ export function EventCard({event,copyText,copyTurn,copyEnabled,hideCopy,...extra
  }
  if(kind==='todo.state'){
   const items=Array.isArray(data.items)?(data.items as Record<string,unknown>[]):[];
-  return <article className="tool-card todo-card"><div className="subagent-row"><ListTodo size={15}/><strong>待办清单</strong></div><TodoList items={items}/></article>;
+  return <TodoStateCard event={event} items={items}/>;
  }
- if(kind==='plan.state'||kind==='goal.state')return <article className="tool-card"><div className="subagent-row">{kind==='plan.state'?<ListTodo size={15}/>:<Target size={15}/>}<strong>{kind==='plan.state'?'计划':'目标'}</strong></div><div className="prose"><Markdown content={printable(data.content)}/></div></article>;
+ if(kind==='plan.state'||kind==='goal.state')return <PlanStateCard kind={kind} content={printable(data.content)}/>;
  if(kind==='user.message')return <article className="message user" data-message-id={event.id}><div className="message-body"><div className="user-bubble">{Array.isArray(data.quotes)&&data.quotes.map((quote,index)=><blockquote key={index} className="sent-quote" title={String(quote)}><b>引用：</b>{String(quote)}</blockquote>)}<div className="prose"><LinkedText content={printable(data.content)}/></div>{Array.isArray(data.attachments)&&data.attachments.map((a,index)=><ArtifactDownload key={index} sessionId={event.sessionId} artifact={a as ArtifactMetadata}/>)}</div></div></article>;
  if(kind==='assistant.message'||kind==='assistant.attempt'){
   const content=data.content==null?'':printable(data.content)??'';

@@ -15,11 +15,13 @@ const isDone=(item:Record<string,unknown>)=>item.done===true||item.completed===t
 const todoSummary=(data:Record<string,unknown>)=>{const items=todoItems(data);return `${items.length} 项 · ${items.filter(isDone).length} 已完成`};
 const planSnippet=(data:Record<string,unknown>)=>{const text=String(data.content??'');return text.length>80?`${text.slice(0,80)}…`:text};
 
-export function PlansPanel({currentSessionId,onOpenSession}:{currentSessionId:string;onOpenSession:(sessionId:string,workspaceId:string)=>void}) {
+export function PlansPanel({currentSessionId,onOpenSession,revision=0}:{currentSessionId:string;onOpenSession:(sessionId:string,workspaceId:string)=>void;revision?:number}) {
  const [entries,setEntries]=useState<PlanStateOverview[]>([]),[error,setError]=useState(''),[loaded,setLoaded]=useState(false);
  const [expanded,setExpanded]=useState(''),[history,setHistory]=useState<Record<string,SessionEvent[]|null>>({});
  async function load(){setError('');try{setEntries(await command<PlanStateOverview[]>('plan_overview'));setLoaded(true)}catch(e){setError(errorText(e))}}
  useEffect(()=>{void load()},[]);
+ // 事件驱动自动刷新：模型写入 todo/plan/goal 后 revision 递增，打开期间重拉汇总（revision=0 为首挂载，由上面的 effect 负责）。
+ useEffect(()=>{if(revision>0)void load()},[revision]);
  const order=entries.map(e=>e.sessionId).filter((id,index,all)=>all.indexOf(id)===index);
  const groups=order.map(sessionId=>({sessionId,items:entries.filter(e=>e.sessionId===sessionId)}));
  async function toggleHistory(sessionId:string){

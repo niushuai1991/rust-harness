@@ -627,3 +627,45 @@ button.run-session:hover{color:var(--text);text-decoration:underline}
 .pill.running{background:#f2efdf;color:#8b7946}.pill.running .dot{background:#8b7946;animation:pulse 1.1s infinite}
 .pill.failed{background:#faeae5;color:#a53e3a}.pill.failed .dot{background:#a53e3a}
 .tcard>summary .t-stats{flex-shrink:0}
+
+/* 消息流 zcode 风格待办卡：无框折叠头 + 淡灰内衬状态行 */
+.zc-card{margin:10px 0}
+.zc-card>summary{padding:4px 8px;margin:0 -8px;border-radius:8px;display:flex;align-items:center;gap:8px;cursor:pointer;list-style:none;font-size:13px;color:var(--muted)}
+.zc-card>summary::-webkit-details-marker{display:none}
+.zc-card>summary:hover{background:var(--surface)}
+.zc-card>summary strong{font-weight:550;color:var(--text);display:inline-flex;align-items:center;gap:7px;flex-shrink:0}
+.zc-card>summary strong svg{color:var(--muted)}
+.zc-primary{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:color-mix(in srgb,var(--muted) 70%,transparent)}
+.zc-meta{font-size:10px;color:color-mix(in srgb,var(--muted) 55%,transparent);font-family:"Cascadia Code",Consolas,monospace;flex-shrink:0}
+.zc-chev{color:var(--muted);opacity:0;transition:transform .15s,opacity .15s;flex-shrink:0;display:inline-flex}
+.zc-card>summary:hover .zc-chev{opacity:1}
+.zc-card[open] .zc-chev{opacity:1;transform:rotate(90deg)}
+.zc-body{padding:6px 8px 2px}
+.zc-body-inner{background:var(--surface);border-radius:12px;padding:8px 12px}
+.zc-rows{padding:2px 0}
+.zc-row{display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:12px}
+.zc-row.pending{color:var(--muted)}
+.zc-row.current{color:var(--text);font-weight:550}
+.zc-row.done{color:var(--muted);text-decoration:line-through}
+.zc-ico{display:inline-flex;flex-shrink:0}
+.zc-ico.ok{color:#4a703b}
+.zc-ico.cur{color:var(--text)}
+.zc-ico.pending{color:var(--muted);opacity:.45}
+.zc-ico svg{width:14px;height:14px}
+.zc-circle{width:8px;height:8px;border:1.6px solid currentColor;border-radius:50%}
+
+/* 消息流 zcode 风格计划/目标卡：白卡预览 + 渐隐 + 悬浮「查看完整计划」 */
+.zc-plan{margin:12px 0;border:1px solid var(--border);border-radius:12px;background:var(--panel);overflow:hidden;cursor:pointer;box-shadow:0 1px 2px #2021240f;transition:border-color .15s}
+.zc-plan:hover,.zc-plan:focus-visible{border-color:color-mix(in srgb,var(--muted) 30%,var(--border))}
+.zc-plan-head{display:flex;align-items:center;gap:8px;padding:14px 16px 0;min-width:0}
+.zc-plan-head>svg{color:var(--muted);flex-shrink:0}
+.zc-plan-title{font-weight:500;font-size:13px;color:var(--muted);flex-shrink:0}
+.zc-plan-copy{margin-left:auto;flex-shrink:0;width:26px;height:26px;padding:0;border:0;background:transparent;border-radius:6px;color:var(--muted);display:inline-flex;align-items:center;justify-content:center}
+.zc-plan-copy:hover{background:var(--surface);color:var(--text)}
+.zc-plan-copy.ok{color:#4a703b}
+.zc-plan-body{position:relative;overflow:hidden}
+.zc-plan-preview{max-height:256px;overflow:hidden;padding:8px 16px 48px;-webkit-mask-image:linear-gradient(to bottom,#000 0%,#000 30%,transparent 100%);mask-image:linear-gradient(to bottom,#000 0%,#000 30%,transparent 100%)}
+.zc-plan-preview .prose{padding:0;font-size:12px}
+.zc-plan-full{position:absolute;bottom:24px;left:50%;transform:translateX(-50%);height:40px;padding:0 18px 0 24px;border-radius:999px;border:0;background:var(--accent);color:var(--panel);display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:500;box-shadow:0 1px 3px #2021242e;white-space:nowrap}
+.zc-plan-full:hover{background:color-mix(in srgb,var(--accent) 88%,var(--bg))}
+.process-body .zc-card,.process-body .zc-plan{margin-left:10px}
