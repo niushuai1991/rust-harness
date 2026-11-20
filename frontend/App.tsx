@@ -16,6 +16,8 @@ import {useChat} from './store';
 import {DiffView,diffStats,parseUnifiedDiff} from './DiffView';
 import {groupFileEdits,summarizeFileEdits,type FileEditGroup} from './fileEdits';
 import {projectShellEvents,type ShellTimelineNode} from './shellEvents';
+import {projectToolEvents,type ToolTimelineNode} from './toolCallPairs';
+import {ToolCard} from './ToolCard';
 import {ShellCommandCard} from './ShellCommandCard';
 import ModelSelect from './ModelSelect';
 import {UsageRing} from './UsageRing';
@@ -966,11 +968,18 @@ function EventList({events,hideCopy,...extras}:{events:SessionEvent[];hideCopy?:
   const anchor=node.call??node.result;if(anchor)shells.set(anchor,node);
   if(node.call&&node.result)pairedResults.add(node.result);
  }
+ const tools=new Map<SessionEvent,Extract<ToolTimelineNode,{kind:'tool'}>>(),pairedToolResults=new Set<SessionEvent>();
+ for(const node of projectToolEvents(events))if(node.kind==='tool'){
+  const anchor=node.call??node.result;if(anchor)tools.set(anchor,node);
+  if(node.call&&node.result)pairedToolResults.add(node.result);
+ }
  return <>{groupFileEdits(events).map(node=>{
   if(node.kind==='group')return <FileEditGroup key={node.key} group={node.group}/>;
-  const event=node.event;if(pairedResults.has(event))return null;
+  const event=node.event;if(pairedResults.has(event)||pairedToolResults.has(event))return null;
   const shell=shells.get(event);
   if(shell){const result=shell.result,artifact=result?.data.artifact as ArtifactMetadata|undefined;return <ShellCommandCard key={shell.key} node={shell} artifact={result&&artifact?<ArtifactDownload sessionId={result.sessionId} artifact={artifact}/>:undefined}/>}
+  const tool=tools.get(event);
+  if(tool){const result=tool.result,artifact=result?.data.artifact as ArtifactMetadata|undefined;return <ToolCard key={tool.key} node={tool} workspaceId={extras.workspaceId} artifact={result&&artifact?<ArtifactDownload sessionId={result.sessionId} artifact={artifact}/>:undefined}/>}
   return <EventCard key={event.id} event={event} hideCopy={hideCopy} {...extras}/>;
  })}</>;
 }
@@ -1020,27 +1029,6 @@ export function EventCard({event,copyText,copyTurn,copyEnabled,hideCopy,...extra
   const reasoning=!!data.reasoning&&<details className="reasoning"><summary>思考过程</summary><pre>{printable(data.reasoning)}</pre></details>;
   const body=hasBody&&(hideCopy?<div className="proc-note prose"><Markdown content={content}/></div>:<div className="prose"><Markdown content={content}/></div>);
   return <article className="message assistant"><div className="message-body">{reasoning}{body}{!!data.error&&<div className="inline-error">{printable(data.error)}</div>}{copyEnabled&&hasBody&&<MessageCopyButton text={copyText??content} turn={copyTurn}/>}</div></article>;
- }
- if(kind==='tool.call'||kind==='tool.result'){
-  const args=typeof data.arguments==='object'&&data.arguments!==null?data.arguments as Record<string,unknown>:null;
-  const toolName=String(data.name);
-  // 调用事件从 arguments 取路径；结果事件无 arguments，由后端在 data.path 补充。
-  const toolPath=(toolName==='write'||toolName==='edit')?(typeof args?.path==='string'?args.path:typeof data.path==='string'?data.path:null):null;
-  // edit/write 收敛为文件工具行：调用只留一行，结果卡展开行级差异；旧事件无 diff 回退 JSON。
-  if(toolPath){
-   const isEdit=toolName==='edit';
-   const head=<>
-    {isEdit?<Pencil size={14} aria-hidden="true"/>:<FilePlus size={14} aria-hidden="true"/>}
-    <span className="ft-label">{isEdit?'编辑':'写入'}</span>
-    <button type="button" className="file-chip" title={toolPath} onClick={e=>{e.preventDefault();useSidePanel.getState().openPreview(toolPath)}}><FileCode size={12}/>{basename(toolPath)}</button>
-    {!!dirOf(toolPath)&&<span className="ft-dir">{dirOf(toolPath)}</span>}
-   </>;
-   if(kind==='tool.call')return <div className="tool-row">{head}</div>;
-   const diff=typeof data.diff==='string'&&data.diff?data.diff:null;
-   const stats=diff?diffStats(parseUnifiedDiff(diff)):null;
-   return <details className="tool-card file-tool"><summary>{head}{stats&&<span className="tool-stats"><b className="st-add">+{stats.add}</b><b className="st-del">-{stats.del}</b></span>}<span className={`ft-status${data.isError?' is-error':''}`}>{data.isError?'执行失败':'已完成'}</span><ChevronRight size={14} className="chev" aria-hidden="true"/></summary>{diff?<div className="tool-diff"><DiffView diff={diff}/></div>:<pre>{printable(data.arguments??data.content)}</pre>}{!!data.artifact&&<ArtifactDownload sessionId={event.sessionId} artifact={data.artifact as ArtifactMetadata}/>}</details>;
-  }
-  return <details className="tool-card"><summary><Terminal size={15}/><strong>{printable(data.name)}</strong>{toolPath&&<button type="button" className="file-chip" title={toolPath} onClick={e=>{e.preventDefault();useSidePanel.getState().openPreview(toolPath)}}><FileCode size={12}/>{basename(toolPath)}</button>}<span>{kind==='tool.call'?'工具调用':data.isError?'执行失败':'已完成'}</span></summary>{kind==='tool.result'&&toolName.startsWith('plugin__')?<PluginResultCards workspaceId={extras.workspaceId} content={printable(data.content)}/>:<pre>{printable(data.arguments??data.content)}</pre>}{!!data.artifact&&<ArtifactDownload sessionId={event.sessionId} artifact={data.artifact as ArtifactMetadata}/>}</details>;
  }
  if(kind==='plugin.command.result')return <article className="tool-card"><strong>{printable(data.name)}</strong><PluginResultCards workspaceId={extras.workspaceId} content={printable(data.content)}/></article>;
  // ask_user 提问卡：回放展示问题与选项；答复状态由 ask.resolved 按 id 配对（askAnswers 由调用方传入）。
