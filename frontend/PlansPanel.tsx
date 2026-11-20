@@ -1,7 +1,6 @@
 import {useEffect,useState} from 'react';
 import {ListTodo,MessageSquare,RefreshCw,Target} from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import {SessionMarkdown} from './SessionLinks';
 import {command,errorText} from './api';
 import {TodoList} from './App';
 import type {PlanStateOverview,SessionEvent,TimelinePage} from './types';
@@ -60,7 +59,7 @@ export function PlansPanel({currentSessionId,onOpenSession,revision=0}:{currentS
     {g.items.map(e=>
      <section key={e.kind} className="plan-entry">
       <div className="subagent-row">{e.kind==='todo.state'?<ListTodo size={15}/>:<Target size={15}/>}<strong>{KIND_LABEL[e.kind]??e.kind}</strong><small className="muted">{localTime(e.updatedAt)}</small></div>
-      {e.kind==='todo.state'?<TodoList items={todoItems(e.data)}/>:<div className="prose"><ReactMarkdown remarkPlugins={[remarkGfm]}>{String(e.data.content??'')}</ReactMarkdown></div>}
+      {e.kind==='todo.state'?<TodoList items={todoItems(e.data)}/>:<div className="prose"><SessionMarkdown sessionLinks={false} content={String(e.data.content??'')}/></div>}
      </section>)}
    </article>)}
   </div>
