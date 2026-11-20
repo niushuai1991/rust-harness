@@ -1,5 +1,6 @@
-import {useEffect,useState,type ReactNode,type MouseEvent} from 'react';
-import ReactMarkdown from 'react-markdown';
+import {useEffect,useMemo,useState,type ReactNode,type MouseEvent} from 'react';
+import {Check,Copy,X} from 'lucide-react';
+import ReactMarkdown, {type Components} from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {command,errorText} from './api';
 import {useSidePanel} from './sidePanelStore';
@@ -27,8 +28,25 @@ function SessionLink({href,children}:{href?:string;children?:ReactNode}) {
   {menu&&<div className="session-context-menu link-context-menu" role="menu" aria-label="链接操作" style={{left:menu.x,top:menu.y}} onMouseDown={event=>event.stopPropagation()}><button type="button" role="menuitem" onClick={()=>void perform('copy')}>复制链接</button><button type="button" role="menuitem" onClick={()=>void perform('open')}>在默认浏览器中打开</button></div>}
   {error&&<span role="alert" className="inline-error">{error}</span>}</>;
 }
-const markdownComponents={a:({href,children}:{href?:string;children?:ReactNode})=><SessionLink href={href}>{children}</SessionLink>};
-export function SessionMarkdown({content}:{content:string}) {return <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{content}</ReactMarkdown>}
+function CodeBlock({raw,children}:{raw:string;children?:ReactNode}) {
+ const [state,setState]=useState<'idle'|'success'|'error'>('idle');
+ useEffect(()=>{if(state==='idle')return;const timer=window.setTimeout(()=>setState('idle'),2000);return()=>window.clearTimeout(timer)},[state]);
+ async function copy(){try{await navigator.clipboard.writeText(raw);setState('success')}catch{setState('error')}}
+ const language=raw.match(/^```([^\r\n]*)/)?.[1].trim().split(/\s+/)[0]||'text';
+ return <div className="markdown-code-block"><div className="markdown-code-header"><span>{language}</span><button type="button" className={`markdown-code-copy ${state}`} aria-label="复制代码块" title={state==='success'?'已复制':state==='error'?'复制失败':'复制代码块'} onClick={()=>void copy()}>{state==='success'?<Check size={15}/>:state==='error'?<X size={15}/>:<Copy size={15}/>}</button></div><pre>{children}</pre><span className="markdown-code-status" role="status">{state==='success'?'已复制':state==='error'?'复制失败':''}</span></div>;
+}
+export function SessionMarkdown({content,sessionLinks=true}:{content:string;sessionLinks?:boolean}) {
+ const components=useMemo<Components>(()=>({
+  ...(sessionLinks?{a:({href,children})=><SessionLink href={href}>{children}</SessionLink>}:{}),
+  pre:({node,children})=>{
+   const start=node?.position?.start.offset,end=node?.position?.end.offset;
+   const raw=start!==undefined&&end!==undefined?content.slice(start,end):'';
+   if(!/^```(?!`)[^`\r\n]*(?:\r\n|\r|\n)/.test(raw)||!/(?:^|\r|\n)[ \t]*(?:> ?)*```[ \t]*$/.test(raw))return <pre>{children}</pre>;
+   return <CodeBlock raw={raw}>{children}</CodeBlock>;
+  }
+ }),[content,sessionLinks]);
+ return <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>{content}</ReactMarkdown>;
+}
 export function LinkedText({content}:{content:string}) {
  const parts=content.split(/(https?:\/\/[^\s<>"'，。！？、；：）】]+)/gi);
  return <>{parts.map((part,index)=>{
