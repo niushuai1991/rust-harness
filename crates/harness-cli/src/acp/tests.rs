@@ -71,6 +71,19 @@ fn tool_call_notification_matches_session_update_tag() {
 }
 
 #[test]
+fn tool_call_updates_reject_empty_association_keys() {
+    // 与桌面端时间线投影对齐：空字符串关联键视为无效，静默不发通知（缺失/非字符串已由 as_str()? 挡住）。
+    assert!(tool_call_update(&json!({"id": "", "name": "shell", "arguments": {}})).is_none());
+    assert!(tool_result_update(&json!({"callId": "", "name": "shell", "content": "ok"})).is_none());
+    assert!(tool_result_update(&json!({"name": "shell", "content": "ok"})).is_none());
+    // 正常关联键仍产出通知。
+    assert!(tool_call_update(&json!({"id": "c1", "name": "shell", "arguments": {}})).is_some());
+    assert!(
+        tool_result_update(&json!({"callId": "c1", "name": "shell", "content": "ok"})).is_some()
+    );
+}
+
+#[test]
 fn prompt_request_parses_text_and_resource_link_blocks() {
     let request: PromptRequest = serde_json::from_value(json!({
         "sessionId": "sess_1",
