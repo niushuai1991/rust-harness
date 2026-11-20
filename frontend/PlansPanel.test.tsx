@@ -72,4 +72,14 @@ describe('计划与目标面板',()=>{
   render(<PlansPanel currentSessionId="" onOpenSession={vi.fn()}/>);
   expect(await screen.findByText('查询失败')).toBeInTheDocument();
  });
+ it('revision 变化时重新读取汇总（事件驱动自动刷新）',async()=>{
+  mocks.command.mockResolvedValue([entry({data:{content:'第一版'}})]);
+  const {rerender}=render(<PlansPanel currentSessionId="s1" onOpenSession={vi.fn()} revision={0}/>);
+  await screen.findByText('第一版');
+  expect(mocks.command.mock.calls.filter(([name])=>name==='plan_overview')).toHaveLength(1);
+  mocks.command.mockResolvedValue([entry({data:{content:'第二版'}})]);
+  rerender(<PlansPanel currentSessionId="s1" onOpenSession={vi.fn()} revision={1}/>);
+  expect(await screen.findByText('第二版')).toBeInTheDocument();
+  expect(mocks.command.mock.calls.filter(([name])=>name==='plan_overview')).toHaveLength(2);
+ });
 });

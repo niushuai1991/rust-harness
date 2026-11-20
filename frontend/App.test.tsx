@@ -1303,18 +1303,58 @@ describe('子代理与任务状态可视化',()=>{
   await screen.findByText('历史派生记录，原父子关系属于源会话。');
   expect(screen.queryByRole('button',{name:'查看会话'})).not.toBeInTheDocument();
  });
- it('todo与plan状态事件渲染为清单与文本卡片',async()=>{
+ it('todo与plan状态事件渲染为zcode卡片，查看完整计划打开右侧抽屉',async()=>{
   const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,[
-   {id:'t1',sessionId:'a',seq:'1',kind:'todo.state',data:{items:[{text:'已完成项',done:true},{text:'待办项'}]},createdAt:''},
-   {id:'p1',sessionId:'a',seq:'2',kind:'plan.state',data:{content:'## 分三步走'},createdAt:''}
-   ]):original(name,args));
-  const {container}=render(<App/>);
+  mocks.command.mockImplementation(async(name:string,args:any)=>{
+   if(name==='session_timeline_page')return timeline(args.sessionId,[
+    {id:'t1',sessionId:'a',seq:'1',kind:'todo.state',data:{items:[{text:'已完成项',done:true},{text:'待办项'}]},createdAt:''},
+    {id:'p1',sessionId:'a',seq:'2',kind:'plan.state',data:{content:'## 分三步走'},createdAt:''}
+   ]);
+   if(name==='plan_overview')return [{sessionId:'a',sessionTitle:'会话 A',workspaceId:'w',kind:'plan.state',data:{content:'完整计划'},updatedAt:''}];
+   return original(name,args);
+  });
+  render(<App/>);
   await openSidebarSession(/会话 A/);
   await screen.findByText('待办清单');
-  expect(container.querySelector('.todo-list li.done')?.textContent).toContain('已完成项');
-  expect(screen.getByText(/待办项/)).toBeInTheDocument();
-  expect(screen.getByRole('heading',{name:'分三步走',level:2})).toBeInTheDocument();
+  // 历史回放的待办卡默认收起；折叠头含当前项与完成进度
+  const todoCard=document.querySelector('details.zc-card') as HTMLDetailsElement;
+  expect(todoCard).not.toBeNull();
+  expect(todoCard.open).toBe(false);
+  expect(todoCard.querySelector('summary')?.textContent).toContain('1/2');
+  fireEvent.click(todoCard.querySelector('summary')!);
+  expect(todoCard.querySelector('.zc-row.done')?.textContent).toContain('已完成项');
+  expect(todoCard.querySelector('.zc-row.current')?.textContent).toContain('待办项');
+  // 计划卡：白卡 + Markdown 预览 + 复制 + 悬浮「查看完整计划」
+  const planCard=document.querySelector('.zc-plan') as HTMLElement;
+  expect(planCard).not.toBeNull();
+  expect(within(planCard).getByText('计划')).toBeInTheDocument();
+  expect(within(planCard).getByRole('heading',{name:'分三步走',level:2})).toBeInTheDocument();
+  expect(within(planCard).getByRole('button',{name:'复制计划'})).toBeInTheDocument();
+  // 历史回放不自动弹抽屉；点击「查看完整计划」打开右侧计划视图并加载数据
+  expect(useSidePanel.getState().open).toBe(false);
+  fireEvent.click(within(planCard).getByRole('button',{name:/查看完整计划/}));
+  const drawer=await screen.findByRole('complementary',{name:'文件面板'});
+  expect(within(drawer).getByRole('tab',{name:'计划'})).toHaveAttribute('aria-selected','true');
+  expect(useSidePanel.getState()).toMatchObject({open:true,view:'plans'});
+  expect(await within(drawer).findByText('完整计划')).toBeInTheDocument();
+ });
+ it('实时写入计划后自动打开右侧计划抽屉并刷新面板数据',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  let planOverviewCalls=0;
+  mocks.command.mockImplementation(async(name:string,args:any)=>{
+   if(name==='plan_overview'){planOverviewCalls++;return planOverviewCalls===1?[]:[{sessionId:'a',sessionTitle:'会话 A',workspaceId:'w',kind:'plan.state',data:{content:'实时计划'},updatedAt:''}]}
+   return original(name,args);
+  });
+  mocks.send.mockImplementation(async(_id:string,_text:string,_model:string,onEvent:(e:LiveEvent)=>void)=>{
+   onEvent({type:'durable',event:{id:'lp1',sessionId:'a',seq:'2',kind:'plan.state',data:{content:'实时计划'},createdAt:''}});
+  });
+  await renderOpenA();
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'写个计划'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  // plan_write 实时事件 → 右侧抽屉自动弹出「计划」视图
+  await waitFor(()=>expect(useSidePanel.getState()).toMatchObject({open:true,view:'plans'}));
+  const drawer=await screen.findByRole('complementary',{name:'文件面板'});
+  expect(await within(drawer).findByText('实时计划')).toBeInTheDocument();
  });
 });
 describe('计划与目标面板',()=>{
