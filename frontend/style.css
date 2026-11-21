@@ -41,7 +41,7 @@
 .composer-plus:hover{background:var(--surface);color:var(--text)}
 .composer-plus[aria-expanded="true"]{background:var(--surface);color:var(--accent)}
 /* 子代理入口：+号旁的 Bot 图标，运行中数量以右上角小徽标提示；面板向上弹出同 plus-menu。 */
-.composer-subagent-wrap{position:relative}
+/* 目标模式：/goal 激活后显示在子代理左侧，点击取消；配色沿用 composer 图标激活态 */.composer-goal{width:34px;height:34px;padding:0;border:0;background:transparent;color:var(--accent);border-radius:8px}.composer-goal:hover{background:var(--surface)}.composer-subagent-wrap{position:relative}
 .composer-subagent{position:relative;width:34px;height:34px;padding:0;border:0;background:transparent;color:var(--muted);border-radius:8px}
 .composer-subagent:hover{background:var(--surface);color:var(--text)}
 .composer-subagent[aria-expanded="true"]{background:var(--surface);color:var(--accent)}
