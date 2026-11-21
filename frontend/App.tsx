@@ -45,7 +45,7 @@ const TERMINAL_STATUS:{[status:string]:string}={running:'运行中',exited:'已�
 const APPROVAL_MODES:{value:ApprovalPolicy;label:string;description:string}[]=[
  {value:'ask',label:'每次确认',description:'每个工具调用前逐一确认'},
  {value:'edit',label:'自动编辑',description:'写文件自动放行，其余仍确认'},
- {value:'guarded',label:'自主',description:'自动执行，危险命令仍需确认'},
+ {value:'guarded',label:'自主',description:'自动执行，危险命令与交互终端仍需确认'},
  {value:'auto',label:'完全访问',description:'全部自动放行（改动仍只落工作副本）'},
  {value:'never',label:'只读',description:'需审批的工具一律拒绝'},
 ];

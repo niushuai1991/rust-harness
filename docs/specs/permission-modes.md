@@ -1,8 +1,8 @@
 # 权限模式（五档审批策略）
 
-- 日期：2026-11-09（计划批准）
+- 日期：2026-11-09（计划批准）；修订：2026-11-22（Guarded 档闸门扩展到命令承载类工具与交互终端）
 - 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
-- 范围：五档权限模式（审批策略）统一定义与四端接入：CLI `--approval`、能力预设 `approval` 字段、ACP modes、桌面发送框权限模式选择器；`guarded` 档的危险 shell 命令识别规则。设计参考 codex approval presets 与 zcode permissionMode（plan/build/edit/guarded/yolo）。
+- 范围：五档权限模式（审批策略）统一定义与四端接入：CLI `--approval`、能力预设 `approval` 字段、ACP modes、桌面发送框权限模式选择器；`guarded` 档的危险命令识别规则。设计参考 codex approval presets 与 zcode permissionMode（plan/build/edit/guarded/yolo）。
 
 ## 背景与决策
 
@@ -24,11 +24,12 @@
 | `ask` | 每次确认（默认） | 一律 `None` 交互询问 | 现行为 |
 | `edit` | 自动编辑 | tool ∈ {`write`,`edit`} → `Some(true)`，其余 `None` | 写文件落副本本身可审阅，先放行；shell 等仍确认 |
 | `auto` | 完全访问 | 一律 `Some(true)` | 改动仍只落副本；shell 仍受受限令牌沙箱约束 |
-| `guarded` | 自主 | tool ≠ `shell` → `Some(true)`；`shell` 命中[危险命令规则](#危险命令规则-guarded-v1) → `None`，否则 `Some(true)` | 危险命令的审批理由点名规则（如「自主模式检测到危险命令（git-push-force）」） |
+| `guarded` | 自主 | `terminal_open` → `None`（交互式终端的后续输入无法静态预审，一律询问）；tool ∈ {`shell`, `background_run`} → 命令缺失/空白或命中[危险命令规则](#危险命令规则-guarded-v1) → `None`，否则 `Some(true)`；其余需审批工具 → `Some(true)` | 危险命令的审批理由点名规则（如「自主模式检测到危险命令（git-push-force）」），shell 与后台命令同款；用户批准打开终端后，terminal_write 免审批即构成已确认闭环 |
 
 - `decide` 返回 `Some(allow)` 时审批不经 pending 等待直接结算；事件流仍完整记录 `approval.request` 与 `approval.resolved`，回放语义不变。
 - `None` 时回落宿主交互裁决：CLI 终端 y/n、桌面审批卡片、ACP `session/request_permission`。
-- `shell` 命令缺失或为空白时按需确认处理（保守）。
+- `shell`/`background_run` 命令缺失或为空白时按需确认处理（保守）。
+- 修订说明（2026-11-22）：闸门从工具名 `shell` 扩展为「命令承载类工具」（`shell`、`background_run`）与交互终端（`terminal_open`）。此前 `background_run`（执行任意命令，直接模式还是无沙箱宿主令牌）与 `terminal_open`（ConPTY PowerShell，后续 `terminal_write` 免审批）因工具名不同绕过危险检查，与「自主，危险命令仍需确认」的用户预期不符。`schedule_write`/`agent_send`/`agent_fork` 等非命令承载工具维持放行：定时任务到期回合内的 shell 仍守卫，子代理沿父策略。
 
 ## 会话策略与运行时默认档
 

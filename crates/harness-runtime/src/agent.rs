@@ -1626,17 +1626,19 @@ impl Runtime {
         cancel: &CancellationToken,
         escalated: bool,
         denial_rule: Option<&str>,
+        exec_mode: ExecutionMode,
     ) -> AppResult<()> {
         let policy = self.approval_policy(session);
-        // 自主档下 shell 危险命令在审批理由中点名规则，便于用户判断。
-        let dangerous = (policy == Some(ApprovalPolicy::Guarded) && call.name == "shell")
-            .then(|| {
-                call.arguments
-                    .get("command")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-            })
-            .and_then(dangerous_shell_rule);
+        // 自主档下命令承载类工具的危险命令在审批理由中点名规则，便于用户判断。
+        let dangerous = (policy == Some(ApprovalPolicy::Guarded)
+            && matches!(call.name.as_str(), "shell" | "background_run"))
+        .then(|| {
+            call.arguments
+                .get("command")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+        })
+        .and_then(dangerous_shell_rule);
         let request = ApprovalRequest {
             id: new_id(),
             session_id: session.into(),
@@ -1653,7 +1655,13 @@ impl Runtime {
                 (false, Some(rule)) => {
                     format!("自主模式检测到危险命令（{rule}），需要确认本次执行。")
                 }
-                (false, None) => "允许此工具在隔离工作副本中执行？原项目仍需单独确认同步。".into(),
+                (false, None) => match exec_mode {
+                    // 直接模式没有隔离副本，通用文案会误导用户以为改动经审阅同步。
+                    ExecutionMode::Direct => {
+                        "允许此工具在源项目目录中直接执行？改动立即生效，无隔离副本。".into()
+                    }
+                    _ => "允许此工具在隔离工作副本中执行？原项目仍需单独确认同步。".into(),
+                },
             },
         };
         // 会话级策略（桌面端设置）可自动裁决的档位不经 pending 等待；事件流仍完整记录请求与结算。
@@ -1965,7 +1973,8 @@ impl Runtime {
                         .await?
                 } else if a["escalate"].as_bool().unwrap_or(false) {
                     // 主动提权：首次即审批，批准后无沙箱执行。
-                    self.approve(&session, &call, &cancel, true, None).await?;
+                    self.approve(&session, &call, &cancel, true, None, exec.mode)
+                        .await?;
                     escalated = true;
                     ShellService::run_in(root, &exec.capability_id, command, cancel.clone(), false)
                         .await?
@@ -1982,7 +1991,7 @@ impl Runtime {
                     if first.exit_code != 0
                         && let Some(rule) = harness_platform::classify_sandbox_denial(&first)
                     {
-                        self.approve(&session, &call, &cancel, true, Some(rule))
+                        self.approve(&session, &call, &cancel, true, Some(rule), exec.mode)
                             .await?;
                         escalated = true;
                         ShellService::run_in(
@@ -2333,7 +2342,7 @@ impl Runtime {
         }
         if needs_approval
             && let Err(error) = self
-                .approve(ctx.session, &call, ctx.cancel, false, None)
+                .approve(ctx.session, &call, ctx.cancel, false, None, ctx.exec.mode)
                 .await
         {
             return (call, Err(error));

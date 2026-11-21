@@ -1,6 +1,8 @@
 //! Human-only declarative plugin entry points. Agent-facing tools continue through agent approval.
 use crate::Runtime;
-use harness_contracts::{AppError, AppResult, ToolCall, ToolResult, WorkspaceFilePreview, new_id};
+use harness_contracts::{
+    AppError, AppResult, ExecutionMode, ToolCall, ToolResult, WorkspaceFilePreview, new_id,
+};
 use serde_json::{Value, json};
 use std::{path::Path, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -108,7 +110,9 @@ impl Runtime {
         )
         .await?;
         let result = async {
-            self.approve(session, &call, &cancel, false, None).await?;
+            // 插件命令固定在托管副本执行：reason 按实际执行位置（隔离副本）描述。
+            self.approve(session, &call, &cancel, false, None, ExecutionMode::Replica)
+                .await?;
             self.plugins
                 .execute_command(
                     &info.workspace_id,

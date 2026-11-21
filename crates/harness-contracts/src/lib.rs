@@ -425,10 +425,19 @@ impl ApprovalPolicy {
             Self::Auto => Some(true),
             Self::Never => Some(false),
             Self::Guarded => {
-                if request.tool != "shell" {
-                    return Some(true);
+                // 交互终端（ConPTY PowerShell）无法静态预审后续输入，一律保守询问；
+                // 用户批准打开后，terminal_write 免审批即构成已确认闭环。
+                if request.tool == "terminal_open" {
+                    return None;
                 }
-                let command = request.arguments.get("command").and_then(Value::as_str)?;
+                // 命令承载类工具与 shell 同守危险规则：background_run 执行任意命令，
+                // 直接模式还是无沙箱宿主令牌，不能因工具名不同绕过检查。
+                let command = match request.tool.as_str() {
+                    "shell" | "background_run" => {
+                        request.arguments.get("command").and_then(Value::as_str)?
+                    }
+                    _ => return Some(true),
+                };
                 if command.trim().is_empty() || dangerous_shell_rule(command).is_some() {
                     None
                 } else {
@@ -1476,6 +1485,57 @@ mod approval_policy_tests {
             None
         );
         assert_eq!(ApprovalPolicy::Guarded.decide(&shell("   ")), None);
+    }
+
+    #[test]
+    fn guarded_gates_command_carrying_tools_like_shell() {
+        // background_run 本质执行任意命令，与 shell 同守危险规则。
+        let background =
+            |command: &str| request("background_run", serde_json::json!({"command": command}));
+        assert_eq!(
+            ApprovalPolicy::Guarded.decide(&background("cargo test --all-features")),
+            Some(true),
+            "安全后台命令应自动放行"
+        );
+        assert_eq!(
+            ApprovalPolicy::Guarded.decide(&background("git push --force origin main")),
+            None,
+            "危险后台命令必须询问"
+        );
+        // 命令缺失或空白时保守询问。
+        assert_eq!(
+            ApprovalPolicy::Guarded.decide(&request("background_run", serde_json::json!({}))),
+            None
+        );
+        assert_eq!(ApprovalPolicy::Guarded.decide(&background("  ")), None);
+        // terminal_open 打开的是交互式 PowerShell，后续输入无法静态预审，一律保守询问。
+        assert_eq!(
+            ApprovalPolicy::Guarded.decide(&request("terminal_open", serde_json::json!({}))),
+            None,
+            "交互终端无法预审后续输入，Guarded 档应询问"
+        );
+        // 非命令承载工具维持自动放行：schedule_write 的 task 是提示词（到期回合内 shell 仍守卫），
+        // agent 类投递符合「自主」语义。
+        assert_eq!(
+            ApprovalPolicy::Guarded.decide(&request(
+                "schedule_write",
+                serde_json::json!({"at":"2099-01-01T00:00:00Z","task":"备份","modelId":"m"})
+            )),
+            Some(true)
+        );
+        assert_eq!(
+            ApprovalPolicy::Guarded.decide(&request(
+                "agent_send",
+                serde_json::json!({"sessionId":"c1","task":"梳理"})
+            )),
+            Some(true)
+        );
+        // Ask/Edit/Auto/Never 四档不受本次闸门调整影响（对照锚定）。
+        let bg = background("git push --force origin main");
+        assert_eq!(ApprovalPolicy::Ask.decide(&bg), None);
+        assert_eq!(ApprovalPolicy::Edit.decide(&bg), None);
+        assert_eq!(ApprovalPolicy::Auto.decide(&bg), Some(true));
+        assert_eq!(ApprovalPolicy::Never.decide(&bg), Some(false));
     }
 
     #[test]
