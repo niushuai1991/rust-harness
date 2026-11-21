@@ -6,7 +6,7 @@
 
 ## 修订记录
 
-- 2026-11-22：`background_run` 从「仅托管副本」扩展到会话执行位置（直接模式/worktree/副本/scratch），按会话执行位置镜像前台 shell 执行方式（详见[直接执行模式](direct-execution.md)）；shell 前台执行到达时限（KV `app.tool_timeout_secs`，缺省 180 秒）自动转为受管后台任务继续运行，不取消、不重跑；内存任务注册表从 harness-orchestration 上移到 `Runtime::jobs`，前台转后台与 `background_run` 共用；输入框下方新增终端图标浮层展示运行中任务与已运行时长。
+- 2026-11-22：`background_run` 从「仅托管副本」扩展到会话执行位置（直接模式/worktree/副本/scratch），按会话执行位置镜像前台 shell 执行方式（详见[直接执行模式](direct-execution.md)）；shell 前台执行到达时限（KV `app.tool_timeout_secs`，缺省 120 秒）自动转为受管后台任务继续运行，不取消、不重跑；内存任务注册表从 harness-orchestration 上移到 `Runtime::jobs`，前台转后台与 `background_run` 共用；输入框下方新增终端图标浮层展示运行中任务与已运行时长。
 
 ## 背景与范围
 
@@ -61,7 +61,7 @@ P2 阶段验收项「后台任务」的后端能力由 `harness-orchestration` �
 
 ## shell 前台到限自动转后台（2026-11-22 修订）
 
-- shell 工具前台执行到达时限（KV `app.tool_timeout_secs`，缺省 180 秒、允许 5–3600，桌面「设置 → 性能」暴露）时**不取消**：已在执行的工具体原样移入独立任务继续运行，无重跑副作用。
+- shell 工具前台执行到达时限（KV `app.tool_timeout_secs`，缺省 120 秒、允许 5–3600，桌面「设置 → 性能」暴露）时**不取消**：已在执行的工具体原样移入独立任务继续运行，无重跑副作用。
 - 转后台沿用本调用前已通过的命令审批，不发起新审批；沙箱提权重跑若已裁决，后台以同款方式继续执行。
 - 转后台时登记 `Runtime::jobs`（与 `background_run` 共用的内存注册表），落 `job.started` 事件；工具体结束后还原 shell 结果（`ProcessOutput` JSON）落 `job.finished`，事件形状与 `background_run` 完全一致，`background_status` 查询与桌面面板零改动可用。
 - 工具向模型返回任务 id 与 `background_status`/`background_cancel` 用法提示；回合结束后任务继续存续，可经注册表令牌取消，宿主退出统一取消，重启后未终结任务由恢复逻辑补记「已中断」且不重放副作用。

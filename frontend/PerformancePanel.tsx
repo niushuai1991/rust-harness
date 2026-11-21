@@ -3,7 +3,7 @@ import {command,errorText} from './api';
 
 type PerfSettings={toolConcurrency:boolean;toolConcurrencyLimit:number;toolTimeoutSecs:number;autoCompaction:boolean;httpConnectionReuse:boolean};
 
-const DEFAULTS:PerfSettings={toolConcurrency:true,toolConcurrencyLimit:8,toolTimeoutSecs:180,autoCompaction:true,httpConnectionReuse:true};
+const DEFAULTS:PerfSettings={toolConcurrency:true,toolConcurrencyLimit:8,toolTimeoutSecs:120,autoCompaction:true,httpConnectionReuse:true};
 
 function Toggle({label,description,checked,onChange}:{label:string;description:string;checked:boolean;onChange:(value:boolean)=>void}){
  return <article className="settings-example-item">
@@ -15,7 +15,7 @@ function Toggle({label,description,checked,onChange}:{label:string;description:s
 export function PerformancePanel(){
  const [settings,setSettings]=useState<PerfSettings|null>(null);
  const [limitText,setLimitText]=useState('8');
- const [timeoutText,setTimeoutText]=useState('180');
+ const [timeoutText,setTimeoutText]=useState('120');
  const [error,setError]=useState<string|null>(null);
  useEffect(()=>{
   command<PerfSettings>('perf_settings_get')
@@ -59,7 +59,7 @@ export function PerformancePanel(){
     onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();applyLimit()}}}/>
   </article>
   <article className="settings-example-item">
-   <span className="settings-example-copy"><strong>工具执行时限</strong><small>前台执行到达上限后，shell 命令自动转为后台任务继续运行，其余工具取消并结算结果未知；5–3600 秒，默认 180。</small></span>
+   <span className="settings-example-copy"><strong>工具执行时限</strong><small>前台执行到达上限后，shell 命令自动转为后台任务继续运行，其余工具取消并结算结果未知；5–3600 秒，默认 120。</small></span>
    <input type="number" min={5} max={3600} aria-label="工具执行时限（秒）" value={timeoutText}
     onChange={e=>setTimeoutText(e.target.value)} onBlur={applyTimeout}
     onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();applyTimeout()}}}/>

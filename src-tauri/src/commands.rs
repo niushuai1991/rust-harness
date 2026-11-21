@@ -941,7 +941,7 @@ pub struct PerfSettings {
     pub http_connection_reuse: bool,
 }
 
-/// 读取性能优化设置（缺省全部开启、并发上限 8、执行时限 180 秒）。
+/// 读取性能优化设置（缺省全部开启、并发上限 8、执行时限 120 秒）。
 #[tauri::command]
 #[specta::specta]
 pub async fn perf_settings_get(state: Backend<'_>) -> AppResult<PerfSettings> {

@@ -33,9 +33,9 @@ const TOOL_CONCURRENCY_KEY: &str = "app.tool_concurrency";
 /// 工具批次并发上限（KV，缺省 8，允许 1–16）。
 const TOOL_CONCURRENCY_LIMIT_KEY: &str = "app.tool_concurrency_limit";
 const DEFAULT_TOOL_CONCURRENCY_LIMIT: u32 = 8;
-/// 工具执行时限（KV，秒；缺省 180，允许 5–3600）。shell 到限自动转后台任务，其余工具超时取消。
+/// 工具执行时限（KV，秒；缺省 120，允许 5–3600）。shell 到限自动转后台任务，其余工具超时取消。
 const TOOL_TIMEOUT_SECS_KEY: &str = "app.tool_timeout_secs";
-const DEFAULT_TOOL_TIMEOUT_SECS: u64 = 180;
+const DEFAULT_TOOL_TIMEOUT_SECS: u64 = 120;
 /// 请求前自动压缩开关（KV，缺省开启）。
 const AUTO_COMPACTION_KEY: &str = "app.auto_compaction";
 /// 自动压缩触发阈值：总输入 token 达到窗口的 80% 时在下一次请求前压缩。
@@ -823,7 +823,7 @@ impl Runtime {
             .set(TOOL_CONCURRENCY_LIMIT_KEY, &json!(limit))
             .await
     }
-    /// 工具执行时限（秒，缺省 180；shell 到限自动转后台，其余工具超时取消）。
+    /// 工具执行时限（秒，缺省 120；shell 到限自动转后台，其余工具超时取消）。
     pub async fn tool_timeout_secs(&self) -> AppResult<u64> {
         let stored = self.store.get(TOOL_TIMEOUT_SECS_KEY).await?;
         match stored {
@@ -3045,7 +3045,7 @@ pub fn builtin_tools() -> Vec<ToolDefinition> {
         ),
         def(
             "shell",
-            "在Windows系统写入沙箱内运行PowerShell命令，需审批；escalate为true时请求不带沙箱重跑（需审批）。前台达到时限（默认180秒）命令不中断，自动转为后台任务继续执行并以tool result返回任务id，用background_status查询结果、background_cancel取消",
+            "在Windows系统写入沙箱内运行PowerShell命令，需审批；escalate为true时请求不带沙箱重跑（需审批）。前台达到时限（默认120秒）命令不中断，自动转为后台任务继续执行并以tool result返回任务id，用background_status查询结果、background_cancel取消",
             json!({"command":s,"escalate":{"type":"boolean"}}),
             &["command"],
         ),
