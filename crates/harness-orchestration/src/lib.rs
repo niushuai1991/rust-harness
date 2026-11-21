@@ -109,7 +109,6 @@ pub struct JobInfo {
 struct State {
     runtime: Weak<Runtime>,
     stop: CancellationToken,
-    jobs: Mutex<HashMap<String, (String, CancellationToken)>>,
     agents: Mutex<HashMap<String, usize>>,
     terminals: Mutex<HashMap<String, Arc<TerminalEntry>>>,
     world: Arc<dyn PtyWorld>,
@@ -122,7 +121,13 @@ pub struct Installed {
 }
 impl Installed {
     pub fn has_activity(&self) -> bool {
-        !self.state.jobs.lock().unwrap().is_empty() || !self.state.agents.lock().unwrap().is_empty()
+        let jobs = self
+            .state
+            .runtime
+            .upgrade()
+            .map(|r| !r.jobs.is_empty())
+            .unwrap_or(false);
+        jobs || !self.state.agents.lock().unwrap().is_empty()
     }
     fn runtime(&self) -> AppResult<Arc<Runtime>> {
         self.state
@@ -363,13 +368,11 @@ impl Installed {
 impl Drop for Installed {
     fn drop(&mut self) {
         self.state.stop.cancel();
-        for (_, token) in self.state.jobs.lock().unwrap().values() {
-            token.cancel();
-        }
         for entry in self.state.terminals.lock().unwrap().values() {
             entry.token.cancel();
         }
         if let Some(runtime) = self.state.runtime.upgrade() {
+            runtime.jobs.cancel_all();
             for id in self.state.agents.lock().unwrap().keys() {
                 runtime.cancel(id);
             }
@@ -385,7 +388,6 @@ pub fn install_with(runtime: Arc<Runtime>, world: Arc<dyn PtyWorld>) -> AppResul
     let state = Arc::new(State {
         runtime: Arc::downgrade(&runtime),
         stop: CancellationToken::new(),
-        jobs: Mutex::new(HashMap::new()),
         agents: Mutex::new(HashMap::new()),
         terminals: Mutex::new(HashMap::new()),
         world,
@@ -650,7 +652,7 @@ impl ExternalTool for Tool {
             "background_run" => (
                 json!({"command":s}),
                 vec!["command"],
-                "在托管副本启动真实后台Shell任务，需审批",
+                "在当前项目执行位置（直接模式/worktree/副本）启动真实后台Shell任务，需审批",
             ),
             "background_status" => (
                 json!({"id":s}),
@@ -752,6 +754,8 @@ impl ExternalTool for Tool {
                     Some(r.workspaces.acquire(&context.workspace_id)?)
                 };
                 let root = context.root.to_string_lossy().into_owned();
+                let mode = context.mode;
+                let capability_id = context.capability_id.clone();
                 let id = new_id();
                 let token = self.state.stop.child_token();
                 r.append(
@@ -760,18 +764,22 @@ impl ExternalTool for Tool {
                     json!({"id":id,"command":command,"status":"running"}),
                 )
                 .await?;
-                self.state
-                    .jobs
-                    .lock()
-                    .unwrap()
-                    .insert(id.clone(), (context.session_id.clone(), token.clone()));
-                let state = self.state.clone();
+                r.jobs
+                    .register(id.clone(), context.session_id.clone(), token.clone());
                 let sid = context.session_id.clone();
                 let job = id.clone();
                 tokio::spawn(async move {
-                    let result =
-                        ShellService::run(std::path::Path::new(&root), &command, token.clone())
-                            .await;
+                    // 按执行位置镜像前台 shell 的执行方式：direct 无沙箱宿主令牌执行，
+                    // 其余（副本/worktree/scratch）按 capability 派生受限令牌沙箱执行。
+                    let sandboxed = mode != harness_contracts::ExecutionMode::Direct;
+                    let result = ShellService::run_in(
+                        std::path::Path::new(&root),
+                        &capability_id,
+                        &command,
+                        token.clone(),
+                        sandboxed,
+                    )
+                    .await;
                     // ShellService joins process-tree teardown before returning. Never drop the lease on cancellation early.
                     let status = if token.is_cancelled() {
                         "cancelled"
@@ -787,7 +795,7 @@ impl ExternalTool for Tool {
                     };
                     let _ = r.append(&sid, "job.finished", payload).await;
                     drop(lease);
-                    state.jobs.lock().unwrap().remove(&job);
+                    r.jobs.remove(&job);
                 });
                 json!({"id":id,"status":"running"})
             }
@@ -1136,7 +1144,7 @@ impl State {
     async fn cancel_job(&self, r: &Runtime, session: &str, id: &str) -> AppResult<Value> {
         self.ready.get_or_try_init(|| self.recover_all()).await?;
         let status = self.job_status(r, session, id).await?;
-        if let Some((owner, token)) = self.jobs.lock().unwrap().get(id)
+        if let Some((owner, token)) = r.jobs.owner_token(id)
             && owner == session
         {
             token.cancel();
@@ -1178,7 +1186,7 @@ impl State {
                 }
             }
             for id in open.keys() {
-                if !self.jobs.lock().unwrap().contains_key(id) {
+                if !r.jobs.contains(id) {
                     r.append(&s.id,"job.finished",json!({"id":id,"status":"interrupted","error":"应用中断，未重放Shell副作用"})).await?;
                 }
             }
