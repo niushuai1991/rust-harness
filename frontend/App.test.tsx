@@ -1610,6 +1610,61 @@ describe('斜杠命令补全',()=>{
   fireEvent.keyDown(input,{key:'Enter'});
   expect(await screen.findByText(/可用命令：/)).toBeInTheDocument();
  });
+ it('Enter 选中 /goal 激活目标模式：不发送消息并出现目标图标',async()=>{
+  mocks.send.mockResolvedValue(undefined);
+  await renderOpenA();
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'/go'}});
+  fireEvent.keyDown(input,{key:'Enter'});
+  expect(mocks.send).not.toHaveBeenCalled();
+  expect(input).toHaveValue('');
+  expect(screen.getByRole('button',{name:'目标模式'})).toBeInTheDocument();
+ });
+ it('目标模式下发送的消息展开为预置提示词，发送后目标图标消失',async()=>{
+  mocks.send.mockResolvedValue(undefined);
+  await renderOpenA();
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'/goal'}});
+  fireEvent.keyDown(input,{key:'Enter'});
+  expect(screen.getByRole('button',{name:'目标模式'})).toBeInTheDocument();
+  fireEvent.change(input,{target:{value:'完成导出功能'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a',`${GOAL_PROMPT}\n\n目标：完成导出功能`,'m',expect.any(Function),undefined,'high'));
+  expect(screen.queryByRole('button',{name:'目标模式'})).not.toBeInTheDocument();
+ });
+ it('点击目标图标取消目标模式，后续消息按原文发送',async()=>{
+  mocks.send.mockResolvedValue(undefined);
+  await renderOpenA();
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'/goal'}});
+  fireEvent.keyDown(input,{key:'Enter'});
+  fireEvent.click(screen.getByRole('button',{name:'目标模式'}));
+  expect(screen.queryByRole('button',{name:'目标模式'})).not.toBeInTheDocument();
+  fireEvent.change(input,{target:{value:'普通消息'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','普通消息','m',expect.any(Function),undefined,'high'));
+ });
+ it('菜单关闭后输入 /goal 回车同样激活目标模式',async()=>{
+  mocks.send.mockResolvedValue(undefined);
+  await renderOpenA();
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'/goal'}});
+  fireEvent.keyDown(input,{key:'Escape'});
+  fireEvent.keyDown(input,{key:'Enter'});
+  expect(mocks.send).not.toHaveBeenCalled();
+  expect(screen.getByRole('button',{name:'目标模式'})).toBeInTheDocument();
+ });
+ it('切换会话后目标模式退出',async()=>{
+  mocks.send.mockResolvedValue(undefined);
+  await renderOpenA();
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'/goal'}});
+  fireEvent.keyDown(input,{key:'Enter'});
+  expect(screen.getByRole('button',{name:'目标模式'})).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button',{name:/会话 B/}));
+  await screen.findByText('内容 b');
+  expect(screen.queryByRole('button',{name:'目标模式'})).not.toBeInTheDocument();
+ });
 });
 describe('草稿内容保留',()=>{
  it('草稿输入在切换会话再新建聊天后保留，可继续编辑',async()=>{
