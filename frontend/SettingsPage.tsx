@@ -12,7 +12,7 @@ type SettingsSectionId='overview'|SettingsPanelId|'archive'|'performance'|'model
 export type SettingsCategoryId=Exclude<SettingsSectionId,'overview'>;
 type SettingsItem={id:SettingsCategoryId;title:string;description:string;summary:string;group:string;icon:LucideIcon;legacyPanel?:SettingsPanelId};
 const ITEMS:SettingsItem[]=[
- {id:'presets',title:'能力预设',description:'组合模型、推理档位与审批策略，快速切换常用工作方式。',summary:'3 个示例预设',group:'工作方式',icon:Bookmark,legacyPanel:'presets'},
+ {id:'presets',title:'能力预设',description:'组合模型、推理档位与审批策略，保存常用工作方式。',summary:'3 个示例预设',group:'工作方式',icon:Bookmark,legacyPanel:'presets'},
  {id:'skills',title:'技能',description:'管理项目与用户技能，让助手按需加载专用工作指引。',summary:'2 个示例技能',group:'工作方式',icon:Sparkles,legacyPanel:'skills'},
  {id:'performance',title:'性能',description:'调整工具并发调度与上限、上下文自动压缩、HTTP 连接复用。',summary:'默认全部开启',group:'工作方式',icon:Gauge},
  {id:'archive',title:'存档管理',description:'集中查看各项目的已归档会话，随时恢复到任务列表。',summary:'按项目分组 · 可恢复',group:'会话',icon:Archive},
@@ -22,7 +22,7 @@ const ITEMS:SettingsItem[]=[
 ];
 const GROUPS=['工作方式','会话','扩展与安全','关于'];
 const INTRO:Record<SettingsCategoryId,string>={
- presets:'把常用模型、推理档位和审批方式保存为一组配置，之后可以在发送框快速切换。',
+ presets:'把常用模型、推理档位和审批方式保存为一组配置，供 CLI / JSON-RPC / ACP 经预设名引用。',
  skills:'查看当前工作区和用户目录中的技能，并管理它们是否参与助手的技能目录。',
  performance:'工具并发调度、上下文自动压缩与 HTTP 连接复用均可独立开关；调整立即生效，下一回合起生效。',
  plugins:'集中查看本地插件、MCP 连接及其声明与授权的权限范围。',
@@ -109,7 +109,7 @@ function SettingsCategory({item,onOpenPanel,archivedSessions,projectName,onResto
 
 function PresetPreview(){
  return <div className="settings-example-list">
-  <PreviewItem icon={<Bookmark size={16}/>} title="默认（无覆盖）" description="沿用发送框当前选择" badge="内置" selected/>
+  <PreviewItem icon={<Bookmark size={16}/>} title="默认（无覆盖）" description="不覆盖当前模型选择" badge="内置" selected/>
   <PreviewItem icon={<Terminal size={16}/>} title="快速开发" description="DeepSeek V4 Pro · high · 自动编辑" badge="常用"/>
   <PreviewItem icon={<ShieldCheck size={16}/>} title="谨慎审阅" description="GLM-5.3 · max · 每次确认" badge="自定义"/>
  </div>;
