@@ -1,8 +1,8 @@
 # 直接执行模式与会话级执行位置
 
-- 日期：2026-11-18（计划拟制）
+- 日期：2026-11-18（计划拟制）；修订：2026-11-22（`background_run` 对齐执行位置，弃用 `sandbox_lease` 路径反推）
 - 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
-- 范围：新增「直接模式」（执行根=源项目目录，无副本、无 worktree、shell 无沙箱），作为新建项目的默认；worktree 从工作区级自动模式改为会话级可选；会话固化的执行位置与旧数据兼容规则。相关：[worktree 执行模式](worktree-execution.md)、[权限模式](permission-modes.md)。
+- 范围：新增「直接模式」（执行根=源项目目录，无副本、无 worktree、shell 无沙箱），作为新建项目的默认；worktree 从工作区级自动模式改为会话级可选；会话固化的执行位置与旧数据兼容规则。相关：[worktree 执行模式](worktree-execution.md)、[权限模式](permission-modes.md)、[后台任务](p2-background-tasks.md)。
 
 ## 背景与决策
 
@@ -47,6 +47,7 @@
 - 执行根为工作区 `source_path` 原样目录；不创建 `<data>/workspaces/<id>/root` 副本，`replica_path` 仅作记录占位满足加载校验。`record.json` 的 baseline 为空快照。
 - 文件工具（read/write/edit/list_files/search）直接作用于源项目目录，read-before-edit 与唯一匹配校验逻辑不变。写工具的结果文案显示「已写入/已修改 <path>」，不再出现「副本」字样。
 - shell 以宿主令牌执行（`ShellService::run_in` 的 `sandboxed=false` 路径），工作目录为源项目目录；不使用 `sandbox_lease`、不调用 `shell::prepare`，因此不会在源项目目录树写入 capability ACE、不递归遍历目录。命令审批完全由[权限模式](permission-modes.md)的 `ApprovalPolicy::decide` 决定：`ask` 逐条询问，`edit` 自动放行写文件但 shell 仍询问，`auto` / `guarded` 直接执行，`never` 拒绝需审批的工具。
+- `background_run` 同样按会话执行位置执行（2026-11-22 修订）：弃用从托管副本路径反推租约的 `sandbox_lease` 路径，改走前台 shell 同款 `run_in`，由调用方持工作区运行租约；直接模式无沙箱宿主令牌执行，worktree/副本/scratch 按 capability 派生受限令牌沙箱执行。此前 `background_run` 在直接会话与 worktree 会话下报 `INVALID_WORKSPACE: Shell requires a managed root`。`sandbox_lease` 之后仅 PTY 终端路径使用。
 - `escalate: true` 参数在直接模式下无额外语义（本就不带沙箱）；审批仍按五档执行。
 - 系统提示声明：执行根为源项目目录、编辑直接生效、无隔离副本或 worktree、shell 以宿主权限运行、git 命令会真实影响当前分支。
 - 右侧「更改审阅」不提供同步动作：只读提示「改动已直接写入源项目目录，无同步审阅」，不请求差异列表、不显示「应用」。直接模式下 `workspace_diff` / `workspace_file_diff` 返回空，`workspace_apply` 拒绝。
