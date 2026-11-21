@@ -205,6 +205,97 @@ async fn guarded_policy_asks_once_on_dangerous_shell() {
     );
 }
 
+/// 审批探针：仅承载审批层行为，与实际工具实现无关（背景任务工具由 orchestration 安装）。
+struct ApprovalProbe;
+#[async_trait]
+impl harness_runtime::ExternalTool for ApprovalProbe {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "background_run".into(),
+            description: "审批探针".into(),
+            parameters: json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}),
+        }
+    }
+    async fn execute(
+        &self,
+        _: harness_runtime::ToolContext,
+        _: Value,
+        _: CancellationToken,
+    ) -> AppResult<ToolResult> {
+        Ok(ToolResult {
+            content: "ok".into(),
+            is_error: false,
+            diff: None,
+            escalated: false,
+        })
+    }
+}
+
+#[tokio::test]
+async fn guarded_policy_gates_background_run_like_shell() {
+    let (_temp, runtime, session) = setup("guarded-bg").await;
+    runtime.set_approval_policy(&session, Some(ApprovalPolicy::Guarded));
+    let _probe = runtime.register_tool(Arc::new(ApprovalProbe)).unwrap();
+    let model = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([
+            call(
+                "c1",
+                "background_run",
+                json!({"command":"git push --force origin main"}),
+            ),
+            ModelAnswer::default(),
+        ])),
+    });
+    let task = tokio::spawn(
+        runtime
+            .clone()
+            .run_session(session.clone(), "后台".into(), model),
+    );
+    let pending = deny_first_pending(&runtime).await;
+    assert_eq!(pending.tool, "background_run", "危险后台命令交交互裁决");
+    assert_eq!(
+        pending.reason, "自主模式检测到危险命令（git-push-force），需要确认本次执行。",
+        "Guarded 档下后台命令的审批理由应与 shell 同样点名规则"
+    );
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn approval_reason_reflects_direct_execution() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&source, None, ExecutionMode::Direct)
+        .unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "direct-reason")
+        .await
+        .unwrap();
+    // ask 档：一切需审批工具都交交互裁决，用于检查 reason 文案。
+    runtime.set_approval_policy(&session.id, Some(ApprovalPolicy::Ask));
+    let model = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([
+            call("c1", "write", json!({"path":"a.txt","content":"new"})),
+            ModelAnswer::default(),
+        ])),
+    });
+    let task = tokio::spawn(
+        runtime
+            .clone()
+            .run_session(session.id.clone(), "写".into(), model),
+    );
+    let pending = deny_first_pending(&runtime).await;
+    assert_eq!(
+        pending.reason, "允许此工具在源项目目录中直接执行？改动立即生效，无隔离副本。",
+        "直接模式的审批理由不应再声称隔离工作副本"
+    );
+    task.await.unwrap().unwrap();
+}
+
 #[tokio::test]
 async fn agent_spawn_inherits_parent_policy() {
     let (_temp, runtime, session) = setup("inherit").await;
