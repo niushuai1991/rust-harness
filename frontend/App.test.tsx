@@ -2335,6 +2335,15 @@ describe('会话命名',()=>{
   await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('used','后续问题','m',expect.any(Function),undefined,'high'));
   expect(mocks.command).not.toHaveBeenCalledWith('session_title_generate',expect.anything());
  });
+ it('会话右键菜单可复制会话ID',async()=>{
+  const copy=vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:copy}});
+  await renderOpenA();
+  fireEvent.contextMenu(screen.getByRole('button',{name:/会话 A/}));
+  fireEvent.click(await screen.findByRole('menuitem',{name:'复制会话ID'}));
+  await waitFor(()=>expect(copy).toHaveBeenCalledWith('a'));
+  await waitFor(()=>expect(screen.queryByRole('menu',{name:'会话操作'})).not.toBeInTheDocument());
+ });
  it('会话右键菜单可用 Escape 和点击外部关闭',async()=>{
   await renderOpenA();
   fireEvent.contextMenu(screen.getByRole('button',{name:/会话 A/}));
