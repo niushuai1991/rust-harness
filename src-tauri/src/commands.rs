@@ -925,7 +925,7 @@ pub async fn token_budget_limit_set(state: Backend<'_>, limit_tokens: f64) -> Ap
     state.set_token_budget_limit(limit_tokens as u64).await
 }
 
-/// 性能优化设置：工具并发调度、并发上限、请求前自动压缩与 HTTP 连接复用。
+/// 性能优化设置：工具并发调度、并发上限、执行时限、请求前自动压缩与 HTTP 连接复用。
 #[derive(Debug, Clone, serde::Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct PerfSettings {
@@ -933,30 +933,36 @@ pub struct PerfSettings {
     pub tool_concurrency: bool,
     /// 工具并发上限（1–16）。
     pub tool_concurrency_limit: u32,
+    /// 工具执行时限（秒，5–3600；shell 到限自动转后台，其余工具超时取消）。
+    pub tool_timeout_secs: u64,
     /// 请求前自动压缩开关。
     pub auto_compaction: bool,
     /// HTTP 连接复用开关。
     pub http_connection_reuse: bool,
 }
 
-/// 读取性能优化设置（缺省全部开启、并发上限 8）。
+/// 读取性能优化设置（缺省全部开启、并发上限 8、执行时限 120 秒）。
 #[tauri::command]
 #[specta::specta]
 pub async fn perf_settings_get(state: Backend<'_>) -> AppResult<PerfSettings> {
     Ok(PerfSettings {
         tool_concurrency: state.tool_concurrency_enabled().await?,
         tool_concurrency_limit: state.tool_concurrency_limit().await?,
+        tool_timeout_secs: state.tool_timeout_secs().await?,
         auto_compaction: state.auto_compaction_enabled().await?,
         http_connection_reuse: state.models.http_connection_reuse().await,
     })
 }
 
-/// 保存性能优化设置；并发上限校验 1–16，下一回合起生效。
+/// 保存性能优化设置；并发上限校验 1–16、执行时限校验 5–3600 秒，下一回合起生效。
 #[tauri::command]
 #[specta::specta]
 pub async fn perf_settings_set(state: Backend<'_>, settings: PerfSettings) -> AppResult<()> {
     state
         .set_tool_concurrency_limit(settings.tool_concurrency_limit)
+        .await?;
+    state
+        .set_tool_timeout_secs(settings.tool_timeout_secs)
         .await?;
     state
         .set_tool_concurrency(settings.tool_concurrency)

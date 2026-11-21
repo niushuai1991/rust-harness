@@ -33,8 +33,10 @@ async fn setup() -> (tempfile::TempDir, Arc<Runtime>, ToolContext) {
         .unwrap();
     let ctx = ToolContext {
         session_id: session.id,
-        workspace_id: workspace.id,
+        workspace_id: workspace.id.clone(),
         root: workspace.replica_path.into(),
+        mode: harness_contracts::ExecutionMode::Replica,
+        capability_id: workspace.id,
         provider: Arc::new(Answer),
     };
     (dir, runtime, ctx)
@@ -1213,5 +1215,172 @@ async fn automation_supports_no_project_workspace_sentinel() {
         created.session_id.as_deref(),
         Some(session.id.as_str()),
         "绑定无项目会话的自动化创建合法"
+    );
+}
+
+/// 按执行位置构造 ToolContext：root/mode/capability 与运行时 resolve_exec_root 同源。
+#[cfg(windows)]
+async fn setup_at(
+    mode: harness_contracts::ExecutionMode,
+) -> (tempfile::TempDir, Arc<Runtime>, ToolContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("a.txt"), "hello").unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["add", "a.txt"],
+        vec![
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "initial",
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&source)
+                .args(&args)
+                .status()
+                .unwrap()
+                .success(),
+            "git fixture 失败"
+        );
+    }
+    let runtime = Runtime::open(dir.path().join("data")).await.unwrap();
+    let workspace = runtime.workspaces.create(&source, None, mode).unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "父任务")
+        .await
+        .unwrap();
+    let target = runtime
+        .workspaces
+        .execution_target(&workspace.id, &session.id, None, None)
+        .unwrap();
+    let ctx = ToolContext {
+        session_id: session.id,
+        workspace_id: workspace.id,
+        root: target.root,
+        mode: target.mode,
+        capability_id: target.capability_id,
+        provider: Arc::new(Answer),
+    };
+    (dir, runtime, ctx)
+}
+
+/// 轮询后台任务直至脱离 running，返回最终状态载荷。
+#[cfg(windows)]
+async fn wait_finished(i: &Installed, c: &ToolContext, id: &str) -> Value {
+    for _ in 0..200 {
+        let s = call(i, c, "background_status", json!({"id": id}))
+            .await
+            .unwrap();
+        if s["status"] != "running" {
+            return s;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    }
+    panic!("后台任务未结算");
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn background_run_direct_mode_writes_source_directory() {
+    let (_d, r, c) = setup_at(harness_contracts::ExecutionMode::Direct).await;
+    let i = install(r.clone()).unwrap();
+    let j = call(
+        &i,
+        &c,
+        "background_run",
+        json!({"command":"Set-Content -Path direct.txt -Value hi"}),
+    )
+    .await
+    .unwrap();
+    let s = wait_finished(&i, &c, j["id"].as_str().unwrap()).await;
+    assert_eq!(
+        s["status"], "completed",
+        "direct 模式后台任务不应报 INVALID_WORKSPACE: {}",
+        s["error"]
+    );
+    assert_eq!(
+        std::fs::read_to_string(c.root.join("direct.txt"))
+            .unwrap()
+            .trim_end(),
+        "hi"
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn background_run_worktree_mode_writes_session_worktree() {
+    let (_d, r, c) = setup_at(harness_contracts::ExecutionMode::Worktree).await;
+    assert_eq!(c.mode, harness_contracts::ExecutionMode::Worktree);
+    let i = install(r.clone()).unwrap();
+    let j = call(
+        &i,
+        &c,
+        "background_run",
+        json!({"command":"Set-Content -Path wt.txt -Value hi"}),
+    )
+    .await
+    .unwrap();
+    let s = wait_finished(&i, &c, j["id"].as_str().unwrap()).await;
+    assert_eq!(
+        s["status"], "completed",
+        "worktree 模式后台任务失败: {}",
+        s["error"]
+    );
+    assert_eq!(
+        std::fs::read_to_string(c.root.join("wt.txt"))
+            .unwrap()
+            .trim_end(),
+        "hi"
+    );
+    // 执行确实发生在会话 worktree，而不是源目录。
+    let source = r.workspaces.get(&c.workspace_id).unwrap().source_path;
+    assert!(!std::path::Path::new(&source).join("wt.txt").exists());
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn background_run_scratch_session_runs_in_scratch_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(dir.path().join("data")).await.unwrap();
+    let session = runtime.store.create_session("", "scratch").await.unwrap();
+    let root = runtime.workspaces.ensure_scratch_root(&session.id).unwrap();
+    let ctx = ToolContext {
+        session_id: session.id.clone(),
+        workspace_id: String::new(),
+        root,
+        mode: harness_contracts::ExecutionMode::Replica,
+        capability_id: session.id.clone(),
+        provider: Arc::new(Answer),
+    };
+    let i = install(runtime.clone()).unwrap();
+    let j = call(
+        &i,
+        &ctx,
+        "background_run",
+        json!({"command":"Set-Content -Path scratch.txt -Value hi"}),
+    )
+    .await
+    .unwrap();
+    let s = wait_finished(&i, &ctx, j["id"].as_str().unwrap()).await;
+    assert_eq!(
+        s["status"], "completed",
+        "scratch 会话后台任务失败: {}",
+        s["error"]
+    );
+    assert_eq!(
+        std::fs::read_to_string(ctx.root.join("scratch.txt"))
+            .unwrap()
+            .trim_end(),
+        "hi"
     );
 }

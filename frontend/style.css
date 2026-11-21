@@ -59,6 +59,20 @@
 .subagent-stop{flex-shrink:0;width:24px;height:24px;padding:0;margin-right:5px;border:0;background:transparent;color:var(--muted);border-radius:6px}
 .subagent-stop:hover{background:var(--surface);color:var(--text)}
 .subagent-panel .empty-small{padding:4px 10px 8px}
+/* 后台任务入口：子代理左侧的终端图标，运行中数量复用 subagent-count 徽标样式；浮层卡片同 subagent-panel。 */
+.composer-jobs-wrap{position:relative}
+.composer-jobs{position:relative;width:34px;height:34px;padding:0;border:0;background:transparent;color:var(--muted);border-radius:8px}
+.composer-jobs:hover{background:var(--surface);color:var(--text)}
+.composer-jobs[aria-expanded="true"]{background:var(--surface);color:var(--accent)}
+.composer-jobs .subagent-count{position:absolute;top:2px;right:2px;min-width:13px;height:13px;padding:0 3px;border-radius:7px;background:var(--accent);color:var(--panel);font-size:9px;font-weight:600;line-height:13px;text-align:center}
+.composer-jobs-panel{position:absolute;bottom:calc(100% + 10px);left:0;width:300px;max-width:78vw;background:var(--panel);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(32,33,36,.14);padding:5px;display:flex;flex-direction:column;gap:3px;z-index:15;transform-origin:bottom left;animation:plus-menu-in .13s ease-out}
+@media(prefers-reduced-motion:reduce){.composer-jobs-panel{animation:none}}
+.composer-job{display:flex;align-items:center;gap:7px;padding:7px 9px;border-radius:8px;font-size:12px}
+.composer-job>svg{flex-shrink:0;color:var(--muted)}
+.composer-job-command{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+.composer-job-elapsed{flex-shrink:0;font-variant-numeric:tabular-nums;color:var(--muted)}
+.composer-job-cancel{flex-shrink:0;padding:3px 8px;font-size:11px}
+.composer-jobs-panel .empty-small{padding:4px 10px 8px}
 .plus-menu{position:absolute;bottom:calc(100% + 10px);left:0;width:300px;max-width:78vw;background:var(--panel);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(32,33,36,.14);padding:5px;display:flex;flex-direction:column;z-index:15;transform-origin:bottom left;animation:plus-menu-in .13s ease-out}
 @keyframes plus-menu-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 @media(prefers-reduced-motion:reduce){.plus-menu{animation:none}}

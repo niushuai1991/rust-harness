@@ -15,6 +15,9 @@ pub struct ToolContext {
     pub session_id: String,
     pub workspace_id: String,
     pub root: PathBuf,
+    /// 执行位置解析结果：后台 shell 须按模式镜像前台执行方式（direct 无沙箱，其余按 capability 沙箱）。
+    pub mode: ExecutionMode,
+    pub capability_id: String,
     pub provider: Arc<dyn ModelProvider>,
 }
 #[async_trait]

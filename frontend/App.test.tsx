@@ -978,7 +978,7 @@ describe('后台任务可视化',()=>{
   render(<App/>);
   await openSidebarSession(/会话 A/);
   await screen.findByText('npm run build');
-  const button=screen.getByRole('button',{name:/后台任务/});
+  const button=screen.getByRole('button',{name:/^后台任务/});
   expect(button).toHaveTextContent('1');
   fireEvent.click(button);
   const panel=await screen.findByRole('region',{name:'后台任务'});
@@ -987,6 +987,36 @@ describe('后台任务可视化',()=>{
   fireEvent.click(button);
   expect(panel).not.toBeInTheDocument();
   expect(button).toHaveAttribute('aria-expanded','false');
+ });
+ it('输入框终端图标位于子代理左侧，弹出浮层展示运行中任务与时长并可取消',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>{
+   if(name==='session_timeline_page')return timeline(args.sessionId,jobEvents.filter(e=>['s2'].includes(e.id)));
+   if(name==='job_list')return [{id:'job-9',command:'Start-Sleep -Seconds 60',status:'running',cancelRequested:false,output:null,error:null,createdAt:new Date().toISOString()}];
+   if(name==='schedule_list')return [];
+   if(name==='job_cancel')return {};
+   return original(name,args);
+  });
+  render(<App/>);
+  // 草稿态未建会话：不渲染入口。
+  expect(screen.queryByRole('button',{name:'运行中后台任务'})).not.toBeInTheDocument();
+  await openSidebarSession(/会话 A/);
+  await screen.findByText('npm run build');
+  const composerBottom=document.querySelector('.composer-bottom')!;
+  const icon=screen.getByRole('button',{name:'运行中后台任务'});
+  const subagent=screen.getByRole('button',{name:'子代理'});
+  expect(composerBottom.contains(icon)).toBe(true);
+  // DOM 顺序在子代理按钮之前（子代理左侧）。
+  expect(icon.compareDocumentPosition(subagent)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(icon).toHaveTextContent('1');
+  fireEvent.click(icon);
+  const panel=await screen.findByRole('region',{name:'运行中后台任务'});
+  expect(panel).toHaveTextContent('Start-Sleep -Seconds 60');
+  expect(screen.getByLabelText('已运行时长').textContent).toMatch(/^\d{2}:\d{2}$/);
+  fireEvent.click(screen.getByRole('button',{name:'取消'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('job_cancel',{sessionId:'a',jobId:'job-9'}));
+  fireEvent.click(icon);
+  expect(panel).not.toBeInTheDocument();
  });
 });
 

@@ -5,7 +5,7 @@ import {PerformancePanel} from './PerformancePanel';
 const mocks=vi.hoisted(()=>({command:vi.fn()}));
 vi.mock('./api',()=>({command:mocks.command,errorText:(e:unknown)=>e instanceof Error?e.message:String(e)}));
 
-const DEFAULTS={toolConcurrency:true,toolConcurrencyLimit:8,autoCompaction:true,httpConnectionReuse:true};
+const DEFAULTS={toolConcurrency:true,toolConcurrencyLimit:8,toolTimeoutSecs:120,autoCompaction:true,httpConnectionReuse:true};
 
 beforeEach(()=>{mocks.command.mockReset();mocks.command.mockResolvedValue(undefined)});
 afterEach(()=>{cleanup()});
@@ -20,6 +20,7 @@ it('加载后展示三项开关与上限默认值',async()=>{
  expect(screen.getByRole('switch',{name:'上下文自动压缩'})).toBeChecked();
  expect(screen.getByRole('switch',{name:'HTTP 连接复用'})).toBeChecked();
  expect(screen.getByLabelText('工具并行数量上限')).toHaveValue(8);
+ expect(screen.getByLabelText('工具执行时限（秒）')).toHaveValue(120);
 });
 
 it('关闭开关立即保存',async()=>{
@@ -65,6 +66,36 @@ it('上限合法值失焦时保存',async()=>{
   const calls=mocks.command.mock.calls.filter(([name])=>name==='perf_settings_set');
   expect(calls.length).toBe(1);
   expect(calls[0][1]).toEqual({...DEFAULTS,toolConcurrencyLimit:4});
+ });
+});
+
+it('执行时限越界时提示并回退不保存',async()=>{
+ mocks.command.mockImplementation((name:string)=>{
+  if(name==='perf_settings_get')return Promise.resolve(DEFAULTS);
+  return Promise.resolve(undefined);
+ });
+ render(<PerformancePanel/>);
+ const input=await screen.findByLabelText('工具执行时限（秒）');
+ await act(async()=>{fireEvent.change(input,{target:{value:'3'}})});
+ await act(async()=>{fireEvent.blur(input)});
+ expect(await screen.findByText('工具执行时限必须在 5–3600 秒之间')).toBeInTheDocument();
+ expect(mocks.command.mock.calls.filter(([name])=>name==='perf_settings_set').length).toBe(0);
+ expect(screen.getByLabelText('工具执行时限（秒）')).toHaveValue(120);
+});
+
+it('执行时限合法值失焦时保存',async()=>{
+ mocks.command.mockImplementation((name:string)=>{
+  if(name==='perf_settings_get')return Promise.resolve(DEFAULTS);
+  return Promise.resolve(undefined);
+ });
+ render(<PerformancePanel/>);
+ const input=await screen.findByLabelText('工具执行时限（秒）');
+ await act(async()=>{fireEvent.change(input,{target:{value:'300'}})});
+ await act(async()=>{fireEvent.blur(input)});
+ await waitFor(()=>{
+  const calls=mocks.command.mock.calls.filter(([name])=>name==='perf_settings_set');
+  expect(calls.length).toBe(1);
+  expect(calls[0][1]).toEqual({...DEFAULTS,toolTimeoutSecs:300});
  });
 });
 

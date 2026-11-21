@@ -33,6 +33,9 @@ const TOOL_CONCURRENCY_KEY: &str = "app.tool_concurrency";
 /// 工具批次并发上限（KV，缺省 8，允许 1–16）。
 const TOOL_CONCURRENCY_LIMIT_KEY: &str = "app.tool_concurrency_limit";
 const DEFAULT_TOOL_CONCURRENCY_LIMIT: u32 = 8;
+/// 工具执行时限（KV，秒；缺省 120，允许 5–3600）。shell 到限自动转后台任务，其余工具超时取消。
+const TOOL_TIMEOUT_SECS_KEY: &str = "app.tool_timeout_secs";
+const DEFAULT_TOOL_TIMEOUT_SECS: u64 = 120;
 /// 请求前自动压缩开关（KV，缺省开启）。
 const AUTO_COMPACTION_KEY: &str = "app.auto_compaction";
 /// 自动压缩触发阈值：总输入 token 达到窗口的 80% 时在下一次请求前压缩。
@@ -50,6 +53,16 @@ fn validate_concurrency_limit(limit: u64) -> AppResult<u32> {
         ));
     }
     Ok(limit as u32)
+}
+/// 工具执行时限合法性：下限 5 秒避免误配置让所有工具即刻超时，上限 1 小时兜底。
+fn validate_tool_timeout_secs(secs: u64) -> AppResult<u64> {
+    if !(5..=3600).contains(&secs) {
+        return Err(AppError::new(
+            "TOOL_TIMEOUT_SECS",
+            "工具执行时限必须在 5–3600 秒之间",
+        ));
+    }
+    Ok(secs)
 }
 #[derive(Default)]
 pub struct Approvals {
@@ -110,6 +123,8 @@ pub struct Runtime {
     pub skills: crate::skills::SkillService,
     pub workspaces: WorkspaceManager,
     pub plugins: Arc<PluginManager>,
+    /// 会话后台任务内存注册表：background_run 与前台转后台共用，停机统一取消。
+    pub jobs: crate::jobs::JobRegistry,
     pub approvals: Approvals,
     pub questions: Questions,
     /// 无人值守模式：ask_user 提问不经挂起，直接以「无人在场」自动结算（非交互宿主设置）。
@@ -216,6 +231,7 @@ impl Runtime {
             default_approval_policy: Mutex::new(None),
             mcp: harness_extensions::mcp::McpManager::new(),
             lsp: Arc::new(harness_extensions::lsp::LspManager::new()),
+            jobs: Default::default(),
             mcp_scopes: Mutex::new(HashMap::new()),
             events,
             active: Mutex::new(HashMap::new()),
@@ -806,6 +822,23 @@ impl Runtime {
         self.store
             .set(TOOL_CONCURRENCY_LIMIT_KEY, &json!(limit))
             .await
+    }
+    /// 工具执行时限（秒，缺省 120；shell 到限自动转后台，其余工具超时取消）。
+    pub async fn tool_timeout_secs(&self) -> AppResult<u64> {
+        let stored = self.store.get(TOOL_TIMEOUT_SECS_KEY).await?;
+        match stored {
+            None => Ok(DEFAULT_TOOL_TIMEOUT_SECS),
+            Some(value) => {
+                let secs = value.as_u64().ok_or_else(|| {
+                    AppError::new("TOOL_TIMEOUT_SECS", "已保存的工具执行时限无效，请重新设置")
+                })?;
+                validate_tool_timeout_secs(secs)
+            }
+        }
+    }
+    pub async fn set_tool_timeout_secs(&self, secs: u64) -> AppResult<()> {
+        let secs = validate_tool_timeout_secs(secs)?;
+        self.store.set(TOOL_TIMEOUT_SECS_KEY, &json!(secs)).await
     }
     /// 请求前自动压缩开关（缺省开启）。
     pub async fn auto_compaction_enabled(&self) -> AppResult<bool> {
@@ -1761,6 +1794,13 @@ impl Runtime {
         .await?;
         Ok((request, answer))
     }
+    /// 工具体的 owned 形态：future 自持 Runtime 引用，可整体移入独立任务（前台转后台）。
+    fn execute_tool_owned(
+        self: Arc<Self>,
+        input: ToolExecution,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = AppResult<ToolResult>> + Send>> {
+        Box::pin(async move { self.execute_tool(input).await })
+    }
     async fn execute_tool(self: &Arc<Self>, input: ToolExecution) -> AppResult<ToolResult> {
         let ToolExecution {
             session,
@@ -2144,6 +2184,8 @@ impl Runtime {
                             session_id: session.clone(),
                             workspace_id: workspace.clone(),
                             root: root.into(),
+                            mode: exec.mode,
+                            capability_id: exec.capability_id.clone(),
                             provider,
                         },
                         a.clone(),
@@ -2537,24 +2579,179 @@ struct PreparedCall {
     needs_approval: bool,
     failure: Option<AppError>,
 }
+/// shell 前台转后台所需的最小元数据（input 移动进工具体前提取）。
+struct HandoffMeta {
+    session: String,
+    workspace: String,
+    command: String,
+}
 /// 工具执行守卫：子 token 取消、执行时限与工具体竞速；取消/超时先中断并等待收尾。
+/// shell 到达时限不取消：解除回合取消链接并转为受管后台任务继续执行
+///（见 handoff_shell_to_background）；其余工具超时取消并结算 TOOL_TIMEOUT。
 async fn run_tool_guarded(runtime: Arc<Runtime>, input: ToolExecution) -> AppResult<ToolResult> {
     let is_ask = input.call.name == "ask_user";
-    let tool_cancel = input.cancel.child_token();
+    let is_shell = !is_ask && input.call.name == "shell";
     let turn_cancel = input.cancel.clone();
-    let input = ToolExecution {
-        cancel: tool_cancel.clone(),
-        ..input
+    // ask_user 挂起等待用户答复，与审批同享 600 秒等待上限；其余工具按配置时限执行
+    //（KV 读取失败时回退缺省值，不让配置故障打断工具执行）。
+    let tool_limit = if is_ask {
+        ASK_WAIT_SECS
+    } else {
+        runtime
+            .tool_timeout_secs()
+            .await
+            .unwrap_or(DEFAULT_TOOL_TIMEOUT_SECS)
     };
-    let work = runtime.execute_tool(input);
-    tokio::pin!(work);
-    // ask_user 挂起等待用户答复，与审批同享 600 秒等待上限；其余工具维持 180 秒执行时限。
-    let tool_limit = if is_ask { ASK_WAIT_SECS } else { 180 };
+    let handoff_meta = is_shell.then(|| HandoffMeta {
+        session: input.session.clone(),
+        workspace: input.workspace.clone(),
+        command: input
+            .call
+            .arguments
+            .get("command")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+    });
+    // shell 用独立执行令牌 + 链接任务：转后台前回合取消传播到执行；
+    // 解除链接（unlink）后任务只受 background_cancel 与宿主停机管理。
+    // 非 shell 沿用子令牌语义。工具体用 Box 装箱以便转后台时整体移入独立任务。
+    let (exec_cancel, unlink) = if is_shell {
+        let exec_cancel = CancellationToken::new();
+        let unlink = CancellationToken::new();
+        let tc = turn_cancel.clone();
+        let ec = exec_cancel.clone();
+        let ul = unlink.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = tc.cancelled() => ec.cancel(),
+                _ = ul.cancelled() => {}
+            }
+        });
+        (exec_cancel, unlink)
+    } else {
+        (turn_cancel.child_token(), CancellationToken::new())
+    };
+    let mut work = runtime.clone().execute_tool_owned(ToolExecution {
+        cancel: exec_cancel.clone(),
+        ..input
+    });
     tokio::select! {
-        _ = turn_cancel.cancelled() => {tool_cancel.cancel(); let _ = work.await; Err(cancelled())},
-        _ = tokio::time::sleep(std::time::Duration::from_secs(tool_limit)) => {tool_cancel.cancel(); let _ = work.await; Err(AppError::new("TOOL_TIMEOUT", "工具超过执行时限"))},
-        r = &mut work => r,
+        _ = turn_cancel.cancelled() => {
+            unlink.cancel(); exec_cancel.cancel();
+            let _ = work.await;
+            Err(cancelled())
+        },
+        _ = tokio::time::sleep(std::time::Duration::from_secs(tool_limit)), if !is_shell => {
+            unlink.cancel(); exec_cancel.cancel();
+            let _ = work.await;
+            Err(AppError::new("TOOL_TIMEOUT", "工具超过执行时限"))
+        },
+        _ = tokio::time::sleep(std::time::Duration::from_secs(tool_limit)), if is_shell => {
+            unlink.cancel();
+            if turn_cancel.is_cancelled() {
+                exec_cancel.cancel();
+                let _ = work.await;
+                return Err(cancelled());
+            }
+            // work 仍借用 runtime，转后台任务另持独立 Arc。
+            handoff_shell_to_background(runtime.clone(), handoff_meta.unwrap(), work, exec_cancel, tool_limit).await
+        },
+        r = &mut work => {
+            unlink.cancel();
+            r
+        },
     }
+}
+/// shell 前台到限转后台：不取消、不重跑——已在执行的工具体原样移入独立任务继续跑。
+/// 登记后台注册表并落 job.started/job.finished 事件（与 background_run 同形），
+/// 立即向模型返回任务 id；命令审批沿用本调用前已通过的裁决，无需新审批。
+async fn handoff_shell_to_background(
+    runtime: Arc<Runtime>,
+    meta: HandoffMeta,
+    work: std::pin::Pin<Box<dyn std::future::Future<Output = AppResult<ToolResult>> + Send>>,
+    token: CancellationToken,
+    limit_secs: u64,
+) -> AppResult<ToolResult> {
+    let id = harness_contracts::new_id();
+    runtime
+        .jobs
+        .register(id.clone(), meta.session.clone(), token.clone());
+    runtime
+        .append(
+            &meta.session,
+            "job.started",
+            json!({"id":id,"command":meta.command,"status":"running"}),
+        )
+        .await?;
+    let sid = meta.session.clone();
+    let job = id.clone();
+    let wid = meta.workspace.clone();
+    tokio::spawn(async move {
+        // 工作区共享租约与回合租约（共享锁）共存；回合结束后仍保证与差异同步互斥。
+        // 独占占用（同步进行中）短暂重试，仍失败则按失败结算，不放弃互斥保证。
+        let mut lease = None;
+        if !wid.is_empty() {
+            let mut acquire_err = None;
+            for _ in 0..20 {
+                match runtime.workspaces.acquire(&wid) {
+                    Ok(l) => {
+                        lease = Some(l);
+                        break;
+                    }
+                    Err(e) if e.code == "BUSY" => acquire_err = Some(e),
+                    Err(e) => {
+                        acquire_err = Some(e);
+                        break;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            if lease.is_none() {
+                let error = acquire_err.unwrap_or_else(|| {
+                    AppError::new("WORKSPACE_BUSY", "后台任务无法取得工作区运行租约")
+                });
+                let _ = runtime
+                    .append(
+                        &sid,
+                        "job.finished",
+                        json!({"id":job,"status":"failed","error":error}),
+                    )
+                    .await;
+                runtime.jobs.remove(&job);
+                return;
+            }
+        }
+        let result = work.await;
+        let status = if token.is_cancelled() {
+            "cancelled"
+        } else {
+            match &result {
+                Ok(r) if !r.is_error => "completed",
+                _ => "failed",
+            }
+        };
+        // shell 结果 content 即 ProcessOutput JSON；解析失败时按纯文本降级进 stdout。
+        let payload = match result {
+            Ok(r) => {
+                let output = serde_json::from_str::<Value>(&r.content)
+                    .unwrap_or_else(|_| json!({"stdout": r.content}));
+                json!({"id":job,"status":status,"output":output})
+            }
+            Err(error) => json!({"id":job,"status":status,"error":error}),
+        };
+        let _ = runtime.append(&sid, "job.finished", payload).await;
+        drop(lease);
+        runtime.jobs.remove(&job);
+    });
+    Ok(ToolResult {
+        content: format!(
+            "前台执行达到 {limit_secs} 秒上限，命令已转入后台任务 {id} 继续运行；用 background_status 查询进度与结果，background_cancel 可取消。"
+        ),
+        is_error: false,
+        diff: None,
+        escalated: false,
+    })
 }
 /// ask_user 挂起等待上限（秒）：与审批 600 秒兜底一致。
 const ASK_WAIT_SECS: u64 = 600;
@@ -2848,7 +3045,7 @@ pub fn builtin_tools() -> Vec<ToolDefinition> {
         ),
         def(
             "shell",
-            "在Windows系统写入沙箱内运行PowerShell命令，需审批；escalate为true时请求不带沙箱重跑（需审批）",
+            "在Windows系统写入沙箱内运行PowerShell命令，需审批；escalate为true时请求不带沙箱重跑（需审批）。前台达到时限（默认120秒）命令不中断，自动转为后台任务继续执行并以tool result返回任务id，用background_status查询结果、background_cancel取消",
             json!({"command":s,"escalate":{"type":"boolean"}}),
             &["command"],
         ),
