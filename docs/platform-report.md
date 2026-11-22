@@ -6,7 +6,7 @@
 - IPC应调用 `apply_reviewed(id, &[FileChange])`，独占锁内重新检查用户预览的before/after/source哈希，过期返回`STALE_DIFF`。兼容`apply(id, &[String])`只适合宿主内部明确即时确认的操作。
 - `acquire(id) -> WorkspaceLease`持跨进程共享文件锁；同步独占锁遇活动lease返回`BUSY`。运行时和stdio生命周期应持lease。
 - `read_file(root, relative) -> AppResult<String>`、`write_file(root, relative, text) -> AppResult<()>`、`list_files(root) -> AppResult<Vec<String>>`、`resolve_path(root, relative, must_exist) -> AppResult<PathBuf>`。返回PathBuf不会延续句柄保护；文件操作应直接使用read/write helper。
-- `ShellService::run(root, command, CancellationToken)`返回stdout/stderr/exit_code；`spawn_stdio(root, program, &[String], cancel)`返回实现AsyncRead/AsyncWrite的`SandboxedStdio`。使用`tokio::io::split(child)`保留Job/lease，最后一个half释放时杀进程树。stdio只执行.exe绝对路径或PATH名字；.cmd/.bat需调用明确的.exe解释器。
+- `ShellService::run_in(root, capability_id, command, CancellationToken, sandboxed)`返回stdout/stderr/exit_code；调用方须持有工作区运行租约（2026-11-22 起为唯一 shell 入口，路径反推的 `sandbox_lease`/`ShellService::run` 已移除）。`spawn_stdio(root, program, &[String], cancel)`返回实现AsyncRead/AsyncWrite的`SandboxedStdio`。使用`tokio::io::split(child)`保留Job/lease，最后一个half释放时杀进程树。stdio只执行.exe绝对路径或PATH名字；.cmd/.bat需调用明确的.exe解释器。
 - `set_secret(reference,value)`、`get_secret(reference)`、`delete_secret(reference)`使用Windows Credential Manager。非Windows返回UNSUPPORTED，不写明文文件。
 
 ## 安全实现

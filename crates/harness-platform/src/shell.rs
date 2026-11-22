@@ -49,33 +49,11 @@ impl ShellService {
     pub fn new() -> Self {
         Self
     }
-    pub async fn run(
-        root: &Path,
-        command: &str,
-        cancel: CancellationToken,
-    ) -> AppResult<ProcessOutput> {
-        let root = root.to_path_buf();
-        let command = command.to_owned();
-        #[cfg(windows)]
-        {
-            tokio::task::spawn_blocking(move || windows::run(&root, &command, cancel))
-                .await
-                .map_err(crate::io)?
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = (root, command, cancel);
-            Err(AppError::new(
-                "UNSUPPORTED",
-                "System shell isolation is Windows only",
-            ))
-        }
-    }
     /// 在指定执行根执行命令（调用方须已持有工作区运行租约）。
     ///
     /// `capability_id` 派生受限令牌的 capability SID：副本模式为工作区 id，
     /// worktree 模式为会话 id（与 `shell::prepare` 打授权时一致）。
-    /// `sandboxed=false` 为提权重跑：宿主令牌直接执行，一次性的显式用户授权。
+    /// `sandboxed=false` 为提权重跑或直接模式：宿主令牌直接执行。
     pub async fn run_in(
         root: &Path,
         capability_id: &str,

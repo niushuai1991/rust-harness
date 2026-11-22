@@ -18,13 +18,18 @@ async fn restricted_process_writes_inside_and_cannot_write_outside() {
         "[IO.File]::WriteAllText('inside.txt','ok'); try {{ [IO.File]::WriteAllText('{}','escape'); exit 9 }} catch {{ exit 0 }}",
         source.join("outside.txt").display()
     );
-    let out = ShellService::run(
+    // 调用方持有工作区运行租约（生产中为回合租约或后台任务租约）。
+    let lease = manager.acquire(&info.id).unwrap();
+    let out = ShellService::run_in(
         std::path::Path::new(&info.replica_path),
+        &info.id,
         &command,
         CancellationToken::new(),
+        true,
     )
     .await
     .unwrap();
+    drop(lease);
     assert_eq!(out.exit_code, 0, "{} {}", out.stdout, out.stderr);
     assert_eq!(
         fs::read_to_string(PathBuf::from(info.replica_path).join("inside.txt")).unwrap(),
@@ -55,6 +60,7 @@ async fn cancellation_returns_and_releases_runtime_lease() {
     );
     let token = cancel.clone();
     let replica = info.replica_path.clone();
+    let lease = manager.acquire(&info.id).unwrap();
     tokio::spawn(async move {
         // 固定延时在 CI 慢机上可能早于 Start-Process 写出 child.pid，导致取消后
         // 读 pid 文件 NotFound；改为轮询等待 pid 文件出现再取消（上限 10 秒）。
@@ -67,10 +73,17 @@ async fn cancellation_returns_and_releases_runtime_lease() {
     });
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(15),
-        ShellService::run(std::path::Path::new(&info.replica_path), &command, cancel),
+        ShellService::run_in(
+            std::path::Path::new(&info.replica_path),
+            &info.id,
+            &command,
+            cancel,
+            true,
+        ),
     )
     .await
     .unwrap();
+    drop(lease);
     assert_eq!(result.unwrap_err().code, "CANCELLED");
     let pid = fs::read_to_string(PathBuf::from(&info.replica_path).join("child.pid"))
         .unwrap()

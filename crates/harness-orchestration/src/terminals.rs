@@ -11,12 +11,16 @@ use std::path::Path;
 use tokio_util::sync::CancellationToken;
 pub(crate) const TERMINAL_LIMIT: usize = 4;
 /// Execution-world seam: opening one terminal inside one world.
+/// `capability_id` 派生受限令牌（与目录授权同源）；`sandboxed=false` 为直接模式
+/// 宿主令牌执行。工作区租约由工具层持有，本接口不感知。
 #[async_trait]
 pub trait PtyWorld: Send + Sync {
     async fn spawn(
         &self,
         root: &Path,
+        capability_id: &str,
         cancel: CancellationToken,
+        sandboxed: bool,
     ) -> AppResult<Box<dyn TerminalSession>>;
 }
 /// One live terminal: interactive stdin, incremental stdout, exit and teardown.
@@ -31,16 +35,19 @@ pub trait TerminalSession: Send {
     fn spill(&self) -> (String, bool);
     fn terminate(&self);
 }
-/// Local execution world: interactive sandboxed shell in the managed replica.
+/// Local execution world: interactive shell bound to a ConPTY at the caller's
+/// execution root（副本/worktree/scratch 受限令牌，直接模式宿主令牌）.
 pub struct PlatformWorld;
 #[async_trait]
 impl PtyWorld for PlatformWorld {
     async fn spawn(
         &self,
         root: &Path,
+        capability_id: &str,
         cancel: CancellationToken,
+        sandboxed: bool,
     ) -> AppResult<Box<dyn TerminalSession>> {
-        let pty = PtyService::spawn(root, cancel).await?;
+        let pty = PtyService::spawn(root, capability_id, cancel, sandboxed).await?;
         Ok(Box::new(PlatformTerminal { pty }))
     }
 }

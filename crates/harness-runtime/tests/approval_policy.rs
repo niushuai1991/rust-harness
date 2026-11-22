@@ -362,3 +362,184 @@ async fn default_policy_applies_when_session_has_no_override() {
         "默认档同样免 pending 等待"
     );
 }
+
+/// 可命名审批探针：`needs_approval` 可覆写（模拟 orchestration 的工具声明）。
+struct NamedProbe {
+    name: &'static str,
+    needs: bool,
+}
+#[async_trait]
+impl harness_runtime::ExternalTool for NamedProbe {
+    fn definition(&self) -> ToolDefinition {
+        // schema 与调用参数同形：带参调用要先过 schema 校验才能到达审批层。
+        let parameters = match self.name {
+            "terminal_write" => {
+                json!({"type":"object","properties":{"id":{"type":"string"},"input":{"type":"string"}},"required":["id","input"],"additionalProperties":false})
+            }
+            _ => json!({"type":"object","properties":{},"additionalProperties":false}),
+        };
+        ToolDefinition {
+            name: self.name.into(),
+            description: "审批探针".into(),
+            parameters,
+        }
+    }
+    fn requires_approval(&self) -> bool {
+        self.needs
+    }
+    async fn execute(
+        &self,
+        _: harness_runtime::ToolContext,
+        _: Value,
+        _: CancellationToken,
+    ) -> AppResult<ToolResult> {
+        Ok(ToolResult {
+            content: "ok".into(),
+            is_error: false,
+            diff: None,
+            escalated: false,
+        })
+    }
+}
+/// 直接模式夹具：执行根=源项目目录（无沙箱授权）。
+async fn direct_setup(name: &str) -> (tempfile::TempDir, Arc<Runtime>, String) {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&source, None, harness_contracts::ExecutionMode::Direct)
+        .unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, name)
+        .await
+        .unwrap();
+    (temp, runtime, session.id)
+}
+
+#[tokio::test]
+async fn direct_mode_gates_terminal_write_per_input() {
+    let (_temp, runtime, session) = direct_setup("direct-write").await;
+    runtime.set_approval_policy(&session, Some(ApprovalPolicy::Ask));
+    // 探针复刻 orchestration 声明：terminal_write 免审批；直接模式由运行时特例覆盖。
+    let _probe = runtime
+        .register_tool(Arc::new(NamedProbe {
+            name: "terminal_write",
+            needs: false,
+        }))
+        .unwrap();
+    let model = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([
+            call("c1", "terminal_write", json!({"id":"t1","input":"echo"})),
+            ModelAnswer::default(),
+        ])),
+    });
+    let task = tokio::spawn(
+        runtime
+            .clone()
+            .run_session(session.clone(), "输入".into(), model),
+    );
+    let pending = deny_first_pending(&runtime).await;
+    assert_eq!(
+        pending.tool, "terminal_write",
+        "无沙箱终端的每条输入应交交互裁决"
+    );
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn replica_mode_keeps_terminal_write_approval_free() {
+    let (_temp, runtime, session) = setup("replica-write").await;
+    runtime.set_approval_policy(&session, Some(ApprovalPolicy::Ask));
+    let _probe = runtime
+        .register_tool(Arc::new(NamedProbe {
+            name: "terminal_write",
+            needs: false,
+        }))
+        .unwrap();
+    let model = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([
+            call("c1", "terminal_write", json!({"id":"t1","input":"echo"})),
+            ModelAnswer::default(),
+        ])),
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        runtime
+            .clone()
+            .run_session(session.clone(), "输入".into(), model),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        runtime.approvals.list().is_empty(),
+        "沙箱内终端维持打开时一次审批，输入不再询问"
+    );
+}
+
+#[tokio::test]
+async fn terminal_open_direct_reason_warns_unsandboxed() {
+    let (_temp, runtime, session) = direct_setup("direct-open").await;
+    runtime.set_approval_policy(&session, Some(ApprovalPolicy::Ask));
+    let _probe = runtime
+        .register_tool(Arc::new(NamedProbe {
+            name: "terminal_open",
+            needs: true,
+        }))
+        .unwrap();
+    let model = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([
+            call("c1", "terminal_open", json!({})),
+            ModelAnswer::default(),
+        ])),
+    });
+    let task = tokio::spawn(
+        runtime
+            .clone()
+            .run_session(session.clone(), "开终端".into(), model),
+    );
+    let pending = deny_first_pending(&runtime).await;
+    assert_eq!(
+        pending.reason, "允许打开无沙箱交互终端？本模式无沙箱，批准后每条输入将逐条审批。",
+        "直接模式的终端审批理由应明确警示无沙箱与逐条审批"
+    );
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn plan_mode_rejects_terminal_open() {
+    let (_temp, runtime, session) = setup("plan-terminal").await;
+    runtime.session_plan_set(&session, true).await.unwrap();
+    let _probe = runtime
+        .register_tool(Arc::new(NamedProbe {
+            name: "terminal_open",
+            needs: true,
+        }))
+        .unwrap();
+    let model = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([
+            call("c1", "terminal_open", json!({})),
+            ModelAnswer::default(),
+        ])),
+    });
+    runtime
+        .clone()
+        .run_session(session.clone(), "开终端".into(), model)
+        .await
+        .unwrap();
+    let events = runtime.store.events(&session, 0).await.unwrap();
+    let result = events
+        .iter()
+        .find(|e| e.kind == "tool.result" && e.data["callId"] == "c1")
+        .expect("terminal_open 调用应有结果");
+    // 计划模式只加载受信只读编排工具（含 agent_wait），terminal_open 不进工具面，
+    // 模型调用（如幻觉）会得到工具不可用——拒绝语义由此锚定。
+    assert_eq!(
+        result.data["content"].as_str().unwrap(),
+        "TOOL_UNAVAILABLE: terminal_open",
+        "计划模式应拒绝打开终端"
+    );
+}

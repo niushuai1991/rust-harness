@@ -1478,7 +1478,9 @@ impl Runtime {
                     let mut broken = false;
                     for call in segment {
                         let prepared_call = self
-                            .prepare_call(call, &tools, session, workspace, root, &cancel)
+                            .prepare_call(
+                                call, &tools, session, workspace, root, &cancel, exec.mode,
+                            )
                             .await?;
                         if prepared_call.failure.is_none()
                             && (prepared_call.needs_approval
@@ -1550,7 +1552,7 @@ impl Runtime {
                 } else {
                     // 串行完整路径：prepare → execute（含审批发起）→ settle，与既有行为一致。
                     let prepared_call = self
-                        .prepare_call(first, &tools, session, workspace, root, &cancel)
+                        .prepare_call(first, &tools, session, workspace, root, &cancel, exec.mode)
                         .await?;
                     let (call, result) = self.execute_prepared(prepared_call, &ctx).await;
                     self.settle_call(&call, result, session, workspace, root, &cancel)
@@ -1658,7 +1660,12 @@ impl Runtime {
                 (false, None) => match exec_mode {
                     // 直接模式没有隔离副本，通用文案会误导用户以为改动经审阅同步。
                     ExecutionMode::Direct => {
-                        "允许此工具在源项目目录中直接执行？改动立即生效，无隔离副本。".into()
+                        if call.name == "terminal_open" {
+                            "允许打开无沙箱交互终端？本模式无沙箱，批准后每条输入将逐条审批。"
+                                .into()
+                        } else {
+                            "允许此工具在源项目目录中直接执行？改动立即生效，无隔离副本。".into()
+                        }
                     }
                     _ => "允许此工具在隔离工作副本中执行？原项目仍需单独确认同步。".into(),
                 },
@@ -2233,6 +2240,7 @@ impl Runtime {
     /// 批次执行前的准备：定义查找、schema 校验、before_tool 钩子（含 rewrite 落库）、
     /// 计划模式判定与审批需求判定（不发起审批）。校验类错误记入 `failure`，
     /// 在结算阶段按既有错误语义落 tool.result；钩子可变状态操作保持串行调用。
+    #[allow(clippy::too_many_arguments)] // prepare 上下文平铺比聚合结构更贴近既有调用形态
     async fn prepare_call(
         &self,
         mut call: ToolCall,
@@ -2241,6 +2249,7 @@ impl Runtime {
         workspace: &str,
         root: &Path,
         cancel: &CancellationToken,
+        exec_mode: ExecutionMode,
     ) -> AppResult<PreparedCall> {
         let outcome = async {
             let definition = tools
@@ -2301,14 +2310,19 @@ impl Runtime {
             }
             // 计划模式走到这里的工具都已被白名单判定为只读（内置只读清单或只读 shell 命令），
             // 无需再走审批；提权请求已在白名单处拒绝，不存在待批事项。
+            let declared = self
+                .custom
+                .lock()
+                .unwrap()
+                .get(&call.name)
+                .map(|t| t.requires_approval())
+                .unwrap_or_else(|| requires_approval(&call.name));
+            // 直接模式无沙箱：交互终端的每条输入对齐 shell 逐条审批（参考 codex 对
+            // 沙箱外终端的持续续审），避免「一次批准换整段免审命令」的审批套利。
+            // 副本/worktree/scratch 终端在受限令牌内，维持打开时一次审批。
             let needs_approval = !plan_mode
-                && self
-                    .custom
-                    .lock()
-                    .unwrap()
-                    .get(&call.name)
-                    .map(|t| t.requires_approval())
-                    .unwrap_or_else(|| requires_approval(&call.name));
+                && (declared
+                    || (exec_mode == ExecutionMode::Direct && call.name == "terminal_write"));
             Ok(needs_approval)
         }
         .await;

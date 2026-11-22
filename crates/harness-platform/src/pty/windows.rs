@@ -1,13 +1,13 @@
-//! ConPTY-backed sandboxed terminal spawn on Windows.
+//! ConPTY-backed terminal spawn on Windows.
 use super::{OutputBuffer, ResizeFn, SandboxedPty};
+use crate::io;
 use crate::shell::windows::{
-    Handle, capability, environment_block, error, grant, sandbox_lease, sid, token, wide,
+    Handle, capability, environment_block, error, grant, sid, token, wide,
 };
-use crate::{WorkspaceLease, io};
 use harness_contracts::{AppError, AppResult};
 use std::{
     ffi::c_void,
-    fs::{self, File},
+    fs::File,
     io::Read,
     os::windows::io::FromRawHandle,
     path::{Path, PathBuf},
@@ -54,12 +54,12 @@ impl Drop for PtyStartup {
         }
     }
 }
-/// Terminal lifetime: kill-on-close job, exit wait handle, private temp and lease.
+/// Terminal lifetime: kill-on-close job, exit wait handle and private temp.
+/// 工作区租约由调用方持有（terminal_open），终端进程不再重复持有。
 struct PtyLifetime {
     job: Arc<Handle>,
     process: Arc<Handle>,
     done: CancellationToken,
-    _lease: WorkspaceLease,
     _temp: tempfile::TempDir,
     /// Ends donated to CreatePseudoConsole; kept open for the session lifetime
     /// (portable-pty/codex retain them on Windows — closing early can break the
@@ -114,22 +114,28 @@ fn conpty_startup(hpc_value: &HPCON) -> AppResult<PtyStartup> {
         Ok(startup)
     }
 }
-pub(super) fn spawn(root: &Path, cancel: CancellationToken) -> AppResult<SandboxedPty> {
+pub(super) fn spawn(
+    root: &Path,
+    capability_id: &str,
+    cancel: CancellationToken,
+    sandboxed: bool,
+) -> AppResult<SandboxedPty> {
     if cancel.is_cancelled() {
         return Err(AppError::new("CANCELLED", "Terminal cancelled"));
     }
-    let (root, id, _manager, lease) = sandbox_lease(root)?;
-    let workspace = root
-        .parent()
-        .ok_or_else(|| AppError::new("INVALID_WORKSPACE", "Missing workspace"))?
-        .to_path_buf();
-    fs::create_dir_all(workspace.join("temp")).map_err(io)?;
-    let temp = tempfile::tempdir_in(workspace.join("temp")).map_err(io)?;
-    let cap = capability(&id)?;
+    crate::paths::check(root)?;
+    // 私有临时目录在系统默认位置（镜像 run_in）：TEMP 重定向与 temp_capability
+    // 语义不变，只是不再依赖「从路径反推项目」来定位数据目录。
+    let temp = tempfile::tempdir().map_err(io)?;
     let temp_cap = capability(&uuid::Uuid::new_v4().to_string())?;
     let world = sid("S-1-1-0")?;
     grant(temp.path(), temp_cap.0, world.0)?;
-    let restricted = token(cap.0, temp_cap.0, world.0)?;
+    let restricted = if sandboxed {
+        let cap = capability(capability_id)?;
+        Some(token(cap.0, temp_cap.0, world.0)?)
+    } else {
+        None
+    };
     unsafe {
         let job = Arc::new(Handle(CreateJobObjectW(null(), null())));
         if job.0.is_null() {
@@ -184,7 +190,7 @@ pub(super) fn spawn(root: &Path, cancel: CancellationToken) -> AppResult<Sandbox
         // 存活于本作用域的副本：属性列表仅存指针，不能指向已返回的栈帧。
         let hpc_value = hpc.0;
         let startup = conpty_startup(&hpc_value)?;
-        // Shell selection matches ShellService::run: pwsh 7 first, then Windows PowerShell.
+        // Shell selection matches ShellService::run_in: pwsh 7 first, then Windows PowerShell.
         let system = std::env::var_os("SystemRoot")
             .map(PathBuf::from)
             .and_then(|p| {
@@ -204,21 +210,36 @@ pub(super) fn spawn(root: &Path, cancel: CancellationToken) -> AppResult<Sandbox
         let mut command_line = wide(format!("\"{}\" -NoLogo -NoProfile", executable.display()));
         let env = environment_block(temp.path());
         let mut process: PROCESS_INFORMATION = std::mem::zeroed();
-        if CreateProcessAsUserW(
-            restricted.0,
-            wide(&executable).as_ptr(),
-            command_line.as_mut_ptr(),
-            null(),
-            null(),
-            0,
-            CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
-            env.as_ptr().cast(),
-            wide(&root).as_ptr(),
-            &startup.info.StartupInfo,
-            &mut process,
-        ) == 0
-        {
-            return Err(error("CreateProcessAsUserW"));
+        let created = match restricted.as_ref() {
+            Some(restricted) => CreateProcessAsUserW(
+                restricted.0,
+                wide(&executable).as_ptr(),
+                command_line.as_mut_ptr(),
+                null(),
+                null(),
+                0,
+                CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
+                env.as_ptr().cast(),
+                wide(root).as_ptr(),
+                &startup.info.StartupInfo,
+                &mut process,
+            ),
+            // 直接模式：宿主令牌执行（对齐 run_with 的无沙箱路径），TEMP 重定向保留。
+            None => CreateProcessW(
+                null(),
+                command_line.as_mut_ptr(),
+                null(),
+                null(),
+                0,
+                CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
+                env.as_ptr().cast(),
+                wide(root).as_ptr(),
+                &startup.info.StartupInfo,
+                &mut process,
+            ),
+        };
+        if created == 0 {
+            return Err(error("CreateProcess terminal"));
         }
         let process_handle = Arc::new(Handle(process.hProcess));
         let thread = Handle(process.hThread);
@@ -248,7 +269,6 @@ pub(super) fn spawn(root: &Path, cancel: CancellationToken) -> AppResult<Sandbox
             job: job.clone(),
             process: process_handle,
             done: done.clone(),
-            _lease: lease,
             _temp: temp,
             _pty_input_read: in_read,
             _pty_output_write: out_write,

@@ -482,38 +482,6 @@ pub(crate) fn quoted(value: &str) -> String {
     out.push('"');
     out
 }
-/// Resolve and acquire the shared runtime lease of a managed replica root.
-pub(crate) fn sandbox_lease(
-    root: &Path,
-) -> AppResult<(PathBuf, String, WorkspaceManager, crate::WorkspaceLease)> {
-    crate::paths::check(root)?;
-    let root = dunce::canonicalize(root).map_err(io)?;
-    if root.file_name().and_then(|s| s.to_str()) != Some("root") {
-        return Err(AppError::new(
-            "INVALID_WORKSPACE",
-            "Shell requires a managed root",
-        ));
-    }
-    let workspace = root
-        .parent()
-        .ok_or_else(|| AppError::new("INVALID_WORKSPACE", "Missing workspace"))?;
-    let id = workspace
-        .file_name()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| AppError::new("INVALID_WORKSPACE", "Missing id"))?
-        .to_owned();
-    let data = workspace
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| AppError::new("INVALID_WORKSPACE", "Missing data directory"))?
-        .to_path_buf();
-    let manager = WorkspaceManager::new(data)?;
-    let lease = manager.acquire(&id)?;
-    if Path::new(&lease.info.replica_path) != root {
-        return Err(AppError::new("INVALID_WORKSPACE", "Root mismatch"));
-    }
-    Ok((root, id, manager, lease))
-}
 /// Child environment: inherited except private TEMP/TMP/TMPDIR pointing at the sandbox temp.
 pub(crate) fn environment_block(temp: &Path) -> Vec<u16> {
     let mut environment: Vec<(String, String)> = std::env::vars()
@@ -716,25 +684,8 @@ pub(super) fn spawn_stdio(
         })
     }
 }
-pub(super) fn run(
-    root: &Path,
-    command: &str,
-    cancel: CancellationToken,
-) -> AppResult<ProcessOutput> {
-    if cancel.is_cancelled() {
-        return Err(AppError::new("CANCELLED", "Shell cancelled"));
-    }
-    let (root, id, _manager, _lease) = sandbox_lease(root)?;
-    let workspace = root
-        .parent()
-        .ok_or_else(|| AppError::new("INVALID_WORKSPACE", "Missing workspace"))?;
-    fs::create_dir_all(workspace.join("temp")).map_err(io)?;
-    let temp = tempfile::tempdir_in(workspace.join("temp")).map_err(io)?;
-    run_with(&root, &id, command, cancel, true, temp)
-}
-
 /// 调用方持有工作区运行租约的执行入口（副本/会话 worktree 通用）。
-/// `sandboxed=false` 为提权重跑：宿主令牌执行，绕过受限令牌边界。
+/// `sandboxed=false` 为提权重跑或直接模式：宿主令牌执行，绕过受限令牌边界。
 pub(super) fn run_in(
     root: &Path,
     capability_id: &str,

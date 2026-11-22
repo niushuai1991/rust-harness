@@ -1,6 +1,6 @@
 # 宿主代建 worktree 执行模式与沙箱提权重跑
 
-- 日期：2026-11-10（计划拟制）；2026-11-18 修订（执行模式支持创建后编辑）
+- 日期：2026-11-10（计划拟制）；2026-11-18 修订（执行模式支持创建后编辑）；2026-11-22 修订（`sandbox_lease` 移除，执行根校验由运行时执行位置解析承担，交互终端在 worktree 可用）
 - 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
 - 范围：工作区「worktree 执行模式」——宿主在真实项目 `.worktrees/` 代建 git worktree 并将会话执行根切换过去，文件编辑直落真实分支工作区；shell 沙箱「提权重跑」——命令被沙箱拦截经审批后无沙箱重跑一次。主仓 `.git` 保持对 agent 只读。设计参考 codex（真实 cwd + OS 沙箱 + escalation）与 zcode（`isolation: "worktree"` 契约）。
 
@@ -36,9 +36,8 @@
 
 ## 沙箱租约与授权
 
-- `sandbox_lease`（`harness-platform/src/shell/windows.rs`）放宽结构校验：执行根允许两类——数据目录副本 root（现状）与已登记工作区的 `<sourcePath>/.worktrees/<dir>`；后者必须与 record.json 的 worktrees 登记匹配，防止路径逃逸。
+- 执行根校验由运行时的执行位置解析承担（`WorkspaceManager::execution_target`，见[直接执行模式](direct-execution.md)）：从路径反推项目的 `sandbox_lease` 检查已于 2026-11-22 移除，shell/后台任务/交互终端统一由调用方（工具层）持工作区运行租约并传入 capability。
 - capability SID 派生：uuid 形态的 id 直接取字节，其他形态（会话 id）用 uuid5 确定性派生，同一 id 恒得同一 SID。宿主创建 worktree 后调用 `shell::prepare(root, session_id)` 对 worktree 目录打 DACL/完整性标签。ACL 打在**软件自建的目录**上，随目录删除一并消失，无残留。
-- 沙箱临时目录沿用 `<data_dir>/workspaces/<wid>/temp`，不落在源项目内。
 - worktree 模式下主仓 `.git` 与 main 工作区位于授权树之外，受限令牌天然只读——与 codex 的「保护性元数据」语义等效，无需额外 deny ACE。
 
 ## 沙箱提权重跑
