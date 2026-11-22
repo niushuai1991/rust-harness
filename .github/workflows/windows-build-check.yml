@@ -1,0 +1,14 @@
+name: Windows build asset checks
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  asset-cache:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check ConPTY asset preparation
+        shell: powershell
+        run: ./scripts/test-build-windows.ps1

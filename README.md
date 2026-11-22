@@ -32,9 +32,12 @@ Rust / Tauri 2 宿主，React 19 界面，SQLite 事件存储。所有模型改�
 
 ```powershell
 ./scripts/build-windows.ps1   # 自动执行 npm ci、前端测试、Tauri 打包与安装包权限校验
+# 如果依赖已安装，也可以运行 npm run desktop:build（不重复安装依赖）
 ```
 
 系统级 NSIS 安装包生成于 `target/release/bundle/nsis`。
+
+构建脚本固定使用指定版本的 ConPTY 配套文件，两个文件齐全且本地版本记录匹配时跳过下载。升级时手动修改 `scripts/build-windows.ps1` 中的 `$conptyVersion`，下次构建会重新下载配套文件；首次使用旧缓存时也会重新准备一次。
 
 ### 首次使用
 
