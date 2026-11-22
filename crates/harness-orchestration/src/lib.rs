@@ -693,7 +693,7 @@ impl ExternalTool for Tool {
             "terminal_write" => (
                 json!({"id":s,"input":s,"yieldMs":{"type":"integer","minimum":250,"maximum":30000}}),
                 vec!["id", "input"],
-                "向本会话已打开终端写入命令并等待增量输出（ANSI已过滤）；终端存续期间写入不再逐次审批",
+                "向本会话已打开终端写入命令并等待增量输出（ANSI已过滤）；沙箱内终端（副本/worktree/scratch）打开时一次审批后写入免审，直接模式（无沙箱）下每条输入单独审批",
             ),
             "terminal_read" => (
                 json!({"id":s,"yieldMs":{"type":"integer","minimum":250,"maximum":30000}}),
