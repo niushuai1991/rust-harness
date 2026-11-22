@@ -203,6 +203,8 @@ pub struct TimelinePage {
 #[serde(rename_all = "camelCase")]
 pub struct TimelineTurn {
     pub start_seq: String,
+    #[serde(default)]
+    pub run_id: Option<String>,
     pub end_seq: Option<String>,
     pub status: Option<String>,
     pub final_message_id: Option<String>,

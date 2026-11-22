@@ -81,3 +81,12 @@ it('刷新最新消息时保留已加载的历史与游标',()=>{
  expect(useChat.getState().events.a.map(item=>item.seq)).toEqual(Array.from({length:180},(_,index)=>String(index+1)));
  expect(useChat.getState().timeline('a')).toMatchObject({olderCursor:null,hasOlder:false,loadedOlder:true,throughSeq:'180'});
 });
+
+it('重复的持久事件不会在满页时增加缓存页',()=>{
+ const state=useChat.getState();
+ state.replaceTimelinePage('a',page('a',201,400,'201',true));
+ state.prependTimelinePage('a',page('a',1,200,null,false));
+ state.receive({type:'durable',event:event('a',1)});
+ expect(useChat.getState().timeline('a')?.pages).toHaveLength(2);
+ expect(useChat.getState().events.a).toHaveLength(400);
+});

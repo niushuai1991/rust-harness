@@ -14,7 +14,7 @@ export interface SessionInfo {id:string;workspaceId:string;title:string;createdA
 export interface SessionEvent {id:string;sessionId:string;seq:string;kind:string;data:Record<string,unknown>;createdAt:string}
 export interface TurnNavigatorEntry {eventId:string;seq:string;preview:string;previewTruncated:boolean}
 export interface TurnNavigatorPage {entries:TurnNavigatorEntry[];olderCursor:string|null;hasOlder:boolean}
-export interface TimelineTurn {startSeq:string;endSeq:string|null;status:string|null;finalMessageId:string|null}
+export interface TimelineTurn {startSeq:string;runId?:string|null;endSeq:string|null;status:string|null;finalMessageId:string|null}
 export interface TimelinePage {sessionId:string;events:SessionEvent[];olderCursor:string|null;throughSeq:string;hasOlder:boolean;turns?:TimelineTurn[]}
 export type LiveEvent = {type:'durable';event:SessionEvent}|{type:'delta';sessionId:string;requestId:string;index:number;text:string;reasoning:boolean}|{type:'status';sessionId:string;status:string};
 export type ApiMode='chatCompletions'|'responses'|'anthropic';

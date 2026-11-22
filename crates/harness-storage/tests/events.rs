@@ -405,3 +405,107 @@ async fn turn_navigator_directory_pages_and_summarizes_user_messages() {
     assert_eq!(earlier.entries[0].preview, "第一条 消息");
     assert!(!earlier.has_older);
 }
+
+#[tokio::test]
+async fn recovery_marks_unapplied_steering_failed_once_without_changing_applied() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Store::open(&dir.path().join("events.db")).await.unwrap();
+    let session = db.create_session("work-a", "steer recovery").await.unwrap();
+    db.append(&session.id, "turn.start", json!({"runId":"run-a"}))
+        .await
+        .unwrap();
+    db.append(
+        &session.id,
+        "steer.queued",
+        json!({"id":"done","runId":"run-a","content":"applied"}),
+    )
+    .await
+    .unwrap();
+    db.append(
+        &session.id,
+        "steer.applied",
+        json!({"id":"done","runId":"run-a"}),
+    )
+    .await
+    .unwrap();
+    db.append(
+        &session.id,
+        "steer.queued",
+        json!({"id":"pending","runId":"run-a","content":"keep me"}),
+    )
+    .await
+    .unwrap();
+    db.recover().await.unwrap();
+    db.recover().await.unwrap();
+    let events = db.events(&session.id, 0).await.unwrap();
+    let failures: Vec<_> = events
+        .iter()
+        .filter(|event| event.kind == "steer.failed")
+        .collect();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].data["id"], "pending");
+    assert_eq!(failures[0].data["runId"], "run-a");
+    assert!(
+        events
+            .iter()
+            .any(|event| event.kind == "steer.queued" && event.data["content"] == "keep me")
+    );
+}
+
+#[tokio::test]
+async fn timeline_page_carries_run_id_and_steer_status_from_outside_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Store::open(&dir.path().join("events.db")).await.unwrap();
+    let session = db.create_session("w", "pagination").await.unwrap();
+    db.append(&session.id, "turn.start", json!({"runId":"run-1"}))
+        .await
+        .unwrap();
+    db.append(
+        &session.id,
+        "steer.queued",
+        json!({"id":"m","runId":"run-1","content":"补充"}),
+    )
+    .await
+    .unwrap();
+    db.append(&session.id, "assistant.message", json!({"content":"other"}))
+        .await
+        .unwrap();
+    db.append(
+        &session.id,
+        "steer.applied",
+        json!({"id":"m","runId":"run-1"}),
+    )
+    .await
+    .unwrap();
+    let page = db
+        .timeline_page(&session.id, Some(3), Some(1))
+        .await
+        .unwrap();
+    assert_eq!(page.events[0].data["steerStatus"], "steer.applied");
+    assert_eq!(page.turns[0].run_id.as_deref(), Some("run-1"));
+    assert!(page.turns[0].end_seq.is_none());
+}
+
+#[tokio::test]
+async fn pending_steers_are_ordered_and_exclude_settled_or_other_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Store::open(&dir.path().join("events.db")).await.unwrap();
+    let session = db.create_session("w", "steers").await.unwrap();
+    for (kind, data) in [
+        ("steer.queued", json!({"id":"one","runId":"r"})),
+        ("steer.queued", json!({"id":"other","runId":"other"})),
+        ("steer.queued", json!({"id":"done","runId":"r"})),
+        ("steer.applied", json!({"id":"done","runId":"r"})),
+        ("steer.queued", json!({"id":"two","runId":"r"})),
+    ] {
+        db.append(&session.id, kind, data).await.unwrap();
+    }
+    let pending = db.pending_steering(&session.id, "r").await.unwrap();
+    assert_eq!(
+        pending
+            .iter()
+            .map(|e| e["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["one", "two"]
+    );
+}

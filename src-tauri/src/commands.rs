@@ -704,6 +704,28 @@ pub async fn session_send(
 }
 #[tauri::command]
 #[specta::specta]
+pub async fn session_steer(
+    state: Backend<'_>,
+    session_id: String,
+    expected_run_id: String,
+    message_id: String,
+    text: String,
+    attachments: Vec<String>,
+    quotes: Vec<String>,
+) -> AppResult<()> {
+    state
+        .steer_session(
+            &session_id,
+            &expected_run_id,
+            &message_id,
+            text,
+            attachments,
+            quotes,
+        )
+        .await
+}
+#[tauri::command]
+#[specta::specta]
 pub async fn session_cancel(state: Backend<'_>, session_id: String) -> AppResult<()> {
     state.cancel(&session_id);
     Ok(())
@@ -1461,6 +1483,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         session_turn_navigator_page,
         session_turn_assistant_content,
         session_send,
+        session_steer,
         session_cancel,
         session_export,
         session_fork,
