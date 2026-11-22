@@ -1660,8 +1660,12 @@ impl Runtime {
                 (false, None) => match exec_mode {
                     // 直接模式没有隔离副本，通用文案会误导用户以为改动经审阅同步。
                     ExecutionMode::Direct => {
+                        // 理由点名动作（开终端 / 写入终端输入），让用户能区分每次弹审批的是什么。
                         if call.name == "terminal_open" {
                             "允许打开无沙箱交互终端？本模式无沙箱，批准后每条输入将逐条审批。"
+                                .into()
+                        } else if call.name == "terminal_write" {
+                            "允许向交互终端写入输入？本模式无沙箱，终端内命令将以你的权限直接执行。"
                                 .into()
                         } else {
                             "允许此工具在源项目目录中直接执行？改动立即生效，无隔离副本。".into()
