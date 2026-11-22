@@ -3,7 +3,7 @@
 //! 目的：把「附着失败」的变量切开——powershell 5.1 特有 vs ConPTY 通用 vs CreatePseudoConsole
 //! flag 差异。每组：spawn → 写 echo 标记 → 5 秒轮询输出/退出 → 汇总写系统临时目录
 //! `pty_attach_matrix.txt`。判定：输出含标记 = 附着成功（输入到达且回流）。
-#![cfg_attr(not(windows), windows_subsystem = "windows")]
+#![cfg_attr(windows, windows_subsystem = "windows")]
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::HANDLE;
 #[cfg(windows)]
@@ -94,7 +94,7 @@ fn probe_one(exe: &std::path::Path, args: &str, inherit_cursor: bool) -> String 
             list,
             0,
             PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
-            (&hpc as *const HPCON).cast::<std::ffi::c_void>(),
+            hpc as *const std::ffi::c_void,
             std::mem::size_of::<HPCON>(),
             std::ptr::null_mut(),
             std::ptr::null(),
@@ -104,6 +104,7 @@ fn probe_one(exe: &std::path::Path, args: &str, inherit_cursor: bool) -> String 
         }
         let mut startup: STARTUPINFOEXW = std::mem::zeroed();
         startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
         startup.lpAttributeList = list;
         let mut command_line = wide(&format!("\"{}\" {args}", exe.display()));
         let mut process: PROCESS_INFORMATION = std::mem::zeroed();
@@ -231,9 +232,9 @@ fn probe_one(exe: &std::path::Path, args: &str, inherit_cursor: bool) -> String 
         let mut marker_seen = false;
         std::thread::sleep(Duration::from_millis(500));
         let cmd = if exe.file_stem().unwrap() == "cmd" {
-            "echo ATTACH_MATRIX_MARKER\r\nexit\r\n"
+            "set A=ATTACH_MATRIX_\r\necho %A%MARKER\r\nexit\r\n"
         } else {
-            "Write-Output ATTACH_MATRIX_MARKER\r\n"
+            "Write-Output ('ATTACH_MATRIX_' + 'MARKER')\r\n"
         };
         write_pipe(in_write, cmd);
         let mut seen = String::new();

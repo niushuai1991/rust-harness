@@ -4,7 +4,7 @@
 //! 启动的直接模式终端却弹出独立控制台窗口——子进程未附着 ConPTY。本探针以完全相同的 GUI 形态
 //! 启动终端、写入标记命令并等待输出回流：输出含标记 = 附着成功；无输出 = 附着失败（弹窗复现）。
 //! 结果写入系统临时目录 `gui_pty_result.txt`（GUI 程序无控制台输出）。
-#![cfg_attr(not(windows), windows_subsystem = "windows")]
+#![cfg_attr(windows, windows_subsystem = "windows")]
 #[cfg(windows)]
 fn main() {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -30,7 +30,7 @@ async fn probe() -> harness_contracts::AppResult<String> {
         .await
         .expect("spawn 终端");
     pty.write_input(
-        "Write-Output gui-pty-probe-marker; [IO.File]::WriteAllText('marker.txt','ok')\r\n",
+        "Write-Output ('gui-pty-' + 'probe-marker'); [IO.File]::WriteAllText('marker.txt','ok')\r\n",
     )
     .await
     .expect("写终端输入");
@@ -45,7 +45,9 @@ async fn probe() -> harness_contracts::AppResult<String> {
             .unwrap_or_default();
         seen.push_str(&chunk);
         exit = pty.try_exit_code();
-        if seen.contains("gui-pty-probe-marker") || exit.is_some() {
+        if (seen.contains("gui-pty-probe-marker") && base.join("marker.txt").exists())
+            || exit.is_some()
+        {
             break;
         }
     }

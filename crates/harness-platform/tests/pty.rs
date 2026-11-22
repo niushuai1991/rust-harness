@@ -32,6 +32,7 @@ async fn worktree_workspace() -> (tempfile::TempDir, WorkspaceManager, Workspace
             "-c",
             "user.email=test@example.invalid",
             "commit",
+            "--allow-empty",
             "-q",
             "-m",
             "initial",
@@ -250,7 +251,7 @@ async fn pty_terminate_kills_process_tree_and_releases_lease() {
     let ps = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
         .join("System32/WindowsPowerShell/v1.0/powershell.exe");
     pty.write_input(&format!(
-        "$child=Start-Process -FilePath '{}' -ArgumentList '-NoProfile -NonInteractive -Command \"Start-Sleep -Seconds 60\"' -PassThru; [IO.File]::WriteAllText('child.pid',[string]$child.Id)",
+        "$child=Start-Process -FilePath '{}' -ArgumentList '-NoProfile -NonInteractive -Command \"Start-Sleep -Seconds 60\"' -PassThru; [IO.File]::WriteAllText('child.pid',[string]$child.Id)\r\n",
         ps.display()
     ))
     .await
@@ -396,4 +397,26 @@ async fn pty_direct_session_runs_unsandboxed_in_source() {
     }
     assert_eq!(fs::read_to_string(&marker_path).unwrap().trim(), MARKER);
     drop(pty);
+}
+
+/// 直接模式必须验证真实回显和执行结果，不能依赖可能跳过的沙箱预检。
+#[tokio::test]
+async fn direct_pty_returns_real_command_output() {
+    let root = tempfile::tempdir().unwrap();
+    let mut pty = PtyService::spawn(root.path(), "", CancellationToken::new(), false)
+        .await
+        .unwrap();
+    // 结果字符串不直接出现在命令中，避免命令回显造成假阳性。
+    pty.write_input("Write-Output ('rh-direct-' + 'output-42')\r\n")
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(12);
+    let mut seen = String::new();
+    while !seen.contains("rh-direct-output-42") && tokio::time::Instant::now() < deadline {
+        seen.push_str(&pty.read_output(250).await.unwrap());
+    }
+    assert!(
+        seen.contains("rh-direct-output-42"),
+        "未收到真实输出：{seen:?}"
+    );
 }

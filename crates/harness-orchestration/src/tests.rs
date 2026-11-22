@@ -520,6 +520,24 @@ async fn terminal_open_write_read_close_with_stub_world() {
     );
 }
 #[tokio::test]
+async fn terminal_write_accepts_enter_and_other_whitespace_input() {
+    let (_d, r, c) = setup().await;
+    let i = install_with(r.clone(), Arc::new(StubWorld)).unwrap();
+    let opened = call(&i, &c, "terminal_open", json!({})).await.unwrap();
+    let id = opened["id"].as_str().unwrap();
+    for input in ["\r", "\n", " ", "\t"] {
+        let written = call(&i, &c, "terminal_write", json!({"id":id,"input":input}))
+            .await
+            .unwrap();
+        assert_eq!(written["output"], format!("回显:{input}"));
+    }
+    assert!(
+        call(&i, &c, "terminal_write", json!({"id":id,"input":""}))
+            .await
+            .is_err()
+    );
+}
+#[tokio::test]
 async fn terminal_exit_settles_and_scopes() {
     let (_d, r, c) = setup().await;
     let i = install_with(r.clone(), Arc::new(StubWorld)).unwrap();
