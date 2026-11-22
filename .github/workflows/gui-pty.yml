@@ -1,0 +1,16 @@
+name: GUI PTY regression
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  gui-pty:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check GUI terminal output
+        shell: pwsh
+        run: ./scripts/check-gui-pty.ps1

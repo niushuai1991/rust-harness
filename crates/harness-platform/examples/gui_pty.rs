@@ -1,63 +1,104 @@
-//! GUI 宿主形态的 PTY 附着探针（诊断工具，不参与测试）。
-//!
-//! 背景：真实 ConPTY 集成测试（控制台宿主）附着成功，桌面端（GUI 宿主，`windows_subsystem="windows"`）
-//! 启动的直接模式终端却弹出独立控制台窗口——子进程未附着 ConPTY。本探针以完全相同的 GUI 形态
-//! 启动终端、写入标记命令并等待输出回流：输出含标记 = 附着成功；无输出 = 附着失败（弹窗复现）。
-//! 结果写入系统临时目录 `gui_pty_result.txt`（GUI 程序无控制台输出）。
+//! GUI 宿主下直接模式 ConPTY 的真实命令输出检查。
 #![cfg_attr(windows, windows_subsystem = "windows")]
+
 #[cfg(windows)]
 fn main() {
-    let runtime = tokio::runtime::Builder::new_current_thread()
+    use std::{path::PathBuf, time::Duration};
+
+    let mut args = std::env::args().skip(1);
+    let mut report = None;
+    let mut work_dir = None;
+    let mut command =
+        "Write-Output ('gui-pty-' + 'probe-marker'); [IO.File]::WriteAllText('marker.txt','ok')"
+            .to_owned();
+    let mut timeout = Duration::from_secs(15);
+    while let Some(arg) = args.next() {
+        match (arg.as_str(), args.next()) {
+            ("--report", Some(value)) => report = Some(PathBuf::from(value)),
+            ("--work-dir", Some(value)) => work_dir = Some(PathBuf::from(value)),
+            ("--command", Some(value)) => command = value,
+            ("--timeout-ms", Some(value)) => match value.parse::<u64>() {
+                Ok(ms) if ms > 0 => timeout = Duration::from_millis(ms),
+                _ => std::process::exit(2),
+            },
+            _ => std::process::exit(2),
+        }
+    }
+    let Some(report) = report else {
+        std::process::exit(2);
+    };
+    let Some(work_dir) = work_dir else {
+        std::process::exit(2);
+    };
+    let source = harness_platform::PtyService::conpty_source();
+    let result = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .expect("tokio runtime");
-    let result = runtime.block_on(probe());
-    let report = match result {
-        Ok(seen) => format!("attached_output={seen:?}"),
-        Err(e) => format!("error={e}"),
+        .map_err(|e| format!("runtime: {e}"))
+        .and_then(|runtime| runtime.block_on(probe(&work_dir, &command, timeout)));
+    let (message, code) = match result {
+        Ok(output) => (format!("PASS source={source} output={output:?}"), 0),
+        Err(error) => (format!("FAIL source={source} {error}"), 1),
     };
-    let path = std::env::temp_dir().join("gui_pty_result.txt");
-    std::fs::write(&path, &report).expect("写结果文件");
+    if std::fs::write(report, message).is_err() {
+        std::process::exit(2);
+    }
+    std::process::exit(code);
 }
 
 #[cfg(windows)]
-async fn probe() -> harness_contracts::AppResult<String> {
+async fn probe(
+    work_dir: &std::path::Path,
+    command: &str,
+    timeout: std::time::Duration,
+) -> Result<String, String> {
     use harness_platform::PtyService;
-    use std::time::{Duration, Instant};
-    let base = std::env::temp_dir().join(format!("gui_pty_{}", harness_contracts::new_id()));
-    std::fs::create_dir_all(&base).expect("建探针目录");
-    let mut pty = PtyService::spawn(&base, "", tokio_util::sync::CancellationToken::new(), false)
-        .await
-        .expect("spawn 终端");
-    pty.write_input(
-        "Write-Output ('gui-pty-' + 'probe-marker'); [IO.File]::WriteAllText('marker.txt','ok')\r\n",
+    use tokio::time::{Instant, timeout_at};
+
+    let root = tempfile::tempdir_in(work_dir).map_err(|e| format!("temporary directory: {e}"))?;
+    let deadline = Instant::now() + timeout;
+    let mut pty = timeout_at(
+        deadline,
+        PtyService::spawn(
+            root.path(),
+            "",
+            tokio_util::sync::CancellationToken::new(),
+            false,
+        ),
     )
     .await
-    .expect("写终端输入");
-    let mut seen = String::new();
-    let mut exit: Option<i32> = None;
-    let deadline = Instant::now() + Duration::from_secs(8);
-    while Instant::now() < deadline {
-        let chunk = tokio::time::timeout(Duration::from_secs(2), pty.read_output(200))
-            .await
-            .ok()
-            .and_then(|r| r.ok())
-            .unwrap_or_default();
-        seen.push_str(&chunk);
-        exit = pty.try_exit_code();
-        if (seen.contains("gui-pty-probe-marker") && base.join("marker.txt").exists())
-            || exit.is_some()
-        {
-            break;
+    .map_err(|_| "timeout spawning terminal".to_owned())?
+    .map_err(|e| format!("spawn terminal: {e}"))?;
+    let input = format!("{}\r\n", command.replace('\n', "\r\n"));
+    timeout_at(deadline, pty.write_input(&input))
+        .await
+        .map_err(|_| "timeout writing command".to_owned())?
+        .map_err(|e| format!("write command: {e}"))?;
+    let mut output = String::new();
+    loop {
+        let marker = std::fs::read_to_string(root.path().join("marker.txt"));
+        if output.contains("gui-pty-probe-marker") && matches!(marker, Ok(ref s) if s == "ok") {
+            return Ok(output);
         }
+        if let Some(code) = pty.try_exit_code() {
+            return Err(format!(
+                "terminal exited early: {code}; output={output:?}; marker={marker:?}"
+            ));
+        }
+        let chunk = timeout_at(deadline, pty.read_output(200))
+            .await
+            .map_err(|_| {
+                format!(
+                    "timeout waiting for output and marker; output={output:?}; marker={marker:?}"
+                )
+            })?
+            .map_err(|e| format!("read output: {e}; output={output:?}; marker={marker:?}"))?;
+        output.push_str(&chunk);
     }
-    let marker = base.join("marker.txt").exists();
-    Ok(format!(
-        "seen={seen:?} exit={exit:?} markerWritten={marker}"
-    ))
 }
 
 #[cfg(not(windows))]
 fn main() {
-    println!("Windows only");
+    eprintln!("Windows only");
+    std::process::exit(1);
 }
