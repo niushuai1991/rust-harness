@@ -167,9 +167,29 @@ async fn pty_try_exit_code_is_nonblocking_while_running() {
     };
     assert_eq!(code, 0);
 }
+/// 侧载判定：worktree 根放了 conpty.dll 时（诊断期），必须报告 conpty.dll 来源
+/// 且真实 spawn 附着成功——「GUI 宿主附着失效」修复的直接证据链。
+#[test]
+fn conpty_source_reflects_sideload_presence() {
+    if !std::path::Path::new("conpty.dll").exists() {
+        // 无 dll 环境（CI 默认）：回退 inbox 是契约行为。
+        assert_eq!(PtyService::conpty_source(), "inbox");
+        return;
+    }
+    assert_eq!(
+        PtyService::conpty_source(),
+        "conpty.dll",
+        "cwd 存在 conpty.dll 时必须侧载而不是回退系统内置"
+    );
+}
+
 #[tokio::test]
 async fn pty_roundtrip_resize_exit_and_lease_lifecycle() {
     skip_without_conpty!();
+    eprintln!(
+        "conpty source = {}（诊断期应关注是否为 conpty.dll）",
+        PtyService::conpty_source()
+    );
     let (_tmp, manager, info) = workspace().await;
     // 租约由调用方（生产中为 terminal_open）持有：测试层显式 acquire。
     let lease = manager.acquire(&info.id).unwrap();

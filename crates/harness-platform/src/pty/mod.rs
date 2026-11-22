@@ -167,6 +167,18 @@ pub struct SandboxedPty {
 }
 pub struct PtyService;
 impl PtyService {
+    /// ConPTY 实际来源："conpty.dll"（侧载，OpenConsole 配对）或 "inbox"（系统内置）。
+    /// 诊断与测试断言用——附着平台回归的验证依赖明确知道走的是哪条路径。
+    pub fn conpty_source() -> &'static str {
+        #[cfg(windows)]
+        {
+            conpty_api::get().source
+        }
+        #[cfg(not(windows))]
+        {
+            "unavailable"
+        }
+    }
     /// Spawn an interactive shell (pwsh 7, falling back to Windows PowerShell)
     /// attached to a ConPTY. `capability_id` 派生受限令牌（与目录授权同源）；
     /// `sandboxed=false` 为直接模式：宿主令牌执行，`capability_id` 不参与令牌。
@@ -241,6 +253,8 @@ impl SandboxedPty {
         (self.resize)(cols, rows)
     }
 }
+#[cfg(windows)]
+mod conpty_api;
 #[cfg(windows)]
 mod windows;
 
