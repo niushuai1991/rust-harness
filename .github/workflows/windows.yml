@@ -20,11 +20,19 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: npm ci --no-audit --no-fund
+      - run: npm test
       - run: npm run sdk:check
       - run: cargo test --workspace --exclude rust-harness-desktop
       - run: python -m unittest discover -s sdk/python -p 'test_*.py' -v
       - name: Build NSIS
         run: npm run desktop:build
+      - name: Verify installer UAC manifest
+        shell: pwsh
+        run: |
+          $config = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $installer = Join-Path target/release/bundle/nsis ('{0}_{1}_x64-setup.exe' -f $config.productName, $config.version)
+          python scripts/verify-installer.py $installer --application target/release/rust-harness-desktop.exe
+          if ($LASTEXITCODE) { throw 'Installer UAC manifest verification failed' }
       - name: Verify packaged ConPTY assets
         shell: pwsh
         run: |

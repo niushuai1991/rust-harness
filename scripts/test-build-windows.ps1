@@ -37,6 +37,11 @@ try {
     & $build -SkipInstall | Out-Null
     Assert-True ($global:conptyTestDownloadCount -eq 1) 'A complete matching version must skip download.'
 
+    $callsBefore = $global:conptyTestNpmCalls.Count
+    & $build -PrepareOnly | Out-Null
+    Assert-True ($global:conptyTestNpmCalls.Count -eq $callsBefore) 'Preparation-only must not run npm.'
+    Assert-True ($global:conptyTestDownloadCount -eq 1) 'Preparation-only must reuse the matching cache.'
+
     Set-Content -LiteralPath $versionFile -Value 'older-version'
     & $build -SkipInstall | Out-Null
     Assert-True ($global:conptyTestDownloadCount -eq 2) 'A mismatched version must trigger a download.'

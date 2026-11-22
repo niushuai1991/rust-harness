@@ -1,4 +1,4 @@
-param([switch]$SkipInstall)
+param([switch]$SkipInstall, [switch]$PrepareOnly)
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'Windows build requires Windows.' }
@@ -41,6 +41,8 @@ if ($cachedVersion -eq $conptyVersion -and
     Remove-Item -LiteralPath $resolved -Recurse -Force
   }
 }
+
+if ($PrepareOnly) { return }
 
 if (-not $SkipInstall) { npm ci --no-audit --no-fund; if ($LASTEXITCODE) { throw 'npm ci failed' } }
 npm test; if ($LASTEXITCODE) { throw 'Frontend tests failed' }

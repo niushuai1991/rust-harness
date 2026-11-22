@@ -5,6 +5,18 @@ on:
 permissions:
   contents: read
 jobs:
+  desktop-entry:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check platform-specific desktop build entry
+        run: node --test scripts/test-build-desktop.mjs
   asset-cache:
     runs-on: windows-latest
     steps:
