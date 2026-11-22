@@ -422,7 +422,9 @@ impl PtyWorld for StubWorld {
     async fn spawn(
         &self,
         _root: &std::path::Path,
+        _capability_id: &str,
         _cancel: CancellationToken,
+        _sandboxed: bool,
     ) -> AppResult<Box<dyn TerminalSession>> {
         Ok(Box::new(StubTerminal {
             echo: String::new(),
@@ -1383,4 +1385,73 @@ async fn background_run_scratch_session_runs_in_scratch_root() {
             .trim_end(),
         "hi"
     );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn terminal_open_direct_mode_opens_session() {
+    let (_d, r, c) = setup_at(harness_contracts::ExecutionMode::Direct).await;
+    assert_eq!(c.mode, harness_contracts::ExecutionMode::Direct);
+    let i = install_with(r.clone(), Arc::new(StubWorld)).unwrap();
+    let opened = call(&i, &c, "terminal_open", json!({})).await.unwrap();
+    let id = opened["id"].as_str().unwrap().to_owned();
+    call(
+        &i,
+        &c,
+        "terminal_write",
+        json!({"id":id,"input":"echo hi","yieldMs":250}),
+    )
+    .await
+    .unwrap();
+    call(&i, &c, "terminal_close", json!({"id":id}))
+        .await
+        .unwrap();
+    let events = r.store.events(&c.session_id, 0).await.unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| e.kind == "terminal.opened" && e.data["id"] == id),
+        "直接模式会话应能打开交互终端"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e.kind == "terminal.closed" && e.data["id"] == id),
+        "关闭应结算 terminal.closed"
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn terminal_open_scratch_session_opens_without_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(dir.path().join("data")).await.unwrap();
+    let session = runtime.store.create_session("", "scratch").await.unwrap();
+    let root = runtime.workspaces.ensure_scratch_root(&session.id).unwrap();
+    let ctx = ToolContext {
+        session_id: session.id.clone(),
+        workspace_id: String::new(),
+        root,
+        mode: harness_contracts::ExecutionMode::Replica,
+        capability_id: session.id.clone(),
+        provider: Arc::new(Answer),
+    };
+    let i = install_with(runtime.clone(), Arc::new(StubWorld)).unwrap();
+    let opened = call(&i, &ctx, "terminal_open", json!({})).await.unwrap();
+    let id = opened["id"].as_str().unwrap().to_owned();
+    let out = call(
+        &i,
+        &ctx,
+        "terminal_write",
+        json!({"id":id,"input":"echo hi","yieldMs":250}),
+    )
+    .await
+    .unwrap();
+    assert!(
+        out.to_string().contains("回显"),
+        "scratch 会话终端应可交互: {out}"
+    );
+    call(&i, &ctx, "terminal_close", json!({"id":id}))
+        .await
+        .unwrap();
 }

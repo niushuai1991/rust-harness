@@ -953,11 +953,15 @@ impl ExternalTool for Tool {
                     Some(r.workspaces.acquire(&context.workspace_id)?)
                 };
                 let root = context.root.to_string_lossy().into_owned();
+                // 按执行位置镜像前台 shell：直接模式宿主令牌（每条输入由运行时审批），
+                // 副本/worktree/scratch 受限令牌沙箱。capability 与目录授权同源。
+                let sandboxed = context.mode != harness_contracts::ExecutionMode::Direct;
+                let capability_id = context.capability_id.clone();
                 let token = self.state.stop.child_token();
                 let session = match self
                     .state
                     .world
-                    .spawn(Path::new(&root), token.clone())
+                    .spawn(Path::new(&root), &capability_id, token.clone(), sandboxed)
                     .await
                 {
                     Ok(session) => session,

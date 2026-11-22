@@ -167,16 +167,23 @@ pub struct SandboxedPty {
 }
 pub struct PtyService;
 impl PtyService {
-    /// Spawn an interactive sandboxed shell (pwsh 7, falling back to Windows
-    /// PowerShell) rooted at the managed replica, attached to a ConPTY.
-    pub async fn spawn(root: &Path, cancel: CancellationToken) -> AppResult<SandboxedPty> {
+    /// Spawn an interactive shell (pwsh 7, falling back to Windows PowerShell)
+    /// attached to a ConPTY. `capability_id` 派生受限令牌（与目录授权同源）；
+    /// `sandboxed=false` 为直接模式：宿主令牌执行，`capability_id` 不参与令牌。
+    /// 调用方持有工作区运行租约（无项目会话无租约，与会话语义一致）。
+    pub async fn spawn(
+        root: &Path,
+        capability_id: &str,
+        cancel: CancellationToken,
+        sandboxed: bool,
+    ) -> AppResult<SandboxedPty> {
         #[cfg(windows)]
         {
-            windows::spawn(root, cancel)
+            windows::spawn(root, capability_id, cancel, sandboxed)
         }
         #[cfg(not(windows))]
         {
-            let _ = (root, cancel);
+            let _ = (root, capability_id, cancel, sandboxed);
             Err(AppError::new(
                 "UNSUPPORTED",
                 "PTY isolation is Windows only",
