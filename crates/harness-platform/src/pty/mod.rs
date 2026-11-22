@@ -223,6 +223,12 @@ impl SandboxedPty {
     pub async fn exit_code(&mut self) -> Option<i32> {
         (&mut self.exit).await.ok()
     }
+    /// Non-blocking exit-code probe: `None` while the process is alive.
+    /// terminal_write/read 的逐条返回依赖此语义——阻塞式 await 在存活期会永久挂起
+    ///（PR #172 真实抽查暴露：一次审批后的每次写入都被卡死）。
+    pub fn try_exit_code(&mut self) -> Option<i32> {
+        self.exit.try_recv().ok()
+    }
     /// Spill tail for persistence: (text, truncated-flag).
     pub fn spill(&self) -> (String, bool) {
         self.buffer.lock().unwrap().tail_text()

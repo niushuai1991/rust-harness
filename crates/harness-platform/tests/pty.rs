@@ -128,6 +128,45 @@ macro_rules! skip_without_conpty {
         }
     };
 }
+/// 进程存活时 try_exit_code 必须立即返回 None（terminal_write 依赖该语义逐条返回），
+/// 退出后返回退出码——阻塞式 await 在存活期会永久挂起（PR #172 真实抽查暴露）。
+#[tokio::test]
+async fn pty_try_exit_code_is_nonblocking_while_running() {
+    skip_without_conpty!();
+    let (_tmp, manager, info) = workspace().await;
+    let _lease = manager.acquire(&info.id).unwrap();
+    let mut pty = PtyService::spawn(
+        std::path::Path::new(&info.replica_path),
+        &info.id,
+        CancellationToken::new(),
+        true,
+    )
+    .await
+    .unwrap();
+    let started = std::time::Instant::now();
+    assert_eq!(
+        pty.try_exit_code(),
+        None,
+        "存活的终端必须立即返回 None 而不是阻塞"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "try_exit_code 不得阻塞"
+    );
+    pty.write_input("exit\r\n").await.unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+    let code = loop {
+        if let Some(code) = pty.try_exit_code() {
+            break code;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "退出码未在 15 秒内可得"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    assert_eq!(code, 0);
+}
 #[tokio::test]
 async fn pty_roundtrip_resize_exit_and_lease_lifecycle() {
     skip_without_conpty!();

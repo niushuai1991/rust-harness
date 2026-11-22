@@ -31,6 +31,8 @@ pub trait TerminalSession: Send {
     async fn read_output(&mut self, yield_ms: u64) -> AppResult<String>;
     /// Exit code, `None` while still running.
     async fn exit_code(&mut self) -> Option<i32>;
+    /// 非阻塞退出码探测：存活即 `None`（terminal_write/read 逐条返回依赖此语义）。
+    fn try_exit_code(&mut self) -> Option<i32>;
     /// Spill tail for persistence: (text, truncated-flag).
     fn spill(&self) -> (String, bool);
     fn terminate(&self);
@@ -64,6 +66,9 @@ impl TerminalSession for PlatformTerminal {
     }
     async fn exit_code(&mut self) -> Option<i32> {
         self.pty.exit_code().await
+    }
+    fn try_exit_code(&mut self) -> Option<i32> {
+        self.pty.try_exit_code()
     }
     fn spill(&self) -> (String, bool) {
         self.pty.spill()

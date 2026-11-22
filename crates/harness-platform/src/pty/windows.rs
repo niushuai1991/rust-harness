@@ -210,6 +210,13 @@ pub(super) fn spawn(
         let mut command_line = wide(format!("\"{}\" -NoLogo -NoProfile", executable.display()));
         let env = environment_block(temp.path());
         let mut process: PROCESS_INFORMATION = std::mem::zeroed();
+        // CREATE_NO_WINDOW 仅作回退保护：PSEUDOCONSOLE attribute 生效时被忽略；
+        // GUI 宿主（无控制台可继承）下 attribute 一旦失效，没有它系统会为子进程新建
+        // 真实控制台窗口（桌面端弹窗 + ConPTY 管道无人消费）。
+        let creation_flags = CREATE_SUSPENDED
+            | CREATE_UNICODE_ENVIRONMENT
+            | EXTENDED_STARTUPINFO_PRESENT
+            | CREATE_NO_WINDOW;
         let created = match restricted.as_ref() {
             Some(restricted) => CreateProcessAsUserW(
                 restricted.0,
@@ -218,7 +225,7 @@ pub(super) fn spawn(
                 null(),
                 null(),
                 0,
-                CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
+                creation_flags,
                 env.as_ptr().cast(),
                 wide(root).as_ptr(),
                 &startup.info.StartupInfo,
@@ -231,7 +238,7 @@ pub(super) fn spawn(
                 null(),
                 null(),
                 0,
-                CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
+                creation_flags,
                 env.as_ptr().cast(),
                 wide(root).as_ptr(),
                 &startup.info.StartupInfo,
