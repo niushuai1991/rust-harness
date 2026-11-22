@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 use windows_sys::Win32::{
     Security::SECURITY_ATTRIBUTES,
     System::{
-        Console::{COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON, ResizePseudoConsole},
+        Console::{COORD, HPCON},
         JobObjects::{
             AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
@@ -31,14 +31,15 @@ use windows_sys::Win32::{
 const TERMINAL_COLS: i16 = 120;
 const TERMINAL_ROWS: i16 = 30;
 /// Owns one HPCON; closed after the process tree is torn down (guard drop order).
-struct PcHandle(HPCON);
+/// close 函数指针随来源（侧载 conpty.dll / 系统内置）成对持有。
+struct PcHandle(HPCON, super::conpty_api::ClosePseudoConsoleFn);
 unsafe impl Send for PcHandle {}
 unsafe impl Sync for PcHandle {}
 impl Drop for PcHandle {
     fn drop(&mut self) {
         unsafe {
             if self.0 != 0 {
-                ClosePseudoConsole(self.0);
+                (self.1)(self.0);
             }
         }
     }
@@ -173,7 +174,10 @@ pub(super) fn spawn(
         let out_write = Handle(out_write);
         let out_read = File::from_raw_handle(out_read);
         let mut hpc: HPCON = 0;
-        if CreatePseudoConsole(
+        // ConPTY API 双来源：优先侧载 conpty.dll（自带 OpenConsole 绕开系统 conhost），
+        // 回退系统内置——修复「GUI 宿主 × inbox conhost」附着失效的平台回归。
+        let api = super::conpty_api::get();
+        if (api.create)(
             COORD {
                 X: TERMINAL_COLS,
                 Y: TERMINAL_ROWS,
@@ -186,7 +190,7 @@ pub(super) fn spawn(
         {
             return Err(error("CreatePseudoConsole"));
         }
-        let hpc = Arc::new(PcHandle(hpc));
+        let hpc = Arc::new(PcHandle(hpc, api.close));
         // 存活于本作用域的副本：属性列表仅存指针，不能指向已返回的栈帧。
         let hpc_value = hpc.0;
         let startup = conpty_startup(&hpc_value)?;
@@ -291,8 +295,9 @@ pub(super) fn spawn(
         });
         let resize: ResizeFn = {
             let hpc = hpc.clone();
+            let api_resize = api.resize;
             Box::new(move |cols, rows| {
-                if ResizePseudoConsole(
+                if api_resize(
                     hpc.0,
                     COORD {
                         X: cols as i16,

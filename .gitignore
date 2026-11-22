@@ -16,3 +16,8 @@ src-tauri/gen/
 /.codex/
 # Tauri Specta generated bindings
 /frontend/bindings.ts
+
+# ConPTY 后备资产（构建脚本从 NuGet 下载，不入库；worktree 根的配对为本地诊断/测试用）
+src-tauri/binaries/
+/conpty.dll
+/OpenConsole.exe
