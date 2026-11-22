@@ -446,6 +446,10 @@ async fn direct_mode_gates_terminal_write_per_input() {
         pending.tool, "terminal_write",
         "无沙箱终端的每条输入应交交互裁决"
     );
+    assert_eq!(
+        pending.reason, "允许向交互终端写入输入？本模式无沙箱，终端内命令将以你的权限直接执行。",
+        "审批理由应点名「写入终端输入」，让用户能区分终端写入与普通工具"
+    );
     task.await.unwrap().unwrap();
 }
 
