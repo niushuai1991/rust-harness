@@ -1,6 +1,6 @@
-﻿import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
+import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {act,cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
-import App from './App';
+import App,{ConversationEvents} from './App';
 import './style.css';
 import {ChangesView} from './ChangesView';
 
@@ -9,7 +9,8 @@ import {useChat} from './store';
 import {useSidePanel} from './sidePanelStore';
 import {open,save} from '@tauri-apps/plugin-dialog';
 import type {LiveEvent,SessionEvent} from './types';
-const mocks=vi.hoisted(()=>({command:vi.fn(),send:vi.fn()}));
+const mocks=vi.hoisted(()=>({command:vi.fn(),send:vi.fn(),listeners:new Map<string,(event:{payload:any})=>void>()}));
+vi.mock('@tauri-apps/api/event',()=>({listen:async(name:string,handler:(event:{payload:any})=>void)=>{mocks.listeners.set(name,handler);return()=>mocks.listeners.delete(name)}}));
 vi.mock('./api',()=>({desktop:()=>true,command:mocks.command,send:mocks.send,errorText:(e:unknown)=>e instanceof Error?e.message:String(e)}));
 vi.mock('@tauri-apps/plugin-dialog',()=>({open:vi.fn(),save:vi.fn()}));
 vi.mock('@tauri-apps/api/app',()=>({getVersion:vi.fn(async()=>'0.1.6')}));
@@ -19,7 +20,7 @@ const timeline=(sessionId:string,events:SessionEvent[])=>({sessionId,events,olde
 async function openSidebarSession(title:RegExp){fireEvent.click(await screen.findByRole('button',{name:title}))}
 async function openSessionA(){await openSidebarSession(/会话 A/);await screen.findByText('内容 a')}
 async function renderOpenA(){const utils=render(<App/>);await openSessionA();return utils}
-beforeEach(()=>{useChat.setState({events:{},streams:{},statuses:{},timelines:{},timelineLru:[]});useSidePanel.getState().reset();mocks.command.mockReset();mocks.send.mockReset();vi.mocked(open).mockReset();vi.mocked(save).mockReset();mocks.command.mockImplementation(async(name:string,args:any)=>{
+beforeEach(()=>{mocks.listeners.clear();useChat.setState({events:{},streams:{},statuses:{},timelines:{},timelineLru:[]});useSidePanel.getState().reset();mocks.command.mockReset();mocks.send.mockReset();vi.mocked(open).mockReset();vi.mocked(save).mockReset();mocks.command.mockImplementation(async(name:string,args:any)=>{
  if(name==='workspace_list')return [{id:'w',sourcePath:'D:/project',replicaPath:'D:/copy',createdAt:'',name:'project'}];
  if(name==='model_list')return [{id:'m',name:'测试模型',compatibility:'standard',providerId:'custom',apiMode:'chatCompletions',maxOutputTokens:null,baseUrl:'https://example.test',model:'m',credentialRef:'',proxy:null,efforts:['low','high'],effort:null,enabled:true,builtin:false}];
  if(name==='provider_list')return [{id:'custom',name:'自定义供应商',builtin:false,compatibility:'standard',endpoints:[{apiMode:'chatCompletions',baseUrl:'https://example.test'}],defaultModel:'m',credentialRef:'',proxy:null,enabled:true,builtinModels:[],disabledModels:[]}];
@@ -3036,4 +3037,162 @@ describe('无项目会话',()=>{
   expect(within(groupHead.closest('.ws-head') as HTMLElement).queryByLabelText(/重命名 无项目/)).not.toBeInTheDocument();
   expect(within(groupHead.closest('.ws-head') as HTMLElement).queryByLabelText(/置顶 无项目/)).not.toBeInTheDocument();
  });
+});
+
+describe('运行中插话',()=>{
+ it('运行中可以发送插话，同时保留停止按钮和原回合',async()=>{
+  let release!:()=>void;
+  mocks.send.mockImplementation(async(_id:string,_text:string,_model:string,receive:(e:LiveEvent)=>void)=>{
+   receive({type:'durable',event:{id:'start-steer',sessionId:'a',seq:'2',kind:'turn.start',data:{runId:'run-1'},createdAt:''}});
+   await new Promise<void>(resolve=>release=resolve);
+  });
+  await renderOpenA();
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'开始'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await screen.findByRole('button',{name:'取消生成'});
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'改用中文'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_steer',expect.objectContaining({sessionId:'a',expectedRunId:'run-1',text:'改用中文',messageId:expect.any(String)})));
+  expect(mocks.send).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole('button',{name:'取消生成'})).toBeInTheDocument();
+  await act(async()=>release());
+ });
+});
+
+describe('插话时间线',()=>{
+ it('按原事件顺序显示插话并显示处理状态，避免重复用户消息',()=>{
+  const events:SessionEvent[]=[
+   {id:'st',sessionId:'a',seq:'1',kind:'turn.start',data:{runId:'r'},createdAt:''},
+   {id:'u',sessionId:'a',seq:'2',kind:'user.message',data:{content:'任务'},createdAt:''},
+   {id:'n',sessionId:'a',seq:'3',kind:'assistant.message',data:{content:'正在检查'},createdAt:''},
+   {id:'q',sessionId:'a',seq:'4',kind:'steer.queued',data:{id:'q1',runId:'r',content:'补充限制',attachments:[],quotes:[]},createdAt:''},
+   {id:'us',sessionId:'a',seq:'5',kind:'user.message',data:{steerId:'q1',runId:'r',content:'补充限制'},createdAt:''},
+   {id:'ap',sessionId:'a',seq:'6',kind:'steer.applied',data:{id:'q1',runId:'r'},createdAt:''},
+   {id:'last',sessionId:'a',seq:'7',kind:'assistant.message',data:{content:'最终结果'},createdAt:''},
+   {id:'end',sessionId:'a',seq:'8',kind:'turn.end',data:{status:'completed'},createdAt:''}
+  ];
+  render(<ConversationEvents events={events} turns={[]}/>);
+  expect(screen.getAllByText('补充限制')).toHaveLength(1);
+  expect(screen.getByText('已纳入上下文')).toBeInTheDocument();
+  expect(screen.getByText('正在检查').compareDocumentPosition(screen.getByText('补充限制'))&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(screen.getByText('补充限制').compareDocumentPosition(screen.getByText('最终结果'))&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+ });
+});
+
+describe('插话失败重试',()=>{
+ it('通信失败保留输入，重试使用同一个消息标识',async()=>{
+  const original=mocks.command.getMockImplementation()!;let release!:()=>void;let calls=0;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_steer'&&++calls===1?Promise.reject(new Error('连接中断')):original(name,args));
+  mocks.send.mockImplementation(async(_id:string,_text:string,_model:string,receive:(e:LiveEvent)=>void)=>{
+   receive({type:'durable',event:{id:'start-retry',sessionId:'a',seq:'2',kind:'turn.start',data:{runId:'run-1'},createdAt:''}});
+   await new Promise<void>(resolve=>release=resolve);
+  });
+  await renderOpenA();fireEvent.change(screen.getByLabelText('消息'),{target:{value:'任务'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await screen.findByRole('button',{name:'取消生成'});
+  const input=screen.getByLabelText('消息');fireEvent.change(input,{target:{value:'补充要求'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));await screen.findByText('连接中断');expect(input).toHaveValue('补充要求');
+  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+  await waitFor(()=>expect(mocks.command.mock.calls.filter(([name])=>name==='session_steer')).toHaveLength(2));
+  const submissions=mocks.command.mock.calls.filter(([name])=>name==='session_steer');
+  expect(submissions[0][1].messageId).toBe(submissions[1][1].messageId);
+  await act(async()=>release());
+ });
+});
+
+it('中断回合仍显示未处理插话供用户重新发送',()=>{
+ const events:SessionEvent[]=[
+  {id:'start-f',sessionId:'a',seq:'1',kind:'turn.start',data:{runId:'r'},createdAt:''},
+  {id:'user-f',sessionId:'a',seq:'2',kind:'user.message',data:{content:'任务'},createdAt:''},
+  {id:'queued-f',sessionId:'a',seq:'3',kind:'steer.queued',data:{id:'m',runId:'r',content:'保留这条',attachments:[],quotes:[]},createdAt:''},
+  {id:'failed-f',sessionId:'a',seq:'4',kind:'steer.failed',data:{id:'m',runId:'r',reason:'取消'},createdAt:''},
+  {id:'end-f',sessionId:'a',seq:'5',kind:'turn.end',data:{status:'cancelled'},createdAt:''}
+ ];
+ render(<ConversationEvents events={events} turns={[]}/>);
+ expect(screen.getByText('保留这条')).toBeVisible();
+ expect(screen.getByText('未处理，请重新发送')).toBeVisible();
+});
+
+it('工具调用与结果之间插话时仍配对成一张卡',()=>{
+ const events:SessionEvent[]=[
+  {id:'start-p',sessionId:'a',seq:'1',kind:'turn.start',data:{runId:'r'},createdAt:''},
+  {id:'user-p',sessionId:'a',seq:'2',kind:'user.message',data:{content:'任务'},createdAt:''},
+  {id:'call-p',sessionId:'a',seq:'3',kind:'tool.call',data:{id:'c',name:'read',arguments:{path:'a.txt'}},createdAt:''},
+  {id:'queued-p',sessionId:'a',seq:'4',kind:'steer.queued',data:{id:'m',runId:'r',content:'新要求',attachments:[],quotes:[]},createdAt:''},
+  {id:'result-p',sessionId:'a',seq:'5',kind:'tool.result',data:{callId:'c',name:'read',content:'文件内容',isError:false},createdAt:''}
+ ];
+ render(<ConversationEvents events={events} turns={[]}/>);
+ const tool=screen.getByText('读取',{selector:'.t-title'}).closest('.tcard')!;
+ expect(within(tool as HTMLElement).getByText('已完成')).toBeInTheDocument();
+ expect(screen.getAllByText('读取',{selector:'.t-title'})).toHaveLength(1);
+});
+
+it('重新打开长回合时可使用分页元数据向当前回合插话',async()=>{
+ const original=mocks.command.getMockImplementation()!;
+ mocks.command.mockImplementation(async(name,args)=>{
+  if(name==='session_active_list')return ['a'];
+  if(name==='session_timeline_page')return {...timeline(args.sessionId,[event('late','a','250','内容 a')]),turns:[{startSeq:'1',runId:'long-run',endSeq:null,status:null,finalMessageId:null}]};
+  return original(name,args);
+ });
+ await renderOpenA();
+ await screen.findByRole('button',{name:'取消生成'});
+ fireEvent.change(screen.getByLabelText('消息'),{target:{value:'新增限制'}});
+ fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
+ await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_steer',expect.objectContaining({expectedRunId:'long-run',text:'新增限制'})));
+});
+it('插话结算事件不在当前页时使用分页中的状态',()=>{
+ const events:SessionEvent[]=[
+  {id:'s-page',sessionId:'a',seq:'1',kind:'turn.start',data:{runId:'r'},createdAt:''},
+  {id:'q-page',sessionId:'a',seq:'2',kind:'steer.queued',data:{id:'m',runId:'r',content:'分页输入',steerStatus:'steer.applied'},createdAt:''},
+ ];
+ render(<ConversationEvents events={events} turns={[]}/>);
+ expect(screen.getByText('已纳入上下文')).toBeVisible();
+});
+
+it('后台运行会话的插话事件可实时更新当前时间线',async()=>{
+ const original=mocks.command.getMockImplementation()!;
+ mocks.command.mockImplementation(async(name,args)=>name==='session_active_list'?['a']:original(name,args));
+ await renderOpenA();
+ await waitFor(()=>expect(mocks.listeners.has('session-steering-event')).toBe(true));
+ const deliver=mocks.listeners.get('session-steering-event')!;
+ await act(async()=>deliver({payload:{id:'bg-start',sessionId:'a',seq:'2',kind:'turn.start',data:{runId:'bg'},createdAt:''}}));
+ await act(async()=>deliver({payload:{id:'bg-q',sessionId:'a',seq:'3',kind:'steer.queued',data:{id:'m',runId:'bg',content:'后台消息',attachments:[],quotes:[]},createdAt:''}}));
+ expect(await screen.findByText('后台消息')).toBeVisible();
+ await act(async()=>deliver({payload:{id:'bg-ap',sessionId:'a',seq:'4',kind:'steer.applied',data:{id:'m',runId:'bg'},createdAt:''}}));
+ expect(screen.getByText('已纳入上下文')).toBeVisible();
+});
+
+it('回合结束后补记的失败状态仍关联原插话',()=>{
+ const events:SessionEvent[]=[
+  {id:'s-late',sessionId:'a',seq:'1',kind:'turn.start',data:{runId:'r'},createdAt:''},
+  {id:'q-late',sessionId:'a',seq:'2',kind:'steer.queued',data:{id:'m',runId:'r',content:'保留晚到状态'},createdAt:''},
+  {id:'end-late',sessionId:'a',seq:'3',kind:'turn.end',data:{status:'error'},createdAt:''},
+  {id:'fail-late',sessionId:'a',seq:'4',kind:'steer.failed',data:{id:'m',runId:'r',reason:'恢复'},createdAt:''}
+ ];
+ render(<ConversationEvents events={events} turns={[]}/>);
+ expect(screen.getByText('未处理，请重新发送')).toBeVisible();
+});
+
+it('后台回合结束时补拉未广播的插话记录',async()=>{
+ const original=mocks.command.getMockImplementation()!;let finished=false;
+ const done:SessionEvent[]=[
+  {id:'rt-st',sessionId:'a',seq:'2',kind:'turn.start',data:{runId:'r'},createdAt:''},
+  {id:'rt-q',sessionId:'a',seq:'3',kind:'steer.queued',data:{id:'m',runId:'r',content:'补拉消息'},createdAt:''},
+  {id:'rt-f',sessionId:'a',seq:'4',kind:'steer.failed',data:{id:'m',runId:'r'},createdAt:''},
+  {id:'rt-end',sessionId:'a',seq:'5',kind:'turn.end',data:{status:'cancelled'},createdAt:''}
+ ];
+ mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'&&finished?timeline('a',[event('e-a','a','1','内容 a'),...done]):original(name,args));
+ await renderOpenA();await waitFor(()=>expect(mocks.listeners.has('session-steering-event')).toBe(true));
+ finished=true;await act(async()=>mocks.listeners.get('session-steering-event')!({payload:done[3]}));
+ expect(await screen.findByText('补拉消息')).toBeVisible();
+ expect(screen.getByText('未处理，请重新发送')).toBeVisible();
+});
+
+it('受理事件不在当前页时已应用的插话仍显示状态',()=>{
+ const events:SessionEvent[]=[
+  {id:'us-page',sessionId:'a',seq:'30',kind:'user.message',data:{steerId:'m',runId:'r',content:'较早的插话'},createdAt:''},
+  {id:'ap-page',sessionId:'a',seq:'31',kind:'steer.applied',data:{id:'m',runId:'r'},createdAt:''}
+ ];
+ render(<ConversationEvents events={events} turns={[]}/>);
+ expect(screen.getByText('较早的插话')).toBeVisible();
+ expect(screen.getByText('已纳入上下文')).toBeVisible();
 });

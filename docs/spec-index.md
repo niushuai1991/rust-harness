@@ -42,6 +42,7 @@
 | [全局指令文件](specs/global-agents-md.md) | 数据目录（默认 `~/.RustHarness`）下的 `AGENTS.md` 自动注入所有会话系统提示，缺失静默跳过。 |
 | [无项目会话与无项目自动化](specs/no-project-sessions.md) | 桌面端允许不选择项目创建会话与自动化（`workspace_id` 空串哨兵）：会话独立 scratch 执行根，草稿态「无项目」落点与侧栏「无项目」分组。 |
 | [会话回合导航](specs/turn-navigator.md) | 用户消息摘要导航、自适应宽度、悬停预览及跨页历史跳转。 |
+| [运行中插话](specs/turn-steering.md) | 桌面向运行中的回合补充输入，按模型请求边界持久化并处理。 |
 | [回合回复呈现](specs/turn-reply-presentation.md) | 一个回合视为一个回复单元：完成回合过程区默认折叠，复制入口收敛到轮尾总结并复制整轮文本合并。 |
 
 

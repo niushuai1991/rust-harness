@@ -60,6 +60,7 @@ function storeTimeline(state:State,id:string,timeline:TimelineState){
 function flattenPages(pages:SessionEvent[][]){return pages.reduce((all,page)=>mergeEvents(all,page),[] as SessionEvent[])}
 // 满页时另起一页而不是裁掉最早事件：实时追加不能丢任何已到达的会话内容。
 function appendDurable(pages:SessionEvent[][],event:SessionEvent):SessionEvent[][] {
+ if(pages.some(page=>page.some(existing=>existing.id===event.id)))return pages;
  if(!pages.length)return [[event]];
  const last=mergeEvents(pages[pages.length-1],[event]);
  if(last.length>MAX_EVENTS_PER_PAGE)return [...pages,[event]];

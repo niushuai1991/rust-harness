@@ -137,12 +137,19 @@ pub struct Runtime {
     events: broadcast::Sender<LiveEvent>,
     pub(crate) active: Mutex<HashMap<String, CancellationToken>>,
     queues: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    steering: Mutex<HashMap<String, Arc<tokio::sync::Mutex<SteeringState>>>>,
     cancelled_messages: Mutex<HashSet<(String, String)>>,
     children: Mutex<HashMap<String, Vec<String>>>,
     parents: Mutex<HashMap<String, String>>,
     custom: crate::registry::Tools,
     _host_lock: std::fs::File,
 }
+
+#[derive(Default)]
+struct SteeringState {
+    run_id: Option<String>,
+}
+
 /// 回合执行上下文：执行根、执行模式、shell 沙箱 capability 派生 id 与 worktree 模式的分支名。
 #[derive(Clone)]
 struct ExecContext {
@@ -236,6 +243,7 @@ impl Runtime {
             events,
             active: Mutex::new(HashMap::new()),
             queues: Mutex::new(HashMap::new()),
+            steering: Mutex::new(HashMap::new()),
             cancelled_messages: Mutex::new(HashSet::new()),
             children: Mutex::new(children),
             parents: Mutex::new(parents),
@@ -897,6 +905,136 @@ impl Runtime {
         }
         Ok(snapshot)
     }
+    fn steering_state(&self, session: &str) -> Arc<tokio::sync::Mutex<SteeringState>> {
+        self.steering
+            .lock()
+            .unwrap()
+            .entry(session.to_owned())
+            .or_default()
+            .clone()
+    }
+
+    /// 将输入绑定到当前运行回合，并持久化受理。
+    pub async fn steer_session(
+        &self,
+        session_id: &str,
+        expected_run_id: &str,
+        message_id: &str,
+        text: String,
+        attachments: Vec<String>,
+        quotes: Vec<String>,
+    ) -> AppResult<()> {
+        if message_id.is_empty()
+            || message_id.len() > 128
+            || (text.trim().is_empty()
+                && attachments.is_empty()
+                && quotes.iter().all(|q| q.trim().is_empty()))
+            || text.len() > 1024 * 1024
+            || attachments.len() > 20
+            || quotes.len() > 10
+        {
+            return Err(AppError::new("INVALID_INPUT", "消息为空或超出限制"));
+        }
+        let quotes: Vec<String> = quotes
+            .into_iter()
+            .map(|q| q.trim().to_owned())
+            .filter(|q| !q.is_empty())
+            .collect();
+        self.store.session(session_id).await?;
+        let mut attached = Vec::new();
+        for hash in attachments {
+            let metadata = self.artifact_metadata(session_id, &hash).await?;
+            self.store.blob(&hash).await?;
+            if !attached.iter().any(|a: &ArtifactMetadata| a.hash == hash) {
+                attached.push(metadata);
+            }
+        }
+        let queued = json!({"id":message_id,"runId":expected_run_id,"content":text,"attachments":attached,"quotes":quotes});
+        let state = self.steering_state(session_id);
+        let state = state.lock().await;
+        let events = self.store.events(session_id, 0).await?;
+        if let Some(previous) = events
+            .iter()
+            .find(|e| e.kind == "steer.queued" && e.data["id"] == message_id)
+        {
+            return if previous.data == queued {
+                Ok(())
+            } else {
+                Err(AppError::new("STEER_CONFLICT", "消息标识已用于其他输入"))
+            };
+        }
+        if state.run_id.as_deref() != Some(expected_run_id) {
+            return Err(AppError::new(
+                "STEER_STALE",
+                "回合已结束或已改变，请重新发送",
+            ));
+        }
+        self.append(session_id, "steer.queued", queued).await?;
+        Ok(())
+    }
+
+    async fn apply_steering(&self, session: &str, root: &Path) -> AppResult<()> {
+        let state = self.steering_state(session);
+        let state = state.lock().await;
+        let Some(run_id) = state.run_id.as_deref() else {
+            return Ok(());
+        };
+        let pending = self.store.pending_steering(session, run_id).await?;
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let mut records = Vec::new();
+        for input in &pending {
+            records.push(("user.message".into(), json!({"steerId":input["id"],"runId":input["runId"],"content":input["content"],"attachments":input["attachments"],"quotes":input["quotes"]})));
+            records.push((
+                "steer.applied".into(),
+                json!({"id":input["id"],"runId":input["runId"]}),
+            ));
+        }
+        let events = self.store.append_batch(session, records).await?;
+        for event in events {
+            let _ = self.events.send(LiveEvent::Durable { event });
+        }
+        drop(state);
+        for input in pending {
+            self.load_skill_mentions(session, input["content"].as_str().unwrap_or_default(), root)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// 在最终回复边界原子地决定继续还是关闭接收。
+    async fn close_if_no_steering(&self, session: &str) -> AppResult<bool> {
+        let state = self.steering_state(session);
+        let mut state = state.lock().await;
+        if let Some(run_id) = state.run_id.as_deref()
+            && !self
+                .store
+                .pending_steering(session, run_id)
+                .await?
+                .is_empty()
+        {
+            return Ok(false);
+        }
+        state.run_id = None;
+        Ok(true)
+    }
+
+    async fn fail_pending_steering(&self, session: &str) -> AppResult<()> {
+        let state = self.steering_state(session);
+        let mut state = state.lock().await;
+        let Some(run_id) = state.run_id.take() else {
+            return Ok(());
+        };
+        let pending = self.store.pending_steering(session, &run_id).await?;
+        let records = pending.iter().map(|input| ("steer.failed".into(), json!({"id":input["id"],"runId":input["runId"],"reason":"回合结束，插话未处理"}))).collect();
+        let events = self.store.append_batch(session, records).await?;
+        for event in events {
+            let _ = self.events.send(LiveEvent::Durable { event });
+        }
+        Ok(())
+    }
+
     /// 校验输入并落 `inbox.queued`，立即返回消息标识；回合执行经 [`Self::execute_message`]。
     pub async fn enqueue_message(
         self: &Arc<Self>,
@@ -1024,6 +1162,9 @@ impl Runtime {
             .insert(session_id.clone(), cancel.clone());
         let run_id = new_id();
         let result = async {
+            let state = self.steering_state(&session_id);
+            let mut state = state.lock().await;
+            state.run_id = Some(run_id.clone());
             self.append(
                 &session_id,
                 "turn.start",
@@ -1043,6 +1184,7 @@ impl Runtime {
                 message["quotes"] = quotes.clone();
             }
             self.append(&session_id, "user.message", message).await?;
+            drop(state);
             {
                 let _updates = token_budget.serialize_updates().await;
                 self.publish_token_budget(&session_id, &token_budget, token_budget.snapshot())
@@ -1061,9 +1203,10 @@ impl Runtime {
             .await
         }
         .await;
+        let steering_result = self.fail_pending_steering(&session_id).await;
         self.active.lock().unwrap().remove(&session_id);
         token_budget.unregister_session(&session_id);
-        let result = match (result, token_budget.error()) {
+        let result = match (result.and(steering_result), token_budget.error()) {
             (Err(_), Some(budget_error)) => Err(budget_error),
             (result, _) => result,
         };
@@ -1169,6 +1312,7 @@ impl Runtime {
                 return Err(token_budget.error().unwrap_or_else(cancelled));
             }
             token_budget.check_available()?;
+            self.apply_steering(session, root).await?;
             let mut tools = builtin_tools();
             let plan_mode = self.session_plan_get(session).await?;
             if plan_mode {
@@ -1419,7 +1563,10 @@ impl Runtime {
                 let _ = self.events.send(LiveEvent::Durable { event });
             }
             if answer.calls.is_empty() {
-                return Ok(());
+                if budget_snapshot.stopped.is_some() || self.close_if_no_steering(session).await? {
+                    return Ok(());
+                }
+                continue;
             }
             if budget_snapshot.stopped.is_some() {
                 let error = token_budget.error().unwrap_or_else(|| {

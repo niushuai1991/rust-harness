@@ -88,15 +88,20 @@ pub fn run() {
             })?;
             app.manage(browser);
         }
-        // 自动化到点执行（含手动触发）会后台新建/投递会话；durable 事件只经 session_send
-        // 按会话过滤转发，后台会话的事件到不了前端。这里常驻订阅广播，命中 automation.triggered
-        // 时单发窗口事件，前端据此拉取该会话增量合入侧栏列表。
+        // 后台运行的会话没有 session_send 的通道。常驻转发持久事件，保证切入会话后
+        // 可见插话及随后工具结果；自动化新建会话另发事件更新侧栏。
         let automations_handle = app.handle().clone();
         let mut automation_events = runtime.subscribe();
         tauri::async_runtime::spawn(async move {
             loop {
                 match automation_events.recv().await {
                     Ok(harness_contracts::LiveEvent::Durable { event }) => {
+                        let _ = tauri::Emitter::emit_to(
+                            &automations_handle,
+                            "main",
+                            "session-steering-event",
+                            event.clone(),
+                        );
                         if event.kind == "automation.triggered" {
                             let _ = tauri::Emitter::emit_to(
                                 &automations_handle,

@@ -428,6 +428,14 @@ impl Store {
             .map_err(db_error)?;
         rows.iter().map(event_row).collect()
     }
+    /// 已持久化但尚未结算的插话，按受理顺序返回。
+    pub async fn pending_steering(&self, session: &str, run_id: &str) -> AppResult<Vec<Value>> {
+        let rows: Vec<String> = sqlx::query_scalar("SELECT q.data FROM events q WHERE q.session_id=? AND q.kind='steer.queued' AND json_extract(q.data,'$.runId')=? AND NOT EXISTS (SELECT 1 FROM events s WHERE s.session_id=q.session_id AND s.kind IN ('steer.applied','steer.failed') AND json_extract(s.data,'$.runId')=json_extract(q.data,'$.runId') AND json_extract(s.data,'$.id')=json_extract(q.data,'$.id')) ORDER BY q.seq")
+            .bind(session).bind(run_id).fetch_all(&self.pool).await.map_err(db_error)?;
+        rows.into_iter()
+            .map(|row| serde_json::from_str(&row).map_err(db_error))
+            .collect()
+    }
     pub async fn turn_assistant_content(
         &self,
         session: &str,
@@ -570,6 +578,18 @@ impl Store {
         }
         let mut events = rows.iter().map(event_row).collect::<AppResult<Vec<_>>>()?;
         events.reverse();
+        for event in &mut events {
+            if event.kind == "steer.queued"
+                && let (Some(id), Some(run_id)) =
+                    (event.data["id"].as_str(), event.data["runId"].as_str())
+            {
+                let status = sqlx::query_scalar::<_, String>("SELECT kind FROM events WHERE session_id=? AND seq<=? AND kind IN ('steer.applied','steer.failed') AND json_extract(data,'$.id')=? AND json_extract(data,'$.runId')=? ORDER BY seq DESC LIMIT 1")
+                    .bind(session).bind(through).bind(id).bind(run_id).fetch_optional(&self.pool).await.map_err(db_error)?;
+                if let Some(status) = status {
+                    event.data["steerStatus"] = json!(status);
+                }
+            }
+        }
         let older_cursor = has_older.then(|| {
             events
                 .first()
@@ -606,6 +626,7 @@ impl Store {
             };
             turns.push(TimelineTurn {
                 start_seq: start.seq,
+                run_id: start.data["runId"].as_str().map(str::to_owned),
                 end_seq: end.as_ref().map(|e| e.seq.clone()),
                 status: end
                     .as_ref()
@@ -652,6 +673,24 @@ impl Store {
                 }
             }
             let mut records = Vec::new();
+            let settled_steers: std::collections::HashSet<(&str, &str)> = events
+                .iter()
+                .filter(|event| matches!(event.kind.as_str(), "steer.applied" | "steer.failed"))
+                .filter_map(|event| {
+                    Some((event.data["runId"].as_str()?, event.data["id"].as_str()?))
+                })
+                .collect();
+            for event in events.iter().filter(|event| event.kind == "steer.queued") {
+                if let (Some(run), Some(id)) =
+                    (event.data["runId"].as_str(), event.data["id"].as_str())
+                    && !settled_steers.contains(&(run, id))
+                {
+                    records.push((
+                        "steer.failed".into(),
+                        json!({"runId":run,"id":id,"reason":"应用中断，插话未处理"}),
+                    ));
+                }
+            }
             for (id, call) in calls {
                 if !results.contains(id.as_str()) {
                     if !events
