@@ -693,7 +693,7 @@ impl ExternalTool for Tool {
             "terminal_write" => (
                 json!({"id":s,"input":s,"yieldMs":{"type":"integer","minimum":250,"maximum":30000}}),
                 vec!["id", "input"],
-                "向本会话已打开终端写入命令并等待增量输出（ANSI已过滤）；沙箱内终端（副本/worktree/scratch）打开时一次审批后写入免审，直接模式（无沙箱）下每条输入单独审批",
+                "向本会话已打开终端原样写入按键并等待增量输出（ANSI已过滤）；不会自动回车，执行命令须在 input 末尾加 \\n；沙箱内终端（副本/worktree/scratch）打开时一次审批后写入免审，直接模式（无沙箱）下每条输入单独审批",
             ),
             "terminal_read" => (
                 json!({"id":s,"yieldMs":{"type":"integer","minimum":250,"maximum":30000}}),
@@ -990,7 +990,11 @@ impl ExternalTool for Tool {
             }
             "terminal_write" => {
                 let id = string(&args, "id")?.to_owned();
-                let input = string(&args, "input")?.to_owned();
+                let input = args["input"]
+                    .as_str()
+                    .filter(|s| !s.is_empty() && s.len() <= 1024 * 1024)
+                    .ok_or_else(|| AppError::new("TOOL_ARGUMENTS", "缺少有效字段 input"))?
+                    .to_owned();
                 let yield_ms = args["yieldMs"].as_u64().unwrap_or(1000).clamp(250, 30000);
                 let entry = self.state.terminal_entry(&id, &context.session_id)?;
                 let mut session = entry.session.lock().await;

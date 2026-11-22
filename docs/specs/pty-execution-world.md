@@ -1,6 +1,6 @@
 # PTY 执行世界（本地交互终端）规范
 
-- 日期：2026-11-06（计划拟制）；修订：2026-11-22（终端扩展到全部执行位置：worktree/scratch 沙箱内可用，直接模式宿主令牌 + 每条输入审批；弃用 `sandbox_lease` 路径反推）
+- 日期：2026-11-06（计划拟制）；修订：2026-11-22（修正 ConPTY 附着参数和逐字输入约定；终端支持全部执行位置）
 - 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
 - 范围：ConPTY 持久交互终端，`terminal_open/write/read/close` 工具组；自研 ConPTY + 受限 token/宿主令牌 spawn；P3 SSH 远端仅留 trait seam。
 
@@ -18,7 +18,7 @@ P2 阶段验收项中的「PTY」。当前全部 Agent 进程经 `harness-platfo
 
 不引入 portable-pty：项目安全不变量要求子进程经受控方式启动。`pty` 模块，仅给 windows-sys 增加 `Win32_System_Console` feature：
 
-- `PtyService::spawn(root, capability_id, cancel, sandboxed) -> SandboxedPty`：`CreatePipe` 两对 → `CreatePseudoConsole(120x30)` → `STARTUPINFOEXW` + `UpdateProcThreadAttribute(PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE)` → 沙箱内（副本/worktree/scratch）以 `capability_id` 派生受限令牌、`CreateProcessAsUserW` 启动；直接模式（`sandboxed=false`）以宿主令牌 `CreateProcessW` 启动 → `AssignProcessToJobObject(KILL_ON_JOB_CLOSE)` → `ResumeThread`。ConPTY 下不传 `CREATE_NO_WINDOW`。2026-11-22 修订：不再从路径反推项目（`sandbox_lease` 已随直接模式/后台任务改造移除），租约由调用方持有，临时目录在系统默认位置（与 `run_in` 一致）。
+- `PtyService::spawn(root, capability_id, cancel, sandboxed) -> SandboxedPty`：`CreatePipe` 两对 → `CreatePseudoConsole(120x30)` → `STARTUPINFOEXW`（`STARTF_USESTDHANDLES` 且标准句柄为 null）+ `UpdateProcThreadAttribute(PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE)`（传入 HPCON 值） → 沙箱内（副本/worktree/scratch）以 `capability_id` 派生受限令牌、`CreateProcessAsUserW` 启动；直接模式（`sandboxed=false`）以宿主令牌 `CreateProcessW` 启动 → `AssignProcessToJobObject(KILL_ON_JOB_CLOSE)` → `ResumeThread`。ConPTY 下不传 `CREATE_NO_WINDOW`，否则会阻断伪控制台连接。2026-11-22 修订：不再从路径反推项目（`sandbox_lease` 已随直接模式/后台任务改造移除），租约由调用方持有，临时目录在系统默认位置（与 `run_in` 一致）。
 - Shell 选择与 `run_in` 一致：pwsh 7 回退 Windows PowerShell，`-NoLogo -NoProfile` 交互模式，cwd 为会话执行根；env 沿用「父环境去 TEMP/TMP → 私有 temp」。
 - `SandboxedPty`：异步 input writer；输出泵为阻塞读线程（16KB 块、UTF-8 边界安全解码，直接写入共享 OutputBuffer，消费方自行聚合）；`resize`；exit waiter 线程上报退出码；guard drop 兜底 `TerminateJobObject`。捐赠给 `CreatePseudoConsole` 的两端句柄保留至会话结束。杀树只靠 Job Object；Windows 中断（SIGINT 语义）= 向输入写 `\r`（`\n` 归一化为 `\r`，控制台输入处理器以 CR 为回车）。
 - 纯函数单测覆盖 ANSI 控制序列过滤器（CSI/OSC 剥离、跨块转义边界）与有界缓冲（尾部 ring + 截断标志、消费式增量读取）；真实 ConPTY 集成测试参照 `tests/sandbox.rs` 真实进程测试形态。
@@ -32,7 +32,7 @@ P2 阶段验收项中的「PTY」。当前全部 Agent 进程经 `harness-platfo
 | 工具 | 参数 | 审批 | 行为 |
 |---|---|---|---|
 | `terminal_open` | 无 | **需审批** | 每会话上限 4 个；acquire 工作区租约并持有至关闭（无项目会话不持）；spawn 交互式 shell；追加 `terminal.opened {id, shell}`；返回 `{id}` |
-| `terminal_write` | `{id, input, yieldMs?}` | 沙箱内免；**直接模式每条审批** | 写入 stdin；等待 `yieldMs`（缺省 1000，钳制 250–30000ms）收集新输出；返回 `{id, output, status}`；status 含退出码 |
+| `terminal_write` | `{id, input, yieldMs?}` | 沙箱内免；**直接模式每条审批** | 原样写入 stdin（不自动回车；可单独写入回车或空格）；等待 `yieldMs`（缺省 1000，钳制 250–30000ms）收集新输出；返回 `{id, output, status}`；status 含退出码 |
 | `terminal_read` | `{id, yieldMs?}` | 免 | 不写只读，同上返回增量 |
 | `terminal_close` | `{id}` | 免 | terminate 杀树、等退出、追加 `terminal.closed`、释放租约；返回 `{id, closed:true}` |
 
@@ -50,10 +50,8 @@ P2 阶段验收项中的「PTY」。当前全部 Agent 进程经 `harness-platfo
 - 终端输出不全文落事件存储：`tool.call/tool.result` 记录每次读写往来，`terminal.closed` 记录尾部 blob；完整转写不保证。
 - 会话取消（回合 cancel）不杀终端——终端跨回合存续，与后台 job 一致；只有 `terminal_close`、应用关闭或杀树语义会终结。
 - 事件流推送沿用 `session_send` 活跃期广播，无额外推送通道。
-- ConPTY 可用性因机器而异：真实 ConPTY 集成测试带可用性预检，不可用时打印原因跳过（与浏览器测试无浏览器环境的处理一致）；桌面端在 ConPTY 不可用的机器上 `terminal_open` 返回明确错误。
+- ConPTY 可用性因机器而异：受限令牌集成测试带可用性预检，不可用时打印原因跳过；直接模式输出回归测试不跳过，确保真实执行结果回流；桌面端在 ConPTY 不可用的机器上 `terminal_open` 返回明确错误。
 - **退出码探测双语义**（2026-11-22）：`exit_code` 阻塞等待（`terminal_close` 的 10 秒超时兜底内使用）、`try_exit_code` 非阻塞（`terminal_write`/`terminal_read` 逐条返回依赖）。阻塞式 await 在进程存活期永久挂起，曾导致桌面真实抽查中每次写入卡死（tool.result 永不落库）。
-- **ConPTY 附着的平台限制（2026-11-22 深度排查，根因链完整）**：真实桌面抽查发现 GUI 宿主下终端零输出后，用自包含矩阵探针（`examples/attach_matrix.rs` GUI 版 + `attach_matrix_console.rs` 控制台版对照）完成消元——失败的组合与 shell 种类（5.1/cmd）、`PSEUDOCONSOLE_INHERIT_CURSOR`、`CREATE_SUSPENDED`、默认终端委托（delegation）、Job Object、`CreateProcessW` vs `CreateProcessAsUserW`（宿主令牌）均无关；headless conhost 正常创建（`--server` 句柄存在）但子进程不连接。最终矩阵：
-  - 受限令牌 + `CreateProcessAsUserW`：控制台宿主✅附着成功；GUI 桌面宿主 = 0xC0000142 立死（11 月以来历史会话数据一致）。
-  - 宿主令牌（`CreateProcessW` 或 `AsUserW`）：控制台与 GUI 宿主均❌活着但零输出（ConPTY 管道无人消费）。
-  - 结论：**Insider 26300 的 inbox conhost 在「GUI 宿主 × 任一令牌路径」下 pseudoconsole 连接全面失效**，与本项目 spawn 代码无关（Windows Terminal 正常是因其打包自带的 OpenConsole，不走 inbox conhost）。已加 `CREATE_NO_WINDOW` 防弹窗（attribute 失效时不再新建可见控制台），受影响机器上终端表现为打开成功但 `terminal_write` 返回空输出。诊断探针三件套保留于 `crates/harness-platform/examples/`（`gui_pty` 单端附着、`attach_matrix`/`attach_matrix_console` 矩阵扫组合，结果写系统临时目录）。
-- **ConPTY 来源双路径（2026-11-22 根治落地）**：`PtyService::conpty_source()` 报告实际来源——优先侧载 `conpty.dll`（官方 NuGet `Microsoft.Windows.Console.ConPTY`，MIT；其内部启动**自带的 OpenConsole.exe** 而非系统内置 conhost，绕开上述平台回归），缺失时回退系统内置（inbox，CI 与正常机器零影响）。搜索顺序：exe 同目录 `binaries/conpty/`（桌面端 tauri resources）→ exe 同目录 → 当前工作目录 → PATH。dll 与 OpenConsole.exe 必须同目录同版本配对（conpty.dll 按相对路径找 OpenConsole）。构建脚本 `scripts/build-windows.ps1` 从 NuGet 固定版本下载提取（资产不入库）。**开发机实测：OpenConsole 路径下真实 PTY 集成测试 6/6 附着成功（marker 回流）——此前 GUI 宿主零输出的直接修复证据**；来源判定测试 `conpty_source_reflects_sideload_presence` 固化契约（dll 在场必须侧载）。端点安全软件对随包 OpenConsole.exe 的误报为社区已知分发知情项。
+- **ConPTY 附着修正（2026-11-22）**：此前的附着矩阵传入了 HPCON 变量的地址，而不是 HPCON 值；并且未设置 `STARTF_USESTDHANDLES`，生产代码还使用了 `CREATE_NO_WINDOW`。这组参数可能使子进程脱离伪控制台，导致存活但无输出。此前将零输出归因于 Windows 26300 inbox conhost 回归的结论不成立，旧矩阵结果不能作为平台根因证据。现在传入 HPCON 值，以 `STARTF_USESTDHANDLES` 和空标准句柄避免继承宿主重定向流，移除 `CREATE_NO_WINDOW`；以真实直接模式命令输出和 GUI 宿主探针验证。
+
+- **ConPTY 来源双路径（2026-11-22）**：`PtyService::conpty_source()` 报告实际来源——优先侧载 `conpty.dll`（官方 NuGet `Microsoft.Windows.Console.ConPTY`，MIT；其内部启动自带的 OpenConsole.exe），缺失时回退系统内置（inbox，CI 与正常机器零影响）。搜索顺序：exe 同目录 `binaries/conpty/`（桌面端 tauri resources）→ exe 同目录 → 当前工作目录 → PATH。dll 与 OpenConsole.exe 必须同目录同版本配对（conpty.dll 按相对路径找 OpenConsole）。构建脚本 `scripts/build-windows.ps1` 从 NuGet 固定版本下载提取（资产不入库）。此前的 PTY 集成测试允许预检失败时跳过，不能仅凭测试通过数量认定附着成功；来源判定测试 `conpty_source_reflects_sideload_presence` 固化契约（dll 在场必须侧载）。端点安全软件对随包 OpenConsole.exe 的误报为社区已知分发知情项。

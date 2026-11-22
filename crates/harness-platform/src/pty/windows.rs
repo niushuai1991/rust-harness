@@ -79,9 +79,8 @@ impl Drop for PtyLifetime {
         self.done.cancel();
     }
 }
-/// `hpc_value` must outlive the subsequent CreateProcess call: the attribute
-/// list stores a pointer to it rather than copying the handle.
-fn conpty_startup(hpc_value: &HPCON) -> AppResult<PtyStartup> {
+/// The pseudoconsole attribute takes the HPCON value itself, not its address.
+fn conpty_startup(hpc_value: HPCON) -> AppResult<PtyStartup> {
     unsafe {
         let mut size = 0;
         InitializeProcThreadAttributeList(null_mut(), 1, 0, &mut size);
@@ -95,6 +94,8 @@ fn conpty_startup(hpc_value: &HPCON) -> AppResult<PtyStartup> {
         }
         let mut info: STARTUPINFOEXW = std::mem::zeroed();
         info.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+        // 防止继承宿主的重定向标准句柄，让伪控制台提供标准输入和输出。
+        info.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
         info.lpAttributeList = list;
         let startup = PtyStartup {
             info,
@@ -104,7 +105,7 @@ fn conpty_startup(hpc_value: &HPCON) -> AppResult<PtyStartup> {
             list,
             0,
             PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
-            (hpc_value as *const HPCON).cast::<c_void>(),
+            hpc_value as *const c_void,
             std::mem::size_of::<HPCON>(),
             null_mut(),
             null(),
@@ -191,9 +192,7 @@ pub(super) fn spawn(
             return Err(error("CreatePseudoConsole"));
         }
         let hpc = Arc::new(PcHandle(hpc, api.close));
-        // 存活于本作用域的副本：属性列表仅存指针，不能指向已返回的栈帧。
-        let hpc_value = hpc.0;
-        let startup = conpty_startup(&hpc_value)?;
+        let startup = conpty_startup(hpc.0)?;
         // Shell selection matches ShellService::run_in: pwsh 7 first, then Windows PowerShell.
         let system = std::env::var_os("SystemRoot")
             .map(PathBuf::from)
@@ -214,13 +213,9 @@ pub(super) fn spawn(
         let mut command_line = wide(format!("\"{}\" -NoLogo -NoProfile", executable.display()));
         let env = environment_block(temp.path());
         let mut process: PROCESS_INFORMATION = std::mem::zeroed();
-        // CREATE_NO_WINDOW 仅作回退保护：PSEUDOCONSOLE attribute 生效时被忽略；
-        // GUI 宿主（无控制台可继承）下 attribute 一旦失效，没有它系统会为子进程新建
-        // 真实控制台窗口（桌面端弹窗 + ConPTY 管道无人消费）。
-        let creation_flags = CREATE_SUSPENDED
-            | CREATE_UNICODE_ENVIRONMENT
-            | EXTENDED_STARTUPINFO_PRESENT
-            | CREATE_NO_WINDOW;
+        // CREATE_NO_WINDOW 会阻断伪控制台连接；仍以挂起方式启动并先加入 Job。
+        let creation_flags =
+            CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
         let created = match restricted.as_ref() {
             Some(restricted) => CreateProcessAsUserW(
                 restricted.0,
