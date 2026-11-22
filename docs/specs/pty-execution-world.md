@@ -51,3 +51,5 @@ P2 阶段验收项中的「PTY」。当前全部 Agent 进程经 `harness-platfo
 - 会话取消（回合 cancel）不杀终端——终端跨回合存续，与后台 job 一致；只有 `terminal_close`、应用关闭或杀树语义会终结。
 - 事件流推送沿用 `session_send` 活跃期广播，无额外推送通道。
 - ConPTY 可用性因机器而异：真实 ConPTY 集成测试带可用性预检，不可用时打印原因跳过（与浏览器测试无浏览器环境的处理一致）；桌面端在 ConPTY 不可用的机器上 `terminal_open` 返回明确错误。
+- **退出码探测双语义**（2026-11-22）：`exit_code` 阻塞等待（`terminal_close` 的 10 秒超时兜底内使用）、`try_exit_code` 非阻塞（`terminal_write`/`terminal_read` 逐条返回依赖）。阻塞式 await 在进程存活期永久挂起，曾导致桌面真实抽查中每次写入卡死（tool.result 永不落库）。
+- **GUI 宿主 ConPTY 附着的平台限制**（2026-11-22 真实桌面抽查发现）：GUI 进程（`windows_subsystem="windows"`）启动的终端子进程在 Windows 11 24H2/Insider 26300 上未附着 pseudoconsole——控制台宿主（测试）附着成功、GUI 宿主失败，子进程回退到新建真实控制台（Windows Terminal 接管显示，即用户看到的「弹出窗口」），ConPTY 管道无人消费导致输入丢失。创建参数已加 `CREATE_NO_WINDOW` 回退保护（attribute 失效时不再弹窗，代价是该类机器上终端无输入输出——`terminal_write` 返回空输出）。社区同期报告与解法一致（24H2 时间窗的 conhost 回归，attribute 用法逐条符合微软官方清单 https://learn.microsoft.com/en-us/windows/console/creating-a-pseudoconsole-session ）；GUI 形态探针保留于 `crates/harness-platform/examples/gui_pty.rs`，结果写系统临时目录 `gui_pty_result.txt`。待上游修复后移除本条。

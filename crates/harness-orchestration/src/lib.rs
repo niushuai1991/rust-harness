@@ -996,7 +996,7 @@ impl ExternalTool for Tool {
                 let mut session = entry.session.lock().await;
                 session.write_input(&input).await?;
                 let output = session.read_output(yield_ms).await?;
-                let exit = session.exit_code().await;
+                let exit = session.try_exit_code();
                 drop(session);
                 if let Some(code) = exit {
                     self.state
@@ -1013,7 +1013,7 @@ impl ExternalTool for Tool {
                 let entry = self.state.terminal_entry(&id, &context.session_id)?;
                 let mut session = entry.session.lock().await;
                 let output = session.read_output(yield_ms).await?;
-                let exit = session.exit_code().await;
+                let exit = session.try_exit_code();
                 drop(session);
                 if let Some(code) = exit {
                     self.state

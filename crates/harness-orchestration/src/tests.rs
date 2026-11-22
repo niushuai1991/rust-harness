@@ -454,6 +454,9 @@ impl TerminalSession for StubTerminal {
     async fn exit_code(&mut self) -> Option<i32> {
         self.exited.then_some(0)
     }
+    fn try_exit_code(&mut self) -> Option<i32> {
+        self.exited.then_some(0)
+    }
     fn spill(&self) -> (String, bool) {
         ("stub 尾部输出".into(), false)
     }
