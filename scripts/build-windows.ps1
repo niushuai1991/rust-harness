@@ -13,7 +13,10 @@ if (-not (Test-Path (Join-Path $conptyDir 'conpty.dll'))) {
   Invoke-WebRequest -Uri "https://www.nuget.org/api/v2/package/Microsoft.Windows.Console.ConPTY/$conptyVersion" -OutFile $nupkg
   $extract = Join-Path $env:TEMP "conpty-$conptyVersion"
   if (Test-Path $extract) { Remove-Item $extract -Recurse -Force }
-  Expand-Archive -LiteralPath $nupkg -DestinationPath $extract -Force
+  # .nupkg 实为 zip 包，但 Expand-Archive 只认 .zip 后缀，复制一份再解压
+  $zip = Join-Path $env:TEMP "Microsoft.Windows.Console.ConPTY.$conptyVersion.zip"
+  Copy-Item $nupkg $zip -Force
+  Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force
   New-Item -ItemType Directory -Force -Path $conptyDir | Out-Null
   Copy-Item (Join-Path $extract 'runtimes/win-x64/native/conpty.dll') (Join-Path $conptyDir 'conpty.dll') -Force
   Copy-Item (Join-Path $extract 'build/native/runtimes/x64/OpenConsole.exe') (Join-Path $conptyDir 'OpenConsole.exe') -Force
