@@ -245,6 +245,98 @@ async fn timeline_page_reads_latest_then_strictly_older_bounded_windows() {
 }
 
 #[tokio::test]
+async fn timeline_page_hides_inherited_history_behind_side_boundary() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Store::open(&dir.path().join("events.db")).await.unwrap();
+    let s = db.create_session("w", "side").await.unwrap();
+    // 继承区：父会话复制来的完整回合（seq 1-3）。
+    db.append(&s.id, "turn.start", json!({"runId":"inherited"}))
+        .await
+        .unwrap();
+    db.append(&s.id, "user.message", json!({"content":"父会话问题"}))
+        .await
+        .unwrap();
+    db.append(&s.id, "turn.end", json!({"status":"completed"}))
+        .await
+        .unwrap();
+    // 边界（seq 4）与合成说明消息（seq 5）。
+    db.append(&s.id, "side.boundary", json!({"beforeSeq":"3"}))
+        .await
+        .unwrap();
+    db.append(
+        &s.id,
+        "user.message",
+        json!({"content":"以上对话继承自父会话……", "source":"side_inherited"}),
+    )
+    .await
+    .unwrap();
+    // 侧聊自己的新回合（seq 6-9）。
+    let start = db
+        .append(&s.id, "turn.start", json!({"runId":"fresh"}))
+        .await
+        .unwrap();
+    let question = db
+        .append(&s.id, "user.message", json!({"content":"侧聊新问题"}))
+        .await
+        .unwrap();
+    let answer = db
+        .append(&s.id, "assistant.message", json!({"content":"侧聊回答"}))
+        .await
+        .unwrap();
+    let end = db
+        .append(&s.id, "turn.end", json!({"status":"completed"}))
+        .await
+        .unwrap();
+
+    let page = db.timeline_page(&s.id, None, None).await.unwrap();
+    // 只剩侧聊新回合的 4 条事件；继承历史、边界与合成消息均不出现。
+    assert_eq!(
+        page.events
+            .iter()
+            .map(|e| e.seq.as_str())
+            .collect::<Vec<_>>(),
+        ["6", "7", "8", "9"]
+    );
+    assert!(!page.has_older);
+    assert_eq!(page.older_cursor, None);
+    assert_eq!(page.through_seq, "9");
+    assert_eq!(page.turns.len(), 1);
+    assert_eq!(page.turns[0].start_seq, start.seq);
+    assert_eq!(page.turns[0].end_seq.as_deref(), Some(end.seq.as_str()));
+    assert_eq!(page.turns[0].final_message_id, Some(answer.id));
+    assert_eq!(page.events[1].id, question.id);
+    // 全量读取不受边界影响：模型上下文、导出与事件接口仍能看到继承历史。
+    let all = db.events(&s.id, 0).await.unwrap();
+    assert_eq!(all.len(), 9);
+}
+
+#[tokio::test]
+async fn timeline_page_returns_empty_for_side_without_new_turns() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Store::open(&dir.path().join("events.db")).await.unwrap();
+    let s = db.create_session("w", "fresh-side").await.unwrap();
+    db.append(&s.id, "user.message", json!({"content":"继承"}))
+        .await
+        .unwrap();
+    db.append(&s.id, "side.boundary", json!({"beforeSeq":"1"}))
+        .await
+        .unwrap();
+    db.append(
+        &s.id,
+        "user.message",
+        json!({"content":"说明", "source":"side_inherited"}),
+    )
+    .await
+    .unwrap();
+    let page = db.timeline_page(&s.id, None, None).await.unwrap();
+    assert!(page.events.is_empty());
+    assert!(!page.has_older);
+    assert!(page.turns.is_empty());
+    // through_seq 反映真实最大 seq，便于前端与全量读取对齐。
+    assert_eq!(page.through_seq, "3");
+}
+
+#[tokio::test]
 async fn timeline_page_identifies_completed_turn_across_page_boundary() {
     let dir = tempfile::tempdir().unwrap();
     let db = Store::open(&dir.path().join("events.db")).await.unwrap();

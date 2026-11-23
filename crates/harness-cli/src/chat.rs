@@ -259,6 +259,30 @@ pub async fn execute(runtime: Arc<Runtime>, args: Args) -> AppResult<()> {
                     .id;
                 eprintln!("已重开会话：{session_id}（原会话保留，可用 /resume 切回）");
             }
+            ChatCommand::Side(text) => match runtime.fork_as_side(&session_id).await {
+                Ok(side) => {
+                    eprintln!(
+                        "已创建侧聊：{}（{}）。父会话历史仅供模型参考，/resume {session_id} 切回。",
+                        side.id, side.title
+                    );
+                    session_id = side.id;
+                    // 带文字时把首条消息发到侧聊；context 需按新会话重建。
+                    if let Some(text) = text {
+                        let context = run::TurnContext {
+                            session_id: session_id.clone(),
+                            workspace_id: workspace_id.clone(),
+                            provider: provider.clone(),
+                            policy,
+                            json: false,
+                            color: ColorChoice::Auto,
+                        };
+                        if let Err(error) = run::turn_once(runtime.clone(), context, text).await {
+                            eprintln!("回合发起失败：{error}");
+                        }
+                    }
+                }
+                Err(error) => eprintln!("派生侧聊失败：{error}"),
+            },
             ChatCommand::Compact => {
                 eprintln!("正在压缩会话历史……");
                 match harness_orchestration::compact_session(

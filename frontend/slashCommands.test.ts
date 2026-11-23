@@ -1,19 +1,19 @@
 import {describe,expect,it} from 'vitest';
-import {GOAL_PROMPT,INIT_PROMPT,SLASH_COMMANDS,commandTokenUnderCursor,expandSlashPrompt,filterSlashCommands} from './slashCommands';
+import {GOAL_PROMPT,INIT_PROMPT,SLASH_COMMANDS,commandTokenUnderCursor,expandSlashPrompt,filterSlashCommands,parseSideSlashCommand} from './slashCommands';
 
 describe('斜杠命令注册表',()=>{
  it('包含桌面端可执行子集且无重复',()=>{
   const names=SLASH_COMMANDS.map(spec=>spec.name);
-  expect(names).toEqual(['clear','compact','init','plan','goal','model','diff','status','help']);
+  expect(names).toEqual(['clear','side','compact','init','plan','goal','model','diff','status','help']);
   expect(new Set(names).size).toBe(names.length);
  });
  it('过滤：exact 优先于 prefix，按注册顺序，容忍前导斜杠',()=>{
-  expect(filterSlashCommands('model')).toEqual([SLASH_COMMANDS[5]]);
-  expect(filterSlashCommands('mo')).toEqual([SLASH_COMMANDS[5]]);
+  expect(filterSlashCommands('model')).toEqual([SLASH_COMMANDS[6]]);
+  expect(filterSlashCommands('mo')).toEqual([SLASH_COMMANDS[6]]);
   expect(filterSlashCommands('/cl')).toEqual([SLASH_COMMANDS[0]]);
-  expect(filterSlashCommands('s')).toEqual([SLASH_COMMANDS[7]]);
-  expect(filterSlashCommands('pl')).toEqual([SLASH_COMMANDS[3]]);
-  expect(filterSlashCommands('go')).toEqual([SLASH_COMMANDS[4]]);
+  expect(filterSlashCommands('s')).toEqual([SLASH_COMMANDS[1],SLASH_COMMANDS[8]]);
+  expect(filterSlashCommands('pl')).toEqual([SLASH_COMMANDS[4]]);
+  expect(filterSlashCommands('go')).toEqual([SLASH_COMMANDS[5]]);
   expect(filterSlashCommands('')).toEqual(SLASH_COMMANDS);
   expect(filterSlashCommands('zzz')).toEqual([]);
  });
@@ -22,7 +22,8 @@ describe('斜杠命令注册表',()=>{
   expect(filterSlashCommands('/co',{draft:true})).toEqual([]);
   expect(filterSlashCommands('/init',{draft:true})).toEqual([]);
   expect(filterSlashCommands('/cl',{draft:true})).toEqual([SLASH_COMMANDS[0]]);
-  expect(filterSlashCommands('init')).toEqual([SLASH_COMMANDS[2]]);
+  expect(filterSlashCommands('/si',{draft:true})).toEqual([]);
+  expect(filterSlashCommands('init')).toEqual([SLASH_COMMANDS[3]]);
  });
  it('光标不在首命令 token 内时返回 null',()=>{
   expect(commandTokenUnderCursor('/cl',3)).toBe('/cl');
@@ -65,5 +66,20 @@ describe('expandSlashPrompt',()=>{
   expect(expandSlashPrompt('/clear 帮我重开')).toBeNull();
   expect(expandSlashPrompt('/plans 多了字母')).toBeNull();
   expect(expandSlashPrompt('请执行 /plan 任务')).toBeNull();
+ });
+});
+
+describe('parseSideSlashCommand',()=>{
+ it('/side 与别名 /btw 命中即派生侧聊，文字可选且保留多行',()=>{
+  expect(parseSideSlashCommand('/side')).toEqual({kind:'side'});
+  expect(parseSideSlashCommand('/btw')).toEqual({kind:'side'});
+  expect(parseSideSlashCommand('/side  顺便问个问题 ')).toEqual({kind:'side',text:'顺便问个问题'});
+  expect(parseSideSlashCommand('/side 第一行\n第二行')).toEqual({kind:'side',text:'第一行\n第二行'});
+ });
+ it('其余输入不命中',()=>{
+  expect(parseSideSlashCommand('普通消息')).toBeNull();
+  expect(parseSideSlashCommand('/sidekick')).toBeNull();
+  expect(parseSideSlashCommand('/SIDE')).toBeNull();
+  expect(parseSideSlashCommand('请执行 /side')).toBeNull();
  });
 });

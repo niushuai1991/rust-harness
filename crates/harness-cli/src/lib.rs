@@ -162,7 +162,14 @@ pub async fn dispatch(runtime: Arc<Runtime>, method: &str, p: Value) -> AppResul
             runtime.cancel(field(&p, "sessionId")?);
             Value::Null
         }
-        "session.fork" => json!(runtime.fork(field(&p, "sessionId")?).await?),
+        "session.fork" => {
+            let session = field(&p, "sessionId")?;
+            if p["asSide"].as_bool().unwrap_or(false) {
+                json!(runtime.fork_as_side(session).await?)
+            } else {
+                json!(runtime.fork(session).await?)
+            }
+        }
         "session.export" => json!(runtime.store.export(field(&p, "sessionId")?).await?),
         "session.import" => {
             let w = field(&p, "workspaceId")?;

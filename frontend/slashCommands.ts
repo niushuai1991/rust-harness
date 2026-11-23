@@ -3,6 +3,7 @@ export interface SlashSpec {name:string;description:string;requiresSession?:bool
 
 export const SLASH_COMMANDS:SlashSpec[] = [
  {name:'clear',description:'重开新会话'},
+ {name:'side',description:'从当前会话派生侧聊',requiresSession:true},
  {name:'compact',description:'压缩历史为摘要',requiresSession:true},
  {name:'init',description:'在项目根生成 AGENTS.md',requiresSession:true},
  {name:'plan',description:'切换计划模式'},
@@ -44,10 +45,20 @@ export function filterSlashCommands(query:string,options:{draft?:boolean}={}):Sl
 }
 
 // 光标仍在首命令 token 内时返回该 token（以 '/' 开头），否则 null。
-export function commandTokenUnderCursor(text:string,cursor:number):string|null {
+export function commandTokenUnderCursor(text:string,cursor:number):string|null{
  if(!text.startsWith('/'))return null;
  const match=/\s/.exec(text);
  const end=match?match.index:text.length;
  if(cursor>end)return null;
  return text.slice(0,end);
+}
+
+// /side（别名 /btw）：命中即派生侧聊——父会话历史仅供模型参考，界面从空白开始；
+// 带文字时作为侧聊首条消息发送。与 CLI chat.rs 的分发语义镜像。
+export type SideSlashMatch={kind:'side';text?:string}|null;
+export function parseSideSlashCommand(input:string):SideSlashMatch{
+ const match=/^\/(side|btw)(?:\s+([\s\S]+))?$/.exec(input.trim());
+ if(!match)return null;
+ const body=match[2]?.trim();
+ return {kind:'side',...(body?{text:body}:{})};
 }

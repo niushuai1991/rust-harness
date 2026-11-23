@@ -2684,24 +2684,109 @@ impl Runtime {
         let _boundary = self.session_boundary(id).await;
         let original = self.store.session(id).await?;
         let events = self.store.events(id, 0).await?;
-        // 副本会话继承原会话固化的执行位置；worktree 位置由新会话首个 turn 懒建
-        // 自己的 worktree（不在命令内写工作区记录，避免与回合租约冲突）。
+        self.replay_into_new_session(&original, events, format!("{} · 副本", original.title))
+            .await
+    }
+
+    /// 侧聊派生（/side）：复制父会话历史作为模型参考背景，但界面从空白开始——
+    /// 复制事件后追加继承边界（`side.boundary`）与合成说明消息，登记父子关系并把
+    /// 侧聊挂到父会话名下（列表据此隐藏，经父会话的子代理入口切回）。
+    pub async fn fork_as_side(&self, id: &str) -> AppResult<SessionInfo> {
+        if self.parent_of(id).is_some() {
+            return Err(AppError::new(
+                "AGENT_SCOPE",
+                "当前会话已是子会话，不能再派生侧聊；请回到主会话操作",
+            ));
+        }
+        let _boundary = self.session_boundary(id).await;
+        // 等待边界锁期间归属可能变化（如并发工具调用收养了本会话），复查一次。
+        if self.parent_of(id).is_some() {
+            return Err(AppError::new(
+                "AGENT_SCOPE",
+                "当前会话已是子会话，不能再派生侧聊；请回到主会话操作",
+            ));
+        }
+        let original = self.store.session(id).await?;
+        let events = self.store.events(id, 0).await?;
+        let title = self.next_side_title(&original).await?;
+        let side = self
+            .replay_into_new_session(&original, events, title)
+            .await?;
+        let copied = self.store.events(&side.id, 0).await?.len();
+        // 边界事件指向最后一条复制事件；其后只允许侧聊自己的新对话。
+        self.append(
+            &side.id,
+            "side.boundary",
+            json!({"beforeSeq": copied.to_string()}),
+        )
+        .await?;
+        self.append(
+            &side.id,
+            "user.message",
+            json!({
+                "content": "以上对话继承自父会话，仅供你参考背景。请不要主动延续父会话的进行中工作，只回答我在本侧聊中提出的新问题；除非我在本侧聊中明确提出，不要修改工作区文件。",
+                "source": "side_inherited",
+            }),
+        )
+        .await?;
+        self.adopt_child(id, &side.id)?;
+        // 侧聊继承父会话的审批策略，避免策略在侧聊处失效。
+        if let Some(policy) = self.approval_policy(id) {
+            self.set_approval_policy(&side.id, Some(policy));
+        }
+        self.append(
+            id,
+            "subagent.created",
+            json!({"sessionId": side.id, "source": "side"}),
+        )
+        .await?;
+        Ok(side)
+    }
+
+    /// 重复派生时按已占用标题递增编号：`· 侧聊`、`· 侧聊 2`、`· 侧聊 3`……
+    async fn next_side_title(&self, original: &SessionInfo) -> AppResult<String> {
+        let taken: Vec<String> = self
+            .store
+            .sessions(Some(&original.workspace_id))
+            .await?
+            .into_iter()
+            .map(|info| info.title)
+            .collect();
+        let base = format!("{} · 侧聊", original.title);
+        if !taken.contains(&base) {
+            return Ok(base);
+        }
+        for n in 2.. {
+            let candidate = format!("{} · 侧聊 {n}", original.title);
+            if !taken.contains(&candidate) {
+                return Ok(candidate);
+            }
+        }
+        unreachable!("标题编号不可能无限占用")
+    }
+
+    /// 把 `events` 逐条重放进新建会话（继承原会话固化的执行位置）；复制出的
+    /// `subagent.created` 打 historyOnly 标记，防止重启时把历史登记当成活跃父子关系重建。
+    /// worktree 位置由新会话首个 turn 懒建自己的 worktree（不在命令内写工作区记录，
+    /// 避免与回合租约冲突）。
+    async fn replay_into_new_session(
+        &self,
+        original: &SessionInfo,
+        events: Vec<SessionEvent>,
+        title: String,
+    ) -> AppResult<SessionInfo> {
         let mode = if original.workspace_id.is_empty() {
             original.execution_mode
         } else {
             Some(self.workspaces.resolved_mode(
                 &original.workspace_id,
-                id,
+                &original.id,
                 original.execution_mode,
             )?)
         };
         let fork = self
             .store
-            .create_session_with_mode(
-                &original.workspace_id,
-                &format!("{} · 副本", original.title),
-                mode,
-            )
+            .create_session_with_mode(&original.workspace_id, &title, mode)
             .await?;
         for e in events {
             let mut data = e.data;

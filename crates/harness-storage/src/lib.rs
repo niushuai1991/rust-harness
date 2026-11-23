@@ -560,14 +560,28 @@ impl Store {
         let limit = limit
             .unwrap_or(DEFAULT_TIMELINE_PAGE_SIZE)
             .clamp(1, MAX_TIMELINE_PAGE_SIZE);
+        // 侧聊继承边界：边界及之前的复制事件、边界事件与合成说明消息只供模型参考，
+        // 不进界面时间线（全量 events/export 不受影响）。
+        let side_before: Option<i64> =
+            sqlx::query_scalar("SELECT CAST(json_extract(data,'$.beforeSeq') AS INTEGER) FROM events WHERE session_id=? AND kind='side.boundary' ORDER BY seq LIMIT 1")
+                .bind(session)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(db_error)?
+                .flatten();
         let mut rows = sqlx::query(
             "SELECT * FROM events WHERE session_id=? AND seq<=? AND (? IS NULL OR seq<?) \
+             AND kind!='side.boundary' \
+             AND (kind!='user.message' OR COALESCE(json_extract(data,'$.source'),'')!='side_inherited') \
+             AND (? IS NULL OR seq>?) \
              ORDER BY seq DESC LIMIT ?",
         )
         .bind(session)
         .bind(through)
         .bind(before)
         .bind(before)
+        .bind(side_before)
+        .bind(side_before)
         .bind(i64::from(limit) + 1)
         .fetch_all(&self.pool)
         .await
@@ -600,8 +614,8 @@ impl Store {
         let mut starts = Vec::new();
         if let Some(first) = events.first() {
             let first_seq = first.seq.parse::<i64>().map_err(db_error)?;
-            let prior = sqlx::query("SELECT * FROM (SELECT * FROM events INDEXED BY events_session_kind_seq WHERE session_id=? AND kind='turn.start' AND seq<? ORDER BY seq DESC LIMIT 1) UNION ALL SELECT * FROM (SELECT * FROM events INDEXED BY events_session_kind_seq WHERE session_id=? AND kind='turn.end' AND seq<? ORDER BY seq DESC LIMIT 1) ORDER BY seq DESC LIMIT 1")
-                .bind(session).bind(first_seq).bind(session).bind(first_seq).fetch_optional(&self.pool).await.map_err(db_error)?;
+            let prior = sqlx::query("SELECT * FROM (SELECT * FROM events INDEXED BY events_session_kind_seq WHERE session_id=? AND kind='turn.start' AND seq<? AND (? IS NULL OR seq>?) ORDER BY seq DESC LIMIT 1) UNION ALL SELECT * FROM (SELECT * FROM events INDEXED BY events_session_kind_seq WHERE session_id=? AND kind='turn.end' AND seq<? AND (? IS NULL OR seq>?) ORDER BY seq DESC LIMIT 1) ORDER BY seq DESC LIMIT 1")
+                .bind(session).bind(first_seq).bind(side_before).bind(side_before).bind(session).bind(first_seq).bind(side_before).bind(side_before).fetch_optional(&self.pool).await.map_err(db_error)?;
             if let Some(row) = prior {
                 let event = event_row(&row)?;
                 if event.kind == "turn.start" {

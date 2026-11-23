@@ -55,6 +55,12 @@ pub static SLASH_COMMANDS: &[SlashSpec] = &[
         arg_hint: None,
     },
     SlashSpec {
+        name: "side",
+        aliases: &["btw"],
+        description: "从当前会话派生侧聊",
+        arg_hint: Some("[文字]"),
+    },
+    SlashSpec {
         name: "compact",
         aliases: &[],
         description: "压缩历史为摘要",
@@ -155,6 +161,7 @@ pub enum ChatCommand<'a> {
     Model(Option<&'a str>),
     Effort(Option<&'a str>),
     Clear,
+    Side(Option<&'a str>),
     Compact,
     Init,
     Plan(Option<&'a str>),
@@ -186,6 +193,7 @@ pub fn parse_command(line: &str) -> ChatCommand<'_> {
         "model" => ChatCommand::Model(rest),
         "effort" => ChatCommand::Effort(rest),
         "clear" => ChatCommand::Clear,
+        "side" => ChatCommand::Side(rest),
         "compact" => ChatCommand::Compact,
         "init" => ChatCommand::Init,
         "plan" => ChatCommand::Plan(rest),
@@ -211,8 +219,8 @@ mod tests {
         assert_eq!(
             names,
             [
-                "help", "model", "effort", "status", "clear", "compact", "init", "plan", "goal",
-                "resume", "sessions", "diff", "apply", "approval", "skills", "quit"
+                "help", "model", "effort", "status", "clear", "side", "compact", "init", "plan",
+                "goal", "resume", "sessions", "diff", "apply", "approval", "skills", "quit"
             ]
         );
     }
@@ -240,11 +248,12 @@ mod tests {
             filter_slash_commands("q"),
             vec![find_spec("quit").unwrap() as &SlashSpec]
         );
-        // prefix 按注册顺序：status 先于 sessions
+        // prefix 按注册顺序：status 先于 side 先于 sessions
         assert_eq!(
             filter_slash_commands("s"),
             vec![
                 find_spec("status").unwrap() as &SlashSpec,
+                find_spec("side").unwrap() as &SlashSpec,
                 find_spec("sessions").unwrap() as &SlashSpec,
                 find_spec("skills").unwrap() as &SlashSpec,
             ]
@@ -277,6 +286,12 @@ mod tests {
         assert_eq!(parse_command("/status"), ChatCommand::Status);
         assert_eq!(parse_command("/clear"), ChatCommand::Clear);
         assert_eq!(parse_command("/new"), ChatCommand::Clear);
+        assert_eq!(parse_command("/side"), ChatCommand::Side(None));
+        assert_eq!(parse_command("/btw"), ChatCommand::Side(None));
+        assert_eq!(
+            parse_command("/side 顺便问下编译错误"),
+            ChatCommand::Side(Some("顺便问下编译错误"))
+        );
         assert_eq!(parse_command("/compact"), ChatCommand::Compact);
         assert_eq!(parse_command("/init"), ChatCommand::Init);
         assert_eq!(parse_command("/plan"), ChatCommand::Plan(None));
