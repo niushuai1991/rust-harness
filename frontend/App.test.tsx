@@ -1575,6 +1575,52 @@ describe('模型选择',()=>{
   expect(screen.getByRole('listbox',{name:'选择模型'})).toBeInTheDocument();
  });
 });
+describe('侧聊派生',()=>{
+ const forkToSide=()=>{const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name:string,args:any)=>{
+  if(name==='session_fork')return {id:'side-1',workspaceId:'w',title:'会话 A · 侧聊',parentId:'a',createdAt:'',updatedAt:''};
+  return original(name,args);
+ })};
+ it('菜单执行 /side：派生侧聊并切换，时间线按侧聊会话拉取',async()=>{
+  forkToSide();await renderOpenA();
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'/si'}});
+  fireEvent.keyDown(input,{key:'Enter'});
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_fork',{sessionId:'a',asSide:true}));
+  await waitFor(()=>expect(mocks.command.mock.calls.some(([name,args])=>name==='session_timeline_page'&&args.sessionId==='side-1')).toBe(true));
+  expect(await screen.findByText(/已创建侧聊「会话 A · 侧聊」/)).toBeInTheDocument();
+ });
+ it('输入 /side 文字 发送：命令不进主会话，文字作为侧聊首条消息',async()=>{
+  mocks.send.mockResolvedValue(undefined);
+  forkToSide();await renderOpenA();
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'/side 顺便问个问题'}});
+  fireEvent.keyDown(input,{key:'Enter'});
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_fork',{sessionId:'a',asSide:true}));
+  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('side-1','顺便问个问题','m',expect.any(Function),undefined,'high'));
+  expect(mocks.send.mock.calls.some(call=>String(call[1]).includes('/side'))).toBe(false);
+ });
+ it('侧聊会话内执行 /side 给出提示且不派生',async()=>{
+  forkToSide();await renderOpenA();
+  const original=mocks.command.getMockImplementation()!;
+  // 先正常派生一次并切到侧聊。
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'/si'}});
+  fireEvent.keyDown(input,{key:'Enter'});
+  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_fork',{sessionId:'a',asSide:true}));
+  await screen.findByText(/已创建侧聊/);
+  const forkCalls=mocks.command.mock.calls.filter(([name])=>name==='session_fork').length;
+  // 侧聊内再次派生：session_get 等返回侧聊信息后提示拒绝。
+  mocks.command.mockImplementation(async(name:string,args:any)=>{
+   if(name==='session_fork')throw new Error('nope');
+   if(name==='session_get'&&args.sessionId==='side-1')return {id:'side-1',workspaceId:'w',title:'会话 A · 侧聊',parentId:'a',createdAt:'',updatedAt:''};
+   return original(name,args);
+  });
+  fireEvent.change(input,{target:{value:'/side 再派生一个'}});
+  fireEvent.keyDown(input,{key:'Enter'});
+  expect(await screen.findByText(/侧聊不能再派生侧聊/)).toBeInTheDocument();
+  expect(mocks.command.mock.calls.filter(([name])=>name==='session_fork')).toHaveLength(forkCalls);
+ });
+});
 describe('斜杠命令补全',()=>{
  it('输入 / 显示候选菜单，过滤收窄，Esc 关闭后 token 变化重开',async()=>{
   await renderOpenA();

@@ -9,7 +9,7 @@ import {Archive,Activity,ArrowDown,ArrowRight,ArrowUp,Bot,CalendarClock,Check,Ch
 import {SessionMarkdown,LinkedText} from './SessionLinks';
 import {command,desktop,errorText,send} from './api';
 import {KNOWN_APPROVALS} from './types';
-import {GOAL_PROMPT,INIT_PROMPT,SLASH_COMMANDS,commandTokenUnderCursor,expandSlashPrompt,filterSlashCommands,type SlashSpec} from './slashCommands';
+import {GOAL_PROMPT,INIT_PROMPT,SLASH_COMMANDS,commandTokenUnderCursor,expandSlashPrompt,filterSlashCommands,parseSideSlashCommand,type SlashSpec} from './slashCommands';
 import {filterSkillRows,skillRowsFrom,skillTokenUnderCursor,type SkillRow,type SkillToken} from './skills';
 import {GROUP_LABELS,NO_PROJECT_NAME,NO_PROJECT_WORKSPACE,filterByTitle,formatFullTime,groupByProject,groupByTime,relativeLabel,subagentsOf,upsertSession,withoutSubagents,type ViewMode} from './sessionList';
 import {useChat} from './store';
@@ -607,6 +607,9 @@ const lastRunWorkspaceId=useRef<string|null>(null); // workspace effect 实际�
    return;
   }
   if(sessionCreating||importing||(!composerText.trim()&&!attachments.length&&!quotes.length)||planPending.current.has(sessionId))return;
+  // /side 命中即派生：命令本身不进对话（也不作运行中转向），文字作为侧聊首条消息发送。
+  const sideMatch=parseSideSlashCommand(composerText);
+  if(sideMatch){await startSideConversation(sideMatch.text);return}
   if(isRunning&&!currentQuestion){
    if(steerBusy.current)return;
    if(!activeRunId){setError('当前回合尚未就绪或已结束，请稍后重试。');return}
@@ -670,6 +673,21 @@ const lastRunWorkspaceId=useRef<string|null>(null); // workspace effect 实际�
  function applyCompletion(spec:SlashSpec,token:string){const rest=composerText.slice(token.length);const next=`/${spec.name}${rest||' '}`;setComposerText(next);setCursor(next.length);setDismissedToken('');requestAnimationFrame(()=>{textareaRef.current?.setSelectionRange(next.length,next.length)})}
  // 技能补全：替换光标处 $token 为 $名称（token 后已有空格不重复补），同一 token 内不再弹窗。
  function applySkillCompletion(row:SkillRow,tok:SkillToken){const completed=`$${row.name}`;const needsSpace=composerText[tok.end]!==' ';const next=composerText.slice(0,tok.start)+completed+(needsSpace?' ':'')+composerText.slice(tok.end);const caret=tok.start+completed.length+(needsSpace?1:0);setComposerText(next);setCursor(caret);setDismissedToken(`$${row.name}`);requestAnimationFrame(()=>{textareaRef.current?.setSelectionRange(caret,caret)})}
+ // /side（别名 /btw）：从当前会话派生侧聊——父会话历史仅供模型参考，界面从空白开始；
+ // 带文字时作为侧聊首条消息发送。侧聊挂在父会话名下，经子代理面板或父会话登记卡片切回。
+ async function startSideConversation(firstText?:string){
+  if(!sessionId){setNotice('侧聊需要已有会话；请先发送一条消息或从侧栏打开会话。');return}
+  if(sessionCreating||running[sessionId]){setNotice('会话运行中，请等回合结束后再派生侧聊。');return}
+  if(session?.parentId){setNotice('侧聊不能再派生侧聊；请回到主会话操作。');return}
+  setComposerText('');setCursor(0);setDismissedToken('');
+  try{
+   const side=await command<SessionInfo>('session_fork',{sessionId,asSide:true});
+   setSessions(old=>old.some(s=>s.id===side.id)?old:[side,...old]);
+   setSessionId(side.id);setDrafting(false);setDraftWorkspaceId(null);setText('');setAttachments([]);setQuotes([]);
+   setNotice(`已创建侧聊「${side.title}」；原会话保留，可从主会话的子代理面板切回。`);
+   if(firstText)await dispatchText(side.id,firstText,[],[]);
+  }catch(e){setError(errorText(e))}
+ }
  async function executeSlash(spec:SlashSpec){
   setComposerText('');setCursor(0);setDismissedToken('');
   if(spec.name==='help'){setNotice(`可用命令：${SLASH_COMMANDS.map(item=>`/${item.name}（${item.description}）`).join('、')}。输入 / 唤出补全。`);return}
@@ -680,6 +698,7 @@ const lastRunWorkspaceId=useRef<string|null>(null); // workspace effect 实际�
   if(spec.name==='goal'){setGoalPending(true);setNotice('目标模式已开启：下一条发送的消息将作为本会话目标。');return}
   if(spec.name==='clear'){await newSession();return}
   if(!sessionId||sessionCreating||running[sessionId]||!modelId)return;
+  if(spec.name==='side'){await startSideConversation();return}
   if(spec.name==='init'){if(session)startSessionTitleGeneration(session,INIT_PROMPT,[],!events.some(event=>event.kind==='user.message'));await dispatchText(sessionId,INIT_PROMPT,[]);setNotice('已发起 AGENTS.md 生成；完成后用“查看更改”审阅并同步到原项目。');return}
   if(spec.name==='compact'){setNotice('正在压缩会话历史……');await attempt(async()=>{await command('session_compact',{sessionId,modelId,effort});await loadLatestTimeline(sessionId);setNotice('历史已压缩为摘要，后续回合将基于摘要继续。')});return}
  }
@@ -1098,7 +1117,8 @@ export function EventCard({event,copyText,copyTurn,copyEnabled,hideCopy,...extra
  if(kind==='subagent.created'||kind==='subagent.message_sent'){
   const childId=typeof data.sessionId==='string'?data.sessionId:'';
   const sent=kind==='subagent.message_sent';
-  return <article className="tool-card subagent-card"><div className="subagent-row">{sent?<Send size={15}/>:<Bot size={15}/>}<strong>{sent?'已向子代理投递任务':'已创建子代理'}</strong>{childId&&data.historyOnly!==true&&extras.onOpenSession&&<button type="button" onClick={()=>extras.onOpenSession?.(childId)}>查看会话</button>}{childId&&extras.activeIds?.has(childId)&&<i className="live-dot" aria-label="子代理运行中"/>}</div>{data.historyOnly===true&&<p className="muted">历史派生记录，原父子关系属于源会话。</p>}{sent&&<pre>{printable(data.content)}</pre>}</article>;
+  const side=!sent&&data.source==='side';
+  return <article className="tool-card subagent-card"><div className="subagent-row">{sent?<Send size={15}/>:<Bot size={15}/>}<strong>{sent?'已向子代理投递任务':side?'已创建侧聊':'已创建子代理'}</strong>{childId&&data.historyOnly!==true&&extras.onOpenSession&&<button type="button" onClick={()=>extras.onOpenSession?.(childId)}>查看会话</button>}{childId&&extras.activeIds?.has(childId)&&<i className="live-dot" aria-label="子代理运行中"/>}</div>{data.historyOnly===true&&<p className="muted">历史派生记录，原父子关系属于源会话。</p>}{side&&<p className="muted">侧聊继承本会话历史仅供模型参考，点「查看会话」进入。</p>}{sent&&<pre>{printable(data.content)}</pre>}</article>;
  }
  if(kind==='todo.state'){
   const items=Array.isArray(data.items)?(data.items as Record<string,unknown>[]):[];

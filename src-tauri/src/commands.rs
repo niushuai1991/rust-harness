@@ -897,8 +897,16 @@ pub async fn session_export(state: Backend<'_>, session_id: String, path: String
 }
 #[tauri::command]
 #[specta::specta]
-pub async fn session_fork(state: Backend<'_>, session_id: String) -> AppResult<SessionInfo> {
-    state.fork(&session_id).await
+/// 复制会话；`asSide=true` 时派生侧聊（继承历史对模型可见、界面从空白开始）。
+pub async fn session_fork(
+    state: Backend<'_>,
+    session_id: String,
+    as_side: Option<bool>,
+) -> AppResult<SessionInfo> {
+    match as_side {
+        Some(true) => state.fork_as_side(&session_id).await,
+        _ => state.fork(&session_id).await,
+    }
 }
 #[tauri::command]
 #[specta::specta]
