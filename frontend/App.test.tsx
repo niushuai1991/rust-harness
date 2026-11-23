@@ -9,9 +9,9 @@ import {useChat} from './store';
 import {useSidePanel} from './sidePanelStore';
 import {open,save} from '@tauri-apps/plugin-dialog';
 import type {LiveEvent,SessionEvent} from './types';
-const mocks=vi.hoisted(()=>({command:vi.fn(),send:vi.fn(),listeners:new Map<string,(event:{payload:any})=>void>()}));
+const mocks=vi.hoisted(()=>({command:vi.fn(),send:vi.fn(),resume:vi.fn(),listeners:new Map<string,(event:{payload:any})=>void>()}));
 vi.mock('@tauri-apps/api/event',()=>({listen:async(name:string,handler:(event:{payload:any})=>void)=>{mocks.listeners.set(name,handler);return()=>mocks.listeners.delete(name)}}));
-vi.mock('./api',()=>({desktop:()=>true,command:mocks.command,send:mocks.send,errorText:(e:unknown)=>e instanceof Error?e.message:String(e)}));
+vi.mock('./api',()=>({desktop:()=>true,command:mocks.command,send:mocks.send,resume:mocks.resume,errorText:(e:unknown)=>e instanceof Error?e.message:String(e)}));
 vi.mock('@tauri-apps/plugin-dialog',()=>({open:vi.fn(),save:vi.fn()}));
 vi.mock('@tauri-apps/api/app',()=>({getVersion:vi.fn(async()=>'0.1.6')}));
 const event=(id:string,sessionId:string,seq:string,content:string):SessionEvent=>({id,sessionId,seq,kind:'assistant.message',data:{content},createdAt:''});
@@ -35,6 +35,54 @@ beforeEach(()=>{mocks.listeners.clear();useChat.setState({events:{},streams:{},s
  return [];
 })});
 afterEach(()=>{cleanup();vi.useRealTimers()});
+describe('中断后继续',()=>{
+ it('最近回合结束事件不在当前页时使用分页元数据',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?{...timeline(args.sessionId,[event('tail','a','5','历史信息')]),turns:[{startSeq:'1',endSeq:'3',runId:'run',status:'error',finalMessageId:null}]}:original(name,args));
+  render(<App/>);await openSidebarSession(/会话 A/);await screen.findByText('历史信息');
+  expect(screen.getByRole('button',{name:'继续任务'})).toBeEnabled();
+ });
+ it.each(['cancelled','interrupted','error'])('回合状态 %s 可以继续',async status=>{
+  const original=mocks.command.getMockImplementation()!;
+  const events:SessionEvent[]=[
+   {id:'start',sessionId:'a',seq:'1',kind:'turn.start',data:{},createdAt:''},
+   {id:'user',sessionId:'a',seq:'2',kind:'user.message',data:{content:'处理任务'},createdAt:''},
+   {id:'end',sessionId:'a',seq:'3',kind:'turn.end',data:{status},createdAt:''},
+  ];
+  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,events):original(name,args));
+  render(<App/>);await openSidebarSession(/会话 A/);await screen.findByText('处理任务');
+  expect(screen.getByRole('button',{name:'继续任务'})).toBeEnabled();
+ });
+ it('完成的回合不会显示继续按钮',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  const events:SessionEvent[]=[
+   {id:'start',sessionId:'a',seq:'1',kind:'turn.start',data:{},createdAt:''},
+   {id:'user',sessionId:'a',seq:'2',kind:'user.message',data:{content:'处理任务'},createdAt:''},
+   {id:'end',sessionId:'a',seq:'3',kind:'turn.end',data:{status:'completed'},createdAt:''},
+  ];
+  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,events):original(name,args));
+  render(<App/>);await openSidebarSession(/会话 A/);await screen.findByText('处理任务');
+  expect(screen.queryByRole('button',{name:'继续任务'})).toBeNull();
+  expect(screen.getByRole('button',{name:'发送消息'})).toBeDisabled();
+ });
+ it('中断后空输入框可继续，有文字时恢复发送',async()=>{
+  const original=mocks.command.getMockImplementation()!;
+  const events:SessionEvent[]=[
+   {id:'start',sessionId:'a',seq:'1',kind:'turn.start',data:{runId:'run'},createdAt:''},
+   {id:'user',sessionId:'a',seq:'2',kind:'user.message',data:{content:'处理任务'},createdAt:''},
+   {id:'end',sessionId:'a',seq:'3',kind:'turn.end',data:{runId:'run',status:'cancelled'},createdAt:''},
+  ];
+  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,events):original(name,args));
+  render(<App/>);await openSidebarSession(/会话 A/);await screen.findByText('处理任务');
+  const resume=await screen.findByRole('button',{name:'继续任务'});
+  expect(resume).toBeEnabled();
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'补充要求'}});
+  expect(screen.getByRole('button',{name:'发送消息'})).toBeEnabled();
+  fireEvent.change(screen.getByLabelText('消息'),{target:{value:''}});
+  fireEvent.click(screen.getByRole('button',{name:'继续任务'}));
+  await waitFor(()=>expect(mocks.resume).toHaveBeenCalledWith('a','3','m',expect.any(Function),'high'));
+ });
+});
 describe('Shell 命令时间线',()=>{
  it('完成回合中配对命令与结果，过程默认折叠且命令行收起为内联行',async()=>{
   const original=mocks.command.getMockImplementation()!;
@@ -518,7 +566,7 @@ describe('聊天交互',()=>{
   await waitFor(()=>expect(releaseRefresh).toBeTypeOf('function'));
   const visibleWhileHistoryIsLoading=screen.queryByRole('status',{name:'正在思考'})!==null;
   await act(async()=>releaseRefresh(timeline('a',[{id:'end',sessionId:'a',seq:'2',kind:'turn.end',data:{runId:'r',status:'error'},createdAt:''}])));
-  expect(visibleWhileHistoryIsLoading).toBe(false);expect(screen.queryByRole('status',{name:'正在思考'})).not.toBeInTheDocument();expect(screen.getByRole('button',{name:'发送消息'})).toBeInTheDocument();
+  expect(visibleWhileHistoryIsLoading).toBe(false);expect(screen.queryByRole('status',{name:'正在思考'})).not.toBeInTheDocument();expect(screen.getByRole('button',{name:'继续任务'})).toBeInTheDocument();
  });
  it('审批通过传递真实请求id',async()=>{const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name,args)=>name==='approval_list'?[{id:'approval-1',sessionId:'a',tool:'shell',arguments:{command:'cargo test'},reason:'执行测试'}]:original(name,args));render(<App/>);await screen.findByRole('dialog',{name:'操作需要你的批准'});fireEvent.click(screen.getByRole('button',{name:'批准此次操作'}));await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('approval_resolve',{id:'approval-1',allow:true}))});
  it('权限模式选择器加载默认档并对当前会话保存切换',async()=>{await renderOpenA();const selector=screen.getByLabelText('权限模式');expect(selector).toHaveValue('ask');fireEvent.change(selector,{target:{value:'auto'}});await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('approval_mode_save',{mode:'auto',sessionId:'a'}));expect(screen.getByLabelText('权限模式')).toHaveValue('auto')});

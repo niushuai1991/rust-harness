@@ -863,6 +863,45 @@ pub async fn session_send(
 }
 #[tauri::command]
 #[specta::specta]
+pub async fn session_resume(
+    state: Backend<'_>,
+    session_id: String,
+    expected_end_seq: String,
+    model_id: String,
+    effort: Option<String>,
+    on_event: Channel<LiveEvent>,
+) -> AppResult<()> {
+    let provider = state.models.build_model_with(&model_id, effort).await?;
+    let runtime = state.inner().clone();
+    let mut live = runtime.subscribe();
+    let sid = session_id.clone();
+    let forward = tokio::spawn(async move {
+        loop {
+            match live.recv().await {
+                Ok(event) => {
+                    let target = match &event {
+                        LiveEvent::Durable { event } => &event.session_id,
+                        LiveEvent::Delta { session_id, .. }
+                        | LiveEvent::Status { session_id, .. } => session_id,
+                    };
+                    if target == &sid && on_event.send(event).is_err() {
+                        break;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => break,
+                Err(_) => break,
+            }
+        }
+    });
+    let result = runtime
+        .resume_session(session_id, expected_end_seq, provider)
+        .await;
+    tokio::task::yield_now().await;
+    forward.abort();
+    result
+}
+#[tauri::command]
+#[specta::specta]
 pub async fn session_steer(
     state: Backend<'_>,
     session_id: String,
@@ -1651,6 +1690,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         session_turn_navigator_page,
         session_turn_assistant_content,
         session_send,
+        session_resume,
         session_steer,
         session_cancel,
         session_export,
