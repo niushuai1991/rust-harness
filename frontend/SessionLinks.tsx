@@ -1,6 +1,6 @@
 import {useEffect,useMemo,useState,type ReactNode,type MouseEvent} from 'react';
 import {Check,Copy,X} from 'lucide-react';
-import ReactMarkdown, {type Components} from 'react-markdown';
+import ReactMarkdown, {defaultUrlTransform,type Components} from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {command,errorText} from './api';
 import {useSidePanel} from './sidePanelStore';
@@ -8,9 +8,21 @@ import {useSidePanel} from './sidePanelStore';
 export function httpUrl(value:string):boolean {
  try {const url=new URL(value);return url.protocol==='http:'||url.protocol==='https:'} catch {return false}
 }
+function localPdfPath(value:string):string|null {
+ if(httpUrl(value))return null;
+ try {
+  if(/^file:\/\//i.test(value)) {
+   const url=new URL(value);
+   if(url.hostname&&url.hostname!=='localhost')return null;
+   value=decodeURIComponent(url.pathname).replace(/^\/([a-z]:\/)/i,'$1');
+  } else value=decodeURIComponent(value);
+ } catch {return null}
+ if(!/\.pdf$/i.test(value)||(/^[a-z][a-z0-9+.-]*:/i.test(value)&&!/^[a-z]:[\\/]/i.test(value)))return null;
+ return value;
+}
 function SessionLink({href,children}:{href?:string;children?:ReactNode}) {
  const [menu,setMenu]=useState<{x:number;y:number}|null>(null),[error,setError]=useState('');
- const valid=!!href&&httpUrl(href);
+ const valid=!!href&&httpUrl(href),pdf=href?localPdfPath(href):null;
  useEffect(()=>{
   if(!menu)return;
   const dismiss=()=>setMenu(null);
@@ -24,7 +36,7 @@ function SessionLink({href,children}:{href?:string;children?:ReactNode}) {
   try {if(action==='copy')await navigator.clipboard.writeText(href!);else await command('open_external_link',{url:href})}
   catch(e){setError(errorText(e))}
  }
- return <><a href={href} onClick={event=>{if(valid){event.preventDefault();useSidePanel.getState().openWeb(href!)}}} onContextMenu={context}>{children}</a>
+ return <><a href={href} onClick={event=>{if(pdf){event.preventDefault();useSidePanel.getState().openPdf(pdf)}else if(valid){event.preventDefault();useSidePanel.getState().openWeb(href!)}}} onContextMenu={context}>{children}</a>
   {menu&&<div className="session-context-menu link-context-menu" role="menu" aria-label="链接操作" style={{left:menu.x,top:menu.y}} onMouseDown={event=>event.stopPropagation()}><button type="button" role="menuitem" onClick={()=>void perform('copy')}>复制链接</button><button type="button" role="menuitem" onClick={()=>void perform('open')}>在默认浏览器中打开</button></div>}
   {error&&<span role="alert" className="inline-error">{error}</span>}</>;
 }
@@ -45,12 +57,12 @@ export function SessionMarkdown({content,sessionLinks=true}:{content:string;sess
    return <CodeBlock raw={raw}>{children}</CodeBlock>;
   }
  }),[content,sessionLinks]);
- return <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>{content}</ReactMarkdown>;
+ return <ReactMarkdown urlTransform={(url)=>sessionLinks&&localPdfPath(url)?url:defaultUrlTransform(url)} remarkPlugins={[remarkGfm]} components={components}>{content}</ReactMarkdown>;
 }
 export function LinkedText({content}:{content:string}) {
- const parts=content.split(/(https?:\/\/[^\s<>"'，。！？、；：）】]+)/gi);
+ const parts=content.split(/(https?:\/\/[^\s<>"'，。！？、；：）】]+|[a-z]:[\\/][^\r\n<>"'，。！？、；：）】]*?\.pdf(?=$|[\s.,;:!?)，。！？、；：）】]))/gi);
  return <>{parts.map((part,index)=>{
-  if(!/^https?:\/\//i.test(part))return part;
+  if(!/^https?:\/\//i.test(part))return /^[a-z]:[\\/]/i.test(part)&&localPdfPath(part)?<SessionLink key={index} href={part}>{part}</SessionLink>:part;
   let url=part.replace(/[.,;:!?]+$/,'');
   while(url.endsWith(')')&&(url.match(/\)/g)?.length??0)>(url.match(/\(/g)?.length??0))url=url.slice(0,-1);
   return httpUrl(url)?<span key={index}><SessionLink href={url}>{url}</SessionLink>{part.slice(url.length)}</span>:part;

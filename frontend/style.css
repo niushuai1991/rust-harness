@@ -688,3 +688,5 @@ button.run-session:hover{color:var(--text);text-decoration:underline}
 
 /* 固定窗口外壳；各内容区负责自身滚动。 */
 html,body,#root{height:100%;overflow:clip}.app{height:100%;overflow:clip}
+
+.pdf-view{display:flex;flex-direction:column;height:100%;min-height:0}.pdf-page{flex:1;min-height:0;overflow:auto;text-align:center;background:var(--surface);padding:12px}.pdf-page canvas{display:block;margin:auto;box-shadow:0 2px 8px #0002}.pdf-controls{display:flex;align-items:center;justify-content:center;gap:6px;padding:8px;border-top:1px solid var(--border);flex-wrap:wrap}.pdf-controls button{padding:5px 8px}.pdf-controls span{white-space:nowrap}
