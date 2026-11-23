@@ -1,6 +1,6 @@
 # 模型设置：厂商→模型两级选择与 effort 档位规范
 
-- 日期：2026-11-06（计划批准）；2026-11-13（模型图片输入能力元数据）修订；2026-11-16（卸载清理新数据根）修订；2026-11-17（供应商端点与模型同步）修订
+- 日期：2026-11-06（计划批准）；2026-11-13（模型图片输入能力元数据）修订；2026-11-16（卸载清理新数据根）修订；2026-11-17（供应商端点与模型同步）修订；2026-11-23（内置目录新增 glm-5.4，bigmodel 默认模型改 glm-5.3-flash）修订
 - 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
 - 范围：模型设置两级结构（供应商→模型）、内置供应商与内置模型目录、reasoning effort 档位、按 API 自动检测模型列表、发送框级联选择、卸载"清理用户数据"勾选行为、模型图片输入能力三态元数据（内置目录官方核实、自定义模型可配置、设置与选择器展示）。
 
@@ -28,7 +28,7 @@
 | 供应商 | 内置模型 | effort 档位 | 协议端点 |
 |---|---|---|---|
 | deepseek | deepseek-flash、deepseek-v4-pro | disabled/enabled | Anthropic（`https://api.deepseek.com/anthropic`） |
-| bigmodel（智谱 Coding Plan） | glm-5.3、glm-5.3-flash、glm-5.2、glm-5-turbo | low/high/max；disabled/high/max；disabled/enabled | Anthropic（`https://open.bigmodel.cn/api/anthropic`） |
+| bigmodel（智谱 Coding Plan） | glm-5.4、glm-5.3、glm-5.3-flash、glm-5.2、glm-5-turbo | low/high/max（默认模型 glm-5.3-flash）；disabled/high/max；disabled/enabled | Anthropic（`https://open.bigmodel.cn/api/anthropic`） |
 
 档位与成员对照 zcode 内置目录 `config/provider/zcode-builtin.json` 的 modelRules/模板 `builtinModelIds`。
 
@@ -59,6 +59,7 @@
 | deepseek | deepseek-v4-pro | 不支持 | 官方 Models & Pricing：Vision "Not supported" |
 | bigmodel | glm-5.3 / glm-5.2 / glm-5-turbo | 不支持 | 官方模型页：输入模态为文本 |
 | bigmodel | glm-5.3-flash | 支持 | 官方 VLM 页：输入含图像 |
+| bigmodel | glm-5.4 | 支持 | 参照 glm-5.3-flash 预填（2026-11-23 用户指定，待官方文档核实） |
 | chatgpt | 全部 9 个目录模型 | 支持 | OpenAI 官方模型页：Image（Input）徽标 |
 
 未核实的条目必须保持未知，不按模型名称或协议推断；自动检测仅返回模型 ID，不推断能力。自定义模型在添加/编辑弹窗提供「未知 / 支持图片输入 / 不支持图片输入」三态并随配置持久化，缺省未知；内置模型只读展示。展示点：模型设置列表行、内置模型只读弹窗、添加/编辑弹窗与发送框 `ModelSelect` 行内 meta；标注使用文字（不只靠颜色），并注明「模型能力参考；当前应用不支持原生图片输入」。该字段仅是展示元数据，不改变运行时请求——附件仍以文本元数据 + `read_artifact` 提供，不代表原生图像理解。

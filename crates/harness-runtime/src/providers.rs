@@ -43,8 +43,17 @@ pub fn builtin_providers() -> Vec<ProviderInfo> {
             Some(false),
         ),
     ];
-    // 上下文窗口按官方模型页公开规格：glm-5.2/5.3/5.3-flash 为 1M，5-turbo 沿用 200k。
-    let bigmodel_models: [BuiltinCatalogEntry; 4] = [
+    // 上下文窗口按官方模型页公开规格：glm-5.2/5.3/5.3-flash/5.4 为 1M，5-turbo 沿用 200k。
+    // glm-5.4 参数整体参照 glm-5.3-flash 预填。
+    let bigmodel_models: [BuiltinCatalogEntry; 5] = [
+        (
+            "glm-5.4",
+            "GLM-5.4",
+            &["low", "high", "max"],
+            1_000_000,
+            Some(131_072),
+            Some(true),
+        ),
         (
             "glm-5.3",
             "GLM-5.3",
@@ -93,7 +102,7 @@ pub fn builtin_providers() -> Vec<ProviderInfo> {
         (
             "bigmodel",
             "智谱 Coding Plan",
-            "glm-5.3",
+            "glm-5.3-flash",
             bigmodel_models.as_slice(),
             [
                 "https://open.bigmodel.cn/api/coding/paas/v4",
@@ -1247,6 +1256,8 @@ mod tests {
         assert_eq!(vision("deepseek", "deepseek-flash"), Some(true));
         assert_eq!(vision("deepseek", "deepseek-v4-pro"), Some(false));
         // 智谱官方模型页：5.3/5.2/5-Turbo 输入为文本；5.3-Flash 属 VLM（输入含图像）。
+        // glm-5.4 参照 glm-5.3-flash 预填（2026-11-23 用户指定，待官方文档核实）。
+        assert_eq!(vision("bigmodel", "glm-5.4"), Some(true));
         assert_eq!(vision("bigmodel", "glm-5.3"), Some(false));
         assert_eq!(vision("bigmodel", "glm-5.3-flash"), Some(true));
         assert_eq!(vision("bigmodel", "glm-5.2"), Some(false));
@@ -1261,10 +1272,10 @@ mod tests {
         {
             assert_eq!(model.supports_vision, Some(true), "{}", model.id);
         }
-        // 合成条目继承目录元数据。
+        // 合成条目继承目录元数据（glm-5.3-flash 现位于目录第 3 项）。
         let flash = builtin_model_config(
             &builtin_providers()[1],
-            &builtin_providers()[1].builtin_models[1],
+            &builtin_providers()[1].builtin_models[2],
         )
         .unwrap();
         assert_eq!(flash.supports_vision, Some(true));
@@ -1278,7 +1289,7 @@ mod tests {
         assert_eq!(p[0].default_model, "deepseek-flash");
         assert_eq!(p[0].auth, ProviderAuth::ApiKey);
         assert_eq!(p[1].id, "bigmodel");
-        assert_eq!(p[1].default_model, "glm-5.3");
+        assert_eq!(p[1].default_model, "glm-5.3-flash");
         assert_eq!(p[1].auth, ProviderAuth::ApiKey);
         assert_eq!(p[2].id, "chatgpt");
         assert_eq!(p[2].auth, ProviderAuth::ChatGptOAuth);
@@ -2012,11 +2023,17 @@ mod tests {
             .collect();
         assert_eq!(
             bigmodel_ids,
-            ["glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5-turbo"]
+            [
+                "glm-5.4",
+                "glm-5.3",
+                "glm-5.3-flash",
+                "glm-5.2",
+                "glm-5-turbo"
+            ]
         );
         assert_eq!(bigmodel.builtin_models[0].efforts, ["low", "high", "max"]);
         assert_eq!(deepseek.builtin_models[0].efforts, ["disabled", "enabled"]);
-        // 窗口预填值锁定：glm-5.2/5.3/5.3-flash 为 1M，5-turbo 沿用 200k。
+        // 窗口预填值锁定：glm-5.2/5.3/5.3-flash/5.4 为 1M，5-turbo 沿用 200k。
         assert_eq!(
             bigmodel
                 .builtin_models
@@ -2024,6 +2041,7 @@ mod tests {
                 .map(|m| m.context_window)
                 .collect::<Vec<_>>(),
             [
+                Some(1_000_000),
                 Some(1_000_000),
                 Some(1_000_000),
                 Some(1_000_000),
@@ -2037,7 +2055,7 @@ mod tests {
                 .iter()
                 .map(|m| m.max_output_tokens)
                 .collect::<Vec<_>>(),
-            [Some(131_072); 4]
+            [Some(131_072); 5]
         );
         assert_eq!(
             deepseek
