@@ -259,10 +259,7 @@ async fn timeline_page_hides_inherited_history_behind_side_boundary() {
     db.append(&s.id, "turn.end", json!({"status":"completed"}))
         .await
         .unwrap();
-    // 边界（seq 4）与合成说明消息（seq 5）。
-    db.append(&s.id, "side.boundary", json!({"beforeSeq":"3"}))
-        .await
-        .unwrap();
+    // 合成说明消息（seq 4）与封口边界（seq 5，afterSeq 记自身位置）。
     db.append(
         &s.id,
         "user.message",
@@ -270,6 +267,9 @@ async fn timeline_page_hides_inherited_history_behind_side_boundary() {
     )
     .await
     .unwrap();
+    db.append(&s.id, "side.boundary", json!({"afterSeq":"5"}))
+        .await
+        .unwrap();
     // 侧聊自己的新回合（seq 6-9）。
     let start = db
         .append(&s.id, "turn.start", json!({"runId":"fresh"}))
@@ -318,9 +318,6 @@ async fn timeline_page_returns_empty_for_side_without_new_turns() {
     db.append(&s.id, "user.message", json!({"content":"继承"}))
         .await
         .unwrap();
-    db.append(&s.id, "side.boundary", json!({"beforeSeq":"1"}))
-        .await
-        .unwrap();
     db.append(
         &s.id,
         "user.message",
@@ -328,6 +325,9 @@ async fn timeline_page_returns_empty_for_side_without_new_turns() {
     )
     .await
     .unwrap();
+    db.append(&s.id, "side.boundary", json!({"afterSeq":"3"}))
+        .await
+        .unwrap();
     let page = db.timeline_page(&s.id, None, None).await.unwrap();
     assert!(page.events.is_empty());
     assert!(!page.has_older);

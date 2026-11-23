@@ -2689,8 +2689,9 @@ impl Runtime {
     }
 
     /// 侧聊派生（/side）：复制父会话历史作为模型参考背景，但界面从空白开始——
-    /// 复制事件后追加继承边界（`side.boundary`）与合成说明消息，登记父子关系并把
-    /// 侧聊挂到父会话名下（列表据此隐藏，经父会话的子代理入口切回）。
+    /// 复制事件后追加合成说明消息与继承边界（`side.boundary`，封口式：`afterSeq`
+    /// 记自身位置），登记父子关系并把侧聊挂到父会话名下（列表据此隐藏，经父会话
+    /// 的子代理入口切回）。
     pub async fn fork_as_side(&self, id: &str) -> AppResult<SessionInfo> {
         if self.parent_of(id).is_some() {
             return Err(AppError::new(
@@ -2712,21 +2713,23 @@ impl Runtime {
         let side = self
             .replay_into_new_session(&original, events, title)
             .await?;
-        let copied = self.store.events(&side.id, 0).await?.len();
-        // 边界事件指向最后一条复制事件；其后只允许侧聊自己的新对话。
+        // 说明消息属于"继承包"，先落；边界事件随后封口，`afterSeq` 记自身位置，
+        // 界面时间线按 `seq > afterSeq` 取段——继承历史、说明消息与边界一并隐藏。
+        let notice = self
+            .append(
+                &side.id,
+                "user.message",
+                json!({
+                    "content": "以上对话继承自父会话，仅供你参考背景。请不要主动延续父会话的进行中工作，只回答我在本侧聊中提出的新问题；除非我在本侧聊中明确提出，不要修改工作区文件。",
+                    "source": "side_inherited",
+                }),
+            )
+            .await?;
+        let seal = notice.seq.parse::<i64>().map_err(internal)? + 1;
         self.append(
             &side.id,
             "side.boundary",
-            json!({"beforeSeq": copied.to_string()}),
-        )
-        .await?;
-        self.append(
-            &side.id,
-            "user.message",
-            json!({
-                "content": "以上对话继承自父会话，仅供你参考背景。请不要主动延续父会话的进行中工作，只回答我在本侧聊中提出的新问题；除非我在本侧聊中明确提出，不要修改工作区文件。",
-                "source": "side_inherited",
-            }),
+            json!({"afterSeq": seal.to_string()}),
         )
         .await?;
         self.adopt_child(id, &side.id)?;

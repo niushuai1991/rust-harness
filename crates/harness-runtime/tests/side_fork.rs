@@ -65,19 +65,19 @@ async fn side_fork_copies_history_marks_boundary_and_adopts_parent() {
     assert_eq!(events[2].data["historyOnly"], json!(true));
     assert_eq!(events[2].data["sessionId"], json!("legacy-child"));
 
-    // 第四条为继承边界；beforeSeq 指向最后一条复制事件。
-    assert_eq!(events[3].kind, "side.boundary");
-    let before_seq: i64 = events[3].data["beforeSeq"]
+    // 第四条为合成说明消息：user.message 形态、带 source 标记。
+    assert_eq!(events[3].kind, "user.message");
+    assert_eq!(events[3].data["source"], json!("side_inherited"));
+    assert!(events[3].data["content"].as_str().unwrap().contains("参考"));
+
+    // 第五条为封口边界：afterSeq 记自身位置，界面时间线按 seq > afterSeq 取段。
+    assert_eq!(events[4].kind, "side.boundary");
+    let after_seq: i64 = events[4].data["afterSeq"]
         .as_str()
         .unwrap()
         .parse()
         .unwrap();
-    assert_eq!(before_seq, events[2].seq.parse::<i64>().unwrap());
-
-    // 第五条为合成说明消息：user.message 形态、带 source 标记。
-    assert_eq!(events[4].kind, "user.message");
-    assert_eq!(events[4].data["source"], json!("side_inherited"));
-    assert!(events[4].data["content"].as_str().unwrap().contains("参考"));
+    assert_eq!(after_seq, events[4].seq.parse::<i64>().unwrap());
 
     // 父子登记：侧聊挂父会话名下，父会话得到非 historyOnly 的登记事件。
     assert_eq!(
