@@ -140,6 +140,7 @@ pub struct Runtime {
     steering: Mutex<HashMap<String, Arc<tokio::sync::Mutex<SteeringState>>>>,
     cancelled_messages: Mutex<HashSet<(String, String)>>,
     children: Mutex<HashMap<String, Vec<String>>>,
+    pending_children: Mutex<HashSet<String>>,
     parents: Mutex<HashMap<String, String>>,
     custom: crate::registry::Tools,
     _host_lock: std::fs::File,
@@ -246,6 +247,7 @@ impl Runtime {
             steering: Mutex::new(HashMap::new()),
             cancelled_messages: Mutex::new(HashSet::new()),
             children: Mutex::new(children),
+            pending_children: Mutex::new(HashSet::new()),
             parents: Mutex::new(parents),
             custom: Arc::new(Mutex::new(Default::default())),
             _host_lock: host_lock,
@@ -766,6 +768,274 @@ impl Runtime {
             self.execute_message(session_id, message_id, provider).await
         })
     }
+    /// Continue only the exact interrupted turn selected by the caller.
+    pub async fn resume_session(
+        self: Arc<Self>,
+        session_id: String,
+        expected_end_seq: String,
+        provider: Arc<dyn ModelProvider>,
+    ) -> AppResult<()> {
+        let initial = self.store.events(&session_id, 0).await?;
+        let initial_start = initial
+            .iter()
+            .rev()
+            .find(|e| e.kind == "turn.start")
+            .ok_or_else(|| AppError::new("RESUME_STALE", "回合状态已变化，无法继续"))?;
+        let initial_message = initial_start.data["messageId"].as_str().unwrap_or("");
+        let initial_budget = initial_start.data["budgetTurnId"]
+            .as_str()
+            .unwrap_or(initial_message);
+        let mut root_id = session_id.clone();
+        if initial_budget != initial_message {
+            let parents = self.parents.lock().unwrap().clone();
+            let mut visited = HashSet::new();
+            while let Some(parent) = parents.get(&root_id) {
+                if !visited.insert(root_id.clone()) {
+                    return Err(AppError::new("RESUME_STALE", "会话关系无效"));
+                }
+                root_id = parent.clone();
+                if self
+                    .store
+                    .events(&root_id, 0)
+                    .await?
+                    .iter()
+                    .any(|e| e.kind == "turn.start" && e.data["messageId"] == initial_budget)
+                {
+                    break;
+                }
+            }
+        }
+        let root_queue = self
+            .queues
+            .lock()
+            .unwrap()
+            .entry(root_id.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let _root_serial = root_queue
+            .try_lock_owned()
+            .map_err(|_| AppError::new("RESUME_CHILD_ACTIVE", "原任务仍在运行，请等待后再继续"))?;
+        let _child_serial = if root_id != session_id {
+            let queue = self
+                .queues
+                .lock()
+                .unwrap()
+                .entry(session_id.clone())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone();
+            Some(queue.try_lock_owned().map_err(|_| {
+                AppError::new("RESUME_CHILD_ACTIVE", "会话仍在运行，请等待后再继续")
+            })?)
+        } else {
+            None
+        };
+        let session = self.store.session(&session_id).await?;
+        let events = self.store.events(&session_id, 0).await?;
+        events
+            .iter()
+            .rev()
+            .find(|e| e.kind == "turn.start" || e.kind == "turn.end")
+            .filter(|e| {
+                e.kind == "turn.end"
+                    && e.seq == expected_end_seq
+                    && matches!(
+                        e.data["status"].as_str(),
+                        Some("cancelled" | "interrupted" | "error")
+                    )
+            })
+            .ok_or_else(|| AppError::new("RESUME_STALE", "回合状态已变化，无法继续"))?;
+        let latest_start = events
+            .iter()
+            .rev()
+            .find(|e| e.kind == "turn.start")
+            .ok_or_else(|| {
+                AppError::new("TOKEN_USAGE_UNAVAILABLE", "无法确定原任务预算，无法继续")
+            })?;
+        let original_id = latest_start.data["messageId"].as_str().ok_or_else(|| {
+            AppError::new("TOKEN_USAGE_UNAVAILABLE", "无法确定原任务预算，无法继续")
+        })?;
+        let original_id = original_id.to_owned();
+        let budget_id = latest_start.data["budgetTurnId"]
+            .as_str()
+            .unwrap_or(&original_id)
+            .to_owned();
+        if budget_id != initial_budget || original_id != initial_message {
+            return Err(AppError::new("RESUME_STALE", "回合状态已变化，无法继续"));
+        }
+        let root_events = if root_id == session_id {
+            events.clone()
+        } else {
+            self.store.events(&root_id, 0).await?
+        };
+        let first_start = root_events
+            .iter()
+            .position(|e| e.kind == "turn.start" && e.data["messageId"] == budget_id)
+            .ok_or_else(|| {
+                AppError::new("TOKEN_USAGE_UNAVAILABLE", "无法确定原任务预算，无法继续")
+            })?;
+        let mut children: Vec<String> = root_events[first_start..]
+            .iter()
+            .filter(|e| e.kind == "subagent.created")
+            .filter_map(|e| e.data["sessionId"].as_str().map(str::to_owned))
+            .collect();
+        let mut visited = std::collections::HashSet::new();
+        while let Some(child) = children.pop() {
+            if !visited.insert(child.clone()) {
+                continue;
+            }
+            let child_events = self.store.events(&child, 0).await?;
+            if self.is_active(&child) || self.pending_children.lock().unwrap().contains(&child) {
+                return Err(AppError::new(
+                    "RESUME_CHILD_ACTIVE",
+                    "子代理尚未结束，请等待后再继续",
+                ));
+            }
+            children.extend(
+                child_events
+                    .iter()
+                    .filter(|e| e.kind == "subagent.created")
+                    .filter_map(|e| e.data["sessionId"].as_str().map(str::to_owned)),
+            );
+        }
+        // A child may have completed and published usage while it was being checked.
+        let events = self.store.events(&session_id, 0).await?;
+        let root_events = if root_id == session_id {
+            events.clone()
+        } else {
+            self.store.events(&root_id, 0).await?
+        };
+        let budget_event = root_events
+            .iter()
+            .rev()
+            .find(|e| e.kind == "token.budget")
+            .ok_or_else(|| {
+                AppError::new("TOKEN_USAGE_UNAVAILABLE", "无法确定原任务用量，无法继续")
+            })?;
+        let turn_id = budget_event.data["turnId"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                AppError::new("TOKEN_USAGE_UNAVAILABLE", "无法确定原任务预算，无法继续")
+            })?
+            .to_owned();
+        if turn_id != budget_id {
+            return Err(AppError::new(
+                "TOKEN_USAGE_UNAVAILABLE",
+                "无法确定原任务预算，无法继续",
+            ));
+        }
+        let used = budget_event.data["usedTokens"]
+            .as_u64()
+            .filter(|_| budget_event.data["status"] != "usageUnavailable")
+            .ok_or_else(|| {
+                AppError::new("TOKEN_USAGE_UNAVAILABLE", "无法确定原任务用量，无法继续")
+            })?;
+        let accounted: HashSet<&str> = root_events
+            .iter()
+            .filter(|e| e.kind == "model.request.accounted")
+            .filter_map(|e| e.data["requestId"].as_str().filter(|id| !id.is_empty()))
+            .collect();
+        let pending = root_events
+            .iter()
+            .filter(|e| e.kind == "model.request.started" && e.data["turnId"] == turn_id)
+            .any(|started| {
+                !started.data["requestId"]
+                    .as_str()
+                    .is_some_and(|id| !id.is_empty() && accounted.contains(id))
+            });
+        if pending
+            || !root_events
+                .iter()
+                .any(|e| e.kind == "model.request.started" && e.data["turnId"] == turn_id)
+        {
+            return Err(AppError::new(
+                "TOKEN_USAGE_UNAVAILABLE",
+                "中断的模型请求用量未知，无法继续",
+            ));
+        }
+        let limit = self.token_budget_limit().await?;
+        let budget = Arc::new(TurnBudget::restored(
+            root_id.clone(),
+            turn_id.clone(),
+            limit,
+            used,
+        ));
+        budget.check_available()?;
+        let parent = self.parents.lock().unwrap().get(&session_id).cloned();
+        let exec = self
+            .resolve_exec_root(
+                &session.workspace_id,
+                &session_id,
+                session.execution_mode,
+                parent.as_deref(),
+            )
+            .await?;
+        let _lease = if session.workspace_id.is_empty() {
+            None
+        } else {
+            Some(self.workspaces.acquire(&session.workspace_id)?)
+        };
+        // Complete orphaned calls conservatively before projecting history to a provider.
+        let settled: HashSet<&str> = events
+            .iter()
+            .filter(|e| e.kind == "tool.result")
+            .filter_map(|e| e.data["callId"].as_str())
+            .collect();
+        let mut missing = HashSet::new();
+        for call in events
+            .iter()
+            .filter(|e| e.kind == "assistant.message")
+            .flat_map(|e| e.data["toolCalls"].as_array().into_iter().flatten())
+        {
+            if let Some(id) = call["id"].as_str()
+                && !settled.contains(id)
+                && missing.insert(id.to_owned())
+            {
+                if !events
+                    .iter()
+                    .any(|e| e.kind == "tool.call" && e.data["id"] == id)
+                {
+                    self.append(&session_id, "tool.call", call.clone()).await?;
+                }
+                self.append(&session_id, "tool.result", json!({"callId":id,"name":call["name"],"content":"执行中断；外部操作是否完成未知，未自动重试。","isError":true,"status":"unknown"})).await?;
+            }
+        }
+        let cancel = CancellationToken::new();
+        budget.register_session(session_id.clone(), cancel.clone());
+        self.active
+            .lock()
+            .unwrap()
+            .insert(session_id.clone(), cancel.clone());
+        let run_id = new_id();
+        let result = async {
+            let state = self.steering_state(&session_id);
+            let mut state = state.lock().await;
+            state.run_id = Some(run_id.clone());
+            self.append(&session_id, "turn.start", json!({"runId":run_id,"messageId":original_id,"budgetTurnId":turn_id,"resumesEndSeq":expected_end_seq})).await?;
+            self.append(&session_id, "turn.resume", json!({"content":"请继续此前被中断的任务。先确认当前状态和结果未知的操作，再继续完成任务。"})).await?;
+            drop(state);
+            self.publish_token_budget(&session_id, &budget, budget.snapshot()).await?;
+            self.steps(&session_id, &session.workspace_id, &exec, provider, cancel.clone(), budget.clone()).await
+        }.await;
+        let steering_result = self.fail_pending_steering(&session_id).await;
+        self.active.lock().unwrap().remove(&session_id);
+        budget.unregister_session(&session_id);
+        let result = match (result.and(steering_result), budget.error()) {
+            (Err(_), Some(error)) => Err(error),
+            (result, _) => result,
+        };
+        let status = match &result {
+            Ok(()) => "completed",
+            Err(e) if e.code == "CANCELLED" => "cancelled",
+            Err(_) => "error",
+        };
+        self.append(&session_id, "turn.end", json!({"runId":run_id,"messageId":original_id,"status":status,"error":result.as_ref().err()})).await?;
+        let _ = self.events.send(LiveEvent::Status {
+            session_id,
+            status: status.into(),
+        });
+        result
+    }
     pub(crate) fn run_session_with_budget(
         self: Arc<Self>,
         session_id: String,
@@ -1168,7 +1438,7 @@ impl Runtime {
             self.append(
                 &session_id,
                 "turn.start",
-                json!({"runId":run_id,"messageId":message_id}),
+                json!({"runId":run_id,"messageId":message_id,"budgetTurnId":token_budget.turn_id()}),
             )
             .await?;
             self.append(&session_id, "inbox.claimed", json!({"id":message_id}))
@@ -1386,6 +1656,13 @@ impl Runtime {
                 let threshold = (f64::from(window) * AUTO_COMPACTION_THRESHOLD_RATIO) as u64;
                 if input >= threshold {
                     let compaction_started = std::time::Instant::now();
+                    let compaction_id = new_id();
+                    self.append(
+                        token_budget.root_session_id(),
+                        "model.request.started",
+                        json!({"requestId":compaction_id,"turnId":token_budget.turn_id()}),
+                    )
+                    .await?;
                     let compaction = self
                         .compact_projection(
                             session,
@@ -1400,6 +1677,12 @@ impl Runtime {
                             // 压缩请求的 usage 计入回合共享预算（不得通过压缩绕过预算）。
                             self.record_token_usage(session, &token_budget, &answer.usage)
                                 .await?;
+                            self.append(
+                                token_budget.root_session_id(),
+                                "model.request.accounted",
+                                json!({"requestId":compaction_id}),
+                            )
+                            .await?;
                             token_budget.check_available()?;
                             // 基于摘要重建投影后继续原请求。
                             let started = std::time::Instant::now();
@@ -1474,6 +1757,12 @@ impl Runtime {
             });
             let mut request_timing = RequestTiming::start(session, "main_turn");
             let sink = request_timing.wrap_sink(sink);
+            self.append(
+                token_budget.root_session_id(),
+                "model.request.started",
+                json!({"requestId":request_id,"turnId":token_budget.turn_id()}),
+            )
+            .await?;
             let model_result = request_timing
                 .scope(provider.complete_with_partial_usage(
                     messages,
@@ -1499,7 +1788,15 @@ impl Runtime {
                             .record_token_usage(session, &token_budget, &usage)
                             .await
                         {
-                            Ok(_) => e,
+                            Ok(_) => {
+                                self.append(
+                                    token_budget.root_session_id(),
+                                    "model.request.accounted",
+                                    json!({"requestId":request_id}),
+                                )
+                                .await?;
+                                e
+                            }
                             Err(error) => error,
                         }
                     } else {
@@ -1530,6 +1827,12 @@ impl Runtime {
                     return Err(error);
                 }
             };
+            self.append(
+                token_budget.root_session_id(),
+                "model.request.accounted",
+                json!({"requestId":request_id}),
+            )
+            .await?;
             let mut ids: BTreeSet<String> = history
                 .iter()
                 .filter(|e| e.kind == "tool.call")
@@ -2251,13 +2554,16 @@ impl Runtime {
                 let runtime = self.clone();
                 let id = child.id.clone();
                 let task = arg(a, "task")?.to_owned();
+                self.pending_children.lock().unwrap().insert(id.clone());
                 tokio::spawn(async move {
                     if let Err(e) = runtime
-                        .run_session_with_budget(id, task, provider, token_budget)
+                        .clone()
+                        .run_session_with_budget(id.clone(), task, provider, token_budget)
                         .await
                     {
                         tracing::warn!(error=%e,"child agent ended");
                     }
+                    runtime.pending_children.lock().unwrap().remove(&id);
                 });
                 json!({"sessionId":child.id}).to_string()
             }
@@ -3201,6 +3507,7 @@ pub fn project_messages(events: &[SessionEvent]) -> Vec<ModelMessage> {
                 }
                 history.push(ModelMessage::user(message));
             }
+            "turn.resume" => history.push(ModelMessage::user(content())),
             "skill.loaded" => history.push(ModelMessage::user(format!(
                 "<skill name=\"{}\" path=\"{}\">\n{}\n</skill>",
                 e.data["name"].as_str().unwrap_or(""),

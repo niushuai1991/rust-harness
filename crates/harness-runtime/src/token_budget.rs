@@ -148,6 +148,17 @@ impl TurnBudget {
         }
     }
 
+    pub(crate) fn restored(
+        root_session_id: String,
+        turn_id: String,
+        limit_tokens: u64,
+        used_tokens: u64,
+    ) -> Self {
+        let budget = Self::new(root_session_id, turn_id, limit_tokens);
+        budget.add_usage(used_tokens);
+        budget
+    }
+
     pub(crate) fn root_session_id(&self) -> &str {
         &self.root_session_id
     }

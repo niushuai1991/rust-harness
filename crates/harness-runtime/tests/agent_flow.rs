@@ -108,6 +108,896 @@ fn call(id: &str, name: &str, args: Value) -> ModelAnswer {
 }
 
 #[tokio::test]
+async fn resume_failed_turn_preserves_history_and_budget_without_a_user_message() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&source, None, ExecutionMode::Replica)
+        .unwrap();
+    let session = runtime
+        .store
+        .create_session(&workspace.id, "resume")
+        .await
+        .unwrap();
+    let failed = Arc::new(PartialUsageFailure);
+    runtime
+        .clone()
+        .run_session(session.id.clone(), "完成任务".into(), failed)
+        .await
+        .unwrap_err();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            content: "完成".into(),
+            usage: json!({"prompt_tokens":2,"completion_tokens":1}),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+    let failed_events = runtime.store.events(&session.id, 0).await.unwrap();
+    let end_seq = failed_events
+        .iter()
+        .rev()
+        .find(|e| e.kind == "turn.end")
+        .unwrap()
+        .seq
+        .to_string();
+    runtime
+        .clone()
+        .resume_session(session.id.clone(), end_seq.clone(), provider.clone())
+        .await
+        .unwrap();
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    assert_eq!(
+        events.iter().filter(|e| e.kind == "user.message").count(),
+        1
+    );
+    assert_eq!(events.iter().filter(|e| e.kind == "turn.start").count(), 2);
+    assert_eq!(
+        events
+            .iter()
+            .rev()
+            .find(|e| e.kind == "token.budget")
+            .unwrap()
+            .data["usedTokens"],
+        8
+    );
+    assert!(
+        provider.requests.lock().unwrap()[0]
+            .iter()
+            .any(|m| m.role == MessageRole::User && m.content.contains("完成任务"))
+    );
+    assert!(
+        runtime
+            .clone()
+            .resume_session(session.id, end_seq, provider)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn manually_cancelled_turn_can_resume_when_usage_is_known() {
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let session = runtime.store.create_session("", "cancel").await.unwrap();
+    let cancelled = Arc::new(CancelledWithPartialUsage {
+        started: tokio::sync::Notify::new(),
+        usage: json!({"prompt_tokens":3,"completion_tokens":2}),
+    });
+    let task = tokio::spawn(runtime.clone().run_session(
+        session.id.clone(),
+        "继续任务".into(),
+        cancelled.clone(),
+    ));
+    cancelled.started.notified().await;
+    runtime.cancel(&session.id);
+    task.await.unwrap().unwrap_err();
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    let end = events.iter().rev().find(|e| e.kind == "turn.end").unwrap();
+    assert_eq!(end.data["status"], "cancelled");
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            content: "完成".into(),
+            usage: json!({"prompt_tokens":1,"completion_tokens":1}),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .resume_session(session.id.clone(), end.seq.clone(), provider)
+        .await
+        .unwrap();
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .rev()
+            .find(|e| e.kind == "token.budget")
+            .unwrap()
+            .data["usedTokens"],
+        7
+    );
+}
+
+#[tokio::test]
+async fn repeated_resume_clicks_do_not_start_parallel_runs() {
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let session = runtime.store.create_session("", "retry").await.unwrap();
+    runtime
+        .clone()
+        .run_session(
+            session.id.clone(),
+            "任务".into(),
+            Arc::new(PartialUsageFailure),
+        )
+        .await
+        .unwrap_err();
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    let end = events
+        .iter()
+        .rev()
+        .find(|e| e.kind == "turn.end")
+        .unwrap()
+        .seq
+        .clone();
+    let provider = Arc::new(CancelledWithPartialUsage {
+        started: tokio::sync::Notify::new(),
+        usage: json!({"prompt_tokens":1,"completion_tokens":1}),
+    });
+    let first = tokio::spawn(runtime.clone().resume_session(
+        session.id.clone(),
+        end.clone(),
+        provider.clone(),
+    ));
+    provider.started.notified().await;
+    let error = runtime
+        .clone()
+        .resume_session(session.id.clone(), end, provider)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "RESUME_CHILD_ACTIVE");
+    runtime.cancel(&session.id);
+    first.await.unwrap().unwrap_err();
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    assert_eq!(events.iter().filter(|e| e.kind == "turn.start").count(), 2);
+}
+
+#[tokio::test]
+async fn resume_rejects_budget_from_a_previous_message() {
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let session = runtime.store.create_session("", "resume").await.unwrap();
+    runtime
+        .append(
+            &session.id,
+            "token.budget",
+            json!({"turnId":"old","usedTokens":0,"status":"active"}),
+        )
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &session.id,
+            "turn.start",
+            json!({"runId":"new","messageId":"new"}),
+        )
+        .await
+        .unwrap();
+    let end = runtime
+        .append(
+            &session.id,
+            "turn.end",
+            json!({"runId":"new","status":"error"}),
+        )
+        .await
+        .unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::new()),
+        requests: Mutex::new(vec![]),
+    });
+    let err = runtime
+        .clone()
+        .resume_session(session.id, end.seq.to_string(), provider.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "TOKEN_USAGE_UNAVAILABLE");
+    assert!(provider.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn repeated_failures_continue_with_the_same_budget() {
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let session = runtime.store.create_session("", "retry").await.unwrap();
+    runtime
+        .clone()
+        .run_session(
+            session.id.clone(),
+            "任务".into(),
+            Arc::new(PartialUsageFailure),
+        )
+        .await
+        .unwrap_err();
+    for _ in 0..2 {
+        let events = runtime.store.events(&session.id, 0).await.unwrap();
+        let end = events
+            .iter()
+            .rev()
+            .find(|e| e.kind == "turn.end")
+            .unwrap()
+            .seq
+            .to_string();
+        runtime
+            .clone()
+            .resume_session(session.id.clone(), end, Arc::new(PartialUsageFailure))
+            .await
+            .unwrap_err();
+    }
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    assert_eq!(
+        events.iter().filter(|e| e.kind == "user.message").count(),
+        1
+    );
+    assert_eq!(events.iter().filter(|e| e.kind == "turn.start").count(), 3);
+    assert_eq!(
+        events
+            .iter()
+            .rev()
+            .find(|e| e.kind == "token.budget")
+            .unwrap()
+            .data["usedTokens"],
+        15
+    );
+}
+
+#[tokio::test]
+async fn resume_rejects_legacy_failure_with_no_request_accounting() {
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let session = runtime.store.create_session("", "legacy").await.unwrap();
+    runtime
+        .append(
+            &session.id,
+            "turn.start",
+            json!({"runId":"run","messageId":"message"}),
+        )
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &session.id,
+            "token.budget",
+            json!({"turnId":"message","usedTokens":0,"status":"active"}),
+        )
+        .await
+        .unwrap();
+    let end = runtime
+        .append(
+            &session.id,
+            "turn.end",
+            json!({"runId":"run","status":"cancelled"}),
+        )
+        .await
+        .unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::new()),
+        requests: Mutex::new(vec![]),
+    });
+    let error = runtime
+        .clone()
+        .resume_session(session.id, end.seq.to_string(), provider)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "TOKEN_USAGE_UNAVAILABLE");
+}
+
+#[tokio::test]
+async fn resume_rejects_malformed_request_accounting() {
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let session = runtime.store.create_session("", "malformed").await.unwrap();
+    runtime
+        .append(
+            &session.id,
+            "turn.start",
+            json!({"runId":"run","messageId":"message"}),
+        )
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &session.id,
+            "model.request.started",
+            json!({"turnId":"message"}),
+        )
+        .await
+        .unwrap();
+    runtime
+        .append(&session.id, "model.request.accounted", json!({}))
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &session.id,
+            "token.budget",
+            json!({"turnId":"message","usedTokens":0,"status":"active"}),
+        )
+        .await
+        .unwrap();
+    let end = runtime
+        .append(
+            &session.id,
+            "turn.end",
+            json!({"runId":"run","status":"error"}),
+        )
+        .await
+        .unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::new()),
+        requests: Mutex::new(vec![]),
+    });
+    let error = runtime
+        .clone()
+        .resume_session(session.id, end.seq.clone(), provider)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "TOKEN_USAGE_UNAVAILABLE");
+}
+
+#[tokio::test]
+async fn resume_requires_raising_an_exhausted_budget() {
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let session = runtime.store.create_session("", "budget").await.unwrap();
+    runtime.set_token_budget_limit(5).await.unwrap();
+    runtime
+        .clone()
+        .run_session(
+            session.id.clone(),
+            "任务".into(),
+            Arc::new(PartialUsageFailure),
+        )
+        .await
+        .unwrap_err();
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    let end = events
+        .iter()
+        .rev()
+        .find(|e| e.kind == "turn.end")
+        .unwrap()
+        .seq
+        .to_string();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            content: "完成".into(),
+            usage: json!({"prompt_tokens":1,"completion_tokens":1}),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+    assert_eq!(
+        runtime
+            .clone()
+            .resume_session(session.id.clone(), end.clone(), provider.clone())
+            .await
+            .unwrap_err()
+            .code,
+        "TOKEN_BUDGET_EXCEEDED"
+    );
+    runtime.set_token_budget_limit(10).await.unwrap();
+    runtime
+        .clone()
+        .resume_session(session.id.clone(), end, provider)
+        .await
+        .unwrap();
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .rev()
+            .find(|e| e.kind == "token.budget")
+            .unwrap()
+            .data["usedTokens"],
+        7
+    );
+}
+
+#[tokio::test]
+async fn resume_rejects_a_request_with_unknown_usage_after_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    let host = temp.path().join("host");
+    let runtime = Runtime::open(host).await.unwrap();
+    let session = runtime.store.create_session("", "restart").await.unwrap();
+    runtime
+        .append(
+            &session.id,
+            "turn.start",
+            json!({"runId":"run","messageId":"message"}),
+        )
+        .await
+        .unwrap();
+    runtime
+        .append(&session.id, "user.message", json!({"content":"任务"}))
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &session.id,
+            "token.budget",
+            json!({"turnId":"message","usedTokens":2,"status":"active"}),
+        )
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &session.id,
+            "model.request.started",
+            json!({"requestId":"request","turnId":"message"}),
+        )
+        .await
+        .unwrap();
+    runtime.store.recover().await.unwrap();
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    let end = events
+        .iter()
+        .rev()
+        .find(|e| e.kind == "turn.end")
+        .unwrap()
+        .seq
+        .to_string();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::new()),
+        requests: Mutex::new(vec![]),
+    });
+    let error = runtime
+        .clone()
+        .resume_session(session.id, end, provider.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "TOKEN_USAGE_UNAVAILABLE");
+    assert!(provider.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn resume_after_recovery_preserves_unknown_tool_result() {
+    let temp = tempfile::tempdir().unwrap();
+    let host = temp.path().join("host");
+    let runtime = Runtime::open(host.clone()).await.unwrap();
+    let session = runtime.store.create_session("", "restart").await.unwrap();
+    runtime
+        .append(
+            &session.id,
+            "turn.start",
+            json!({"runId":"run","messageId":"message"}),
+        )
+        .await
+        .unwrap();
+    runtime
+        .append(&session.id, "user.message", json!({"content":"任务"}))
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &session.id,
+            "model.request.started",
+            json!({"requestId":"request","turnId":"message"}),
+        )
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &session.id,
+            "token.budget",
+            json!({"turnId":"message","usedTokens":2,"status":"active"}),
+        )
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &session.id,
+            "model.request.accounted",
+            json!({"requestId":"request"}),
+        )
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &session.id,
+            "assistant.message",
+            json!({"toolCalls":[{"id":"call","name":"shell","arguments":{"command":"echo test"}}]}),
+        )
+        .await
+        .unwrap();
+    runtime.store.recover().await.unwrap();
+    drop(runtime);
+    let runtime = Runtime::open(host).await.unwrap();
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    let end = events
+        .iter()
+        .rev()
+        .find(|e| e.kind == "turn.end")
+        .unwrap()
+        .seq
+        .to_string();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            content: "完成".into(),
+            usage: json!({"prompt_tokens":1,"completion_tokens":1}),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .resume_session(session.id.clone(), end, provider.clone())
+        .await
+        .unwrap();
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.kind == "tool.result" && e.data["status"] == "unknown")
+            .count(),
+        1
+    );
+    assert!(
+        provider.requests.lock().unwrap()[0]
+            .iter()
+            .any(|m| m.role == MessageRole::Tool && m.content.contains("未自动重试"))
+    );
+}
+
+#[tokio::test]
+async fn resume_settles_unfinished_tool_calls_after_runtime_error() {
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let session = runtime.store.create_session("", "tools").await.unwrap();
+    runtime
+        .append(
+            &session.id,
+            "turn.start",
+            json!({"runId":"run","messageId":"message"}),
+        )
+        .await
+        .unwrap();
+    runtime
+        .append(&session.id, "user.message", json!({"content":"任务"}))
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &session.id,
+            "model.request.started",
+            json!({"requestId":"request","turnId":"message"}),
+        )
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &session.id,
+            "token.budget",
+            json!({"turnId":"message","usedTokens":2,"status":"active"}),
+        )
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &session.id,
+            "model.request.accounted",
+            json!({"requestId":"request"}),
+        )
+        .await
+        .unwrap();
+    runtime.append(&session.id, "assistant.message", json!({"toolCalls":[{"id":"done","name":"read","arguments":{}},{"id":"unknown","name":"shell","arguments":{}}]})).await.unwrap();
+    runtime
+        .append(
+            &session.id,
+            "tool.result",
+            json!({"callId":"done","name":"read","content":"完成","isError":false}),
+        )
+        .await
+        .unwrap();
+    let end = runtime
+        .append(
+            &session.id,
+            "turn.end",
+            json!({"runId":"run","status":"error"}),
+        )
+        .await
+        .unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            content: "完成".into(),
+            usage: json!({"prompt_tokens":1,"completion_tokens":1}),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .resume_session(session.id.clone(), end.seq.to_string(), provider.clone())
+        .await
+        .unwrap();
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.kind == "tool.result" && e.data["callId"] == "done")
+            .count(),
+        1
+    );
+    assert!(events.iter().any(|e| e.kind == "tool.result"
+        && e.data["callId"] == "unknown"
+        && e.data["status"] == "unknown"));
+    assert!(
+        provider.requests.lock().unwrap()[0]
+            .iter()
+            .any(|m| m.role == MessageRole::Tool && m.content.contains("未自动重试"))
+    );
+}
+
+#[tokio::test]
+async fn resume_waits_for_a_child_that_has_not_settled() {
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let session = runtime.store.create_session("", "parent").await.unwrap();
+    let child = runtime.store.create_session("", "child").await.unwrap();
+    let child_provider = Arc::new(CancelledWithPartialUsage {
+        started: tokio::sync::Notify::new(),
+        usage: json!({"prompt_tokens":0,"completion_tokens":0}),
+    });
+    let child_task = tokio::spawn(runtime.clone().run_session(
+        child.id.clone(),
+        "子任务".into(),
+        child_provider.clone(),
+    ));
+    child_provider.started.notified().await;
+    runtime
+        .append(
+            &session.id,
+            "turn.start",
+            json!({"runId":"run","messageId":"message"}),
+        )
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &session.id,
+            "token.budget",
+            json!({"turnId":"message","usedTokens":2,"status":"active"}),
+        )
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &session.id,
+            "subagent.created",
+            json!({"sessionId":child.id}),
+        )
+        .await
+        .unwrap();
+    let end = runtime
+        .append(
+            &session.id,
+            "turn.end",
+            json!({"runId":"run","status":"cancelled"}),
+        )
+        .await
+        .unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::new()),
+        requests: Mutex::new(vec![]),
+    });
+    let error = runtime
+        .clone()
+        .resume_session(session.id, end.seq.to_string(), provider.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "RESUME_CHILD_ACTIVE");
+    assert!(provider.requests.lock().unwrap().is_empty());
+    runtime.cancel(&child.id);
+    let _ = child_task.await;
+}
+
+#[tokio::test]
+async fn restart_does_not_wait_forever_for_child_that_never_started() {
+    let temp = tempfile::tempdir().unwrap();
+    let host = temp.path().join("host");
+    let runtime = Runtime::open(host.clone()).await.unwrap();
+    let session = runtime.store.create_session("", "parent").await.unwrap();
+    let child = runtime.store.create_session("", "child").await.unwrap();
+    runtime
+        .append(
+            &session.id,
+            "turn.start",
+            json!({"runId":"run","messageId":"message"}),
+        )
+        .await
+        .unwrap();
+    runtime
+        .append(&session.id, "user.message", json!({"content":"任务"}))
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &session.id,
+            "model.request.started",
+            json!({"requestId":"request","turnId":"message"}),
+        )
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &session.id,
+            "token.budget",
+            json!({"turnId":"message","usedTokens":2,"status":"active"}),
+        )
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &session.id,
+            "model.request.accounted",
+            json!({"requestId":"request"}),
+        )
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &session.id,
+            "subagent.created",
+            json!({"sessionId":child.id}),
+        )
+        .await
+        .unwrap();
+    runtime.store.recover().await.unwrap();
+    drop(runtime);
+    let runtime = Runtime::open(host).await.unwrap();
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    let end = events
+        .iter()
+        .rev()
+        .find(|e| e.kind == "turn.end")
+        .unwrap()
+        .seq
+        .to_string();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            content: "完成".into(),
+            usage: json!({"prompt_tokens":1,"completion_tokens":1}),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .resume_session(session.id, end, provider)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn resume_child_uses_the_original_parent_budget() {
+    let temp = tempfile::tempdir().unwrap();
+    let host = temp.path().join("host");
+    let runtime = Runtime::open(host.clone()).await.unwrap();
+    let parent = runtime.store.create_session("", "parent").await.unwrap();
+    let child = runtime.store.create_session("", "child").await.unwrap();
+    let grandparent = runtime
+        .store
+        .create_session("", "grandparent")
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &grandparent.id,
+            "subagent.created",
+            json!({"sessionId":parent.id}),
+        )
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &parent.id,
+            "turn.start",
+            json!({"runId":"parent-run","messageId":"root-message"}),
+        )
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &parent.id,
+            "subagent.created",
+            json!({"sessionId":child.id}),
+        )
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &child.id,
+            "turn.start",
+            json!({"runId":"child-run","messageId":"child-message","budgetTurnId":"root-message"}),
+        )
+        .await
+        .unwrap();
+    runtime
+        .append(&child.id, "user.message", json!({"content":"子任务"}))
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &parent.id,
+            "model.request.started",
+            json!({"requestId":"request","turnId":"root-message"}),
+        )
+        .await
+        .unwrap();
+    let snapshot = json!({"turnId":"root-message","usedTokens":5,"status":"active"});
+    runtime
+        .append(&parent.id, "token.budget", snapshot.clone())
+        .await
+        .unwrap();
+    runtime
+        .append(&child.id, "token.budget", snapshot)
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &parent.id,
+            "model.request.accounted",
+            json!({"requestId":"request"}),
+        )
+        .await
+        .unwrap();
+    let end = runtime
+        .append(
+            &child.id,
+            "turn.end",
+            json!({"runId":"child-run","status":"cancelled"}),
+        )
+        .await
+        .unwrap();
+    runtime
+        .append(
+            &parent.id,
+            "turn.end",
+            json!({"runId":"parent-run","status":"completed"}),
+        )
+        .await
+        .unwrap();
+    drop(runtime);
+    let runtime = Runtime::open(host).await.unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            content: "完成".into(),
+            usage: json!({"prompt_tokens":1,"completion_tokens":1}),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .resume_session(child.id, end.seq.to_string(), provider)
+        .await
+        .unwrap();
+    let events = runtime.store.events(&parent.id, 0).await.unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .rev()
+            .find(|e| e.kind == "token.budget")
+            .unwrap()
+            .data["usedTokens"],
+        7
+    );
+}
+
+#[tokio::test]
 async fn approved_edit_stays_in_replica_until_explicit_sync() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("source");
