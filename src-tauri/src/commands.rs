@@ -373,6 +373,165 @@ pub async fn workspace_file_diff(
         .await
         .map_err(error)?
 }
+// Windows 的目录联接和符号链接可能指向网络共享；解析前逐级拒绝重解析点。
+#[cfg(windows)]
+fn reject_pdf_reparse_points(path: &Path) -> AppResult<()> {
+    use std::os::windows::fs::MetadataExt;
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        if !current.is_absolute() {
+            continue;
+        }
+        if std::fs::symlink_metadata(&current)
+            .map_err(error)?
+            .file_attributes()
+            & 0x400
+            != 0
+        {
+            return Err(error("PDF 路径不能包含符号链接或目录联接"));
+        }
+    }
+    Ok(())
+}
+
+// 相对路径限定在会话执行根内，避免通过父目录或符号链接越界。
+fn resolve_relative_pdf(root: &Path, path: &Path) -> AppResult<PathBuf> {
+    if path.is_absolute()
+        || path.components().any(|c| {
+            !matches!(
+                c,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        })
+    {
+        return Err(error("PDF 相对路径不能离开会话目录"));
+    }
+    #[cfg(windows)]
+    if !is_local_disk_path(root) {
+        return Err(error("不支持网络或设备路径"));
+    }
+    #[cfg(windows)]
+    reject_pdf_reparse_points(root)?;
+    let root = root.canonicalize().map_err(error)?;
+    #[cfg(windows)]
+    if !is_local_disk_path(&root) {
+        return Err(error("不支持网络或设备路径"));
+    }
+    let joined = root.join(path);
+    #[cfg(windows)]
+    reject_pdf_reparse_points(&joined)?;
+    let resolved = joined.canonicalize().map_err(error)?;
+    if !resolved.starts_with(&root) {
+        return Err(error("PDF 相对路径不能离开会话目录"));
+    }
+    Ok(resolved)
+}
+
+#[cfg(windows)]
+fn is_local_disk_path(path: &Path) -> bool {
+    matches!(path.components().next(), Some(std::path::Component::Prefix(prefix)) if matches!(prefix.kind(), std::path::Prefix::Disk(_) | std::path::Prefix::VerbatimDisk(_)))
+}
+
+// 本地 PDF 由用户点击链接后读取；只接受绝对路径和 PDF 文件，并限制总大小。
+fn read_pdf_bytes(path: &Path, max_bytes: u64) -> AppResult<Vec<u8>> {
+    use std::io::Read;
+    if !path.is_absolute()
+        || !path
+            .extension()
+            .is_some_and(|s| s.eq_ignore_ascii_case("pdf"))
+    {
+        return Err(error("请选择绝对路径的 PDF 文件"));
+    }
+    #[cfg(windows)]
+    if !is_local_disk_path(path) {
+        return Err(error("不支持网络或设备路径"));
+    }
+    #[cfg(windows)]
+    reject_pdf_reparse_points(path)?;
+    let canonical = path.canonicalize().map_err(error)?;
+    #[cfg(windows)]
+    if !is_local_disk_path(&canonical) {
+        return Err(error("不支持网络或设备路径"));
+    }
+    let file = std::fs::File::open(canonical).map_err(error)?;
+    if !file.metadata().map_err(error)?.is_file() {
+        return Err(error("PDF 路径不是普通文件"));
+    }
+    let mut bytes = Vec::new();
+    file.take(max_bytes + 1)
+        .read_to_end(&mut bytes)
+        .map_err(error)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(error("PDF 文件超过 32 MiB 的预览上限"));
+    }
+    if !bytes.windows(5).take(1024).any(|window| window == b"%PDF-") {
+        return Err(error("文件不是有效的 PDF"));
+    }
+    Ok(bytes)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn read_local_pdf(
+    state: Backend<'_>,
+    path: String,
+    session_id: Option<String>,
+) -> AppResult<Vec<u8>> {
+    let path = PathBuf::from(path);
+    let root = if path.is_absolute() {
+        None
+    } else {
+        let id = session_id
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| error("相对路径需要当前会话"))?;
+        let session = state.store.session(&id).await?;
+        if session.workspace_id.is_empty() {
+            Some(
+                state
+                    .workspaces
+                    .data_dir()
+                    .join("sessions")
+                    .join(&id)
+                    .join("root"),
+            )
+        } else {
+            let info = state.workspaces.get(&session.workspace_id)?;
+            let mode = state.workspaces.resolved_mode(
+                &session.workspace_id,
+                &id,
+                session.execution_mode,
+            )?;
+            Some(match mode {
+                ExecutionMode::Direct => PathBuf::from(info.source_path),
+                ExecutionMode::Replica => PathBuf::from(info.replica_path),
+                ExecutionMode::Worktree => PathBuf::from(
+                    &info
+                        .worktrees
+                        .get(&id)
+                        .or_else(|| {
+                            state
+                                .parent_of(&id)
+                                .as_ref()
+                                .and_then(|parent| info.worktrees.get(parent))
+                        })
+                        .ok_or_else(|| error("会话工作目录不存在"))?
+                        .path,
+                ),
+            })
+        }
+    };
+    tokio::task::spawn_blocking(move || {
+        let absolute = match root {
+            Some(root) => resolve_relative_pdf(&root, &path)?,
+            None => path,
+        };
+        read_pdf_bytes(&absolute, 32 * 1024 * 1024)
+    })
+    .await
+    .map_err(error)?
+}
+
 /// 右侧面板的文件预览（32KiB 截断 + 二进制占位）。
 #[tauri::command]
 #[specta::specta]
@@ -1466,6 +1625,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         workspace_diff,
         workspace_file_diff,
         workspace_file_preview,
+        read_local_pdf,
         workspace_apply,
         workspace_refresh,
         session_list,
@@ -1638,5 +1798,29 @@ mod workspace_open_dir_tests {
         std::fs::write(&file, b"x").unwrap();
         assert!(source_dir_missing(&file.to_string_lossy()).is_some());
         std::fs::remove_file(&file).ok();
+    }
+}
+
+#[cfg(test)]
+mod pdf_preview_tests {
+    use super::{read_pdf_bytes, resolve_relative_pdf};
+    #[test]
+    fn reads_pdf_and_rejects_non_pdf_and_oversized_files() {
+        let dir = std::env::temp_dir().join(format!("harness-pdf-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pdf = dir.join("sample.pdf");
+        std::fs::write(&pdf, b"%PDF-1.7\nexample").unwrap();
+        assert_eq!(read_pdf_bytes(&pdf, 100).unwrap(), b"%PDF-1.7\nexample");
+        assert!(read_pdf_bytes(&pdf, 4).is_err());
+        let text = dir.join("secret.txt");
+        std::fs::write(&text, b"%PDF-1.7\nexample").unwrap();
+        assert!(read_pdf_bytes(&text, 100).is_err());
+        std::fs::write(&pdf, b"not a PDF").unwrap();
+        assert!(read_pdf_bytes(&pdf, 100).is_err());
+        assert!(read_pdf_bytes(std::path::Path::new("relative.pdf"), 100).is_err());
+        let relative = resolve_relative_pdf(&dir, std::path::Path::new("sample.pdf")).unwrap();
+        assert_eq!(relative, pdf.canonicalize().unwrap());
+        assert!(resolve_relative_pdf(&dir, std::path::Path::new("../escape.pdf")).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

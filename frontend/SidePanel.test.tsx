@@ -3,6 +3,7 @@ import {act,cleanup,fireEvent,render,screen} from '@testing-library/react';
 import {SidePanel} from './SidePanel';
 import {useSidePanel} from './sidePanelStore';
 vi.mock('./ChangesView',()=>({ChangesView:({workspaceId}:{workspaceId:string})=><div>更改视图 {workspaceId}</div>}));
+vi.mock('./PdfView',()=>({PdfView:({path,sessionId}:{path:string;sessionId:string})=><div><div>PDF 视图 {path}</div><div>PDF 会话 {sessionId}</div></div>}));
 vi.mock('./PreviewView',()=>({PreviewView:({path}:{path:string|null})=><div>预览视图 {path??'空'}</div>}));
 beforeEach(()=>{
  act(()=>{useSidePanel.getState().reset()});
@@ -90,4 +91,24 @@ it('网页面板显示当前地址并可切换回文件预览',()=>{
  expect(screen.getByText('https://example.com/')).toBeInTheDocument();
  fireEvent.click(screen.getByRole('tab',{name:'预览'}));
  expect(screen.getByText('预览视图 空')).toBeInTheDocument();
+});
+
+it('本地 PDF 在右侧独立视图显示并可切换回来',async()=>{
+ render(<SidePanel workspaceId=""/>);
+ act(()=>useSidePanel.getState().openPdf('D:/reports/a.pdf'));
+ expect(screen.getByRole('tab',{name:'PDF'})).toHaveAttribute('aria-selected','true');
+ expect(await screen.findByText('PDF 视图 D:/reports/a.pdf')).toBeInTheDocument();
+ fireEvent.click(screen.getByRole('tab',{name:'计划'}));
+ fireEvent.click(screen.getByRole('tab',{name:'PDF'}));
+ expect(await screen.findByText('PDF 视图 D:/reports/a.pdf')).toBeInTheDocument();
+});
+
+it('切换会话不会让相对 PDF 预览指向另一个会话的文件',async()=>{
+ const {rerender}=render(<SidePanel workspaceId="w" currentSessionId="a"/>);
+ act(()=>useSidePanel.getState().openPdf('output/report.pdf'));
+ expect(await screen.findByText('PDF 会话 a')).toBeInTheDocument();
+ rerender(<SidePanel workspaceId="w" currentSessionId="b"/>);
+ expect(screen.getByText('PDF 会话 a')).toBeInTheDocument();
+ act(()=>useSidePanel.getState().openPdf('output/report.pdf'));
+ expect(await screen.findByText('PDF 会话 b')).toBeInTheDocument();
 });

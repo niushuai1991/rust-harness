@@ -1,0 +1,31 @@
+import {afterEach,expect,it,vi} from 'vitest';
+import {cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
+import {PdfView} from './PdfView';
+const mocks=vi.hoisted(()=>({command:vi.fn(),getDocument:vi.fn(),getPage:vi.fn(),renderPage:vi.fn()}));
+vi.mock('./api',()=>({command:mocks.command,errorText:(e:unknown)=>String(e)}));
+vi.mock('pdfjs-dist/legacy/build/pdf.mjs',()=>({GlobalWorkerOptions:{},getDocument:mocks.getDocument}));
+vi.mock('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url',()=>({default:'worker.js'}));
+afterEach(()=>{cleanup();vi.clearAllMocks()});
+it('读取 PDF 并允许翻页和缩放',async()=>{
+ mocks.command.mockResolvedValue([37,80,68,70]);
+ mocks.renderPage.mockReturnValue({promise:Promise.resolve(),cancel:vi.fn()});
+ mocks.getPage.mockResolvedValue({getViewport:({scale}:{scale:number})=>({width:100*scale,height:150*scale}),render:mocks.renderPage});
+ mocks.getDocument.mockReturnValue({promise:Promise.resolve({numPages:2,getPage:mocks.getPage}),destroy:vi.fn()});
+ vi.spyOn(HTMLCanvasElement.prototype,'getContext').mockReturnValue({} as CanvasRenderingContext2D);
+ render(<PdfView path="D:/reports/a.pdf"/>);
+ await screen.findByText('1 / 2');
+ await waitFor(()=>expect(mocks.renderPage).toHaveBeenCalled());
+ const firstCanvas=screen.getByLabelText('PDF 第 1 页');
+ fireEvent.click(screen.getByRole('button',{name:'下一页'}));
+ await screen.findByText('2 / 2');
+ expect(screen.getByLabelText('PDF 第 2 页')).not.toBe(firstCanvas);
+ await waitFor(()=>expect(mocks.getPage).toHaveBeenCalledWith(2));
+ fireEvent.click(screen.getByRole('button',{name:'放大'}));
+ expect(screen.getByText('125%')).toBeInTheDocument();
+ expect(mocks.command).toHaveBeenCalledWith('read_local_pdf',{path:'D:/reports/a.pdf',sessionId:''});
+});
+it('读取失败时显示错误',async()=>{
+ mocks.command.mockRejectedValue('文件不存在');
+ render(<PdfView path="D:/missing.pdf"/>);
+ expect(await screen.findByRole('alert')).toHaveTextContent('文件不存在');
+});
