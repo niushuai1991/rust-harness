@@ -31,6 +31,7 @@ beforeEach(()=>{mocks.listeners.clear();useChat.setState({events:{},streams:{},s
  if(name==='question_list')return [];
  if(name==='approval_mode_get')return 'ask';
  if(name==='session_plan_get')return false;
+ if(name==='session_title_generate')throw new Error('测试未配置标题生成结果');
  return [];
 })});
 afterEach(()=>{cleanup();vi.useRealTimers()});
@@ -264,6 +265,8 @@ describe('计划模式安全边界',()=>{
 });
 describe('计划模式草稿安全',()=>{
  it('草稿的计划入口只标记待启用，发送时真实启用',async()=>{
+  const errors=vi.spyOn(console,'error').mockImplementation(()=>{});
+  try{
   const original=mocks.command.getMockImplementation()!;
   mocks.command.mockImplementation(async(name,args)=>name==='session_create'?{id:'new-plan',workspaceId:'w',title:'新会话'}:original(name,args));
   mocks.send.mockResolvedValue(undefined);
@@ -277,6 +280,9 @@ describe('计划模式草稿安全',()=>{
   fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
   await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_plan_set',{sessionId:'new-plan',enabled:true}));
   await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('new-plan','规划草稿','m',expect.any(Function),undefined,'high'));
+  await waitFor(()=>expect(screen.getByRole('button',{name:/新会话/})).toBeInTheDocument());
+  expect(errors.mock.calls.some(([message])=>String(message).includes('Each child in a list'))).toBe(false);
+  }finally{errors.mockRestore()}
  });
  it('草稿计划任务创建会话并成功启用模式之后才发送',async()=>{
   const original=mocks.command.getMockImplementation()!;
