@@ -1,7 +1,7 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {act,cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
 import App,{ConversationEvents} from './App';
-import './style.css';
+// 交互测试不加载全局样式；真实样式验证集中在 App.style.test.tsx，避免 jsdom 反复计算整张样式表。
 import {ChangesView} from './ChangesView';
 
 import {GOAL_PROMPT,INIT_PROMPT} from './slashCommands';
@@ -20,7 +20,7 @@ const timeline=(sessionId:string,events:SessionEvent[])=>({sessionId,events,olde
 async function openSidebarSession(title:RegExp){fireEvent.click(await screen.findByRole('button',{name:title}))}
 async function openSessionA(){await openSidebarSession(/会话 A/);await screen.findByText('内容 a')}
 async function renderOpenA(){const utils=render(<App/>);await openSessionA();return utils}
-beforeEach(()=>{mocks.listeners.clear();useChat.setState({events:{},streams:{},statuses:{},timelines:{},timelineLru:[]});useSidePanel.getState().reset();mocks.command.mockReset();mocks.send.mockReset();vi.mocked(open).mockReset();vi.mocked(save).mockReset();mocks.command.mockImplementation(async(name:string,args:any)=>{
+beforeEach(()=>{mocks.listeners.clear();useChat.setState({events:{},streams:{},statuses:{},timelines:{},timelineLru:[]});useSidePanel.getState().reset();mocks.command.mockReset();mocks.send.mockReset();mocks.resume.mockReset();vi.mocked(open).mockReset();vi.mocked(save).mockReset();mocks.command.mockImplementation(async(name:string,args:any)=>{
  if(name==='workspace_list')return [{id:'w',sourcePath:'D:/project',replicaPath:'D:/copy',createdAt:'',name:'project'}];
  if(name==='model_list')return [{id:'m',name:'测试模型',compatibility:'standard',providerId:'custom',apiMode:'chatCompletions',maxOutputTokens:null,baseUrl:'https://example.test',model:'m',credentialRef:'',proxy:null,efforts:['low','high'],effort:null,enabled:true,builtin:false}];
  if(name==='provider_list')return [{id:'custom',name:'自定义供应商',builtin:false,compatibility:'standard',endpoints:[{apiMode:'chatCompletions',baseUrl:'https://example.test'}],defaultModel:'m',credentialRef:'',proxy:null,enabled:true,builtinModels:[],disabledModels:[]}];
@@ -1305,7 +1305,7 @@ describe('工作区的首次会话',()=>{
   fireEvent.change(screen.getByLabelText('消息'),{target:{value:'首个任务'}});
   fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
   await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话',executionMode:'replica'}));
-  fireEvent.click(screen.getByRole('button',{name:/B 的会话/}));
+  fireEvent.click(await screen.findByRole('button',{name:/B 的会话/}));
   await screen.findByText('内容 other-session');
   await act(async()=>resolveCreation({id:'late',workspaceId:'w',title:'A 迟到的会话'}));
   expect(screen.getByText('A 迟到的会话')).toBeInTheDocument();
@@ -1799,11 +1799,17 @@ describe('斜杠命令补全',()=>{
 });
 describe('草稿内容保留',()=>{
  it('草稿输入在切换会话再新建聊天后保留，可继续编辑',async()=>{
+  let resolveSessions!:(value:unknown)=>void;
+  const original=mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async(name,args)=>name==='session_list'?new Promise(resolve=>{resolveSessions=resolve}):original(name,args));
   render(<App/>);
   await screen.findByRole('heading',{name:/你想在 project 中构建什么/});
+  await waitFor(()=>expect(resolveSessions).toBeTypeOf('function'));
   const input=screen.getByLabelText('消息');
   fireEvent.change(input,{target:{value:'帮我梳理导出模块'}});
-  fireEvent.click(screen.getByRole('button',{name:/会话 A/}));
+  const sessionButton=screen.findByRole('button',{name:/会话 A/});
+  await act(async()=>resolveSessions([{id:'a',workspaceId:'w',title:'会话 A'},{id:'b',workspaceId:'w',title:'会话 B'}]));
+  fireEvent.click(await sessionButton);
   await screen.findByText('内容 a');
   expect(input).toHaveValue('');
   fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
@@ -1862,7 +1868,7 @@ describe('草稿内容保留',()=>{
   await screen.findByRole('heading',{name:/你想在 project 中构建什么/});
   const input=screen.getByLabelText('消息');
   fireEvent.change(input,{target:{value:'A 的草稿'}});
-  fireEvent.click(screen.getByRole('button',{name:/B 的会话/}));
+  fireEvent.click(await screen.findByRole('button',{name:/B 的会话/}));
   await screen.findByText('内容 other-session');
   expect(input).toHaveValue('');
   fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
@@ -2039,14 +2045,6 @@ describe('会话列表视图',()=>{
   expect(topbar?.firstElementChild).toBe(breadcrumb);
   expect(within(topbar as HTMLElement).getByRole('button',{name:'存档会话'})).toBeInTheDocument();
   expect(topbar?.lastElementChild).toContainElement(within(topbar as HTMLElement).getByRole('button',{name:'存档会话'}));
- });
- it('最近视图的短会话标题保持左对齐',async()=>{
-  localStorage.clear();installSessionMocks();
-  await renderOpenA();
-  const row=screen.getByRole('button',{name:/会话 A/});
-  expect(getComputedStyle(row).textAlign).toBe('left');
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
-  expect(getComputedStyle(screen.getByRole('button',{name:/会话 A/})).textAlign).toBe('left');
  });
  it.each(['项目','最近'])('%s视图会话行不再显示行内日期',async view=>{
   localStorage.clear();installSessionMocks();
