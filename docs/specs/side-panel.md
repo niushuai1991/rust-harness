@@ -1,8 +1,8 @@
-# 右侧面板（文件预览、改动审阅、网页浏览与计划抽屉）规范
+# 右侧面板（文件预览、改动审阅、网页浏览、计划抽屉与侧聊）规范
 
-- 日期：2026-11-07（计划拟制）；2026-11-12（网页浏览）修订；2026-11-16（网页视图承载可视浏览器）修订；2026-11-20（计划视图联动与消息流计划卡）修订；2026-11-23（本地 PDF 预览）修订
+- 日期：2026-11-07（计划拟制）；2026-11-12（网页浏览）修订；2026-11-16（网页视图承载可视浏览器）修订；2026-11-20（计划视图联动与消息流计划卡）修订；2026-11-23（本地 PDF 预览）修订；2026-11-24（侧聊抽屉）修订
 - 状态：现行规范；能力与验证状态见[能力状态矩阵](../capability-matrix.md)
-- 范围：主界面右侧面板统一承载「更改审阅」、工作副本文件预览、会话网页浏览与只读计划抽屉；计划模式与抽屉改动的实现和验证仍在进行。
+- 范围：主界面右侧面板统一承载「更改审阅」、工作副本文件预览、会话网页浏览、只读计划抽屉与 `/side` 侧聊聊天；计划模式与抽屉改动的实现和验证仍在进行。
 
 ## 背景与范围
 
@@ -14,6 +14,7 @@
 - 更改视图：原 DiffPanel 的审阅与同步能力整体迁入，文件行升级为手风琴 + 行级 unified diff。
 - 预览视图：工作副本单文件文本预览（32KiB 截断、二进制占位）。
 - 计划视图：只读汇总跨会话计划、目标和待办，可查看历史并跳转会话，不直接修改内容，详见[计划/目标管理面板规范](plan-goal-panel.md)。明确审批与拒绝或反馈遵循[会话计划模式规范](plan-mode.md)，不由只读抽屉代替。
+- 侧聊视图：`/side`（别名 `/btw`）派生的侧聊会话在抽屉内独立聊天，主会话保持可见；入口、切回、审批与提问归属见下文「侧聊抽屉」。
 - 联动：write/edit 工具卡文件按钮打开预览；`/diff` 与顶栏「查看更改」开关面板；面板打开期间轮询刷新。
 
 明确不做（后续迭代）：
@@ -38,8 +39,8 @@
 
 ### 前端
 
-- `sidePanelStore.ts`：独立 zustand store `useSidePanel`（`open`/`view: 'changes'|'preview'|'web'|'plans'`/`previewPath`/`webUrl` + `openChanges`/`openPreview`/`openWeb`/`openPlans`/`setView`/`toggle`/`close`/`reset`）。预览路径由深层 EventCard 触发，故独立于 App 局部 state；切换工作区时 `reset()`。
-- `SidePanel.tsx`：容器。宽度手写 pointer 拖拽（`--panel` 左缘 6px 热区，280px ~ 60vw），`localStorage['side-panel-width']` 记忆；Escape 关闭；header 为「更改/预览/计划」及有网页时的「网页」tab + 关闭按钮；关闭即卸载（数据重挂载重拉）。
+- `sidePanelStore.ts`：独立 zustand store `useSidePanel`（`open`/`view: 'changes'|'preview'|'web'|'plans'|'pdf'|'chat'`/`previewPath`/`webUrl`/`pdfPath`/`chatSessionId`/`chatParentSessionId`/`chatDrafts`/`chatInitial` + `openChanges`/`openPreview`/`openWeb`/`openPlans`/`openPdf`/`openChat`/`setChatDraft`/`consumeChatInitial`/`closeChat`/`setView`/`toggle`/`close`/`reset`）。预览路径与侧聊会话由深层 EventCard 触发，故独立于 App 局部 state；切换工作区时 `reset()`。
+- `SidePanel.tsx`：容器。宽度手写 pointer 拖拽（`--panel` 左缘 6px 热区，280px ~ 60vw），`localStorage['side-panel-width']` 记忆；Escape 关闭（忽略来自输入框/文本域的按键与已 `defaultPrevented` 的事件）；header 为「更改/预览/计划」及有 PDF、网页、侧聊时的对应 tab + 关闭按钮；关闭即卸载（数据重挂载重拉）。
 - `ChangesView.tsx`：自 DiffPanel 迁移。保留 `workspace_diff` 加载、勾选、二次确认、`workspace_apply`（reviewed 快照 + STALE_DIFF 校验）、冲突禁选与空态；文件行升级为手风琴：
   - 展开时懒调 `workspace_file_diff` 渲染 `DiffView`，并从 diff 文本统计 +n/−n 显示于文件行。
   - conflict 文件勾选框禁用，展开区顶部显示处理提示条。
@@ -85,3 +86,15 @@
 - 点击会话消息中的本地 PDF Markdown 链接、file 链接，或用户消息中的 Windows PDF 路径，在右侧 PDF 标签页预览；HTTP/HTTPS PDF 链接仍打开网页视图。相对路径按当前会话执行目录解析且不能越界；无项目会话同样可预览。
 - 使用 PDF.js 离线渲染，提供上一页、下一页和 25%–400% 缩放；加载失败时显示错误。字符映射和标准字体随前端资源发布。
 - 宿主按用户打开的链接读取文件，拒绝 Windows UNC 网络共享路径及重解析点（包括符号链接和目录联接）、非 PDF 文件和超过 32 MiB 的文件；映射盘符可能指向网络位置；校验 PDF 文件头。预览只读，不支持编辑、注释和 PDF 内链接。
+
+
+## 侧聊抽屉（2026-11-24 修订）
+
+- 目标：`/side`（别名 `/btw`）派生的侧聊在右侧面板「侧聊」视图中独立聊天，主会话保持可见；替代此前“派生后把主界面切到侧聊会话”的桌面行为。侧聊后端语义（`fork_as_side`、`side.boundary`、继承历史仅模型可见）见[斜杠命令规范](slash-commands.md)。
+- 单一视图与常驻挂载：`SideView` 增加 `'chat'`；面板一次只显示一个视图，但侧聊组件在面板打开期间始终挂载——切到更改/预览/计划/网页/PDF 时隐藏而非卸载，切回保留未发送草稿与滚动位置。浏览容器在聊天态改为 `overflow:hidden`，消息区与输入框各自滚动/固定。
+- 会话归属：`chatSessionId`/`chatParentSessionId` 由打开动作记录；抽屉一次只承载一个侧聊，多个侧聊经父会话时间线的「已创建侧聊」登记卡（`subagent.created{source:"side"}`）或子代理面板重新打开并替换当前侧聊。关闭面板或切换工作区（`reset()`）不删除侧聊会话；关闭面板后重开恢复上一次侧聊。
+- 聊天能力：时间线按 `side.boundary` 从空白开始，支持向上加载更早、自动跟随、流式文本与思考指示、运行中转向（`session_steer`）与停止（`session_cancel`）；输入框只发送纯文本，使用主界面当前模型与推理档位，不支持附件、引用、斜杠命令菜单与回合导航（`turn_navigator_page` 未按侧聊边界过滤，会混入继承历史）。
+- 审批与提问（按会话归属到各自面板）：侧聊产生的审批在抽屉内以内联卡显示，提问复用 `QuestionCard` 显示在侧聊输入框上方；抽屉「侧聊」tab 在有待处理审批/提问时显示提示点。主窗口审批弹窗在侧聊视图可见时跳过该侧聊的审批，避免重复；侧聊视图不可见（切到其他视图或关闭面板）时回落到主窗口全局弹窗，保证提示不丢。其他子代理/自动化会话维持原有全局弹窗行为。
+- 首条文字：`/side 文字` 派生后先打开抽屉，待侧聊时间线激活后再发送文字，避免实时事件早于 timeline 建立被丢弃；主会话输入框只清除命令本身，不清附件与引用。
+- 入口与切回：`/side`、父会话「已创建侧聊」卡片的「查看会话」、子代理面板中的侧聊行均打开抽屉；普通子代理仍切换主会话。主会话不因侧聊派生或聊天而切换。
+- 边界：侧聊与父会话共享同一执行根，并行工具写同一文件可能冲突；侧聊继承派生时刻的审批策略，父会话后续改档不自动同步；侧聊仍作为父会话子会话参与子代理面板与相关检查。

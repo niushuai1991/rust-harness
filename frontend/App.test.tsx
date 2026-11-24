@@ -9,18 +9,20 @@ import {useChat} from './store';
 import {useSidePanel} from './sidePanelStore';
 import {open,save} from '@tauri-apps/plugin-dialog';
 import type {LiveEvent,SessionEvent} from './types';
-const mocks=vi.hoisted(()=>({command:vi.fn(),send:vi.fn(),resume:vi.fn(),listeners:new Map<string,(event:{payload:any})=>void>()}));
-vi.mock('@tauri-apps/api/event',()=>({listen:async(name:string,handler:(event:{payload:any})=>void)=>{mocks.listeners.set(name,handler);return()=>mocks.listeners.delete(name)}}));
+const mocks=vi.hoisted(()=>({command:vi.fn(),send:vi.fn(),resume:vi.fn(),listeners:new Map<string,Set<(event:{payload:any})=>void>>()}));
+vi.mock('@tauri-apps/api/event',()=>({listen:async(name:string,handler:(event:{payload:any})=>void)=>{const set=mocks.listeners.get(name)??new Set();set.add(handler);mocks.listeners.set(name,set);return()=>{set.delete(handler);if(!set.size)mocks.listeners.delete(name)}}}));
 vi.mock('./api',()=>({desktop:()=>true,command:mocks.command,send:mocks.send,resume:mocks.resume,errorText:(e:unknown)=>e instanceof Error?e.message:String(e)}));
 vi.mock('@tauri-apps/plugin-dialog',()=>({open:vi.fn(),save:vi.fn()}));
 vi.mock('@tauri-apps/api/app',()=>({getVersion:vi.fn(async()=>'0.1.6')}));
 const event=(id:string,sessionId:string,seq:string,content:string):SessionEvent=>({id,sessionId,seq,kind:'assistant.message',data:{content},createdAt:''});
 const timeline=(sessionId:string,events:SessionEvent[])=>({sessionId,events,olderCursor:null,throughSeq:events[events.length-1]?.seq??'0',hasOlder:false});
+// 真实 Tauri 同一事件名允许多个监听者（主 App 与侧聊抽屉各订阅一次），测试同样全部投递。
+async function emitTauriEvent(name:string,payload:unknown){for(const handler of [...(mocks.listeners.get(name)??[])])await act(async()=>handler({payload}))}
 // 启动默认进入新会话草稿态（不自动打开历史会话）；需要会话上下文的测试先从侧栏打开对应会话。
 async function openSidebarSession(title:RegExp){fireEvent.click(await screen.findByRole('button',{name:title}))}
 async function openSessionA(){await openSidebarSession(/会话 A/);await screen.findByText('内容 a')}
 async function renderOpenA(){const utils=render(<App/>);await openSessionA();return utils}
-beforeEach(()=>{mocks.listeners.clear();useChat.setState({events:{},streams:{},statuses:{},timelines:{},timelineLru:[]});useSidePanel.getState().reset();mocks.command.mockReset();mocks.send.mockReset();vi.mocked(open).mockReset();vi.mocked(save).mockReset();mocks.command.mockImplementation(async(name:string,args:any)=>{
+ beforeEach(()=>{mocks.listeners.clear();useChat.setState({events:{},streams:{},statuses:{},timelines:{},timelineLru:[],pinnedTimelineIds:[]});useSidePanel.getState().reset();mocks.command.mockReset();mocks.send.mockReset();vi.mocked(open).mockReset();vi.mocked(save).mockReset();mocks.command.mockImplementation(async(name:string,args:any)=>{
  if(name==='workspace_list')return [{id:'w',sourcePath:'D:/project',replicaPath:'D:/copy',createdAt:'',name:'project'}];
  if(name==='model_list')return [{id:'m',name:'测试模型',compatibility:'standard',providerId:'custom',apiMode:'chatCompletions',maxOutputTokens:null,baseUrl:'https://example.test',model:'m',credentialRef:'',proxy:null,efforts:['low','high'],effort:null,enabled:true,builtin:false}];
  if(name==='provider_list')return [{id:'custom',name:'自定义供应商',builtin:false,compatibility:'standard',endpoints:[{apiMode:'chatCompletions',baseUrl:'https://example.test'}],defaultModel:'m',credentialRef:'',proxy:null,enabled:true,builtinModels:[],disabledModels:[]}];
@@ -1634,14 +1636,18 @@ describe('侧聊派生',()=>{
   if(name==='session_fork')return {id:'side-1',workspaceId:'w',title:'会话 A · 侧聊',parentId:'a',createdAt:'',updatedAt:''};
   return original(name,args);
  })};
- it('菜单执行 /side：派生侧聊并切换，时间线按侧聊会话拉取',async()=>{
+ it('菜单执行 /side：派生侧聊并在右侧抽屉打开，主会话保持不变',async()=>{
   forkToSide();await renderOpenA();
   const input=screen.getByLabelText('消息');
   fireEvent.change(input,{target:{value:'/si'}});
   fireEvent.keyDown(input,{key:'Enter'});
   await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_fork',{sessionId:'a',asSide:true}));
   await waitFor(()=>expect(mocks.command.mock.calls.some(([name,args])=>name==='session_timeline_page'&&args.sessionId==='side-1')).toBe(true));
-  expect(await screen.findByText(/已创建侧聊「会话 A · 侧聊」/)).toBeInTheDocument();
+  expect(useSidePanel.getState()).toMatchObject({open:true,view:'chat',chatSessionId:'side-1',chatParentSessionId:'a'});
+  expect(await screen.findByRole('complementary',{name:'侧聊面板'})).toBeInTheDocument();
+  expect(await screen.findByText(/已创建侧聊「会话 A · 侧聊」，已在右侧打开/)).toBeInTheDocument();
+  // 主会话没有被切换：标题与消息仍在。
+  expect(screen.getByText('内容 a')).toBeVisible();
  });
  it('输入 /side 文字 发送：命令不进主会话，文字作为侧聊首条消息',async()=>{
   mocks.send.mockResolvedValue(undefined);
@@ -1652,27 +1658,29 @@ describe('侧聊派生',()=>{
   await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_fork',{sessionId:'a',asSide:true}));
   await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('side-1','顺便问个问题','m',expect.any(Function),undefined,'high'));
   expect(mocks.send.mock.calls.some(call=>String(call[1]).includes('/side'))).toBe(false);
+  expect(screen.getByText('内容 a')).toBeVisible();
  });
- it('侧聊会话内执行 /side 给出提示且不派生',async()=>{
-  forkToSide();await renderOpenA();
+ it('父会话登记卡的「查看会话」在抽屉打开侧聊而非切换主会话',async()=>{
   const original=mocks.command.getMockImplementation()!;
-  // 先正常派生一次并切到侧聊。
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'/si'}});
-  fireEvent.keyDown(input,{key:'Enter'});
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_fork',{sessionId:'a',asSide:true}));
-  await screen.findByText(/已创建侧聊/);
-  const forkCalls=mocks.command.mock.calls.filter(([name])=>name==='session_fork').length;
-  // 侧聊内再次派生：session_get 等返回侧聊信息后提示拒绝。
   mocks.command.mockImplementation(async(name:string,args:any)=>{
-   if(name==='session_fork')throw new Error('nope');
-   if(name==='session_get'&&args.sessionId==='side-1')return {id:'side-1',workspaceId:'w',title:'会话 A · 侧聊',parentId:'a',createdAt:'',updatedAt:''};
+   if(name==='session_timeline_page'&&args.sessionId==='a')return timeline('a',[event('e-a','a','1','内容 a'),{id:'side-card',sessionId:'a',seq:'2',kind:'subagent.created',data:{sessionId:'side-1',source:'side'},createdAt:''}]);
    return original(name,args);
   });
-  fireEvent.change(input,{target:{value:'/side 再派生一个'}});
+  render(<App/>);await openSidebarSession(/会话 A/);await screen.findByText('内容 a');
+  fireEvent.click(await screen.findByRole('button',{name:'查看会话'}));
+  expect(useSidePanel.getState()).toMatchObject({open:true,view:'chat',chatSessionId:'side-1',chatParentSessionId:'a'});
+  expect(screen.getByText('内容 a')).toBeVisible();
+ });
+ it('回合运行中从菜单执行 /side 给出等待提示且不派生',async()=>{
+  mocks.send.mockReturnValue(new Promise(()=>{}));
+  forkToSide();await renderOpenA();
+  const input=screen.getByLabelText('消息');
+  fireEvent.change(input,{target:{value:'执行中'}});
   fireEvent.keyDown(input,{key:'Enter'});
-  expect(await screen.findByText(/侧聊不能再派生侧聊/)).toBeInTheDocument();
-  expect(mocks.command.mock.calls.filter(([name])=>name==='session_fork')).toHaveLength(forkCalls);
+  fireEvent.change(input,{target:{value:'/si'}});
+  fireEvent.keyDown(input,{key:'Enter'});
+  expect(await screen.findByText(/会话运行中，请等回合结束后再派生侧聊/)).toBeInTheDocument();
+  expect(mocks.command.mock.calls.some(([name])=>name==='session_fork')).toBe(false);
  });
 });
 describe('斜杠命令补全',()=>{
@@ -3253,11 +3261,10 @@ it('后台运行会话的插话事件可实时更新当前时间线',async()=>{
  mocks.command.mockImplementation(async(name,args)=>name==='session_active_list'?['a']:original(name,args));
  await renderOpenA();
  await waitFor(()=>expect(mocks.listeners.has('session-steering-event')).toBe(true));
- const deliver=mocks.listeners.get('session-steering-event')!;
- await act(async()=>deliver({payload:{id:'bg-start',sessionId:'a',seq:'2',kind:'turn.start',data:{runId:'bg'},createdAt:''}}));
- await act(async()=>deliver({payload:{id:'bg-q',sessionId:'a',seq:'3',kind:'steer.queued',data:{id:'m',runId:'bg',content:'后台消息',attachments:[],quotes:[]},createdAt:''}}));
+ await emitTauriEvent('session-steering-event',{id:'bg-start',sessionId:'a',seq:'2',kind:'turn.start',data:{runId:'bg'},createdAt:''});
+ await emitTauriEvent('session-steering-event',{id:'bg-q',sessionId:'a',seq:'3',kind:'steer.queued',data:{id:'m',runId:'bg',content:'后台消息',attachments:[],quotes:[]},createdAt:''});
  expect(await screen.findByText('后台消息')).toBeVisible();
- await act(async()=>deliver({payload:{id:'bg-ap',sessionId:'a',seq:'4',kind:'steer.applied',data:{id:'m',runId:'bg'},createdAt:''}}));
+ await emitTauriEvent('session-steering-event',{id:'bg-ap',sessionId:'a',seq:'4',kind:'steer.applied',data:{id:'m',runId:'bg'},createdAt:''});
  expect(screen.getByText('已纳入上下文')).toBeVisible();
 });
 
@@ -3282,7 +3289,7 @@ it('后台回合结束时补拉未广播的插话记录',async()=>{
  ];
  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'&&finished?timeline('a',[event('e-a','a','1','内容 a'),...done]):original(name,args));
  await renderOpenA();await waitFor(()=>expect(mocks.listeners.has('session-steering-event')).toBe(true));
- finished=true;await act(async()=>mocks.listeners.get('session-steering-event')!({payload:done[3]}));
+ finished=true;await emitTauriEvent('session-steering-event',done[3]);
  expect(await screen.findByText('补拉消息')).toBeVisible();
  expect(screen.getByText('未处理，请重新发送')).toBeVisible();
 });

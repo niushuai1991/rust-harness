@@ -52,4 +52,32 @@ describe('右侧面板状态',()=>{
   useSidePanel.getState().reset();
   expect(useSidePanel.getState().webUrl).toBeNull();
  });
+ it('openChat 打开侧聊视图并记录会话与父会话，首条文字只消费一次',()=>{
+  useSidePanel.getState().reset();
+  useSidePanel.getState().openChat('side-1','a','顺便问个问题');
+  expect(useSidePanel.getState()).toMatchObject({open:true,view:'chat',chatSessionId:'side-1',chatParentSessionId:'a',chatInitial:{sessionId:'side-1',text:'顺便问个问题'}});
+  expect(useSidePanel.getState().consumeChatInitial('side-1')).toBe('顺便问个问题');
+  expect(useSidePanel.getState().chatInitial).toBeNull();
+  expect(useSidePanel.getState().consumeChatInitial('side-1')).toBeNull();
+ });
+ it('切到其他视图或关闭面板保留侧聊会话，closeChat/reset 清理',()=>{
+  useSidePanel.getState().reset();
+  useSidePanel.getState().openChat('side-1','a');
+  useSidePanel.getState().openPreview('a.ts');
+  expect(useSidePanel.getState()).toMatchObject({view:'preview',chatSessionId:'side-1'});
+  useSidePanel.getState().close();
+  expect(useSidePanel.getState()).toMatchObject({open:false,chatSessionId:'side-1'});
+  useSidePanel.getState().setView('chat');
+  useSidePanel.getState().closeChat();
+  expect(useSidePanel.getState()).toMatchObject({view:'changes',chatSessionId:null,chatParentSessionId:null});
+  useSidePanel.getState().reset();
+ });
+ it('侧聊草稿按会话保留',()=>{
+  useSidePanel.getState().reset();
+  useSidePanel.getState().setChatDraft('side-1','草稿一');
+  useSidePanel.getState().setChatDraft('side-2','草稿二');
+  expect(useSidePanel.getState().chatDrafts).toEqual({'side-1':'草稿一','side-2':'草稿二'});
+  useSidePanel.getState().reset();
+  expect(useSidePanel.getState().chatDrafts).toEqual({});
+ });
 });

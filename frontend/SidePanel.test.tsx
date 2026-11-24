@@ -5,6 +5,8 @@ import {useSidePanel} from './sidePanelStore';
 vi.mock('./ChangesView',()=>({ChangesView:({workspaceId}:{workspaceId:string})=><div>更改视图 {workspaceId}</div>}));
 vi.mock('./PdfView',()=>({PdfView:({path,sessionId}:{path:string;sessionId:string})=><div><div>PDF 视图 {path}</div><div>PDF 会话 {sessionId}</div></div>}));
 vi.mock('./PreviewView',()=>({PreviewView:({path}:{path:string|null})=><div>预览视图 {path??'空'}</div>}));
+vi.mock('./SideChatView',()=>({SideChatView:({sessionId,parentSessionId}:{sessionId:string;parentSessionId:string|null})=><div data-testid="side-chat-view"><span>侧聊视图 {sessionId} / {parentSessionId??'无'}</span><textarea aria-label="侧聊消息"/></div>}));
+const sideChatProps={workspaceId:'w',modelId:'m',effort:null,sessions:[],activeIds:new Set<string>(),approvals:[],questions:[],onResolveApproval:()=>{},onResolveQuestion:()=>{},onOpenSession:()=>{}};
 beforeEach(()=>{
  act(()=>{useSidePanel.getState().reset()});
  Element.prototype.setPointerCapture=Element.prototype.setPointerCapture??(()=>{});
@@ -111,4 +113,35 @@ it('切换会话不会让相对 PDF 预览指向另一个会话的文件',async(
  expect(screen.getByText('PDF 会话 a')).toBeInTheDocument();
  act(()=>useSidePanel.getState().openPdf('output/report.pdf'));
  expect(await screen.findByText('PDF 会话 b')).toBeInTheDocument();
+});
+
+describe('侧聊抽屉',()=>{
+ it('openChat 显示侧聊 tab 与常驻聊天视图，切到其他视图隐藏但不卸载',()=>{
+  render(<SidePanel workspaceId="w" sideChat={sideChatProps}/>);
+  act(()=>useSidePanel.getState().openChat('side-1','a'));
+  expect(screen.getByRole('complementary',{name:'侧聊面板'})).toBeInTheDocument();
+  expect(screen.getByRole('tab',{name:'侧聊'})).toHaveAttribute('aria-selected','true');
+  expect(screen.getByText('侧聊视图 side-1 / a')).toBeVisible();
+  fireEvent.click(screen.getByRole('tab',{name:'预览'}));
+  expect(screen.getByRole('tab',{name:'侧聊'})).toHaveAttribute('aria-selected','false');
+  expect(screen.getByText('侧聊视图 side-1 / a')).not.toBeVisible();
+  expect(screen.getByText('预览视图 空')).toBeVisible();
+  fireEvent.click(screen.getByRole('tab',{name:'侧聊'}));
+  expect(screen.getByText('侧聊视图 side-1 / a')).toBeVisible();
+ });
+ it('侧聊输入框中的 Escape 不关闭面板',()=>{
+  render(<SidePanel workspaceId="w" sideChat={sideChatProps}/>);
+  act(()=>useSidePanel.getState().openChat('side-1','a'));
+  const input=screen.getByLabelText('侧聊消息');
+  fireEvent.keyDown(input,{key:'Escape'});
+  expect(screen.getByRole('complementary',{name:'侧聊面板'})).toBeInTheDocument();
+  fireEvent.keyDown(document,{key:'Escape'});
+  expect(screen.queryByRole('complementary',{name:'侧聊面板'})).not.toBeInTheDocument();
+ });
+ it('侧聊有待处理审批时 tab 显示提示点',()=>{
+  const approval={id:'ap',sessionId:'side-1',tool:'shell',arguments:{},reason:'需要批准'};
+  render(<SidePanel workspaceId="w" sideChat={{...sideChatProps,approvals:[approval]}}/>);
+  act(()=>useSidePanel.getState().openChat('side-1','a'));
+  expect(screen.getByRole('img',{name:'侧聊有待处理事项'})).toBeInTheDocument();
+ });
 });

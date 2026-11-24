@@ -148,10 +148,13 @@
 .side-panel-resizer{position:absolute;left:-3px;top:0;bottom:0;width:6px;cursor:col-resize;z-index:6}
 .side-panel-resizer:hover,.side-panel-resizer:active{background:var(--selected);border-radius:3px}
 .side-panel-head{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border);flex-shrink:0}
-.side-panel-tabs{display:flex;gap:3px;background:var(--surface);border-radius:8px;padding:3px}
-.side-panel-tabs button{border:0;background:transparent;border-radius:6px;padding:5px 13px;font-size:12px;color:var(--muted);justify-content:center}
+.side-panel-tabs{display:flex;gap:3px;background:var(--surface);border-radius:8px;padding:3px;overflow-x:auto;scrollbar-width:none}
+.side-panel-tabs::-webkit-scrollbar{display:none}
+.side-panel-tabs button{border:0;background:transparent;border-radius:6px;padding:5px 13px;font-size:12px;color:var(--muted);justify-content:center;flex-shrink:0}
 .side-panel-tabs button[aria-selected="true"]{background:var(--panel);color:var(--text);font-weight:550;box-shadow:0 1px 3px rgba(32,33,36,.14)}
+.side-panel-tabs .tab-dot{width:6px;height:6px;border-radius:50%;background:#ba694a;flex-shrink:0}
 .side-panel-body{flex:1;overflow:auto;min-height:0;display:flex;flex-direction:column}
+.side-panel-body.is-chat{overflow:hidden}
 .side-empty{padding:34px 20px;text-align:center}
 .side-empty p{margin:0;line-height:1.9}
 .changes-bar{display:flex;align-items:center;gap:9px;padding:11px 13px 9px;font-size:11px;color:var(--muted);flex-shrink:0}
@@ -690,3 +693,35 @@ button.run-session:hover{color:var(--text);text-decoration:underline}
 html,body,#root{height:100%;overflow:clip}.app{height:100%;overflow:clip}
 
 .pdf-view{display:flex;flex-direction:column;height:100%;min-height:0}.pdf-page{flex:1;min-height:0;overflow:auto;text-align:center;background:var(--surface);padding:12px}.pdf-page canvas{display:block;margin:auto;box-shadow:0 2px 8px #0002}.pdf-controls{display:flex;align-items:center;justify-content:center;gap:6px;padding:8px;border-top:1px solid var(--border);flex-wrap:wrap}.pdf-controls button{padding:5px 8px}.pdf-controls span{white-space:nowrap}
+
+/* 侧聊抽屉：消息区独立滚动、输入框常驻底部；窄抽屉内收紧消息内边距。 */
+.side-chat-pane{flex:1;min-height:0;display:flex;flex-direction:column}
+.side-chat-pane[hidden]{display:none}
+.side-chat{flex:1;min-height:0;display:flex;flex-direction:column;position:relative}
+.side-chat-head{display:flex;align-items:center;gap:8px;padding:8px 13px;font-size:12px;flex-shrink:0;border-bottom:1px solid var(--surface)}
+.side-chat-title{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1}
+.side-chat-title strong{font-weight:550;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.side-chat-title span{font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.side-chat-head .icon-soft{border:0;background:transparent;padding:4px;flex-shrink:0}
+.side-chat-error{display:flex;align-items:center;gap:8px;margin:8px 13px 0;padding:7px 10px;border-radius:6px;background:#f7e9e4;color:#ac564b;font-size:11px}
+.side-chat-error span{flex:1;overflow-wrap:anywhere}
+.side-chat-error button{border:0;background:transparent;padding:0;color:inherit}
+.side-chat-scroll{flex:1;min-height:0;overflow:auto;padding:12px 14px}
+.side-chat-messages{max-width:100%}
+.side-chat-messages .message{margin:12px 0}
+.side-chat-messages .user-bubble{max-width:100%}
+.side-chat-empty{padding:34px 10px;text-align:center;font-size:12px;line-height:1.9}
+.side-chat-empty p{margin:0}
+.side-chat-jump{position:absolute;right:16px;bottom:96px}
+.side-chat-composer{flex-shrink:0;border-top:1px solid var(--border);padding:9px 12px 10px;display:flex;flex-direction:column;gap:7px}
+.side-chat-composer textarea{width:100%;resize:none;border:1px solid var(--border);border-radius:8px;background:var(--panel);min-height:58px;max-height:150px;padding:8px 10px;font-size:12.5px;line-height:1.7;outline:none}
+.side-chat-composer textarea:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.side-chat-actions{display:flex;align-items:center;gap:8px}
+.side-chat-hint{flex:1;font-size:10px;color:var(--muted)}
+.side-chat-actions .send{width:28px;height:28px;border-radius:7px}
+.side-chat .ask-popover{margin:0 12px 8px}
+.side-chat .approval-prompt.compact{margin:0 12px 8px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--panel);max-height:42vh;overflow:auto}
+.side-chat .approval-prompt.compact p{margin:6px 0}
+.side-chat .approval-prompt.compact .code-block{max-height:150px}
+.side-chat .approval-prompt.compact .actions{margin-top:8px}
+.side-chat-badge{font-style:normal;font-size:9px;color:var(--muted);border:1px solid var(--border);border-radius:5px;padding:0 5px;flex-shrink:0}

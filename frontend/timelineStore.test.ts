@@ -10,7 +10,7 @@ function page(sessionId:string,from:number,to:number,olderCursor:string|null,has
  return {sessionId,events:Array.from({length:to-from+1},(_,index)=>event(sessionId,from+index)),olderCursor,throughSeq:String(to),hasOlder};
 }
 
-beforeEach(()=>useChat.setState({events:{},timelines:{},timelineLru:[],streams:{},statuses:{}}));
+beforeEach(()=>useChat.setState({events:{},timelines:{},timelineLru:[],pinnedTimelineIds:[],streams:{},statuses:{}}));
 
 describe('timeline page cache',()=>{
  it('prepends older pages without a page-count ceiling',()=>{
@@ -45,16 +45,27 @@ describe('timeline page cache',()=>{
   expect(useChat.getState().events.a.map(item=>item.seq)).toEqual(Array.from({length:202},(_,index)=>String(index+1)));
  });
 
- it('releases the least recently used inactive session after a fourth timeline is opened',()=>{
-  for(const sessionId of ['a','b','c','d'])useChat.getState().replaceTimelinePage(sessionId,page(sessionId,1,1,null,false));
+ it('releases the least recently used inactive session after a fifth timeline is opened',()=>{
+  for(const sessionId of ['a','b','c','d','e'])useChat.getState().replaceTimelinePage(sessionId,page(sessionId,1,1,null,false));
 
   expect(useChat.getState().events.a).toBeUndefined();
   expect(useChat.getState().timeline('a')).toBeUndefined();
-  expect(useChat.getState().events.d.map(item=>item.id)).toEqual(['d-1']);
+  expect(useChat.getState().events.e.map(item=>item.id)).toEqual(['e-1']);
+ });
+
+ it('pinned sessions survive LRU eviction while the oldest unpinned is released',()=>{
+  const state=useChat.getState();state.pinTimeline('a');
+  for(const sessionId of ['a','b','c','d','e','f'])state.replaceTimelinePage(sessionId,page(sessionId,1,1,null,false));
+
+  expect(useChat.getState().events.a.map(item=>item.id)).toEqual(['a-1']);
+  expect(useChat.getState().timeline('a')).toBeDefined();
+  expect(useChat.getState().timeline('b')).toBeUndefined();
+  expect(useChat.getState().timeline('f')).toBeDefined();
+  useChat.getState().unpinTimeline('a');
  });
 
  it('does not recreate an unbounded event cache for an LRU-evicted session',()=>{
-  for(const sessionId of ['a','b','c','d'])useChat.getState().replaceTimelinePage(sessionId,page(sessionId,1,1,null,false));
+  for(const sessionId of ['a','b','c','d','e'])useChat.getState().replaceTimelinePage(sessionId,page(sessionId,1,1,null,false));
 
   useChat.getState().receive({type:'durable',event:event('a',2)});
 
