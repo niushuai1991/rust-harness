@@ -1,6 +1,6 @@
 # 输入框斜杠快捷指令规范
 
-- 日期：2026-11-06（计划批准）；2026-11-07 扩展 /plan /goal 命令与桌面端加号添加菜单；2026-11-17 桌面端草稿态开放斜杠与技能补全，命令按是否已建会话过滤；2026-11-21 桌面端 /goal 改为目标模式：斜杠回车激活，输入框下子代理左侧显示 Goal 图标，下一条发送的消息展开为 GOAL_PROMPT 目标，发送后图标退出；2026-11-23 新增 /side 侧聊派生命令（CLI、桌面端与 JSON-RPC `session.fork` `asSide`）
+- 日期：2026-11-06（计划批准）；2026-11-07 扩展 /plan /goal 命令与桌面端加号添加菜单；2026-11-17 桌面端草稿态开放斜杠与技能补全，命令按是否已建会话过滤；2026-11-21 桌面端 /goal 改为目标模式：斜杠回车激活，输入框下子代理左侧显示 Goal 图标，下一条发送的消息展开为 GOAL_PROMPT 目标，发送后图标退出；2026-11-23 新增 /side 侧聊派生命令（CLI、桌面端与 JSON-RPC `session.fork` `asSide`）；2026-11-24 桌面端 /side 改为在右侧抽屉内聊天、主会话保持可见
 - 状态：现行规范；计划模式升级及验证仍在进行，能力状态见[能力状态矩阵](../capability-matrix.md)
 - 范围：CLI `harness chat` 的 `/` 斜杠命令注册表、crossterm 行编辑与实时补全弹窗、新增命令；桌面端 composer 命令菜单、加号添加菜单与 `session_compact`。`/plan` 的会话模式语义以[会话计划模式规范](plan-mode.md)为准。
 
@@ -76,8 +76,8 @@
 - **菜单**：`text` 以 `/` 开头且光标在首 token 内时，在 `form.composer` 上方渲染候选菜单（composer 加 `position:relative`）；↑↓ 选择、Tab 补全、Esc 关闭、Enter 执行选中，全部 `preventDefault` 且绕过 IME 组合；点击菜单项同样执行。
 - **草稿态可用性**：输入框可用（已建会话或草稿态）即弹斜杠菜单，不要求先创建会话；草稿态只列不依赖会话的命令（`help/status/model/diff/plan/goal/clear`），`init/compact` 隐藏。`$` 技能补全同样在草稿态可用，技能名单按草稿目标项目加载，切换草稿目标项目时重新拉取。
 - **加号添加菜单**：「添加附件」文本按钮改为 + 号图标按钮，弹出"添加内容"菜单：附件（沿用 `addAttachment` 文件选择导入）、计划（进入或切换会话计划模式）、目标（插入 `/goal `）。带任务的 `/plan` 先进入模式再发送，切换失败不发送任务；应显示模式状态并提供退出方式。目标命令仍可展开为预置提示词。
-- **执行映射**（复用现有动作）：`/clear`→`createSessionFor`；`/side`→Tauri `session_fork{asSide:true}` 派生后切换会话（命令不进对话，提交前经 `parseSideSlashCommand` 拦截，运行中与子会话内给出提示；带文字时作为侧聊首条消息发送）；`/model`→打开模型选择浮层卡片（见[模型选择方式优化规范](model-selection.md)）；`/diff`→打开右侧面板更改视图（见[右侧面板规范](side-panel.md)）；`/init`→以预置 prompt 走 `send()`（文本与 CLI `INIT_PROMPT` 保持一致，以 CLI 为准）；`/plan`→切换会话计划模式（带任务时成功切换后提交）；`/goal`→目标模式：斜杠菜单回车/点击或无参数回车激活（输入框下子代理左侧显示 Goal 图标，可点击取消，切换会话退出），下一条发送的消息经 GOAL_PROMPT 展开为目标并发送，发送后图标退出；光标在参数区直接回车 `/goal <描述>` 仍经 `expandSlashPrompt` 展开发送；`/status` `/help`→本地提示信息；`/compact`→Tauri 命令。
-- **侧聊入口与切回**：侧聊作为父会话的子会话不出现在侧栏主列表（子会话过滤），经父会话的子代理面板与时间线"已创建侧聊"登记卡片（`subagent.created{source:"side"}`，带"查看会话"按钮）进入；主会话始终保留，从侧栏点击即切回。
+- **执行映射**（复用现有动作）：`/clear`→`createSessionFor`；`/side`→Tauri `session_fork{asSide:true}` 派生后在右侧面板打开「侧聊」视图（命令不进对话，提交前经 `parseSideSlashCommand` 拦截，运行中与子会话内给出提示；带文字时在侧聊时间线就绪后作为首条消息发送；主会话不切换、不清附件与引用）；`/model`→打开模型选择浮层卡片（见[模型选择方式优化规范](model-selection.md)）；`/diff`→打开右侧面板更改视图（见[右侧面板规范](side-panel.md)）；`/init`→以预置 prompt 走 `send()`（文本与 CLI `INIT_PROMPT` 保持一致，以 CLI 为准）；`/plan`→切换会话计划模式（带任务时成功切换后提交）；`/goal`→目标模式：斜杠菜单回车/点击或无参数回车激活（输入框下子代理左侧显示 Goal 图标，可点击取消，切换会话退出），下一条发送的消息经 GOAL_PROMPT 展开为目标并发送，发送后图标退出；光标在参数区直接回车 `/goal <描述>` 仍经 `expandSlashPrompt` 展开发送；`/status` `/help`→本地提示信息；`/compact`→Tauri 命令。
+- **侧聊入口与切回**：侧聊作为父会话的子会话不出现在侧栏主列表（子会话过滤），经 `/side`、父会话时间线"已创建侧聊"登记卡片（`subagent.created{source:"side"}`，带"查看会话"按钮）或子代理面板中的侧聊行在右侧抽屉打开；抽屉一次承载一个侧聊，切换入口即替换；主会话始终保留且不因侧聊派生/聊天而切换。抽屉内的审批与提问归属、常驻挂载与能力边界见[右侧面板规范](side-panel.md)「侧聊抽屉」。
 - **`session_compact`**：`src-tauri/src/commands.rs` 新增（`sessionId` + `modelId` + `effort`），调用 `harness_orchestration::compact_session`，注册进 `collect_commands!` 并重新导出 specta bindings；前端完成后重拉 `session_events`。
 
 ## 风险与边界

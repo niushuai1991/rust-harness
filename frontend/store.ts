@@ -1,15 +1,16 @@
 import {create} from 'zustand';
 import type {SessionEvent,LiveEvent,TimelinePage,TimelineTurn} from './types';
 
-const MAX_TIMELINE_SESSIONS=3,MAX_EVENTS_PER_PAGE=200;
+const MAX_TIMELINE_SESSIONS=4,MAX_EVENTS_PER_PAGE=200;
 export interface Stream {requestId:string;text:string;reasoning:string;seen:string[]}
 export interface TimelineState {olderCursor:string|null;hasOlder:boolean;throughSeq:string;pagesLoaded:number;loadedOlder:boolean;pages:SessionEvent[][];turns:TimelineTurn[]}
 interface State {
- events:Record<string,SessionEvent[]>;timelines:Record<string,TimelineState>;timelineLru:string[];streams:Record<string,Stream>;statuses:Record<string,string>;
+ events:Record<string,SessionEvent[]>;timelines:Record<string,TimelineState>;timelineLru:string[];pinnedTimelineIds:string[];streams:Record<string,Stream>;statuses:Record<string,string>;
  replace:(id:string,events:SessionEvent[])=>void;replaceTimelinePage:(id:string,page:TimelinePage)=>void;mergeLatestTimelinePages:(id:string,pages:TimelinePage[])=>void;prependTimelinePage:(id:string,page:TimelinePage)=>void;activateTimeline:(id:string)=>void;timeline:(id:string)=>TimelineState|undefined;
+ pinTimeline:(id:string)=>void;unpinTimeline:(id:string)=>void;
  receive:(event:LiveEvent)=>void;clearStream:(id:string)=>void
 }
-export const useChat=create<State>((set,get)=>({events:{},timelines:{},timelineLru:[],streams:{},statuses:{},
+export const useChat=create<State>((set,get)=>({events:{},timelines:{},timelineLru:[],pinnedTimelineIds:[],streams:{},statuses:{},
  replace:(id,events)=>set(state=>({events:{...state.events,[id]:mergeEvents(events,state.events[id]??[])}})),
  replaceTimelinePage:(id,page)=>set(state=>{
   const newer=(state.events[id]??[]).filter(event=>BigInt(event.seq)>BigInt(page.throughSeq));
@@ -30,6 +31,9 @@ export const useChat=create<State>((set,get)=>({events:{},timelines:{},timelineL
  }),
  activateTimeline:(id)=>set(state=>storeTimeline(state,id,state.timelines[id]??emptyTimeline())),
  timeline:(id)=>get().timelines[id],
+ // 固定会话不参与 LRU 淘汰：主会话与打开中的侧聊并行时不能被其他会话挤出。
+ pinTimeline:(id)=>set(state=>state.pinnedTimelineIds.includes(id)?{}:{pinnedTimelineIds:[...state.pinnedTimelineIds,id]}),
+ unpinTimeline:(id)=>set(state=>state.pinnedTimelineIds.includes(id)?{pinnedTimelineIds:state.pinnedTimelineIds.filter(item=>item!==id)}:{}),
  clearStream:(id)=>set(state=>{const streams={...state.streams};delete streams[id];return {streams}}),
  receive:(event)=>set(state=>{
   if(event.type==='durable'){
@@ -54,8 +58,12 @@ function timelineFromPage(page:TimelinePage,newer:SessionEvent[]=[]):TimelineSta
 function emptyTimeline():TimelineState {return {olderCursor:null,hasOlder:false,throughSeq:'0',pagesLoaded:0,loadedOlder:false,pages:[],turns:[]}}
 function storeTimeline(state:State,id:string,timeline:TimelineState){
  const lru=[id,...state.timelineLru.filter(item=>item!==id)],events={...state.events,[id]:flattenPages(timeline.pages)},timelines={...state.timelines,[id]:timeline};
- for(const evicted of lru.slice(MAX_TIMELINE_SESSIONS)){delete events[evicted];delete timelines[evicted]}
- return {events,timelines,timelineLru:lru.slice(0,MAX_TIMELINE_SESSIONS)};
+ // 上限外的固定会话仍保留；优先淘汰上限内最久未用的非固定会话。
+ const kept:string[]=[];
+ for(const item of lru)if(kept.length<MAX_TIMELINE_SESSIONS||state.pinnedTimelineIds.includes(item))kept.push(item);
+ const keep=new Set(kept);
+ for(const evicted of lru)if(!keep.has(evicted)){delete events[evicted];delete timelines[evicted]}
+ return {events,timelines,timelineLru:kept};
 }
 function flattenPages(pages:SessionEvent[][]){return pages.reduce((all,page)=>mergeEvents(all,page),[] as SessionEvent[])}
 // 满页时另起一页而不是裁掉最早事件：实时追加不能丢任何已到达的会话内容。
