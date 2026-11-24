@@ -622,9 +622,15 @@ async fn plan_mode_allows_readonly_shell_without_approval() {
     let (runtime, session_id) = plan_session_fixture(&temp).await;
     runtime.set_approval_policy(&session_id, Some(ApprovalPolicy::Auto));
     runtime.session_plan_set(&session_id, true).await.unwrap();
+    // 使用各平台自带的过滤命令，避免测试依赖额外安装的 Unix 工具。
+    let pipeline = if cfg!(windows) {
+        "hostname | findstr ."
+    } else {
+        "hostname | grep ."
+    };
     let calls = [
         ("host", "shell", json!({"command":"hostname"})),
-        ("pipe", "shell", json!({"command":"hostname | head -1"})),
+        ("pipe", "shell", json!({"command":pipeline})),
     ]
     .into_iter()
     .map(|(id, name, arguments)| ToolCall {
