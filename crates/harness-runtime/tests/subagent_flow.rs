@@ -182,6 +182,89 @@ async fn child_usage_consumes_the_parent_turn_budget() {
     .unwrap();
 }
 
+struct ChildWithoutUsageProvider {
+    runtime: std::sync::Weak<Runtime>,
+    parent: String,
+    parent_calls: AtomicUsize,
+}
+
+#[async_trait]
+impl ModelProvider for ChildWithoutUsageProvider {
+    async fn complete(
+        &self,
+        messages: Vec<ModelMessage>,
+        _: Vec<ToolDefinition>,
+        _: CancellationToken,
+        _: DeltaSink,
+    ) -> AppResult<ModelAnswer> {
+        if messages
+            .iter()
+            .any(|message| message.content == "无用量子任务")
+        {
+            return Err(AppError::new("NETWORK", "子任务请求中断"));
+        }
+        if self.parent_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Ok(ModelAnswer {
+                calls: vec![ToolCall {
+                    id: "spawn-unknown".into(),
+                    name: "agent_spawn".into(),
+                    arguments: json!({"task":"无用量子任务"}),
+                }],
+                usage: json!({"prompt_tokens":2,"completion_tokens":0}),
+                ..Default::default()
+            });
+        }
+        let runtime = self.runtime.upgrade().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(child) = runtime.children_of(&self.parent).first()
+                    && runtime
+                        .store
+                        .events(child, 0)
+                        .await
+                        .unwrap()
+                        .iter()
+                        .any(|event| event.kind == "turn.end")
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        Ok(ModelAnswer {
+            content: "父任务完成".into(),
+            usage: json!({"prompt_tokens":1,"completion_tokens":0}),
+            ..Default::default()
+        })
+    }
+}
+
+#[tokio::test]
+async fn child_missing_usage_marks_shared_parent_budget_incomplete() {
+    let (_temp, runtime, session) = setup("child usage missing").await;
+    auto_approve(&runtime);
+    let provider = Arc::new(ChildWithoutUsageProvider {
+        runtime: Arc::downgrade(&runtime),
+        parent: session.clone(),
+        parent_calls: AtomicUsize::new(0),
+    });
+    runtime
+        .clone()
+        .run_session(session.clone(), "parent".into(), provider)
+        .await
+        .unwrap();
+    let events = runtime.store.events(&session, 0).await.unwrap();
+    let budget = events
+        .iter()
+        .rev()
+        .find(|event| event.kind == "token.budget")
+        .unwrap();
+    assert_eq!(budget.data["usedTokens"], 3);
+    assert_eq!(budget.data["usageIncomplete"], true);
+}
+
 #[tokio::test]
 async fn agent_spawn_with_unknown_model_is_rejected_without_creating_child() {
     let (_temp, runtime, session) = setup("spawn-invalid").await;

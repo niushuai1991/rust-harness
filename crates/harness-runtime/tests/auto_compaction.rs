@@ -225,6 +225,12 @@ async fn auto_compaction_failure_keeps_projection_and_continues() {
     let request_count = provider.requests.lock().unwrap().len();
     assert_eq!(request_count, 3, "压缩失败但仍有余量时继续原请求");
     assert!(provider.request_roles(2).len() > 2);
+    let budget = events
+        .iter()
+        .rev()
+        .find(|event| event.kind == "token.budget")
+        .unwrap();
+    assert_eq!(budget.data["usageIncomplete"], true);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

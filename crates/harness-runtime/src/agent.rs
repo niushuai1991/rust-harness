@@ -781,10 +781,37 @@ impl Runtime {
             .rev()
             .find(|e| e.kind == "turn.start")
             .ok_or_else(|| AppError::new("RESUME_STALE", "回合状态已变化，无法继续"))?;
-        let initial_message = initial_start.data["messageId"].as_str().unwrap_or("");
+        if initial_start.data["messageId"]
+            .as_str()
+            .is_none_or(str::is_empty)
+            && initial_start.data["budgetTurnId"]
+                .as_str()
+                .is_none_or(str::is_empty)
+            && let Some(parent) = self.parent_of(&session_id)
+        {
+            let parent_events = self.store.events(&parent, 0).await?;
+            let independent_side = parent_events.iter().any(|event| {
+                event.kind == "subagent.created"
+                    && event.data["sessionId"] == session_id
+                    && event.data["source"] == "side"
+            });
+            if !independent_side {
+                return Err(AppError::new(
+                    "TOKEN_USAGE_UNAVAILABLE",
+                    "旧子代理的预算归属无法确认，无法继续",
+                ));
+            }
+        }
+        let initial_message = initial_start.data["messageId"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("legacy-resume:{}", initial_start.id));
         let initial_budget = initial_start.data["budgetTurnId"]
             .as_str()
-            .unwrap_or(initial_message);
+            .filter(|id| !id.is_empty())
+            .unwrap_or(&initial_message)
+            .to_owned();
         let mut root_id = session_id.clone();
         if initial_budget != initial_message {
             let parents = self.parents.lock().unwrap().clone();
@@ -851,10 +878,11 @@ impl Runtime {
             .ok_or_else(|| {
                 AppError::new("TOKEN_USAGE_UNAVAILABLE", "无法确定原任务预算，无法继续")
             })?;
-        let original_id = latest_start.data["messageId"].as_str().ok_or_else(|| {
-            AppError::new("TOKEN_USAGE_UNAVAILABLE", "无法确定原任务预算，无法继续")
-        })?;
-        let original_id = original_id.to_owned();
+        let original_id = latest_start.data["messageId"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("legacy-resume:{}", latest_start.id));
         let budget_id = latest_start.data["budgetTurnId"]
             .as_str()
             .unwrap_or(&original_id)
@@ -869,7 +897,12 @@ impl Runtime {
         };
         let first_start = root_events
             .iter()
-            .position(|e| e.kind == "turn.start" && e.data["messageId"] == budget_id)
+            .position(|e| {
+                e.kind == "turn.start"
+                    && (e.data["messageId"] == budget_id
+                        || (e.data["messageId"].as_str().is_none_or(str::is_empty)
+                            && format!("legacy-resume:{}", e.id) == budget_id))
+            })
             .ok_or_else(|| {
                 AppError::new("TOKEN_USAGE_UNAVAILABLE", "无法确定原任务预算，无法继续")
             })?;
@@ -904,32 +937,32 @@ impl Runtime {
         } else {
             self.store.events(&root_id, 0).await?
         };
-        let budget_event = root_events
+        let budget_event = root_events[first_start..]
             .iter()
             .rev()
-            .find(|e| e.kind == "token.budget")
-            .ok_or_else(|| {
-                AppError::new("TOKEN_USAGE_UNAVAILABLE", "无法确定原任务用量，无法继续")
-            })?;
-        let turn_id = budget_event.data["turnId"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| {
-                AppError::new("TOKEN_USAGE_UNAVAILABLE", "无法确定原任务预算，无法继续")
-            })?
-            .to_owned();
+            .find(|e| e.kind == "token.budget");
+        let turn_id = match budget_event {
+            Some(event) => event.data["turnId"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    AppError::new("TOKEN_USAGE_UNAVAILABLE", "无法确定原任务预算，无法继续")
+                })?
+                .to_owned(),
+            None => budget_id.clone(),
+        };
         if turn_id != budget_id {
             return Err(AppError::new(
                 "TOKEN_USAGE_UNAVAILABLE",
                 "无法确定原任务预算，无法继续",
             ));
         }
-        let used = budget_event.data["usedTokens"]
-            .as_u64()
-            .filter(|_| budget_event.data["status"] != "usageUnavailable")
-            .ok_or_else(|| {
+        let used = match budget_event {
+            Some(event) => event.data["usedTokens"].as_u64().ok_or_else(|| {
                 AppError::new("TOKEN_USAGE_UNAVAILABLE", "无法确定原任务用量，无法继续")
-            })?;
+            })?,
+            None => 0,
+        };
         let accounted: HashSet<&str> = root_events
             .iter()
             .filter(|e| e.kind == "model.request.accounted")
@@ -943,22 +976,24 @@ impl Runtime {
                     .as_str()
                     .is_some_and(|id| !id.is_empty() && accounted.contains(id))
             });
-        if pending
+        let usage_incomplete = pending
             || !root_events
                 .iter()
                 .any(|e| e.kind == "model.request.started" && e.data["turnId"] == turn_id)
-        {
-            return Err(AppError::new(
-                "TOKEN_USAGE_UNAVAILABLE",
-                "中断的模型请求用量未知，无法继续",
-            ));
-        }
+            || budget_event.is_none_or(|event| {
+                !matches!(event.data["status"].as_str(), Some("active" | "exhausted"))
+                    || event
+                        .data
+                        .get("usageIncomplete")
+                        .is_some_and(|v| v.as_bool() != Some(false))
+            });
         let limit = self.token_budget_limit().await?;
         let budget = Arc::new(TurnBudget::restored(
             root_id.clone(),
             turn_id.clone(),
             limit,
             used,
+            usage_incomplete,
         ));
         budget.check_available()?;
         let parent = self.parents.lock().unwrap().get(&session_id).cloned();
@@ -1146,6 +1181,7 @@ impl Runtime {
             "usedTokens": snapshot.used_tokens,
             "limitTokens": snapshot.limit_tokens,
             "status": status,
+            "usageIncomplete": snapshot.usage_incomplete,
         });
         self.append(token_budget.root_session_id(), "token.budget", data.clone())
             .await?;
@@ -1174,6 +1210,15 @@ impl Runtime {
             return Err(token_budget.error().unwrap_or(error));
         }
         Ok(snapshot)
+    }
+    async fn record_unknown_token_usage(
+        &self,
+        session: &str,
+        token_budget: &TurnBudget,
+    ) -> AppResult<()> {
+        let _updates = token_budget.serialize_updates().await;
+        self.publish_token_budget(session, token_budget, token_budget.mark_usage_incomplete())
+            .await
     }
     fn steering_state(&self, session: &str) -> Arc<tokio::sync::Mutex<SteeringState>> {
         self.steering
@@ -1696,6 +1741,8 @@ impl Runtime {
                             }
                         }
                         Err(error) => {
+                            self.record_unknown_token_usage(session, &token_budget)
+                                .await?;
                             if input >= u64::from(window) {
                                 // 压缩失败且继续请求必然溢出：给出明确可诊断结果。
                                 self.append(
@@ -1800,6 +1847,8 @@ impl Runtime {
                             Err(error) => error,
                         }
                     } else {
+                        self.record_unknown_token_usage(session, &token_budget)
+                            .await?;
                         e
                     };
                     let p = partial.lock().unwrap().clone();
