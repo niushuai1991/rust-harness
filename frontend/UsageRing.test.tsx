@@ -55,6 +55,19 @@ it('显示本轮累计预算并保存下一回合上限',async()=>{
  expect(mocks.command).toHaveBeenCalledWith('token_budget_limit_set',{limitTokens:2_000_000});
 });
 
+it('用量不完整时明确显示已知用量与预算限制',async()=>{
+ pushEvents([event('token.budget',{turnId:'turn-1',usedTokens:1200,limitTokens:10000,status:'active',usageIncomplete:true})]);
+ renderRing();
+ fireEvent.mouseEnter(screen.getByRole('button',{name:/上下文用量/}));
+ expect(await screen.findByText(/部分用量未知/)).toHaveTextContent('实际用量可能高于显示值');
+ expect(screen.getByText('1.2k / 10k')).toBeInTheDocument();
+});
+it('模型用量不可用时也提示统计不完整',async()=>{
+ pushEvents([event('token.budget',{turnId:'turn-1',usedTokens:1200,limitTokens:10000,status:'usageUnavailable'})]);
+ renderRing();fireEvent.mouseEnter(screen.getByRole('button',{name:/上下文用量/}));
+ expect(await screen.findByText(/部分用量未知/)).toBeInTheDocument();
+});
+
 it('环形显示上下文占用百分比（usage 归一化后 62.1k/200k ≈ 31%）',()=>{
  pushEvents([assistant({input_tokens:60_000,output_tokens:2_100})]);
  renderRing();

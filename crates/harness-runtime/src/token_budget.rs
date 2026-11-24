@@ -117,11 +117,13 @@ pub(crate) struct BudgetSnapshot {
     pub used_tokens: u64,
     pub limit_tokens: u64,
     pub stopped: Option<BudgetStop>,
+    pub usage_incomplete: bool,
 }
 
 struct BudgetState {
     used_tokens: u64,
     stopped: Option<BudgetStop>,
+    usage_incomplete: bool,
 }
 
 pub(crate) struct TurnBudget {
@@ -142,6 +144,7 @@ impl TurnBudget {
             state: Mutex::new(BudgetState {
                 used_tokens: 0,
                 stopped: None,
+                usage_incomplete: false,
             }),
             sessions: Mutex::new(HashMap::new()),
             updates: AsyncMutex::new(()),
@@ -153,8 +156,12 @@ impl TurnBudget {
         turn_id: String,
         limit_tokens: u64,
         used_tokens: u64,
+        usage_incomplete: bool,
     ) -> Self {
         let budget = Self::new(root_session_id, turn_id, limit_tokens);
+        if usage_incomplete {
+            budget.mark_usage_incomplete();
+        }
         budget.add_usage(used_tokens);
         budget
     }
@@ -180,6 +187,7 @@ impl TurnBudget {
             used_tokens: state.used_tokens,
             limit_tokens: self.limit_tokens,
             stopped: state.stopped,
+            usage_incomplete: state.usage_incomplete,
         }
     }
 
@@ -196,6 +204,21 @@ impl TurnBudget {
             used_tokens: state.used_tokens,
             limit_tokens: self.limit_tokens,
             stopped: state.stopped,
+            usage_incomplete: state.usage_incomplete,
+        }
+    }
+
+    pub(crate) fn mark_usage_incomplete(&self) -> BudgetSnapshot {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.usage_incomplete = true;
+        BudgetSnapshot {
+            used_tokens: state.used_tokens,
+            limit_tokens: self.limit_tokens,
+            stopped: state.stopped,
+            usage_incomplete: true,
         }
     }
 
@@ -207,10 +230,12 @@ impl TurnBudget {
         if state.stopped.is_none() {
             state.stopped = Some(BudgetStop::UsageUnavailable);
         }
+        state.usage_incomplete = true;
         BudgetSnapshot {
             used_tokens: state.used_tokens,
             limit_tokens: self.limit_tokens,
             stopped: state.stopped,
+            usage_incomplete: state.usage_incomplete,
         }
     }
 

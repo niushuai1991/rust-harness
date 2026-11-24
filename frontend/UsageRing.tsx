@@ -150,6 +150,7 @@ export function UsageRing({models,providers,modelId,sessionId}:{models:ModelConf
    </>}
    <p className="usage-ring-title usage-ring-gap">本轮 Token 预算</p>
    <div className="usage-ring-line"><strong>{formatTokens(budgetUsed)} / {formatTokens(displayedBudgetLimit)}</strong><span>{Math.round(budgetPercent)}%</span></div>
+   {budget?.usageIncomplete&&<p className="muted usage-ring-hint">部分用量未知，实际用量可能高于显示值；预算上限仅按已知用量计算。</p>}
    <div className="usage-bar usage-ring-bar" role="progressbar" aria-valuenow={Math.round(budgetPercent)} aria-valuemin={0} aria-valuemax={100} aria-label="本轮 Token 预算占用百分比"><i className={budgetPercent>=90?'warn':''} style={{width:`${budgetPercent}%`}}/></div>
    <form className="usage-budget-setting" onSubmit={event=>{event.preventDefault();void saveBudgetLimit()}}>
     <label htmlFor="token-budget-limit">每回合上限（下一条消息生效）</label>
