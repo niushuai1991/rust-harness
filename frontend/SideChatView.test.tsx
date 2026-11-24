@@ -83,6 +83,18 @@ describe('侧聊视图',()=>{
   expect(props.onResolveQuestion).toHaveBeenCalledWith('q1',{text:'A',source:'selected'});
  });
 
+ it('提问挂起时输入框发送按文本答复而不是新消息',async()=>{
+  const questions:AskRequest[]=[{id:'q2',sessionId:'side-1',question:'继续吗？',options:[]}];
+  const props=baseProps({questions});
+  render(<SideChatView {...props}/>);
+  const input=await screen.findByLabelText('侧聊消息');
+  fireEvent.change(input,{target:{value:'继续'}});
+  fireEvent.click(screen.getByRole('button',{name:'发送侧聊消息'}));
+  expect(props.onResolveQuestion).toHaveBeenCalledWith('q2',{text:'继续',source:'text'});
+  expect(mocks.send).not.toHaveBeenCalled();
+  expect(input).toHaveValue('');
+ });
+
  it('打开时携带的首条文字只发送一次',async()=>{
   mocks.send.mockResolvedValue(undefined);
   act(()=>useSidePanel.getState().openChat('side-1','a','首条问题'));

@@ -82,7 +82,10 @@ export function SideChatView({sessionId,parentSessionId,workspaceId,modelId,effo
  }
  function receive(event:LiveEvent){useChat.getState().receive(event)}
  async function dispatchText(input:string){
-  const value=input.trim();if(!value||!modelId)return;
+  const value=input.trim();if(!value)return;
+  // 提问挂起时发送即文本答复（与主输入框一致），不额外入队消息。
+  if(sideQuestion){setError('');setChatDraft(sessionId,'');onResolveQuestion(sideQuestion.id,{text:value,source:'text'});return}
+  if(!modelId)return;
   setError('');setChatDraft(sessionId,'');
   if(running||turnActiveRef.current){
    if(steerBusy.current)return;
@@ -140,7 +143,7 @@ export function SideChatView({sessionId,parentSessionId,workspaceId,modelId,effo
     if(event.key==='Escape'){event.stopPropagation();return}
     if(event.key==='Enter'&&!event.shiftKey&&!event.nativeEvent.isComposing){event.preventDefault();void dispatchText(draft)}
    }}/>
-   <div className="side-chat-actions"><span className="side-chat-hint">{running?'回合运行中，发送将作为补充指令':'使用当前模型 · Enter 发送'}</span>{running&&<button type="button" className="send" aria-label="取消生成" title="停止侧聊回合" onClick={()=>void cancel()}><Square size={14}/></button>}<button type="submit" className="send" aria-label="发送侧聊消息" disabled={!draft.trim()||!modelId}><ArrowUp size={16}/></button></div>
+   <div className="side-chat-actions"><span className="side-chat-hint">{running?'回合运行中，发送将作为补充指令':'使用当前模型 · Enter 发送'}</span>{running&&<button type="button" className="send" aria-label="取消生成" title="停止侧聊回合" onClick={()=>void cancel()}><Square size={14}/></button>}<button type="submit" className="send" aria-label="发送侧聊消息" disabled={!draft.trim()||(!modelId&&!sideQuestion)}><ArrowUp size={16}/></button></div>
   </form>
  </div>;
 }
