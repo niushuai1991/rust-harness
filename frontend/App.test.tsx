@@ -1,8 +1,9 @@
-import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
+import {afterEach,beforeAll,beforeEach,describe,expect,it,vi} from 'vitest';
 import {act,cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
 import App,{ConversationEvents} from './App';
 // 交互测试不加载全局样式；真实样式验证集中在 App.style.test.tsx，避免 jsdom 反复计算整张样式表。
 import {ChangesView} from './ChangesView';
+import {assertNoAppGlobalStyle} from './test-style-guard';
 
 import {GOAL_PROMPT,INIT_PROMPT} from './slashCommands';
 import {useChat} from './store';
@@ -20,6 +21,7 @@ const timeline=(sessionId:string,events:SessionEvent[])=>({sessionId,events,olde
 async function openSidebarSession(title:RegExp){fireEvent.click(await screen.findByRole('button',{name:title}))}
 async function openSessionA(){await openSidebarSession(/会话 A/);await screen.findByText('内容 a')}
 async function renderOpenA(){const utils=render(<App/>);await openSessionA();return utils}
+beforeAll(assertNoAppGlobalStyle);
 beforeEach(()=>{mocks.listeners.clear();useChat.setState({events:{},streams:{},statuses:{},timelines:{},timelineLru:[]});useSidePanel.getState().reset();mocks.command.mockReset();mocks.send.mockReset();mocks.resume.mockReset();vi.mocked(open).mockReset();vi.mocked(save).mockReset();mocks.command.mockImplementation(async(name:string,args:any)=>{
  if(name==='workspace_list')return [{id:'w',sourcePath:'D:/project',replicaPath:'D:/copy',createdAt:'',name:'project'}];
  if(name==='model_list')return [{id:'m',name:'测试模型',compatibility:'standard',providerId:'custom',apiMode:'chatCompletions',maxOutputTokens:null,baseUrl:'https://example.test',model:'m',credentialRef:'',proxy:null,efforts:['low','high'],effort:null,enabled:true,builtin:false}];
@@ -34,7 +36,7 @@ beforeEach(()=>{mocks.listeners.clear();useChat.setState({events:{},streams:{},s
  if(name==='session_title_generate')throw new Error('测试未配置标题生成结果');
  return [];
 })});
-afterEach(()=>{cleanup();vi.useRealTimers()});
+afterEach(()=>{try{assertNoAppGlobalStyle()}finally{cleanup();vi.useRealTimers()}});
 describe('中断后继续',()=>{
  it('最近回合结束事件不在当前页时使用分页元数据',async()=>{
   const original=mocks.command.getMockImplementation()!;
