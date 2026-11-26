@@ -450,7 +450,7 @@ struct StdioLifetime {
     job: std::sync::Arc<Handle>,
     process: Handle,
     done: CancellationToken,
-    _lease: crate::WorkspaceLease,
+    _lease: Option<crate::WorkspaceLease>,
     _temp: tempfile::TempDir,
 }
 impl Drop for StdioLifetime {
@@ -670,7 +670,231 @@ pub(super) fn spawn_stdio(
             job: job.clone(),
             process: process_handle,
             done: done.clone(),
-            _lease: lease,
+            _lease: Some(lease),
+            _temp: temp,
+        };
+        tokio::spawn(async move {
+            tokio::select! { _ = cancel.cancelled() => { TerminateJobObject(job.0, 1); }, _ = done.cancelled() => {} }
+        });
+        Ok(SandboxedStdio {
+            reader: tokio::fs::File::from_std(stdout),
+            writer: tokio::fs::File::from_std(in_write),
+            stderr: stderr_buffer,
+            _guard: Box::new(lifecycle),
+        })
+    }
+}
+fn mcp_environment_block(
+    temp: &Path,
+    supplied: &std::collections::BTreeMap<String, String>,
+) -> Vec<u16> {
+    let mut entries = Vec::new();
+    for name in ["SystemRoot", "WINDIR", "PATH", "PATHEXT"] {
+        if let Some(value) = std::env::var_os(name) {
+            entries.push((name.to_owned(), value.to_string_lossy().into_owned()));
+        }
+    }
+    for (name, value) in supplied {
+        entries.retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
+        entries.push((name.clone(), value.clone()));
+    }
+    for name in ["TEMP", "TMP", "TMPDIR"] {
+        entries.retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
+        entries.push((name.to_owned(), temp.to_string_lossy().into_owned()));
+    }
+    entries.sort_by_key(|(name, _)| name.to_ascii_uppercase());
+    let mut block: Vec<u16> = entries
+        .into_iter()
+        .flat_map(|(name, value)| wide(format!("{name}={value}")))
+        .collect();
+    block.push(0);
+    block
+}
+pub(super) fn spawn_stdio_in(
+    root: &Path,
+    capability_id: &str,
+    program: &str,
+    args: &[String],
+    cancel: CancellationToken,
+    sandboxed: bool,
+    supplied_env: &std::collections::BTreeMap<String, String>,
+) -> AppResult<SandboxedStdio> {
+    if cancel.is_cancelled() {
+        return Err(AppError::new("CANCELLED", "Process cancelled"));
+    }
+    if program.contains('\0') || args.iter().any(|a| a.contains('\0')) {
+        return Err(AppError::new("INVALID_ARGUMENT", "NUL in command"));
+    }
+    if supplied_env
+        .iter()
+        .any(|(name, value)| name.is_empty() || name.contains(['=', '\0']) || value.contains('\0'))
+    {
+        return Err(AppError::new(
+            "INVALID_ARGUMENT",
+            "Invalid environment variable",
+        ));
+    }
+    crate::paths::check(root)?;
+    let root = dunce::canonicalize(root).map_err(io)?;
+    let executable = if Path::new(program).is_absolute() {
+        PathBuf::from(program)
+    } else if !program.contains(['/', '\\']) {
+        let filename = if program.to_ascii_lowercase().ends_with(".exe") {
+            program.to_owned()
+        } else {
+            format!("{program}.exe")
+        };
+        std::env::var_os("PATH")
+            .into_iter()
+            .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+            .map(|p| p.join(&filename))
+            .find(|p| p.is_file())
+            .ok_or_else(|| AppError::new("PROCESS_NOT_FOUND", program))?
+    } else {
+        return Err(AppError::new(
+            "INVALID_ARGUMENT",
+            "Use an absolute executable path or a PATH executable name",
+        ));
+    };
+    // System executables commonly have WinSxS hardlinks. They are only read and
+    // executed here: no ACL is applied and no bytes are written to this path.
+    let executable = dunce::canonicalize(&executable).map_err(io)?;
+    if !executable.is_file() {
+        return Err(AppError::new("PROCESS_NOT_FOUND", program));
+    }
+    if executable
+        .extension()
+        .and_then(|x| x.to_str())
+        .is_none_or(|x| !x.eq_ignore_ascii_case("exe"))
+    {
+        return Err(AppError::new(
+            "INVALID_ARGUMENT",
+            "stdio requires an executable (.exe)",
+        ));
+    }
+    let temp = tempfile::tempdir().map_err(io)?;
+    let token = if sandboxed {
+        let capability = capability(capability_id)?;
+        let temp_capability = self::capability(&uuid::Uuid::new_v4().to_string())?;
+        let world = sid("S-1-1-0")?;
+        grant(temp.path(), temp_capability.0, world.0)?;
+        Some(token(capability.0, temp_capability.0, world.0)?)
+    } else {
+        None
+    };
+    unsafe {
+        let job = std::sync::Arc::new(Handle(CreateJobObjectW(null(), null())));
+        if job.0.is_null() {
+            return Err(error("CreateJobObjectW"));
+        }
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if SetInformationJobObject(
+            job.0,
+            JobObjectExtendedLimitInformation,
+            (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+            std::mem::size_of_val(&limits) as u32,
+        ) == 0
+        {
+            return Err(error("SetInformationJobObject"));
+        }
+        let (stdout, out_write) = pipe()?;
+        let (stderr, err_write) = pipe()?;
+        let mut in_read = null_mut();
+        let mut in_write = null_mut();
+        let security = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: null_mut(),
+            bInheritHandle: 1,
+        };
+        if CreatePipe(&mut in_read, &mut in_write, &security, 0) == 0 {
+            return Err(error("CreatePipe stdin"));
+        }
+        let in_read = Handle(in_read);
+        let in_write = File::from_raw_handle(in_write);
+        use std::os::windows::io::AsRawHandle;
+        if SetHandleInformation(in_write.as_raw_handle(), HANDLE_FLAG_INHERIT, 0) == 0 {
+            return Err(error("SetHandleInformation stdin"));
+        }
+        let startup = startup(in_read.0, out_write.0, err_write.0)?;
+        let mut command = quoted(&executable.to_string_lossy());
+        for argument in args {
+            command.push(' ');
+            command.push_str(&quoted(argument));
+        }
+        let mut command = wide(command);
+        let env = mcp_environment_block(temp.path(), supplied_env);
+        let mut process: PROCESS_INFORMATION = std::mem::zeroed();
+        let created = match token {
+            Some(token) => CreateProcessAsUserW(
+                token.0,
+                wide(&executable).as_ptr(),
+                command.as_mut_ptr(),
+                null(),
+                null(),
+                1,
+                CREATE_SUSPENDED
+                    | CREATE_NO_WINDOW
+                    | CREATE_UNICODE_ENVIRONMENT
+                    | EXTENDED_STARTUPINFO_PRESENT,
+                env.as_ptr().cast(),
+                wide(&root).as_ptr(),
+                &startup.info.StartupInfo,
+                &mut process,
+            ),
+            None => CreateProcessW(
+                wide(&executable).as_ptr(),
+                command.as_mut_ptr(),
+                null(),
+                null(),
+                1,
+                CREATE_SUSPENDED
+                    | CREATE_NO_WINDOW
+                    | CREATE_UNICODE_ENVIRONMENT
+                    | EXTENDED_STARTUPINFO_PRESENT,
+                env.as_ptr().cast(),
+                wide(&root).as_ptr(),
+                &startup.info.StartupInfo,
+                &mut process,
+            ),
+        };
+        if created == 0 {
+            return Err(error("CreateProcess"));
+        }
+        let process_handle = Handle(process.hProcess);
+        let thread = Handle(process.hThread);
+        if AssignProcessToJobObject(job.0, process_handle.0) == 0 {
+            TerminateProcess(process_handle.0, 1);
+            return Err(error("AssignProcessToJobObject"));
+        }
+        if ResumeThread(thread.0) == u32::MAX {
+            TerminateJobObject(job.0, 1);
+            return Err(error("ResumeThread"));
+        }
+        drop(in_read);
+        drop(out_write);
+        drop(err_write);
+        let stderr_buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let buffer = stderr_buffer.clone();
+        std::thread::spawn(move || {
+            let mut stderr = stderr;
+            let mut chunk = [0u8; 4096];
+            while let Ok(n) = stderr.read(&mut chunk) {
+                if n == 0 {
+                    break;
+                }
+                if let Ok(mut bytes) = buffer.lock() {
+                    let take = n.min(65536usize.saturating_sub(bytes.len()));
+                    bytes.extend_from_slice(&chunk[..take]);
+                }
+            }
+        });
+        let done = CancellationToken::new();
+        let lifecycle = StdioLifetime {
+            job: job.clone(),
+            process: process_handle,
+            done: done.clone(),
+            _lease: None,
             _temp: temp,
         };
         tokio::spawn(async move {

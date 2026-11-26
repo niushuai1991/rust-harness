@@ -1423,9 +1423,88 @@ pub async fn plugin_remove(state: Backend<'_>, id: String) -> AppResult<()> {
 
 #[tauri::command]
 #[specta::specta]
+pub async fn mcp_config_list(
+    state: Backend<'_>,
+    workspace_id: String,
+) -> AppResult<Vec<JsonPayload>> {
+    state
+        .mcp_config
+        .effective(Some(&workspace_id))
+        .await?
+        .into_iter()
+        .map(|entry| serde_json::to_value(entry).map(JsonPayload).map_err(error))
+        .collect::<AppResult<Vec<_>>>()
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn mcp_config_status(
+    state: Backend<'_>,
+    session_id: String,
+) -> AppResult<Vec<JsonPayload>> {
+    Ok(state
+        .session_mcp_status(&session_id)
+        .await?
+        .into_iter()
+        .map(JsonPayload)
+        .collect())
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn mcp_config_save(
+    state: Backend<'_>,
+    scope: JsonPayload,
+    config: JsonPayload,
+) -> AppResult<()> {
+    let scope = serde_json::from_value(scope.0).map_err(error)?;
+    let config = serde_json::from_value(config.0).map_err(error)?;
+    state.save_mcp_config(scope, config).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn mcp_config_remove(
+    state: Backend<'_>,
+    scope: JsonPayload,
+    id: String,
+) -> AppResult<()> {
+    let scope = serde_json::from_value(scope.0).map_err(error)?;
+    state.remove_mcp_config(scope, &id).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn mcp_config_trust(
+    state: Backend<'_>,
+    scope: JsonPayload,
+    config: JsonPayload,
+) -> AppResult<()> {
+    let scope = serde_json::from_value(scope.0).map_err(error)?;
+    let config = serde_json::from_value(config.0).map_err(error)?;
+    state.mcp_config.trust_exact(scope, &config).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn mcp_config_connect(
+    state: Backend<'_>,
+    session_id: String,
+    id: String,
+) -> AppResult<()> {
+    state.connect_saved_session_mcp(&session_id, &id).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn mcp_session_disconnect(
+    state: Backend<'_>,
+    session_id: String,
+    id: String,
+) -> AppResult<()> {
+    state.disconnect_session_mcp(&session_id, &id).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn mcp_list(state: Backend<'_>) -> AppResult<Vec<JsonPayload>> {
     Ok(state
         .mcp_connections()
+        .await
         .into_iter()
         .map(JsonPayload)
         .collect())
@@ -1435,30 +1514,41 @@ pub async fn mcp_list(state: Backend<'_>) -> AppResult<Vec<JsonPayload>> {
 pub async fn mcp_connect(
     state: Backend<'_>,
     workspace_id: String,
+    session_id: String,
     config: JsonPayload,
 ) -> AppResult<()> {
-    if workspace_id.is_empty() {
-        return Err(AppError::new("UNSUPPORTED", "无项目会话暂不支持 MCP 连接"));
+    let session = state.store.session(&session_id).await?;
+    if session.workspace_id != workspace_id {
+        return Err(AppError::new("MCP_UNAVAILABLE", "会话不属于当前工作区"));
     }
     let config = serde_json::from_value(config.0).map_err(error)?;
-    state.connect_mcp(&workspace_id, config).await
+    state.connect_session_mcp(&session_id, config).await
 }
+
 #[tauri::command]
 #[specta::specta]
-pub async fn mcp_disconnect(state: Backend<'_>, id: String) -> AppResult<()> {
-    state.disconnect_mcp(&id).await
+pub async fn mcp_disconnect(
+    state: Backend<'_>,
+    id: String,
+    workspace_id: Option<String>,
+) -> AppResult<()> {
+    match workspace_id {
+        Some(workspace) => state.disconnect_scoped_mcp(&workspace, &id).await,
+        None => state.disconnect_mcp(&id).await,
+    }
 }
 #[tauri::command]
 #[specta::specta]
 pub async fn mcp_resources(
     state: Backend<'_>,
+    workspace_id: String,
     id: String,
     uri: Option<String>,
 ) -> AppResult<JsonPayload> {
-    match uri {
-        Some(uri) => state.mcp.read_resource(&id, &uri).await.map(JsonPayload),
-        None => state.mcp.list_resources(&id).await.map(JsonPayload),
-    }
+    state
+        .scoped_mcp_resources(&workspace_id, &id, uri.as_deref())
+        .await
+        .map(JsonPayload)
 }
 
 #[tauri::command]
@@ -1736,6 +1826,13 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         plugin_install,
         plugin_enable,
         plugin_remove,
+        mcp_config_list,
+        mcp_config_status,
+        mcp_config_save,
+        mcp_config_remove,
+        mcp_config_trust,
+        mcp_config_connect,
+        mcp_session_disconnect,
         mcp_list,
         mcp_connect,
         mcp_disconnect,

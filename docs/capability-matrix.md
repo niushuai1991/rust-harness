@@ -15,7 +15,7 @@
 |原项目/执行副本分离与人工同步|已实现|冲突、预览hash、ignore、链接、Git独立副本回归；桌面右侧面板行级diff审阅与文件预览已实现（见[右侧面板规范](specs/side-panel.md)），UI抽查待用户|
 |Windows受限token/Low IL/ACL/Job/stdio|已实现|真实Windows内部允许、外部拒绝、取消子树和split生命周期测试|
 |WASM/WIT、权限、ZIP、hook、KV、声明式界面|已实现并接线|真实component超限/取消/停用与安装攻击；设置、审批命令、受控HTTP、主题和安全卡片回归|
-|MCP HTTP/stdio、资源、取消|已实现并接线|官方SDK本地HTTP和stdio fixtures；自动后台重连未实现|
+|MCP 客户端配置、stdio/HTTP、会话隔离与取消|已实现，桌面真实模型待验收|配置持久化与信任、同名隔离、取消/不重放、配置竞争、计划模式及 direct/replica/worktree/scratch 的受控测试；文件系统服务器 2025.8.21 本地互操作与 SDK 1.32.2 的 HTTP 受控服务通过。OAuth、资源模板、会话资源工具和 ACP 传入配置尚未实现；图片与音频暂以说明替代，见[MCP 规范](specs/mcp.md)|
 |后台Shell、子代理spawn/fork/send/wait/interrupt|已实现并接线|协作与后台任务测试；`background_run` 按会话执行位置执行（直接/worktree/副本/scratch，直接会话下不再报 INVALID_WORKSPACE），shell 前台到限（`app.tool_timeout_secs` 可配置）自动转受管后台任务继续运行；桌面端事件卡片、会话级任务面板与输入框终端图标浮层（运行中任务+时长）见[P2后台任务规范](specs/p2-background-tasks.md)，桌面 UI 抽查待用户|
 |子代理可视化与spawn模型选择|已实现并接线|父子关系重建与modelId校验3项测试、前端3项测试通过；会话列表子任务徽标、事件卡片跳转、运行状态live-dot；ACP透传与管理面板未实现|
 |会话列表「最近 / 项目」视图与项目置顶|已实现并接线|storage 置顶 KV 3 项、sessionList 纯函数 8 项、App 视图/置顶/搜索 3 项新增测试通过；fmt/clippy/build 与 npm test（161 项）全量通过，cargo test 仅 `chatgpt_models_require_login_before_build` 失败（main 既有，与本能力无关）；2026-11-09 侧栏会话入口重整（移除工作区下拉框与标题行 +，新增「新建聊天」按钮与项目组头新建，App 测试 51 项全通过）；2026-11-13 启动默认进入新会话草稿态（不自动打开最近会话），前端全量 274 项测试与生产构建通过；见[会话列表视图规范](specs/session-list.md)；桌面 UI 抽查待用户|

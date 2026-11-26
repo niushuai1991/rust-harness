@@ -81,6 +81,47 @@ impl ShellService {
             ))
         }
     }
+    pub async fn spawn_stdio_in(
+        root: &Path,
+        capability_id: &str,
+        program: &str,
+        args: &[String],
+        cancel: CancellationToken,
+        sandboxed: bool,
+    ) -> AppResult<SandboxedStdio> {
+        Self::spawn_stdio_with_env(
+            root,
+            capability_id,
+            program,
+            args,
+            cancel,
+            sandboxed,
+            &Default::default(),
+        )
+        .await
+    }
+    pub async fn spawn_stdio_with_env(
+        root: &Path,
+        capability_id: &str,
+        program: &str,
+        args: &[String],
+        cancel: CancellationToken,
+        sandboxed: bool,
+        env: &std::collections::BTreeMap<String, String>,
+    ) -> AppResult<SandboxedStdio> {
+        #[cfg(windows)]
+        {
+            windows::spawn_stdio_in(root, capability_id, program, args, cancel, sandboxed, env)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (root, capability_id, program, args, cancel, sandboxed, env);
+            Err(AppError::new(
+                "UNSUPPORTED",
+                "System process isolation is Windows only",
+            ))
+        }
+    }
     pub async fn spawn_stdio(
         root: &Path,
         program: &str,

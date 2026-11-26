@@ -254,6 +254,9 @@ pub struct ToolCall {
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(type = Option<JsonValue>, optional)]
+    pub structured_content: Option<Value>,
     pub content: String,
     pub is_error: bool,
     /// edit/write 成功结果的 unified diff（桌面对话流行级差异展示）；其余为 None。

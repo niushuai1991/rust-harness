@@ -298,18 +298,68 @@ pub async fn dispatch(runtime: Arc<Runtime>, method: &str, p: Value) -> AppResul
             runtime.plugins.remove(field(&p, "id")?)?;
             Value::Null
         }
-        "mcp.list" => json!(runtime.mcp_connections()),
-        "mcp.connect" => {
+        "mcp.config.list" => json!(
             runtime
-                .connect_mcp(
-                    field(&p, "workspaceId")?,
+                .mcp_config
+                .effective(p.get("workspaceId").and_then(Value::as_str))
+                .await?
+        ),
+        "mcp.config.status" => json!(runtime.session_mcp_status(field(&p, "sessionId")?).await?),
+        "mcp.config.save" => {
+            let scope = serde_json::from_value(p["scope"].clone()).map_err(err)?;
+            let config = serde_json::from_value(p["config"].clone()).map_err(err)?;
+            runtime.save_mcp_config(scope, config).await?;
+            Value::Null
+        }
+        "mcp.config.remove" => {
+            let scope = serde_json::from_value(p["scope"].clone()).map_err(err)?;
+            runtime.remove_mcp_config(scope, field(&p, "id")?).await?;
+            Value::Null
+        }
+        "mcp.config.connect" => {
+            runtime
+                .connect_saved_session_mcp(field(&p, "sessionId")?, field(&p, "id")?)
+                .await?;
+            Value::Null
+        }
+        "mcp.session.disconnect" => {
+            runtime
+                .disconnect_session_mcp(field(&p, "sessionId")?, field(&p, "id")?)
+                .await?;
+            Value::Null
+        }
+        "mcp.config.trust" => {
+            let scope = serde_json::from_value(p["scope"].clone()).map_err(err)?;
+            let config = serde_json::from_value(p["config"].clone()).map_err(err)?;
+            runtime.mcp_config.trust_exact(scope, &config).await?;
+            Value::Null
+        }
+        "mcp.list" => json!(runtime.mcp_connections().await),
+        "mcp.connect" => {
+            let session_id = field(&p, "sessionId")?;
+            let session = runtime.store.session(session_id).await?;
+            if let Some(workspace) = p.get("workspaceId").and_then(Value::as_str)
+                && workspace != session.workspace_id
+            {
+                return Err(AppError::new("MCP_UNAVAILABLE", "会话不属于当前工作区"));
+            }
+            runtime
+                .connect_session_mcp(
+                    session_id,
                     serde_json::from_value(p["config"].clone()).map_err(err)?,
                 )
                 .await?;
             Value::Null
         }
         "mcp.disconnect" => {
-            runtime.disconnect_mcp(field(&p, "id")?).await?;
+            match p.get("workspaceId").and_then(Value::as_str) {
+                Some(workspace) => {
+                    runtime
+                        .disconnect_scoped_mcp(workspace, field(&p, "id")?)
+                        .await?
+                }
+                None => runtime.disconnect_mcp(field(&p, "id")?).await?,
+            }
             Value::Null
         }
         "lsp.status" => {

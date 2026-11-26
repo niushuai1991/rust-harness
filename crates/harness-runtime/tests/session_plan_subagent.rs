@@ -162,6 +162,7 @@ impl ExternalTool for StubTool {
         _: CancellationToken,
     ) -> AppResult<ToolResult> {
         Ok(ToolResult {
+            structured_content: None,
             content: "stub ok".into(),
             is_error: false,
             diff: None,

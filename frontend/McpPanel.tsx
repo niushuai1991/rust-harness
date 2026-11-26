@@ -1,12 +1,21 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { command, desktop, errorText } from "./api";
+import { McpSavedServers } from "./McpSavedServers";
 
 interface McpConnection {
   id: string;
   workspaceId: string;
+  sessionId?: string;
+  status?: "connected" | "disconnected";
 }
 type Transport = "streamableHttp" | "stdio";
-export function McpPanel({ workspaceId }: { workspaceId: string }) {
+export function McpPanel({
+  workspaceId,
+  sessionId = "",
+}: {
+  workspaceId: string;
+  sessionId?: string;
+}) {
   const [connections, setConnections] = useState<McpConnection[]>([]),
     [transport, setTransport] = useState<Transport>("streamableHttp");
   const [id, setId] = useState(""),
@@ -28,13 +37,23 @@ export function McpPanel({ workspaceId }: { workspaceId: string }) {
       .catch((e) => {
         if (alive) setError(errorText(e));
       });
+    const timer = window.setInterval(() => {
+      void command<McpConnection[]>("mcp_list")
+        .then((list) => {
+          if (alive) setConnections(list);
+        })
+        .catch((e) => {
+          if (alive) setError(errorText(e));
+        });
+    }, 5000);
     return () => {
       alive = false;
+      window.clearInterval(timer);
     };
   }, []);
   async function connect(event: FormEvent) {
     event.preventDefault();
-    if (!workspaceId) return;
+    if (!sessionId) return;
     setBusy(true);
     setError("");
     setStatus("");
@@ -51,7 +70,7 @@ export function McpPanel({ workspaceId }: { workspaceId: string }) {
           throw new Error("MCP 地址必须使用 HTTP 或 HTTPS。");
         config = { transport, id: id.trim(), url };
       }
-      await command("mcp_connect", { workspaceId, config });
+      await command("mcp_connect", { workspaceId, sessionId, config });
       await load();
       setStatus("MCP 连接已建立。");
     } catch (e) {
@@ -60,12 +79,18 @@ export function McpPanel({ workspaceId }: { workspaceId: string }) {
       setBusy(false);
     }
   }
-  async function disconnect(connectionId: string) {
+  async function disconnect(
+    connectionId: string,
+    ownerWorkspaceId: string,
+    ownerSessionId?: string,
+  ) {
     setBusy(true);
     setError("");
     setStatus("");
     try {
-      await command("mcp_disconnect", { id: connectionId });
+      if (ownerSessionId)
+        await command("mcp_session_disconnect", { id: connectionId, sessionId: ownerSessionId });
+      else await command("mcp_disconnect", { id: connectionId, workspaceId: ownerWorkspaceId });
       await load();
       setStatus("MCP 连接已断开。");
     } catch (e) {
@@ -77,10 +102,10 @@ export function McpPanel({ workspaceId }: { workspaceId: string }) {
   return (
     <section className="mcp-panel" aria-label="MCP 连接">
       <h3>MCP 连接</h3>
-      <p className="muted">显式连接工具服务器，仅当前进程内保留连接。不会自动连接或重连。</p>
+      <McpSavedServers workspaceId={workspaceId} sessionId={sessionId} onChanged={load} />
+      <p className="muted">启用的已保存服务器在会话开始时连接，连接状态仅保留在当前进程中。</p>
       <p className="mcp-warning">
-        本地 stdio
-        服务是长期进程，会占用当前工作副本。同步更改前请先断开连接。连接远端服务前，请确认你信任该服务器。
+        stdio 服务按当前会话的执行位置运行；直接模式使用当前用户权限。远端服务不受本地沙箱约束。
       </p>
       {error && (
         <p role="alert" className="inline-error">
@@ -151,24 +176,34 @@ export function McpPanel({ workspaceId }: { workspaceId: string }) {
             </label>
           </>
         )}
-        {!workspaceId && <p className="muted">请先打开工作区，再连接 MCP。</p>}
-        <button className="primary" disabled={busy || !workspaceId || !desktop()}>
+        {!sessionId && <p className="muted">请先创建会话，再连接 MCP。</p>}
+        <button className="primary" disabled={busy || !sessionId || !desktop()}>
           {busy ? "处理中…" : "连接 MCP"}
         </button>
       </form>
       <div className="mcp-connections">
         {!connections.length && <p className="muted">没有活动 MCP 连接。</p>}
         {connections.map((connection) => (
-          <article key={connection.id}>
+          <article key={`${connection.sessionId ?? connection.workspaceId}:${connection.id}`}>
             <div>
               <strong>{connection.id}</strong>
               <small>
                 {connection.workspaceId === workspaceId
                   ? "当前工作区"
                   : `工作区：${connection.workspaceId}`}
+                {connection.status === "disconnected"
+                  ? " · 连接已断开"
+                  : connection.status === "connected"
+                    ? " · 已连接"
+                    : ""}
               </small>
             </div>
-            <button disabled={busy} onClick={() => disconnect(connection.id)}>
+            <button
+              disabled={busy}
+              onClick={() =>
+                disconnect(connection.id, connection.workspaceId, connection.sessionId)
+              }
+            >
               断开 {connection.id}
             </button>
           </article>

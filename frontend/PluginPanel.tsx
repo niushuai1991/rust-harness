@@ -162,7 +162,7 @@ export function PluginPanel({
         sessionId={sessionId}
         revision={revision}
       />
-      <McpPanel workspaceId={workspaceId} />
+      <McpPanel workspaceId={workspaceId} sessionId={sessionId} />
     </Modal>
   );
 }

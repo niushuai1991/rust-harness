@@ -166,6 +166,7 @@ impl ExternalTool for ProbeTool {
         }
         self.timeline.record(self.name, "exit");
         Ok(ToolResult {
+            structured_content: None,
             content: format!("{} done", self.name),
             is_error: false,
             diff: None,

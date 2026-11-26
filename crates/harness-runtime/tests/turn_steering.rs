@@ -252,6 +252,7 @@ impl harness_runtime::ExternalTool for ToolGate {
         self.started.notify_one();
         self.release.notified().await;
         Ok(harness_contracts::ToolResult {
+            structured_content: None,
             content: "工具完成".into(),
             is_error: false,
             diff: None,
