@@ -483,6 +483,7 @@ impl PluginManager {
         fs::write(&tmp, serde_json::to_vec(&kv).map_err(fail)?).map_err(fail)?;
         fs::rename(tmp, kvpath).map_err(fail)?;
         Ok(ToolResult {
+            structured_content: None,
             content,
             is_error: false,
             diff: None,

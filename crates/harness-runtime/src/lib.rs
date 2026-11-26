@@ -12,6 +12,7 @@ pub mod providers;
 mod artifacts;
 
 pub mod jobs;
+pub mod mcp_config;
 pub mod plugin_ui;
 pub mod presets;
 pub mod skills;

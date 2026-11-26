@@ -279,6 +279,7 @@ impl ExternalTool for Tool {
         let command = build_command(&self.name, &args)?;
         let outcome = self.state.run(command, cancel).await?;
         Ok(ToolResult {
+            structured_content: None,
             content: serde_json::to_string(&outcome)
                 .map_err(|e| AppError::new("INTERNAL", e.to_string()))?,
             is_error: false,

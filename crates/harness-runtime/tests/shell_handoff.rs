@@ -223,6 +223,7 @@ async fn non_shell_tool_times_out_unknown() {
             tokio::select! {
                 _ = cancel.cancelled() => Err(harness_runtime::model::cancelled()),
                 _ = tokio::time::sleep(Duration::from_secs(30)) => Ok(ToolResult {
+            structured_content: None,
                     content: "done".into(), is_error: false, diff: None, escalated: false,
                 }),
             }

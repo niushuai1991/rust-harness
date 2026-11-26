@@ -19,6 +19,7 @@ use tokio::sync::{broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 
 type PendingApproval = (ApprovalRequest, oneshot::Sender<bool>);
+type McpStartupStatuses = Mutex<HashMap<(String, String), (String, Option<String>)>>;
 static FILE_MUTATION: Mutex<()> = Mutex::new(());
 fn benchmark_timing(session: &str, phase: &str, started: std::time::Instant) {
     if std::env::var_os("RUST_HARNESS_BENCHMARK_TRACE").is_some() {
@@ -45,6 +46,47 @@ const AUTO_COMPACTION_THRESHOLD_RATIO: f64 = 0.8;
 const PLAN_MODE_HINT: &str = "\n\n当前处于计划模式：只能只读调查，不得产生项目或外部副作用。shell 工具仅允许只读命令（git 查询、文件查看与列表、搜索、系统信息、--version/--help），写文件、重定向、安装、构建、提权命令会被拒绝。请使用 plan_write 记录计划。如需并行调查，可用 agent_spawn 创建只读调研子代理（子代理同样处于计划模式，仅能只读探索），用 agent_wait 等待并收集其报告，agent_status 查询状态、agent_interrupt 中断。若需要开始执行，请调用 plan_exit 并等待用户明确批准；用户拒绝或无人在场时继续只读。";
 
 /// 工具并发上限合法性：必须有界（规范要求并发上限受控），上限 16 足够覆盖本地开发场景。
+fn resolve_mcp_cwd(root: &Path, requested: Option<&str>) -> AppResult<PathBuf> {
+    let root = std::fs::canonicalize(root).map_err(internal)?;
+    let Some(requested) = requested.filter(|path| !path.is_empty()) else {
+        return Ok(root);
+    };
+    let relative = Path::new(requested);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err(AppError::new(
+            "MCP_CONFIG",
+            "MCP 工作目录必须位于会话执行根内",
+        ));
+    }
+    let mut path = root.clone();
+    for part in relative.components() {
+        path.push(part.as_os_str());
+        let metadata = std::fs::symlink_metadata(&path).map_err(internal)?;
+        if metadata.file_type().is_symlink() {
+            return Err(AppError::new("MCP_CONFIG", "MCP 工作目录不能包含链接"));
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if metadata.file_attributes() & 0x400 != 0 {
+                return Err(AppError::new("MCP_CONFIG", "MCP 工作目录不能包含链接"));
+            }
+        }
+    }
+    let path = std::fs::canonicalize(path).map_err(internal)?;
+    if !path.starts_with(&root) || !path.is_dir() {
+        return Err(AppError::new(
+            "MCP_CONFIG",
+            "MCP 工作目录必须位于会话执行根内",
+        ));
+    }
+    Ok(path)
+}
+
 fn validate_concurrency_limit(limit: u64) -> AppResult<u32> {
     if !(1..=16).contains(&limit) {
         return Err(AppError::new(
@@ -131,9 +173,24 @@ pub struct Runtime {
     unattended: std::sync::atomic::AtomicBool,
     approval_policies: Mutex<HashMap<String, ApprovalPolicy>>,
     default_approval_policy: Mutex<Option<ApprovalPolicy>>,
-    pub mcp: harness_extensions::mcp::McpManager,
+    pub mcp: Arc<harness_extensions::mcp::McpManager>,
+    pub mcp_config: crate::mcp_config::McpConfigService,
     pub lsp: Arc<harness_extensions::lsp::LspManager>,
-    mcp_scopes: Mutex<HashMap<String, String>>,
+    mcp_scopes: Mutex<HashMap<String, (String, String)>>,
+    mcp_gate: tokio::sync::Mutex<()>,
+    mcp_pending: Mutex<HashMap<(String, String), String>>,
+    mcp_startup_status: McpStartupStatuses,
+    mcp_session_owners: Mutex<HashMap<String, String>>,
+    mcp_bound_configs: Mutex<
+        HashMap<
+            String,
+            (
+                crate::mcp_config::McpScope,
+                crate::mcp_config::McpServerConfig,
+            ),
+        >,
+    >,
+    mcp_leases: Mutex<HashMap<String, harness_platform::WorkspaceLease>>,
     events: broadcast::Sender<LiveEvent>,
     pub(crate) active: Mutex<HashMap<String, CancellationToken>>,
     queues: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
@@ -149,6 +206,51 @@ pub struct Runtime {
 #[derive(Default)]
 struct SteeringState {
     run_id: Option<String>,
+}
+
+struct McpStartupGuard<'a> {
+    statuses: &'a McpStartupStatuses,
+    key: (String, String),
+    done: bool,
+}
+impl Drop for McpStartupGuard<'_> {
+    fn drop(&mut self) {
+        if !self.done {
+            self.statuses.lock().unwrap().insert(
+                self.key.clone(),
+                ("failed".into(), Some("CANCELLED".into())),
+            );
+        }
+    }
+}
+
+struct McpConnectionGuard {
+    manager: Arc<harness_extensions::mcp::McpManager>,
+    id: String,
+    armed: bool,
+}
+impl Drop for McpConnectionGuard {
+    fn drop(&mut self) {
+        if self.armed
+            && let Ok(handle) = tokio::runtime::Handle::try_current()
+        {
+            let manager = self.manager.clone();
+            let id = self.id.clone();
+            handle.spawn(async move {
+                let _ = manager.disconnect(&id).await;
+            });
+        }
+    }
+}
+
+struct McpPending<'a> {
+    pending: &'a Mutex<HashMap<(String, String), String>>,
+    key: (String, String),
+}
+impl Drop for McpPending<'_> {
+    fn drop(&mut self) {
+        self.pending.lock().unwrap().remove(&self.key);
+    }
 }
 
 /// 回合执行上下文：执行根、执行模式、shell 沙箱 capability 派生 id 与 worktree 模式的分支名。
@@ -229,6 +331,7 @@ impl Runtime {
             presets: crate::presets::PresetService::new(store.clone(), models.clone()),
             skills: crate::skills::SkillService::new(store.clone()),
             models,
+            mcp_config: crate::mcp_config::McpConfigService::new(store.clone()),
             store,
             workspaces,
             plugins,
@@ -237,10 +340,16 @@ impl Runtime {
             unattended: std::sync::atomic::AtomicBool::new(false),
             approval_policies: Mutex::new(HashMap::new()),
             default_approval_policy: Mutex::new(None),
-            mcp: harness_extensions::mcp::McpManager::new(),
+            mcp: Arc::new(harness_extensions::mcp::McpManager::new()),
             lsp: Arc::new(harness_extensions::lsp::LspManager::new()),
             jobs: Default::default(),
             mcp_scopes: Mutex::new(HashMap::new()),
+            mcp_gate: tokio::sync::Mutex::new(()),
+            mcp_pending: Mutex::new(HashMap::new()),
+            mcp_startup_status: Mutex::new(HashMap::new()),
+            mcp_session_owners: Mutex::new(HashMap::new()),
+            mcp_bound_configs: Mutex::new(HashMap::new()),
+            mcp_leases: Mutex::new(HashMap::new()),
             events,
             active: Mutex::new(HashMap::new()),
             queues: Mutex::new(HashMap::new()),
@@ -381,11 +490,36 @@ impl Runtime {
             .session_queue(session)
             .try_lock_owned()
             .map_err(|_| AppError::new("PLAN_MODE_BUSY", "会话正在运行，不能切换计划模式"))?;
+        let _mcp_guard = if enabled {
+            Some(self.mcp_gate.try_lock().map_err(|_| {
+                AppError::new("PLAN_MODE_BUSY", "MCP 连接正在变化，不能切换计划模式")
+            })?)
+        } else {
+            None
+        };
         let info = self.store.session(session).await?;
         if self.session_plan_get(session).await? == enabled {
             return Ok(());
         }
         if enabled {
+            let has_mcp = self
+                .mcp_session_owners
+                .lock()
+                .unwrap()
+                .values()
+                .any(|owner| owner == session)
+                || self
+                    .mcp_pending
+                    .lock()
+                    .unwrap()
+                    .keys()
+                    .any(|(owner, _)| owner == session);
+            if has_mcp {
+                return Err(AppError::new(
+                    "PLAN_MODE_BUSY",
+                    "请先断开此会话的 MCP 连接，再进入计划模式",
+                ));
+            }
             // 无项目会话（workspace_id 哨兵空串）无 worktree 语义，直接进入计划模式。
             let workspace = if info.workspace_id.is_empty() {
                 None
@@ -506,13 +640,51 @@ impl Runtime {
     ) -> AppResult<()> {
         use harness_extensions::mcp::ServerConfig;
         let info = self.workspaces.get(workspace)?;
-        if self.mcp_scopes.lock().unwrap().contains_key(config.id()) {
+        let external_id = config.id().to_owned();
+        if external_id.is_empty()
+            || external_id.len() > 100
+            || !external_id
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        {
+            return Err(AppError::new("MCP_CONFIG", "服务器标识无效"));
+        }
+        let _gate = self.mcp_gate.lock().await;
+        let internal_id = loop {
+            let candidate = format!(
+                "{}-{}",
+                &external_id[..external_id.len().min(8)],
+                &uuid::Uuid::new_v4().simple().to_string()[..24]
+            );
+            if !self.mcp_scopes.lock().unwrap().contains_key(&candidate) {
+                break candidate;
+            }
+        };
+        if self
+            .mcp_scopes
+            .lock()
+            .unwrap()
+            .values()
+            .any(|(owner, name)| owner == workspace && name == &external_id)
+        {
             return Err(AppError::new("MCP_DUPLICATE", "请先断开同名MCP连接"));
         }
-        match &config {
-            ServerConfig::StreamableHttp { .. } => self.mcp.connect_http(&config, true).await?,
+        let internal_config = match config {
+            ServerConfig::StreamableHttp { url, .. } => ServerConfig::StreamableHttp {
+                id: internal_id.clone(),
+                url,
+            },
+            ServerConfig::Stdio { command, args, .. } => ServerConfig::Stdio {
+                id: internal_id.clone(),
+                command,
+                args,
+            },
+        };
+        match &internal_config {
+            ServerConfig::StreamableHttp { .. } => {
+                self.mcp.connect_http(&internal_config, true).await?
+            }
             ServerConfig::Stdio { command, args, .. } => {
-                // 直接模式与 worktree 模式不建隔离副本，沙箱 stdio 反推租约失败；v1 明确不支持。
                 if info.execution_mode != ExecutionMode::Replica {
                     return Err(AppError::new(
                         "UNSUPPORTED",
@@ -528,20 +700,652 @@ impl Runtime {
                 .await?;
                 let (read, write) = tokio::io::split(child);
                 self.mcp
-                    .connect_sandboxed_stdio(&config, read, write, true)
+                    .connect_sandboxed_stdio(&internal_config, read, write, true)
                     .await?;
             }
         }
         self.mcp_scopes
             .lock()
             .unwrap()
-            .insert(config.id().into(), workspace.into());
+            .insert(internal_id, (workspace.into(), external_id));
         Ok(())
     }
-    pub async fn disconnect_mcp(&self, id: &str) -> AppResult<()> {
-        self.mcp.disconnect(id).await?;
-        self.mcp_scopes.lock().unwrap().remove(id);
+
+    pub async fn save_mcp_config(
+        &self,
+        scope: crate::mcp_config::McpScope,
+        config: crate::mcp_config::McpServerConfig,
+    ) -> AppResult<()> {
+        {
+            let _gate = self.mcp_gate.lock().await;
+            self.mcp_config.save(scope, config).await?;
+        }
+        self.close_stale_mcp_connections().await
+    }
+
+    pub async fn remove_mcp_config(
+        &self,
+        scope: crate::mcp_config::McpScope,
+        id: &str,
+    ) -> AppResult<()> {
+        {
+            let _gate = self.mcp_gate.lock().await;
+            self.mcp_config.remove(scope, id).await?;
+        }
+        self.close_stale_mcp_connections().await
+    }
+
+    async fn close_stale_mcp_connections(&self) -> AppResult<()> {
+        let bindings = self.mcp_bound_configs.lock().unwrap().clone();
+        let owners = self.mcp_session_owners.lock().unwrap().clone();
+        for (key, (scope, config)) in bindings {
+            let Some(session_id) = owners.get(&key) else {
+                continue;
+            };
+            let valid = if let Ok(session) = self.store.session(session_id).await {
+                self.mcp_config
+                    .effective(Some(&session.workspace_id))
+                    .await?
+                    .iter()
+                    .any(|entry| {
+                        entry.trusted
+                            && entry.config.enabled
+                            && entry.scope == scope
+                            && entry.config == config
+                    })
+            } else {
+                false
+            };
+            if !valid {
+                match self.disconnect_session_mcp_key(session_id, &key).await {
+                    Ok(()) => {}
+                    Err(error) if error.code == "MCP_UNAVAILABLE" => {}
+                    Err(error) => return Err(error),
+                }
+            }
+        }
         Ok(())
+    }
+
+    async fn ensure_session_mcp(
+        &self,
+        session_id: &str,
+        workspace: &str,
+        cancel: &CancellationToken,
+    ) -> AppResult<()> {
+        use futures::StreamExt;
+        let servers = self.mcp_config.effective(Some(workspace)).await?;
+        let parent = self.parents.lock().unwrap().get(session_id).cloned();
+        let mut jobs = futures::stream::iter(servers.into_iter().filter(|entry| entry.config.enabled))
+            .map(|entry| {
+                let parent = parent.clone();
+                async move {
+                    if !entry.trusted {
+                        self.append(session_id, "mcp.startup.failed", json!({"server":entry.config.id,"code":"MCP_UNTRUSTED"})).await?;
+                        return Ok(());
+                    }
+                    let existing = {
+                        let scopes = self.mcp_scopes.lock().unwrap();
+                        let owners = self.mcp_session_owners.lock().unwrap();
+                        scopes.iter().find_map(|(id, (_, name))| {
+                            let owner = owners.get(id)?;
+                            if name == &entry.config.id && (owner == session_id || parent.as_ref() == Some(owner)) {
+                                Some((id.clone(), owner.clone()))
+                            } else { None }
+                        })
+                    };
+                    let exists = if let Some((id, owner)) = existing {
+                        if self.mcp.is_connected(&id).await { true } else {
+                            let _ = self.disconnect_session_mcp_key(&owner, &id).await;
+                            false
+                        }
+                    } else { false };
+                    if !exists {
+                        let result = tokio::select! {
+                            _ = cancel.cancelled() => return Err(cancelled()),
+                            result = self.connect_saved_session_mcp(session_id, &entry.config.id) => result,
+                        };
+                        if let Err(error) = result {
+                            self.append(session_id, "mcp.startup.failed", json!({"server":entry.config.id,"code":error.code})).await?;
+                        }
+                    }
+                    Ok(())
+                }
+            })
+            .buffer_unordered(4);
+        while let Some(result) = jobs.next().await {
+            result?;
+        }
+        Ok(())
+    }
+
+    pub async fn connect_saved_session_mcp(&self, session_id: &str, id: &str) -> AppResult<()> {
+        let key = (session_id.to_owned(), id.to_owned());
+        self.mcp_startup_status
+            .lock()
+            .unwrap()
+            .insert(key.clone(), ("connecting".into(), None));
+        let mut guard = McpStartupGuard {
+            statuses: &self.mcp_startup_status,
+            key: key.clone(),
+            done: false,
+        };
+        let result = self.connect_saved_session_mcp_inner(session_id, id).await;
+        let status = match &result {
+            Ok(()) => ("connected".into(), None),
+            Err(error) => ("failed".into(), Some(error.code.clone())),
+        };
+        self.mcp_startup_status.lock().unwrap().insert(key, status);
+        guard.done = true;
+        result
+    }
+
+    async fn connect_saved_session_mcp_inner(&self, session_id: &str, id: &str) -> AppResult<()> {
+        use crate::mcp_config::McpTransport;
+        use harness_extensions::mcp::ServerConfig;
+        let session = self.store.session(session_id).await?;
+        let entry = self
+            .mcp_config
+            .effective(Some(&session.workspace_id))
+            .await?
+            .into_iter()
+            .find(|entry| entry.config.id == id)
+            .ok_or_else(|| AppError::new("MCP_CONFIG", "服务器配置不存在"))?;
+        if !entry.config.enabled || !entry.trusted {
+            return Err(AppError::new("MCP_UNTRUSTED", "服务器未启用或尚未获得信任"));
+        }
+        let saved_config = entry.config.clone();
+        let saved_scope = entry.scope.clone();
+        let config = match entry.config.transport {
+            McpTransport::StreamableHttp { url, .. } => ServerConfig::StreamableHttp {
+                id: id.to_owned(),
+                url,
+            },
+            McpTransport::Stdio { command, args, .. } => ServerConfig::Stdio {
+                id: id.to_owned(),
+                command,
+                args,
+            },
+        };
+        self.connect_session_mcp_inner(session_id, config, Some((saved_scope, saved_config)))
+            .await
+    }
+
+    pub async fn session_mcp_status(&self, session_id: &str) -> AppResult<Vec<Value>> {
+        let session = self.store.session(session_id).await?;
+        let configs = self
+            .mcp_config
+            .effective(Some(&session.workspace_id))
+            .await?;
+        let connections = self.mcp_connections().await;
+        let statuses = self.mcp_startup_status.lock().unwrap().clone();
+        Ok(configs.into_iter().map(|entry| {
+            let key = (session_id.to_owned(), entry.config.id.clone());
+            let existing = connections.iter().find(|value| value["sessionId"].as_str() == Some(session_id) && value["id"].as_str() == Some(entry.config.id.as_str()));
+            let stored = statuses.get(&key);
+            let status = if !entry.config.enabled { "disabled" }
+                else if !entry.trusted { "untrusted" }
+                else if let Some(connection) = existing { connection["status"].as_str().unwrap_or("disconnected") }
+                else { stored.map(|value| value.0.as_str()).unwrap_or("disconnected") };
+            json!({"id":entry.config.id,"status":status,"code":stored.and_then(|value| value.1.as_deref())})
+        }).collect())
+    }
+
+    pub async fn connect_session_mcp(
+        &self,
+        session_id: &str,
+        config: harness_extensions::mcp::ServerConfig,
+    ) -> AppResult<()> {
+        self.connect_session_mcp_inner(session_id, config, None)
+            .await
+    }
+
+    async fn connect_session_mcp_inner(
+        &self,
+        session_id: &str,
+        config: harness_extensions::mcp::ServerConfig,
+        binding: Option<(
+            crate::mcp_config::McpScope,
+            crate::mcp_config::McpServerConfig,
+        )>,
+    ) -> AppResult<()> {
+        use harness_extensions::mcp::ServerConfig;
+        let session = self.store.session(session_id).await?;
+        if self.session_plan_get(session_id).await? {
+            return Err(AppError::new(
+                "PLAN_MODE_READ_ONLY",
+                "计划模式不启动 MCP 服务器",
+            ));
+        }
+        let external_id = config.id().to_owned();
+        if external_id.is_empty()
+            || external_id.len() > 100
+            || !external_id
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        {
+            return Err(AppError::new("MCP_CONFIG", "服务器标识无效"));
+        }
+        let parent = self.parents.lock().unwrap().get(session_id).cloned();
+        let exec = self
+            .resolve_exec_root(
+                &session.workspace_id,
+                session_id,
+                session.execution_mode,
+                parent.as_deref(),
+            )
+            .await?;
+        let key = (session_id.to_owned(), external_id.clone());
+        let internal_id = {
+            let _gate = self.mcp_gate.lock().await;
+            if self.session_plan_get(session_id).await? {
+                return Err(AppError::new(
+                    "PLAN_MODE_READ_ONLY",
+                    "计划模式不启动 MCP 服务器",
+                ));
+            }
+            let scopes = self.mcp_scopes.lock().unwrap();
+            let owners = self.mcp_session_owners.lock().unwrap();
+            let mut pending = self.mcp_pending.lock().unwrap();
+            if pending.contains_key(&key)
+                || scopes.iter().any(|(id, (_, name))| {
+                    name == &external_id && owners.get(id).is_some_and(|owner| owner == session_id)
+                })
+            {
+                return Err(AppError::new("MCP_DUPLICATE", "请先断开同名 MCP 连接"));
+            }
+            let internal_id = loop {
+                let candidate = format!(
+                    "{}-{}",
+                    &external_id[..external_id.len().min(8)],
+                    &uuid::Uuid::new_v4().simple().to_string()[..24]
+                );
+                if !scopes.contains_key(&candidate) && !pending.values().any(|id| id == &candidate)
+                {
+                    break candidate;
+                }
+            };
+            pending.insert(key.clone(), internal_id.clone());
+            internal_id
+        };
+        let _pending = McpPending {
+            pending: &self.mcp_pending,
+            key,
+        };
+        let config = match config {
+            ServerConfig::StreamableHttp { url, .. } => ServerConfig::StreamableHttp {
+                id: internal_id.clone(),
+                url,
+            },
+            ServerConfig::Stdio { command, args, .. } => ServerConfig::Stdio {
+                id: internal_id.clone(),
+                command,
+                args,
+            },
+        };
+        let options = binding
+            .as_ref()
+            .map(|(_, config)| harness_extensions::mcp::ConnectionOptions {
+                startup_timeout: std::time::Duration::from_secs(config.startup_timeout_secs),
+                tool_timeout: std::time::Duration::from_secs(config.tool_timeout_secs),
+                enabled_tools: config
+                    .enabled_tools
+                    .as_ref()
+                    .map(|tools| tools.iter().cloned().collect()),
+                disabled_tools: config.disabled_tools.iter().cloned().collect(),
+            })
+            .unwrap_or_default();
+        let lease = if session.workspace_id.is_empty()
+            || matches!(config, ServerConfig::StreamableHttp { .. })
+        {
+            None
+        } else {
+            Some(self.workspaces.acquire(&session.workspace_id)?)
+        };
+        match &config {
+            ServerConfig::StreamableHttp { .. } => {
+                let headers = match &binding {
+                    Some((_, saved)) => match &saved.transport {
+                        crate::mcp_config::McpTransport::StreamableHttp { headers, .. } => {
+                            crate::mcp_config::resolve_references(headers)?
+                        }
+                        _ => return Err(AppError::new("MCP_CONFIG", "传输配置不匹配")),
+                    },
+                    None => Default::default(),
+                };
+                self.mcp
+                    .connect_http_with_options(&config, &headers, true, &options)
+                    .await?
+            }
+            ServerConfig::Stdio { command, args, .. } => {
+                let (cwd, env) = match &binding {
+                    Some((_, saved)) => match &saved.transport {
+                        crate::mcp_config::McpTransport::Stdio { cwd, env, .. } => (
+                            resolve_mcp_cwd(&exec.root, cwd.as_deref())?,
+                            crate::mcp_config::resolve_references(env)?,
+                        ),
+                        _ => return Err(AppError::new("MCP_CONFIG", "传输配置不匹配")),
+                    },
+                    None => (exec.root.clone(), Default::default()),
+                };
+                let child = ShellService::spawn_stdio_with_env(
+                    &cwd,
+                    &exec.capability_id,
+                    command,
+                    args,
+                    CancellationToken::new(),
+                    exec.mode != ExecutionMode::Direct,
+                    &env,
+                )
+                .await?;
+                let (read, write) = tokio::io::split(child);
+                self.mcp
+                    .connect_stdio_with_options(&config, read, write, true, &options)
+                    .await?;
+            }
+        }
+        let mut connection_guard = McpConnectionGuard {
+            manager: self.mcp.clone(),
+            id: internal_id.clone(),
+            armed: true,
+        };
+        let _publish = self.mcp_gate.lock().await;
+        if let Some((scope, saved)) = &binding {
+            let current = match self.mcp_config.effective(Some(&session.workspace_id)).await {
+                Ok(current) => current,
+                Err(error) => {
+                    let _ = self.mcp.disconnect(&internal_id).await;
+                    return Err(error);
+                }
+            };
+            if !current.iter().any(|entry| {
+                entry.trusted
+                    && entry.config.enabled
+                    && &entry.scope == scope
+                    && &entry.config == saved
+            }) {
+                let _ = self.mcp.disconnect(&internal_id).await;
+                return Err(AppError::new("MCP_CONFIG", "连接期间服务器配置已变更"));
+            }
+        }
+        self.mcp_scopes
+            .lock()
+            .unwrap()
+            .insert(internal_id.clone(), (session.workspace_id, external_id));
+        if let Some(binding) = binding {
+            self.mcp_bound_configs
+                .lock()
+                .unwrap()
+                .insert(internal_id.clone(), binding);
+        }
+        self.mcp_session_owners
+            .lock()
+            .unwrap()
+            .insert(internal_id.clone(), session_id.to_owned());
+        if let Some(lease) = lease {
+            self.mcp_leases.lock().unwrap().insert(internal_id, lease);
+        }
+        connection_guard.armed = false;
+        Ok(())
+    }
+
+    pub async fn session_mcp_tools(&self, session_id: &str) -> AppResult<Vec<ToolDefinition>> {
+        let session = self.store.session(session_id).await?;
+        let parent = self.parents.lock().unwrap().get(session_id).cloned();
+        let ids: Vec<String> = {
+            let owners = self.mcp_session_owners.lock().unwrap();
+            owners
+                .iter()
+                .filter(|(_, owner)| {
+                    owner.as_str() == session_id || parent.as_deref() == Some(owner.as_str())
+                })
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        let bindings = self.mcp_bound_configs.lock().unwrap().clone();
+        let effective = self
+            .mcp_config
+            .effective(Some(&session.workspace_id))
+            .await?;
+        let prefixes: Vec<String> = ids
+            .into_iter()
+            .filter(|id| match bindings.get(id) {
+                None => true,
+                Some((scope, config)) => effective.iter().any(|entry| {
+                    entry.trusted
+                        && entry.config.enabled
+                        && &entry.scope == scope
+                        && &entry.config == config
+                }),
+            })
+            .map(|id| format!("mcp__{id}__"))
+            .collect();
+        Ok(self
+            .mcp
+            .tool_definitions()
+            .await
+            .into_iter()
+            .filter(|tool| prefixes.iter().any(|prefix| tool.name.starts_with(prefix)))
+            .collect())
+    }
+
+    pub async fn call_session_mcp(
+        &self,
+        session_id: &str,
+        name: &str,
+        args: Value,
+        cancel: CancellationToken,
+    ) -> AppResult<ToolResult> {
+        let id = name
+            .strip_prefix("mcp__")
+            .and_then(|n| n.split_once("__"))
+            .map(|(id, _)| id)
+            .ok_or_else(|| AppError::new("MCP_UNAVAILABLE", "MCP 工具名称无效"))?;
+        let parent = self.parents.lock().unwrap().get(session_id).cloned();
+        let allowed = self
+            .mcp_session_owners
+            .lock()
+            .unwrap()
+            .get(id)
+            .is_some_and(|owner| owner == session_id || parent.as_ref() == Some(owner));
+        if !allowed {
+            return Err(AppError::new(
+                "MCP_UNAVAILABLE",
+                "当前会话无法使用此 MCP 工具",
+            ));
+        }
+        if !self
+            .session_mcp_tools(session_id)
+            .await?
+            .iter()
+            .any(|tool| tool.name == name)
+        {
+            return Err(AppError::new("MCP_UNAVAILABLE", "服务器配置已变更或不可用"));
+        }
+        self.mcp.execute_tool(name, args, cancel).await
+    }
+
+    pub async fn disconnect_session_mcp(&self, session_id: &str, name: &str) -> AppResult<()> {
+        let internal = {
+            let scopes = self.mcp_scopes.lock().unwrap();
+            let owners = self.mcp_session_owners.lock().unwrap();
+            scopes
+                .iter()
+                .find(|(id, (_, server))| {
+                    server == name && owners.get(*id).is_some_and(|owner| owner == session_id)
+                })
+                .map(|(id, _)| id.clone())
+                .ok_or_else(|| AppError::new("MCP_UNAVAILABLE", "会话 MCP 连接不存在"))?
+        };
+        self.disconnect_session_mcp_key(session_id, &internal).await
+    }
+
+    async fn disconnect_session_mcp_key(&self, session_id: &str, internal: &str) -> AppResult<()> {
+        let _gate = self.mcp_gate.lock().await;
+        let name = {
+            let scopes = self.mcp_scopes.lock().unwrap();
+            let owners = self.mcp_session_owners.lock().unwrap();
+            if !owners
+                .get(internal)
+                .is_some_and(|owner| owner == session_id)
+            {
+                return Err(AppError::new("MCP_UNAVAILABLE", "会话 MCP 连接不存在"));
+            }
+            scopes
+                .get(internal)
+                .map(|(_, name)| name.clone())
+                .ok_or_else(|| AppError::new("MCP_UNAVAILABLE", "会话 MCP 连接不存在"))?
+        };
+        self.mcp_session_owners.lock().unwrap().remove(internal);
+        self.mcp_bound_configs.lock().unwrap().remove(internal);
+        self.mcp_scopes.lock().unwrap().remove(internal);
+        let result = self.mcp.disconnect(internal).await;
+        self.mcp_leases.lock().unwrap().remove(internal);
+        self.mcp_startup_status
+            .lock()
+            .unwrap()
+            .insert((session_id.to_owned(), name), ("disconnected".into(), None));
+        result
+    }
+
+    pub async fn scoped_mcp_tools(&self, workspace: &str) -> Vec<ToolDefinition> {
+        let session_owned: HashSet<String> = self
+            .mcp_session_owners
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        let allowed: Vec<String> = self
+            .mcp_scopes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(id, (owner, _))| owner == workspace && !session_owned.contains(*id))
+            .map(|(id, _)| format!("mcp__{id}__"))
+            .collect();
+        self.mcp
+            .tool_definitions()
+            .await
+            .into_iter()
+            .filter(|tool| allowed.iter().any(|prefix| tool.name.starts_with(prefix)))
+            .collect()
+    }
+
+    pub async fn call_scoped_mcp(
+        &self,
+        workspace: &str,
+        name: &str,
+        args: Value,
+        cancel: CancellationToken,
+    ) -> AppResult<ToolResult> {
+        let id = name
+            .strip_prefix("mcp__")
+            .and_then(|n| n.split_once("__"))
+            .map(|(id, _)| id)
+            .ok_or_else(|| AppError::new("MCP_UNAVAILABLE", "MCP 工具名称无效"))?;
+        let gate = self.mcp_gate.lock().await;
+        if self.mcp_session_owners.lock().unwrap().contains_key(id) {
+            return Err(AppError::new(
+                "MCP_UNAVAILABLE",
+                "当前工作区无法使用此 MCP 工具",
+            ));
+        }
+        let allowed = self
+            .mcp_scopes
+            .lock()
+            .unwrap()
+            .get(id)
+            .is_some_and(|(owner, _)| owner == workspace);
+        if !allowed {
+            return Err(AppError::new(
+                "MCP_UNAVAILABLE",
+                "当前工作区无法使用此 MCP 工具",
+            ));
+        }
+        drop(gate);
+        self.mcp.execute_tool(name, args, cancel).await
+    }
+
+    pub async fn scoped_mcp_resources(
+        &self,
+        workspace: &str,
+        id: &str,
+        uri: Option<&str>,
+    ) -> AppResult<Value> {
+        let gate = self.mcp_gate.lock().await;
+        let session_owned: HashSet<String> = self
+            .mcp_session_owners
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        let internal = self
+            .mcp_scopes
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(key, (owner, external))| {
+                owner == workspace && external == id && !session_owned.contains(*key)
+            })
+            .map(|(id, _)| id.clone())
+            .ok_or_else(|| AppError::new("MCP_UNAVAILABLE", "MCP 连接不存在"))?;
+        drop(gate);
+        match uri {
+            Some(uri) => self.mcp.read_resource(&internal, uri).await,
+            None => self.mcp.list_resources(&internal).await,
+        }
+    }
+
+    pub async fn disconnect_scoped_mcp(&self, workspace: &str, id: &str) -> AppResult<()> {
+        let _gate = self.mcp_gate.lock().await;
+        let session_owned: HashSet<String> = self
+            .mcp_session_owners
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        let internal = self
+            .mcp_scopes
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(key, (owner, external))| {
+                owner == workspace && external == id && !session_owned.contains(*key)
+            })
+            .map(|(id, _)| id.clone())
+            .ok_or_else(|| AppError::new("MCP_UNAVAILABLE", "MCP 连接不存在"))?;
+        self.mcp.disconnect(&internal).await?;
+        self.mcp_scopes.lock().unwrap().remove(&internal);
+        Ok(())
+    }
+
+    pub async fn disconnect_mcp(&self, id: &str) -> AppResult<()> {
+        let session_owned: HashSet<String> = self
+            .mcp_session_owners
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        let scopes: Vec<String> = self
+            .mcp_scopes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(key, (_, external))| external == id && !session_owned.contains(*key))
+            .map(|(_, (workspace, _))| workspace.clone())
+            .collect();
+        match scopes.as_slice() {
+            [workspace] => self.disconnect_scoped_mcp(workspace, id).await,
+            [] => Err(AppError::new("MCP_UNAVAILABLE", "MCP 连接不存在")),
+            _ => Err(AppError::new(
+                "MCP_AMBIGUOUS",
+                "同名连接属于多个工作区，请指定工作区",
+            )),
+        }
     }
     /// Test and SDK seam: register an LSP connection whose pipes the caller created.
     /// Production spawns the server via `ShellService::spawn_stdio` in `ensure_running`.
@@ -730,13 +1534,23 @@ impl Runtime {
             _ => Err(AppError::new("TOOL_UNAVAILABLE", name)),
         }
     }
-    pub fn mcp_connections(&self) -> Vec<Value> {
-        self.mcp_scopes
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(id, workspace)| json!({"id":id,"workspaceId":workspace}))
-            .collect()
+    pub async fn mcp_connections(&self) -> Vec<Value> {
+        let (owners, scopes) = {
+            let _gate = self.mcp_gate.lock().await;
+            let scopes = self.mcp_scopes.lock().unwrap().clone();
+            let owners = self.mcp_session_owners.lock().unwrap().clone();
+            (owners, scopes)
+        };
+        let mut result = Vec::new();
+        for (key, (workspace, id)) in scopes {
+            let status = if self.mcp.is_connected(&key).await {
+                "connected"
+            } else {
+                "disconnected"
+            };
+            result.push(json!({"id":id,"workspaceId":workspace,"sessionId":owners.get(&key),"status":status}));
+        }
+        result
     }
     pub async fn append(&self, id: &str, kind: &str, data: Value) -> AppResult<SessionEvent> {
         let event = self.store.append(id, kind, data).await?;
@@ -1622,6 +2436,7 @@ impl Runtime {
         let mut step = 0usize;
         // 请求前自动压缩每回合最多尝试一次：失败不无限重试，避免反复请求溢出。
         let mut auto_compaction_tried = false;
+        let mut mcp_initialized = false;
         loop {
             if cancel.is_cancelled() {
                 return Err(token_budget.error().unwrap_or_else(cancelled));
@@ -1630,6 +2445,10 @@ impl Runtime {
             self.apply_steering(session, root).await?;
             let mut tools = builtin_tools();
             let plan_mode = self.session_plan_get(session).await?;
+            if !plan_mode && !mcp_initialized {
+                self.ensure_session_mcp(session, workspace, &cancel).await?;
+                mcp_initialized = true;
+            }
             if plan_mode {
                 // 计划模式仅额外暴露受信只读编排工具（agent_wait 收集调研子代理报告），
                 // 按注册名过滤，不触碰未受信工具；其余插件/MCP/自定义扩展一律不加载、钩子不执行。
@@ -1644,21 +2463,7 @@ impl Runtime {
             } else {
                 tools.extend(self.plugins.tool_definitions(workspace)?);
                 tools.extend(self.custom.lock().unwrap().values().map(|t| t.definition()));
-                let scoped_servers = self
-                    .mcp_scopes
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .filter(|(_, w)| w.as_str() == workspace)
-                    .map(|(id, _)| format!("mcp__{id}__"))
-                    .collect::<Vec<_>>();
-                tools.extend(
-                    self.mcp
-                        .tool_definitions()
-                        .await
-                        .into_iter()
-                        .filter(|t| scoped_servers.iter().any(|p| t.name.starts_with(p))),
-                );
+                tools.extend(self.session_mcp_tools(session).await?);
             }
             let context_hooks = if plan_mode {
                 Vec::new()
@@ -2517,6 +3322,7 @@ impl Runtime {
                     }
                 };
                 return Ok(ToolResult {
+                    structured_content: None,
                     content: serde_json::to_string(&output).map_err(internal)?,
                     is_error: output.exit_code != 0,
                     diff: None,
@@ -2680,10 +3486,22 @@ impl Runtime {
                     .await;
             }
             name if name.starts_with("mcp__") => {
-                return self.mcp.execute_tool(name, a.clone(), cancel).await;
+                let id = name
+                    .strip_prefix("mcp__")
+                    .and_then(|n| n.split_once("__"))
+                    .map(|(id, _)| id);
+                if id.is_some_and(|id| self.mcp_session_owners.lock().unwrap().contains_key(id)) {
+                    return self
+                        .call_session_mcp(&session, name, a.clone(), cancel)
+                        .await;
+                }
+                return self
+                    .call_scoped_mcp(&workspace, name, a.clone(), cancel)
+                    .await;
             }
             name if name.starts_with("lsp_") => {
                 return Ok(ToolResult {
+                    structured_content: None,
                     content: self
                         .execute_lsp_tool(name, &workspace, root, a, cancel)
                         .await?,
@@ -2717,6 +3535,7 @@ impl Runtime {
             }
         };
         Ok(ToolResult {
+            structured_content: None,
             content: text,
             is_error: false,
             diff,
@@ -2910,6 +3729,7 @@ impl Runtime {
         let mut result = match result {
             Ok(r) => r,
             Err(e) => ToolResult {
+                structured_content: None,
                 content: if status == "unknown" {
                     format!("{e}；操作可能已产生副作用，结果未知，未自动重试。")
                 } else {
@@ -2947,6 +3767,21 @@ impl Runtime {
             result.is_error = true;
         }
         let mut content = result.content;
+        let mut structured_content = result.structured_content;
+        let mut structured_artifact = None;
+        if let Some(value) = &structured_content {
+            let bytes = serde_json::to_vec(value).map_err(internal)?;
+            if bytes.len() > 64 * 1024 {
+                let hash = self.store.put_blob(&bytes).await?;
+                structured_artifact = Some(ArtifactMetadata {
+                    hash,
+                    name: format!("{}-structured.json", call.name),
+                    media_type: "application/json".into(),
+                    size: u32::try_from(bytes.len()).unwrap_or(u32::MAX),
+                });
+                structured_content = None;
+            }
+        }
         let result_diff = result.diff;
         // edit/write 结果事件带上文件路径（结果事件无 arguments，前端展示行级差异卡需要）。
         let result_path = if call.name.as_str() == "edit" || call.name.as_str() == "write" {
@@ -2974,6 +3809,8 @@ impl Runtime {
                 "callId": call.id,
                 "name": call.name,
                 "content": content,
+                "structuredContent": structured_content,
+                "structuredContentArtifact": structured_artifact,
                 "isError": result.is_error,
                 "status": status,
                 "artifact": artifact,
@@ -3362,6 +4199,7 @@ async fn handoff_shell_to_background(
         runtime.jobs.remove(&job);
     });
     Ok(ToolResult {
+        structured_content: None,
         content: format!(
             "前台执行达到 {limit_secs} 秒上限，命令已转入后台任务 {id} 继续运行；用 background_status 查询进度与结果，background_cancel 可取消。"
         ),

@@ -223,6 +223,7 @@ impl harness_runtime::ExternalTool for ApprovalProbe {
         _: CancellationToken,
     ) -> AppResult<ToolResult> {
         Ok(ToolResult {
+            structured_content: None,
             content: "ok".into(),
             is_error: false,
             diff: None,
@@ -394,6 +395,7 @@ impl harness_runtime::ExternalTool for NamedProbe {
         _: CancellationToken,
     ) -> AppResult<ToolResult> {
         Ok(ToolResult {
+            structured_content: None,
             content: "ok".into(),
             is_error: false,
             diff: None,

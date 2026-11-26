@@ -80,6 +80,8 @@ cargo run -p harness-cli -- acp
 Move-Item -LiteralPath "$env:LOCALAPPDATA\RustHarness" -Destination "$env:USERPROFILE\.RustHarness"
 ```
 
+有关服务器配置、信任和会话连接，请参阅 [MCP 服务器使用说明](docs/mcp-guide.md)。
+
 ## 🏗 架构
 
 - 桌面宿主 Tauri 2 + React 19；SQLite（WAL）事件存储为唯一事实来源，支持游标、恢复、全文检索与 JSONL 导出。

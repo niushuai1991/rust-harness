@@ -1052,6 +1052,7 @@ impl ExternalTool for Tool {
             _ => return Err(AppError::new("TOOL_UNAVAILABLE", &self.name)),
         };
         Ok(ToolResult {
+            structured_content: None,
             content: value.to_string(),
             is_error: false,
             diff: None,

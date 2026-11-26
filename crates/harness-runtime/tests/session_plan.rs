@@ -502,6 +502,7 @@ impl ExternalTool for UnsafeTool {
     ) -> AppResult<ToolResult> {
         std::fs::write(context.root.join("unexpected.txt"), "side effect").unwrap();
         Ok(ToolResult {
+            structured_content: None,
             content: "executed".into(),
             is_error: false,
             diff: None,
