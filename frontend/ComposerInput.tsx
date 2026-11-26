@@ -1,17 +1,183 @@
-import type {RefObject} from 'react';
-import type {SkillRow,SkillToken} from './skills';
-import type {SlashSpec} from './slashCommands';
+import type { RefObject } from "react";
+import type { SkillRow, SkillToken } from "./skills";
+import type { SlashSpec } from "./slashCommands";
 
-type ComposerInputProps={
- activeSkill:{items:SkillRow[];tok:SkillToken}|null; activeSlash:{items:SlashSpec[];token:string}|null;
- slashIndex:number; selectedOptionRef:RefObject<HTMLButtonElement|null>; textareaRef:RefObject<HTMLTextAreaElement|null>;
- applySkillCompletion:(row:SkillRow,token:SkillToken)=>void; executeSlash:(spec:SlashSpec)=>Promise<void>;
- sessionCreating:boolean; sessionId:string; drafting:boolean; draftWorkspaceId:string|null;
- projectName:(id:string)=>string; composerText:string; setComposerText:(value:string)=>void;
- setCursor:(value:number)=>void; setSlashIndex:(value:number)=>void;
- applyCompletion:(spec:SlashSpec,token:string)=>void; setDismissedToken:(value:string)=>void;
+type ComposerInputProps = {
+  activeSkill: { items: SkillRow[]; tok: SkillToken } | null;
+  activeSlash: { items: SlashSpec[]; token: string } | null;
+  slashIndex: number;
+  selectedOptionRef: RefObject<HTMLButtonElement | null>;
+  textareaRef: RefObject<HTMLTextAreaElement | null>;
+  applySkillCompletion: (row: SkillRow, token: SkillToken) => void;
+  executeSlash: (spec: SlashSpec) => Promise<void>;
+  sessionCreating: boolean;
+  sessionId: string;
+  drafting: boolean;
+  draftWorkspaceId: string | null;
+  projectName: (id: string) => string;
+  composerText: string;
+  setComposerText: (value: string) => void;
+  setCursor: (value: number) => void;
+  setSlashIndex: (value: number) => void;
+  applyCompletion: (spec: SlashSpec, token: string) => void;
+  setDismissedToken: (value: string) => void;
 };
 
-export function ComposerInput({activeSkill,activeSlash,slashIndex,selectedOptionRef,applySkillCompletion,executeSlash,textareaRef,sessionCreating,sessionId,drafting,draftWorkspaceId,projectName,composerText,setComposerText,setCursor,setSlashIndex,applyCompletion,setDismissedToken}:ComposerInputProps){
- return <>{activeSkill&&<div className="slash-menu" role="listbox" aria-label="技能补全">{activeSkill.items.map((row,index)=>{const selected=index===Math.min(slashIndex,activeSkill.items.length-1);return <button type="button" key={row.name} role="option" aria-selected={selected} ref={selected?selectedOptionRef:undefined} className={selected?'selected':undefined} onMouseDown={e=>{e.preventDefault();applySkillCompletion(row,activeSkill.tok)}}><strong>${row.name}</strong><span>{row.description||'（无描述）'}</span></button>})}</div>}{activeSlash&&<div className="slash-menu" role="listbox" aria-label="斜杠命令补全">{activeSlash.items.map((spec,index)=>{const selected=index===Math.min(slashIndex,activeSlash.items.length-1);return <button type="button" key={spec.name} role="option" aria-selected={selected} ref={selected?selectedOptionRef:undefined} className={selected?'selected':undefined} onMouseDown={e=>{e.preventDefault();void executeSlash(spec)}}><strong>/{spec.name}</strong><span>{spec.description}</span></button>})}</div>}<textarea aria-label="消息" ref={textareaRef} placeholder={sessionCreating?'正在准备会话…':sessionId?'描述任务，或继续你的想法…（输入 / 唤出命令）':drafting&&draftWorkspaceId!==null?`描述任务，发送后将在 ${projectName(draftWorkspaceId)} 创建会话（输入 / 唤出命令）`:'选择项目后开始协作'} value={composerText} onChange={e=>{setComposerText(e.target.value);setCursor(e.currentTarget.selectionStart??0)}} onSelect={e=>setCursor(e.currentTarget.selectionStart??0)} disabled={sessionCreating||(!sessionId&&!drafting)} onKeyDown={e=>{const menu=activeSlash,menuSkill=activeSkill;if(menu){if(e.key==='ArrowDown'){e.preventDefault();setSlashIndex(menu.items.length?(slashIndex+1)%menu.items.length:0);return}if(e.key==='ArrowUp'){e.preventDefault();setSlashIndex(menu.items.length?(slashIndex-1+menu.items.length)%menu.items.length:0);return}if(e.key==='Tab'){e.preventDefault();applyCompletion(menu.items[Math.min(slashIndex,menu.items.length-1)],menu.token);return}if(e.key==='Escape'){e.preventDefault();setDismissedToken(menu.token);return}if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();const spec=menu.items[Math.min(slashIndex,menu.items.length-1)];if(spec)void executeSlash(spec);return}}if(menuSkill){if(e.key==='ArrowDown'){e.preventDefault();setSlashIndex(menuSkill.items.length?(slashIndex+1)%menuSkill.items.length:0);return}if(e.key==='ArrowUp'){e.preventDefault();setSlashIndex(menuSkill.items.length?(slashIndex-1+menuSkill.items.length)%menuSkill.items.length:0);return}if(e.key==='Tab'||e.key==='Enter'){e.preventDefault();const row=menuSkill.items[Math.min(slashIndex,menuSkill.items.length-1)];if(row)applySkillCompletion(row,menuSkill.tok);return}if(e.key==='Escape'){e.preventDefault();setDismissedToken(menuSkill.tok.token);return}}if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit()}}}/></>;
+export function ComposerInput({
+  activeSkill,
+  activeSlash,
+  slashIndex,
+  selectedOptionRef,
+  applySkillCompletion,
+  executeSlash,
+  textareaRef,
+  sessionCreating,
+  sessionId,
+  drafting,
+  draftWorkspaceId,
+  projectName,
+  composerText,
+  setComposerText,
+  setCursor,
+  setSlashIndex,
+  applyCompletion,
+  setDismissedToken,
+}: ComposerInputProps) {
+  return (
+    <>
+      {activeSkill && (
+        <div className="slash-menu" role="listbox" aria-label="技能补全">
+          {activeSkill.items.map((row, index) => {
+            const selected = index === Math.min(slashIndex, activeSkill.items.length - 1);
+            return (
+              <button
+                type="button"
+                key={row.name}
+                role="option"
+                aria-selected={selected}
+                ref={selected ? selectedOptionRef : undefined}
+                className={selected ? "selected" : undefined}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  applySkillCompletion(row, activeSkill.tok);
+                }}
+              >
+                <strong>${row.name}</strong>
+                <span>{row.description || "（无描述）"}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {activeSlash && (
+        <div className="slash-menu" role="listbox" aria-label="斜杠命令补全">
+          {activeSlash.items.map((spec, index) => {
+            const selected = index === Math.min(slashIndex, activeSlash.items.length - 1);
+            return (
+              <button
+                type="button"
+                key={spec.name}
+                role="option"
+                aria-selected={selected}
+                ref={selected ? selectedOptionRef : undefined}
+                className={selected ? "selected" : undefined}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  void executeSlash(spec);
+                }}
+              >
+                <strong>/{spec.name}</strong>
+                <span>{spec.description}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      <textarea
+        aria-label="消息"
+        ref={textareaRef}
+        placeholder={
+          sessionCreating
+            ? "正在准备会话…"
+            : sessionId
+              ? "描述任务，或继续你的想法…（输入 / 唤出命令）"
+              : drafting && draftWorkspaceId !== null
+                ? `描述任务，发送后将在 ${projectName(draftWorkspaceId)} 创建会话（输入 / 唤出命令）`
+                : "选择项目后开始协作"
+        }
+        value={composerText}
+        onChange={(e) => {
+          setComposerText(e.target.value);
+          setCursor(e.currentTarget.selectionStart ?? 0);
+        }}
+        onSelect={(e) => setCursor(e.currentTarget.selectionStart ?? 0)}
+        disabled={sessionCreating || (!sessionId && !drafting)}
+        onKeyDown={(e) => {
+          const menu = activeSlash,
+            menuSkill = activeSkill;
+          if (menu) {
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setSlashIndex(menu.items.length ? (slashIndex + 1) % menu.items.length : 0);
+              return;
+            }
+            if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setSlashIndex(
+                menu.items.length ? (slashIndex - 1 + menu.items.length) % menu.items.length : 0,
+              );
+              return;
+            }
+            if (e.key === "Tab") {
+              e.preventDefault();
+              applyCompletion(menu.items[Math.min(slashIndex, menu.items.length - 1)], menu.token);
+              return;
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              setDismissedToken(menu.token);
+              return;
+            }
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              const spec = menu.items[Math.min(slashIndex, menu.items.length - 1)];
+              if (spec) void executeSlash(spec);
+              return;
+            }
+          }
+          if (menuSkill) {
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setSlashIndex(menuSkill.items.length ? (slashIndex + 1) % menuSkill.items.length : 0);
+              return;
+            }
+            if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setSlashIndex(
+                menuSkill.items.length
+                  ? (slashIndex - 1 + menuSkill.items.length) % menuSkill.items.length
+                  : 0,
+              );
+              return;
+            }
+            if (e.key === "Tab" || e.key === "Enter") {
+              e.preventDefault();
+              const row = menuSkill.items[Math.min(slashIndex, menuSkill.items.length - 1)];
+              if (row) applySkillCompletion(row, menuSkill.tok);
+              return;
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              setDismissedToken(menuSkill.tok.token);
+              return;
+            }
+          }
+          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            e.currentTarget.form?.requestSubmit();
+          }
+        }}
+      />
+    </>
+  );
 }

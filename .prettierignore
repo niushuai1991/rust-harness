@@ -1,0 +1,2 @@
+# Tauri Specta 生成的绑定不纳入版本控制。
+/frontend/bindings.ts

@@ -1,68 +1,134 @@
-import {afterEach,expect,it,vi} from 'vitest';
-import {act,cleanup,render,screen,waitFor} from '@testing-library/react';
-import {WebPanel} from './WebPanel';
-import {useSidePanel} from './sidePanelStore';
-const mocks=vi.hoisted(()=>({command:vi.fn().mockResolvedValue(undefined),handlers:new Map<string,(event:{payload:any})=>void>()}));
-vi.mock('@tauri-apps/api/core',()=>({isTauri:()=>true}));
-vi.mock('@tauri-apps/api/event',()=>({listen:async(name:string,handler:(event:{payload:any})=>void)=>{mocks.handlers.set(name,handler);return()=>mocks.handlers.delete(name)}}));
-vi.mock('./api',()=>({command:mocks.command,errorText:(e:unknown)=>String(e)}));
-afterEach(()=>{cleanup();vi.restoreAllMocks();useSidePanel.getState().reset()});
-const openCalls=()=>mocks.command.mock.calls.filter(c=>c[0]==='web_panel_open');
-it('网页视图随弹窗隐藏恢复，卸载时仅隐藏 webview 不销毁',async()=>{
- vi.spyOn(Element.prototype,'getBoundingClientRect').mockReturnValue({x:600,y:80,left:600,top:80,right:1000,bottom:800,width:400,height:720,toJSON(){}});
- const {unmount}=render(<WebPanel url="https://example.com"/>);
- await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('web_panel_open',{url:'https://example.com'}));
- await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('web_panel_bounds',{x:600,y:80,width:400,height:720,visible:true}));
- const overlay=document.createElement('div');overlay.className='overlay';document.body.appendChild(overlay);
- await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('web_panel_bounds',{x:600,y:80,width:400,height:720,visible:false}));
- overlay.remove();
- await waitFor(()=>expect(mocks.command.mock.calls.filter(call=>call[0]==='web_panel_bounds'&&call[1].visible)).toHaveLength(2));
- unmount();
- await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('web_panel_bounds',{x:0,y:0,width:0,height:0,visible:false}));
- expect(mocks.command).not.toHaveBeenCalledWith('web_panel_close');
+import { afterEach, expect, it, vi } from "vitest";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { WebPanel } from "./WebPanel";
+import { useSidePanel } from "./sidePanelStore";
+const mocks = vi.hoisted(() => ({
+  command: vi.fn().mockResolvedValue(undefined),
+  handlers: new Map<string, (event: { payload: any }) => void>(),
+}));
+vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true }));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: async (name: string, handler: (event: { payload: any }) => void) => {
+    mocks.handlers.set(name, handler);
+    return () => mocks.handlers.delete(name);
+  },
+}));
+vi.mock("./api", () => ({ command: mocks.command, errorText: (e: unknown) => String(e) }));
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  useSidePanel.getState().reset();
 });
-it('系统浏览器打开失败时显示错误',async()=>{
- mocks.command.mockImplementation(async(name:string)=>{if(name==='open_external_link')throw new Error('打开失败')});
- render(<WebPanel url="https://example.com"/>);
- screen.getByRole('button',{name:'浏览器打开'}).click();
- expect(await screen.findByRole('alert')).toHaveTextContent('打开失败');
+const openCalls = () => mocks.command.mock.calls.filter((c) => c[0] === "web_panel_open");
+it("网页视图随弹窗隐藏恢复，卸载时仅隐藏 webview 不销毁", async () => {
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
+    x: 600,
+    y: 80,
+    left: 600,
+    top: 80,
+    right: 1000,
+    bottom: 800,
+    width: 400,
+    height: 720,
+    toJSON() {},
+  });
+  const { unmount } = render(<WebPanel url="https://example.com" />);
+  await waitFor(() =>
+    expect(mocks.command).toHaveBeenCalledWith("web_panel_open", { url: "https://example.com" }),
+  );
+  await waitFor(() =>
+    expect(mocks.command).toHaveBeenCalledWith("web_panel_bounds", {
+      x: 600,
+      y: 80,
+      width: 400,
+      height: 720,
+      visible: true,
+    }),
+  );
+  const overlay = document.createElement("div");
+  overlay.className = "overlay";
+  document.body.appendChild(overlay);
+  await waitFor(() =>
+    expect(mocks.command).toHaveBeenCalledWith("web_panel_bounds", {
+      x: 600,
+      y: 80,
+      width: 400,
+      height: 720,
+      visible: false,
+    }),
+  );
+  overlay.remove();
+  await waitFor(() =>
+    expect(
+      mocks.command.mock.calls.filter((call) => call[0] === "web_panel_bounds" && call[1].visible),
+    ).toHaveLength(2),
+  );
+  unmount();
+  await waitFor(() =>
+    expect(mocks.command).toHaveBeenCalledWith("web_panel_bounds", {
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      visible: false,
+    }),
+  );
+  expect(mocks.command).not.toHaveBeenCalledWith("web_panel_close");
 });
-it('加载状态驱动地址栏与错误展示；回显地址不重复打开，新地址触发导航',async()=>{
- mocks.command.mockResolvedValue(undefined);
- const {rerender}=render(<WebPanel url="https://example.com"/>);
- await waitFor(()=>expect(openCalls()).toHaveLength(1));
- await waitFor(()=>expect(mocks.handlers.has('web-panel-load-status')).toBe(true));
- act(()=>mocks.handlers.get('web-panel-load-status')!({payload:[false,'https://example.com/x']}));
- expect(screen.getByRole('alert')).toHaveTextContent('网页加载失败');
- expect(screen.getByText('https://example.com/x')).toBeInTheDocument();
- expect(useSidePanel.getState().webUrl).toBe('https://example.com/x');
- act(()=>mocks.handlers.get('web-panel-load-status')!({payload:[true,'https://example.com/x']}));
- expect(screen.queryByRole('alert')).toBeNull();
- rerender(<WebPanel url="https://example.com/x"/>);
- expect(openCalls()).toHaveLength(1);
- rerender(<WebPanel url="https://example.com/y"/>);
- await waitFor(()=>expect(openCalls().at(-1)).toEqual(['web_panel_open',{url:'https://example.com/y'}]));
+it("系统浏览器打开失败时显示错误", async () => {
+  mocks.command.mockImplementation(async (name: string) => {
+    if (name === "open_external_link") throw new Error("打开失败");
+  });
+  render(<WebPanel url="https://example.com" />);
+  screen.getByRole("button", { name: "浏览器打开" }).click();
+  expect(await screen.findByRole("alert")).toHaveTextContent("打开失败");
 });
-it('网页中的 Escape 请求关闭面板',async()=>{
- act(()=>useSidePanel.getState().openWeb('https://example.com'));
- render(<WebPanel url="https://example.com"/>);
- await waitFor(()=>expect(mocks.handlers.has('web-panel-close-request')).toBe(true));
- expect(useSidePanel.getState().open).toBe(true);
- act(()=>mocks.handlers.get('web-panel-close-request')!({payload:null}));
- expect(useSidePanel.getState().open).toBe(false);
+it("加载状态驱动地址栏与错误展示；回显地址不重复打开，新地址触发导航", async () => {
+  mocks.command.mockResolvedValue(undefined);
+  const { rerender } = render(<WebPanel url="https://example.com" />);
+  await waitFor(() => expect(openCalls()).toHaveLength(1));
+  await waitFor(() => expect(mocks.handlers.has("web-panel-load-status")).toBe(true));
+  act(() =>
+    mocks.handlers.get("web-panel-load-status")!({ payload: [false, "https://example.com/x"] }),
+  );
+  expect(screen.getByRole("alert")).toHaveTextContent("网页加载失败");
+  expect(screen.getByText("https://example.com/x")).toBeInTheDocument();
+  expect(useSidePanel.getState().webUrl).toBe("https://example.com/x");
+  act(() =>
+    mocks.handlers.get("web-panel-load-status")!({ payload: [true, "https://example.com/x"] }),
+  );
+  expect(screen.queryByRole("alert")).toBeNull();
+  rerender(<WebPanel url="https://example.com/x" />);
+  expect(openCalls()).toHaveLength(1);
+  rerender(<WebPanel url="https://example.com/y" />);
+  await waitFor(() =>
+    expect(openCalls().at(-1)).toEqual(["web_panel_open", { url: "https://example.com/y" }]),
+  );
 });
-it('工具栏按历史状态禁用，并调用 web_panel_history',async()=>{
- render(<WebPanel url="https://example.com"/>);
- const back=screen.getByRole('button',{name:'后退'});
- const forward=screen.getByRole('button',{name:'前进'});
- expect(back).toBeDisabled();
- expect(forward).toBeDisabled();
- await waitFor(()=>expect(mocks.handlers.has('web-panel-history')).toBe(true));
- act(()=>mocks.handlers.get('web-panel-history')!({payload:[true,false]}));
- expect(back).toBeEnabled();
- expect(forward).toBeDisabled();
- back.click();
- await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('web_panel_history',{action:'back'}));
- screen.getByRole('button',{name:'刷新'}).click();
- await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('web_panel_history',{action:'reload'}));
+it("网页中的 Escape 请求关闭面板", async () => {
+  act(() => useSidePanel.getState().openWeb("https://example.com"));
+  render(<WebPanel url="https://example.com" />);
+  await waitFor(() => expect(mocks.handlers.has("web-panel-close-request")).toBe(true));
+  expect(useSidePanel.getState().open).toBe(true);
+  act(() => mocks.handlers.get("web-panel-close-request")!({ payload: null }));
+  expect(useSidePanel.getState().open).toBe(false);
+});
+it("工具栏按历史状态禁用，并调用 web_panel_history", async () => {
+  render(<WebPanel url="https://example.com" />);
+  const back = screen.getByRole("button", { name: "后退" });
+  const forward = screen.getByRole("button", { name: "前进" });
+  expect(back).toBeDisabled();
+  expect(forward).toBeDisabled();
+  await waitFor(() => expect(mocks.handlers.has("web-panel-history")).toBe(true));
+  act(() => mocks.handlers.get("web-panel-history")!({ payload: [true, false] }));
+  expect(back).toBeEnabled();
+  expect(forward).toBeDisabled();
+  back.click();
+  await waitFor(() =>
+    expect(mocks.command).toHaveBeenCalledWith("web_panel_history", { action: "back" }),
+  );
+  screen.getByRole("button", { name: "刷新" }).click();
+  await waitFor(() =>
+    expect(mocks.command).toHaveBeenCalledWith("web_panel_history", { action: "reload" }),
+  );
 });
