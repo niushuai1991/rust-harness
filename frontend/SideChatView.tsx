@@ -2,7 +2,7 @@ import {useEffect,useRef,useState} from 'react';
 import {ArrowDown,ArrowUp,Square,X} from 'lucide-react';
 import {listen} from '@tauri-apps/api/event';
 import {command,errorText,send} from './api';
-import {ConversationEvents} from './App';
+import {ConversationEvents} from './ConversationEvents';
 import {ApprovalPrompt} from './ApprovalPrompt';
 import {QuestionCard} from './QuestionCard';
 import {useChat} from './store';

@@ -2,7 +2,7 @@ import {useEffect,useState} from 'react';
 import {ListTodo,MessageSquare,RefreshCw,Target} from 'lucide-react';
 import {SessionMarkdown} from './SessionLinks';
 import {command,errorText} from './api';
-import {TodoList} from './App';
+import {TodoList} from './TodoList';
 import type {PlanStateOverview,SessionEvent,TimelinePage} from './types';
 
 const STATE_KINDS=['todo.state','plan.state','goal.state'];
