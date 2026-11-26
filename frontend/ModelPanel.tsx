@@ -2,7 +2,7 @@ import {useEffect,useRef,useState,type FormEvent} from 'react';
 import {Pencil,Plus,RefreshCw,Trash2} from 'lucide-react';
 import {command,desktop,errorText} from './api';
 import {formatResetTime,USAGE_CARD_LABELS} from './contextUsage';
-import {Modal} from './App';
+import {Modal} from './Modal';
 import {VisionBadge,visionLabel} from './VisionBadge';
 import {KNOWN_EFFORTS,type ApiMode,type ChatGptAccountInfo,type ChatGptLoginState,type ModelConfig,type ProviderInfo,type ProviderUsageSnapshot} from './types';
 const modes:{id:ApiMode;name:string}[]=[{id:'chatCompletions',name:'Chat Completions'},{id:'responses',name:'Responses'},{id:'anthropic',name:'Anthropic'}];

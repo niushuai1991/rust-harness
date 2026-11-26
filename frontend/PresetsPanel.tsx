@@ -1,6 +1,6 @@
 import {useEffect,useRef,useState,type FormEvent} from 'react';
 import {command,desktop,errorText} from './api';
-import {Modal} from './App';
+import {Modal} from './Modal';
 import {BUILTIN_PRESET_ID,KNOWN_APPROVALS,type ModelConfig,type PresetConfig,type PresetInfo,type ProviderInfo} from './types';
 const APPROVAL_LABELS:Record<string,string>={ask:'每次确认',edit:'自动编辑',auto:'完全访问',never:'只读',guarded:'自主'};
 const blankPreset=():PresetConfig=>({id:crypto.randomUUID(),name:'',description:null,modelId:null,effort:null,approval:null});

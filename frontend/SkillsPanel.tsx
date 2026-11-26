@@ -1,6 +1,6 @@
 import {useEffect,useRef,useState} from 'react';
 import {command,desktop,errorText} from './api';
-import {Modal} from './App';
+import {Modal} from './Modal';
 import type {SkillInfo} from './types';
 const SCOPE_LABELS:Record<string,string>={project:'项目',user:'用户'};
 export function SkillsPanel({workspaceId,onClose}:{workspaceId:string;onClose:()=>void}) {
