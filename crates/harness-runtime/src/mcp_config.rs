@@ -113,9 +113,30 @@ impl McpConfigService {
         self.store.set(CONFIG_KEY, &value).await
     }
     pub async fn save(&self, scope: McpScope, config: McpServerConfig) -> AppResult<()> {
+        self.save_inner(scope, config, false).await
+    }
+    pub async fn create(&self, scope: McpScope, config: McpServerConfig) -> AppResult<()> {
+        self.save_inner(scope, config, true).await
+    }
+    async fn save_inner(
+        &self,
+        scope: McpScope,
+        config: McpServerConfig,
+        create_only: bool,
+    ) -> AppResult<()> {
         validate(&scope, &config)?;
         let _guard = self.gate.lock().await;
         let mut configs = self.read().await?;
+        let exists = match &scope {
+            McpScope::Global => configs.global.contains_key(&config.id),
+            McpScope::Project(workspace) => configs
+                .projects
+                .get(workspace)
+                .is_some_and(|entries| entries.contains_key(&config.id)),
+        };
+        if create_only && exists {
+            return Err(invalid("该范围内的服务器标识已存在"));
+        }
         match scope {
             McpScope::Global => {
                 configs.global.insert(config.id.clone(), config);

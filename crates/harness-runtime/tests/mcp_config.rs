@@ -169,3 +169,50 @@ async fn unsafe_working_directory_is_rejected_before_saving() {
     assert!(service.save(McpScope::Global, bad).await.is_err());
     assert!(service.effective(None).await.unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn create_rejects_duplicate_in_same_scope_but_allows_project_override() {
+    let temp = tempfile::tempdir().unwrap();
+    let service = McpConfigService::new(Store::open(&temp.path().join("host.db")).await.unwrap());
+    let global = McpScope::Global;
+    let project = McpScope::Project("a".into());
+    service
+        .create(global.clone(), server("sample", "global"))
+        .await
+        .unwrap();
+    assert!(
+        service
+            .create(global.clone(), server("sample", "replacement"))
+            .await
+            .is_err()
+    );
+    service
+        .create(project, server("sample", "project"))
+        .await
+        .unwrap();
+    let global_result = service.effective(None).await.unwrap();
+    assert_eq!(global_result[0].config, server("sample", "global"));
+    let project_result = service.effective(Some("a")).await.unwrap();
+    assert_eq!(project_result[0].config, server("sample", "project"));
+}
+
+#[tokio::test]
+async fn concurrent_creates_allow_only_one_winner() {
+    let temp = tempfile::tempdir().unwrap();
+    let service = McpConfigService::new(Store::open(&temp.path().join("host.db")).await.unwrap());
+    let (first, second) = tokio::join!(
+        service.create(McpScope::Global, server("same", "first")),
+        service.create(McpScope::Global, server("same", "second"))
+    );
+    assert_ne!(first.is_ok(), second.is_ok());
+    let entries = service.effective(None).await.unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0].config,
+        if first.is_ok() {
+            server("same", "first")
+        } else {
+            server("same", "second")
+        }
+    );
+}

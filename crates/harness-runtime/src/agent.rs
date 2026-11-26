@@ -723,6 +723,18 @@ impl Runtime {
         self.close_stale_mcp_connections().await
     }
 
+    pub async fn create_mcp_config(
+        &self,
+        scope: crate::mcp_config::McpScope,
+        config: crate::mcp_config::McpServerConfig,
+    ) -> AppResult<()> {
+        {
+            let _gate = self.mcp_gate.lock().await;
+            self.mcp_config.create(scope, config).await?;
+        }
+        self.close_stale_mcp_connections().await
+    }
+
     pub async fn remove_mcp_config(
         &self,
         scope: crate::mcp_config::McpScope,

@@ -9,7 +9,6 @@ import {
   Folder,
   Gauge,
   Info,
-  KeyRound,
   Layers,
   Plug,
   Settings,
@@ -25,6 +24,7 @@ import type { SessionInfo, ModelConfig } from "./types";
 import { PerformancePanel } from "./PerformancePanel";
 import { ModelPanel } from "./ModelPanel";
 import { AboutPanel } from "./AboutPanel";
+import { McpPanel } from "./McpPanel";
 
 export type SettingsPanelId = "presets" | "skills" | "plugins";
 type SettingsSectionId =
@@ -33,6 +33,7 @@ type SettingsSectionId =
   | "archive"
   | "performance"
   | "models"
+  | "mcp"
   | "about";
 
 export type SettingsCategoryId = Exclude<SettingsSectionId, "overview">;
@@ -90,6 +91,14 @@ const ITEMS: SettingsItem[] = [
     legacyPanel: "plugins",
   },
   {
+    id: "mcp",
+    title: "MCP 配置",
+    description: "添加和管理 MCP 服务器与会话连接。",
+    summary: "服务器与连接",
+    group: "扩展与安全",
+    icon: Plug,
+  },
+  {
     id: "models",
     title: "模型设置",
     description: "管理模型供应商、API 连接与可用模型。",
@@ -112,7 +121,8 @@ const INTRO: Record<SettingsCategoryId, string> = {
   skills: "查看当前工作区和用户目录中的技能，并管理它们是否参与助手的技能目录。",
   performance:
     "工具并发调度、上下文自动压缩与 HTTP 连接复用均可独立开关；调整立即生效，下一回合起生效。",
-  plugins: "集中查看本地插件、MCP 连接及其声明与授权的权限范围。",
+  plugins: "集中查看本地插件及其声明与授权的权限范围。",
+  mcp: "管理全局和当前项目的 MCP 服务器及会话连接。",
   models: "管理模型供应商、凭据和模型目录；API 密钥只保存在系统凭据管理器中。",
   archive: "归档后的会话不会出现在任务列表里，但仍保留在本机；在这里按项目查看并恢复。",
   about: "查看当前安装的版本号、构建时间与对应的提交记录。",
@@ -127,6 +137,8 @@ export function SettingsPage({
   models,
   onModelsSaved,
   initialSection,
+  workspaceId,
+  sessionId,
 }: {
   onClose: () => void;
   onOpenPanel: (panel: SettingsPanelId) => void;
@@ -136,6 +148,8 @@ export function SettingsPage({
   models: ModelConfig[];
   onModelsSaved: () => Promise<void>;
   initialSection?: SettingsCategoryId;
+  workspaceId: string;
+  sessionId: string;
 }) {
   const [active, setActive] = useState<SettingsSectionId>(initialSection ?? "overview");
   const dialogRef = useRef<HTMLDivElement>(null),
@@ -278,6 +292,8 @@ export function SettingsPage({
         <div className="settings-scroll">
           {selected ? (
             <SettingsCategory
+              workspaceId={workspaceId}
+              sessionId={sessionId}
               item={selected}
               onOpenPanel={openPanel}
               archivedSessions={archivedSessions}
@@ -344,6 +360,8 @@ function SettingsOverview({ onSelect }: { onSelect: (section: SettingsSectionId)
 }
 
 function SettingsCategory({
+  workspaceId,
+  sessionId,
   item,
   onOpenPanel,
   archivedSessions,
@@ -353,6 +371,8 @@ function SettingsCategory({
   onModelsSaved,
 }: {
   item: SettingsItem;
+  workspaceId: string;
+  sessionId: string;
   onOpenPanel: (panel: SettingsPanelId) => void;
   archivedSessions: SessionInfo[];
   projectName: (id: string) => string;
@@ -376,6 +396,7 @@ function SettingsCategory({
       {item.id !== "archive" &&
         item.id !== "performance" &&
         item.id !== "models" &&
+        item.id !== "mcp" &&
         item.id !== "about" && (
           <div className="settings-preview-notice">
             <Sparkles size={15} />
@@ -392,6 +413,7 @@ function SettingsCategory({
         />
       )}
       {item.id === "performance" && <PerformancePanel />}
+      {item.id === "mcp" && <McpPanel workspaceId={workspaceId} sessionId={sessionId} />}
       {item.id === "models" && <ModelPanel models={models} onSaved={onModelsSaved} />}
       {item.id === "about" && <AboutPanel />}
       {item.id === "plugins" && <PluginsPreview />}
@@ -491,12 +513,6 @@ function PluginsPreview() {
           title="本地插件"
           description="声明权限与授权范围相交后才可使用"
           badge="已启用"
-        />
-        <PreviewItem
-          icon={<KeyRound size={16} />}
-          title="MCP 连接"
-          description="按工作区管理连接状态与授权"
-          badge="按需连接"
         />
       </div>
     </>

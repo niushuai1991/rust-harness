@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
-import { command, desktop, errorText } from "./api";
+import { command, errorText } from "./api";
+import { McpEditor, type Scope, type ServerConfig } from "./McpEditor";
 
-type Scope = { kind: "global" } | { kind: "project"; workspaceId: string };
-type ServerConfig = { id: string; enabled: boolean; transport: unknown; [key: string]: unknown };
 type Entry = { scope: Scope; config: ServerConfig; trusted: boolean };
 type Status = { id: string; status: string; code?: string | null };
 
@@ -17,13 +16,9 @@ export function McpSavedServers({
 }) {
   const [servers, setServers] = useState<Entry[]>([]);
   const [statuses, setStatuses] = useState<Status[]>([]);
-  const [project, setProject] = useState(false);
-  const [raw, setRaw] = useState(
-    '{"id":"example","transport":{"type":"streamableHttp","url":"https://example.test/mcp"}}',
-  );
+  const [editor, setEditor] = useState<Entry | "new" | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const scope: Scope = project ? { kind: "project", workspaceId } : { kind: "global" };
 
   async function load() {
     setServers(await command<Entry[]>("mcp_config_list", { workspaceId }));
@@ -135,8 +130,7 @@ export function McpSavedServers({
           <button
             disabled={busy}
             onClick={() => {
-              setProject(entry.scope.kind === "project");
-              setRaw(JSON.stringify(entry.config, null, 2));
+              setEditor(entry);
             }}
           >
             编辑 {entry.config.id}
@@ -166,33 +160,38 @@ export function McpSavedServers({
           </button>
         </article>
       ))}
-      <label>
-        配置范围
-        <select
-          aria-label="配置范围"
-          value={project ? "project" : "global"}
-          onChange={(e) => setProject(e.target.value === "project")}
-          disabled={busy}
-        >
-          <option value="global">全局</option>
-          <option value="project" disabled={!workspaceId}>
-            当前项目
-          </option>
-        </select>
-      </label>
-      <label>
-        服务器配置 JSON
-        <textarea value={raw} onChange={(e) => setRaw(e.target.value)} disabled={busy} />
-      </label>
-      <p className="muted">请求头和环境变量使用环境变量名或凭据引用，不要输入明文密钥。</p>
-      <button
-        disabled={busy || !desktop()}
-        onClick={() =>
-          void action(() => command("mcp_config_save", { scope, config: JSON.parse(raw) }))
-        }
-      >
-        保存服务器配置
-      </button>
+      {!editor && (
+        <button type="button" onClick={() => setEditor("new")}>
+          添加服务器
+        </button>
+      )}
+      {editor && (
+        <McpEditor
+          key={editor === "new" ? "new" : JSON.stringify(editor.scope) + editor.config.id}
+          entry={editor === "new" ? undefined : editor}
+          workspaceId={workspaceId}
+          busy={busy}
+          onCancel={() => setEditor(null)}
+          onSave={async (scope, config, create) => {
+            setBusy(true);
+            setError("");
+            try {
+              await command(create ? "mcp_config_create" : "mcp_config_save", { scope, config });
+              setEditor(null);
+              try {
+                await load();
+                if (sessionId)
+                  setStatuses(await command<Status[]>("mcp_config_status", { sessionId }));
+                await onChanged();
+              } catch (e) {
+                setError(`已保存，但刷新失败：${errorText(e)}`);
+              }
+            } finally {
+              setBusy(false);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

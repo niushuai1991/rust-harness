@@ -3201,6 +3201,8 @@ export default function App() {
       {settingsOpen &&
         createPortal(
           <SettingsPage
+            workspaceId={workspaceId}
+            sessionId={sessionId}
             key={settingsSection ?? "overview"}
             onClose={() => setSettingsOpen(false)}
             initialSection={settingsSection ?? undefined}
