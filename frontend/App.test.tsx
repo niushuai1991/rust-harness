@@ -1,3305 +1,7262 @@
-import {afterEach,beforeAll,beforeEach,describe,expect,it,vi} from 'vitest';
-import {act,cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
-import App,{ConversationEvents} from './App';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import App, { ConversationEvents } from "./App";
 // 交互测试不加载全局样式；真实样式验证集中在 App.style.test.tsx，避免 jsdom 反复计算整张样式表。
-import {ChangesView} from './ChangesView';
-import {assertNoAppGlobalStyle} from './test-style-guard';
+import { ChangesView } from "./ChangesView";
+import { assertNoAppGlobalStyle } from "./test-style-guard";
 
-import {GOAL_PROMPT,INIT_PROMPT} from './slashCommands';
-import {useChat} from './store';
-import {useSidePanel} from './sidePanelStore';
-import {open,save} from '@tauri-apps/plugin-dialog';
-import type {LiveEvent,SessionEvent} from './types';
-const mocks=vi.hoisted(()=>({command:vi.fn(),send:vi.fn(),resume:vi.fn(),listeners:new Map<string,Set<(event:{payload:any})=>void>>()}));
-vi.mock('@tauri-apps/api/event',()=>({listen:async(name:string,handler:(event:{payload:any})=>void)=>{const set=mocks.listeners.get(name)??new Set();set.add(handler);mocks.listeners.set(name,set);return()=>{set.delete(handler);if(!set.size)mocks.listeners.delete(name)}}}));
-vi.mock('./api',()=>({desktop:()=>true,command:mocks.command,send:mocks.send,resume:mocks.resume,errorText:(e:unknown)=>e instanceof Error?e.message:String(e)}));
-vi.mock('@tauri-apps/plugin-dialog',()=>({open:vi.fn(),save:vi.fn()}));
-vi.mock('@tauri-apps/api/app',()=>({getVersion:vi.fn(async()=>'0.1.6')}));
-const event=(id:string,sessionId:string,seq:string,content:string):SessionEvent=>({id,sessionId,seq,kind:'assistant.message',data:{content},createdAt:''});
-const timeline=(sessionId:string,events:SessionEvent[])=>({sessionId,events,olderCursor:null,throughSeq:events[events.length-1]?.seq??'0',hasOlder:false});
+import { GOAL_PROMPT, INIT_PROMPT } from "./slashCommands";
+import { useChat } from "./store";
+import { useSidePanel } from "./sidePanelStore";
+import { open, save } from "@tauri-apps/plugin-dialog";
+import type { LiveEvent, SessionEvent } from "./types";
+const mocks = vi.hoisted(() => ({
+  command: vi.fn(),
+  send: vi.fn(),
+  resume: vi.fn(),
+  listeners: new Map<string, Set<(event: { payload: any }) => void>>(),
+}));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: async (name: string, handler: (event: { payload: any }) => void) => {
+    const set = mocks.listeners.get(name) ?? new Set();
+    set.add(handler);
+    mocks.listeners.set(name, set);
+    return () => {
+      set.delete(handler);
+      if (!set.size) mocks.listeners.delete(name);
+    };
+  },
+}));
+vi.mock("./api", () => ({
+  desktop: () => true,
+  command: mocks.command,
+  send: mocks.send,
+  resume: mocks.resume,
+  errorText: (e: unknown) => (e instanceof Error ? e.message : String(e)),
+}));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
+vi.mock("@tauri-apps/api/app", () => ({ getVersion: vi.fn(async () => "0.1.6") }));
+const event = (id: string, sessionId: string, seq: string, content: string): SessionEvent => ({
+  id,
+  sessionId,
+  seq,
+  kind: "assistant.message",
+  data: { content },
+  createdAt: "",
+});
+const timeline = (sessionId: string, events: SessionEvent[]) => ({
+  sessionId,
+  events,
+  olderCursor: null,
+  throughSeq: events[events.length - 1]?.seq ?? "0",
+  hasOlder: false,
+});
 // 真实 Tauri 同一事件名允许多个监听者（主 App 与侧聊抽屉各订阅一次），测试同样全部投递。
-async function emitTauriEvent(name:string,payload:unknown){for(const handler of [...(mocks.listeners.get(name)??[])])await act(async()=>handler({payload}))}
+async function emitTauriEvent(name: string, payload: unknown) {
+  for (const handler of [...(mocks.listeners.get(name) ?? [])])
+    await act(async () => handler({ payload }));
+}
 // 启动默认进入新会话草稿态（不自动打开历史会话）；需要会话上下文的测试先从侧栏打开对应会话。
-async function openSidebarSession(title:RegExp){fireEvent.click(await screen.findByRole('button',{name:title}))}
-async function openSessionA(){await openSidebarSession(/会话 A/);await screen.findByText('内容 a')}
-async function renderOpenA(){const utils=render(<App/>);await openSessionA();return utils}
-beforeAll(assertNoAppGlobalStyle);
-beforeEach(()=>{mocks.listeners.clear();useChat.setState({events:{},streams:{},statuses:{},timelines:{},timelineLru:[],pinnedTimelineIds:[]});useSidePanel.getState().reset();mocks.command.mockReset();mocks.send.mockReset();mocks.resume.mockReset();vi.mocked(open).mockReset();vi.mocked(save).mockReset();mocks.command.mockImplementation(async(name:string,args:any)=>{
- if(name==='workspace_list')return [{id:'w',sourcePath:'D:/project',replicaPath:'D:/copy',createdAt:'',name:'project'}];
- if(name==='model_list')return [{id:'m',name:'测试模型',compatibility:'standard',providerId:'custom',apiMode:'chatCompletions',maxOutputTokens:null,baseUrl:'https://example.test',model:'m',credentialRef:'',proxy:null,efforts:['low','high'],effort:null,enabled:true,builtin:false}];
- if(name==='provider_list')return [{id:'custom',name:'自定义供应商',builtin:false,compatibility:'standard',endpoints:[{apiMode:'chatCompletions',baseUrl:'https://example.test'}],defaultModel:'m',credentialRef:'',proxy:null,enabled:true,builtinModels:[],disabledModels:[]}];
- if(name==='default_selection_get')return null;
- if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A'},{id:'b',workspaceId:'w',title:'会话 B'}];
- if(name==='session_timeline_page')return timeline(args.sessionId,[event(`e-${args.sessionId}`,args.sessionId,'1',`内容 ${args.sessionId}`)]);
- if(name==='approval_list')return [];
- if(name==='question_list')return [];
- if(name==='approval_mode_get')return 'ask';
- if(name==='session_plan_get')return false;
- if(name==='session_title_generate')throw new Error('测试未配置标题生成结果');
- return [];
-})});
-afterEach(()=>{try{assertNoAppGlobalStyle()}finally{cleanup();vi.useRealTimers()}});
-describe('中断后继续',()=>{
- it('最近回合结束事件不在当前页时使用分页元数据',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?{...timeline(args.sessionId,[event('tail','a','5','历史信息')]),turns:[{startSeq:'1',endSeq:'3',runId:'run',status:'error',finalMessageId:null}]}:original(name,args));
-  render(<App/>);await openSidebarSession(/会话 A/);await screen.findByText('历史信息');
-  expect(screen.getByRole('button',{name:'继续任务'})).toBeEnabled();
- });
- it.each(['cancelled','interrupted','error'])('回合状态 %s 可以继续',async status=>{
-  const original=mocks.command.getMockImplementation()!;
-  const events:SessionEvent[]=[
-   {id:'start',sessionId:'a',seq:'1',kind:'turn.start',data:{},createdAt:''},
-   {id:'user',sessionId:'a',seq:'2',kind:'user.message',data:{content:'处理任务'},createdAt:''},
-   {id:'end',sessionId:'a',seq:'3',kind:'turn.end',data:{status},createdAt:''},
-  ];
-  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,events):original(name,args));
-  render(<App/>);await openSidebarSession(/会话 A/);await screen.findByText('处理任务');
-  expect(screen.getByRole('button',{name:'继续任务'})).toBeEnabled();
- });
- it('完成的回合不会显示继续按钮',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  const events:SessionEvent[]=[
-   {id:'start',sessionId:'a',seq:'1',kind:'turn.start',data:{},createdAt:''},
-   {id:'user',sessionId:'a',seq:'2',kind:'user.message',data:{content:'处理任务'},createdAt:''},
-   {id:'end',sessionId:'a',seq:'3',kind:'turn.end',data:{status:'completed'},createdAt:''},
-  ];
-  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,events):original(name,args));
-  render(<App/>);await openSidebarSession(/会话 A/);await screen.findByText('处理任务');
-  expect(screen.queryByRole('button',{name:'继续任务'})).toBeNull();
-  expect(screen.getByRole('button',{name:'发送消息'})).toBeDisabled();
- });
- it('中断后空输入框可继续，有文字时恢复发送',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  const events:SessionEvent[]=[
-   {id:'start',sessionId:'a',seq:'1',kind:'turn.start',data:{runId:'run'},createdAt:''},
-   {id:'user',sessionId:'a',seq:'2',kind:'user.message',data:{content:'处理任务'},createdAt:''},
-   {id:'end',sessionId:'a',seq:'3',kind:'turn.end',data:{runId:'run',status:'cancelled'},createdAt:''},
-  ];
-  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,events):original(name,args));
-  render(<App/>);await openSidebarSession(/会话 A/);await screen.findByText('处理任务');
-  const resume=await screen.findByRole('button',{name:'继续任务'});
-  expect(resume).toBeEnabled();
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'补充要求'}});
-  expect(screen.getByRole('button',{name:'发送消息'})).toBeEnabled();
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:''}});
-  fireEvent.click(screen.getByRole('button',{name:'继续任务'}));
-  await waitFor(()=>expect(mocks.resume).toHaveBeenCalledWith('a','3','m',expect.any(Function),'high'));
- });
-});
-describe('Shell 命令时间线',()=>{
- it('完成回合中配对命令与结果，过程默认折叠且命令行收起为内联行',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  const events:SessionEvent[]=[
-   {id:'start',sessionId:'a',seq:'1',kind:'turn.start',data:{},createdAt:''},
-   {id:'call',sessionId:'a',seq:'2',kind:'tool.call',data:{id:'c1',name:'shell',arguments:{command:'cargo test'}},createdAt:''},
-   {id:'other',sessionId:'a',seq:'3',kind:'tool.call',data:{id:'c2',name:'read',arguments:{path:'a.txt'}},createdAt:''},
-   {id:'result',sessionId:'a',seq:'4',kind:'tool.result',data:{callId:'c1',name:'shell',content:JSON.stringify({stdout:'测试通过',stderr:'',exit_code:0}),status:'completed'},createdAt:''},
-   {id:'final',sessionId:'a',seq:'5',kind:'assistant.message',data:{content:'已完成检查'},createdAt:''},
-   {id:'end',sessionId:'a',seq:'6',kind:'turn.end',data:{status:'completed'},createdAt:''}
-  ];
-  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,events):original(name,args));
-  render(<App/>);await openSidebarSession(/会话 A/);await screen.findByText('已完成检查');
-  const process=screen.getByText('已执行 · 1 条命令').closest('details')!;
-  expect(process.open).toBe(false);fireEvent.click(screen.getByText('已执行 · 1 条命令'));
-  const row=screen.getByRole('button',{name:/已执行/});
-  expect(row).toHaveAttribute('aria-expanded','false');
-  expect(screen.getAllByRole('button',{name:/已执行|正在执行/})).toHaveLength(1);
-  expect(screen.queryByText('已完成')).toBeNull();
-  fireEvent.click(row);
-  expect(screen.getByText('测试通过')).toBeVisible();expect(screen.getByText('退出码 0')).toBeVisible();
-  expect(screen.getByText('读取',{selector:'.t-title'})).toBeInTheDocument();
- });
-});
-describe('用户消息气泡',()=>{
- it('用户消息正文与引用包裹在气泡容器内',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  const events:SessionEvent[]=[
-   {id:'user',sessionId:'a',seq:'1',kind:'user.message',data:{content:'帮我看下状态',quotes:['旧讨论']},createdAt:''},
-   {id:'final',sessionId:'a',seq:'2',kind:'assistant.message',data:{content:'好的'},createdAt:''}
-  ];
-  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,events):original(name,args));
-  render(<App/>);await openSidebarSession(/会话 A/);await screen.findByText('好的');
-  const bubble=document.querySelector('.user-bubble') as HTMLElement|null;
-  expect(bubble).not.toBeNull();
-  expect(within(bubble!).getByText('帮我看下状态')).toBeInTheDocument();
-  expect(within(bubble!).getByText('旧讨论')).toBeInTheDocument();
-  expect(within(bubble!).queryByText('好的')).toBeNull();
- });
-});
-describe('过程合并组',()=>{
- const baseEvents=(extra:SessionEvent[]):SessionEvent[]=>[
-  {id:'start',sessionId:'a',seq:'1',kind:'turn.start',data:{},createdAt:'2026-11-19T00:00:00Z'},
-  {id:'user',sessionId:'a',seq:'2',kind:'user.message',data:{content:'跑一下测试'},createdAt:'2026-11-19T00:00:01Z'},
-  ...extra,
- ];
- const shellCall={id:'call',sessionId:'a',seq:'3',kind:'tool.call',data:{id:'c1',name:'shell',arguments:{command:'npm test'}},createdAt:'2026-11-19T00:00:10Z'};
- const shellResult={id:'result',sessionId:'a',seq:'4',kind:'tool.result',data:{callId:'c1',name:'shell',content:JSON.stringify({stdout:'ok',stderr:'',exit_code:0}),status:'completed'},createdAt:'2026-11-19T00:00:40Z'};
- it('运行中回合过程收进合并组，组头统计带扫光且可折叠',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  const events=baseEvents([shellCall,shellResult,
-   {id:'empty',sessionId:'a',seq:'5',kind:'assistant.message',data:{},createdAt:'2026-11-19T00:00:45Z'},
-   {id:'note',sessionId:'a',seq:'6',kind:'assistant.message',data:{content:'测试通过，继续检查。'},createdAt:'2026-11-19T00:00:50Z'},
-  ]);
-  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,events):original(name,args));
-  render(<App/>);await openSidebarSession(/会话 A/);await screen.findByText('跑一下测试');
-  const head=screen.getByText('正在执行 · 1 条命令');
-  expect(head.closest('.process-group')!.querySelector('.process-stat')).toHaveClass('is-running');
-  expect(screen.queryByText('测试通过，继续检查。')).toBeVisible();
-  expect(screen.queryByText('正在思考与执行')).not.toBeInTheDocument();
-  fireEvent.click(head);
-  expect((head.closest('.process-group') as HTMLDetailsElement)!.open).toBe(false);
-  fireEvent.click(head);
-  expect(screen.getByText('测试通过，继续检查。')).toBeVisible();
- });
- it('完成回合组头为统计加用时，纯对话回合回退本轮已完成',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  const withTool=baseEvents([shellCall,shellResult,
-   {id:'final',sessionId:'a',seq:'5',kind:'assistant.message',data:{content:'全部通过'},createdAt:'2026-11-19T00:01:10Z'},
-   {id:'end',sessionId:'a',seq:'6',kind:'turn.end',data:{status:'completed'},createdAt:'2026-11-19T00:01:22Z'},
-  ]);
-  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,withTool):original(name,args));
-  render(<App/>);await openSidebarSession(/会话 A/);await screen.findByText('全部通过');
-  expect(screen.getByText('已执行 · 1 条命令 · 用时1分22秒')).toBeVisible();
-  expect(screen.queryByText('正在执行')).not.toBeInTheDocument();
-  // replaceTimelinePage 会保留 seq 大于 throughSeq 的旧事件：plain 的 seq 须整体高于 withTool 才能整回合替换。
-  const plain=[
-   {id:'p-start',sessionId:'a',seq:'10',kind:'turn.start',data:{},createdAt:'2026-11-19T00:02:00Z'},
-   {id:'p-user',sessionId:'a',seq:'11',kind:'user.message',data:{content:'纯对话'},createdAt:'2026-11-19T00:02:01Z'},
-   {id:'p-mid',sessionId:'a',seq:'12',kind:'assistant.message',data:{content:'思考中'},createdAt:'2026-11-19T00:02:10Z'},
-   {id:'p-final',sessionId:'a',seq:'13',kind:'assistant.message',data:{content:'纯对话总结'},createdAt:'2026-11-19T00:02:20Z'},
-   {id:'p-end',sessionId:'a',seq:'14',kind:'turn.end',data:{status:'completed'},createdAt:'2026-11-19T00:02:40Z'},
-  ];
-  act(()=>useChat.getState().replaceTimelinePage('a',timeline('a',plain)));
-  expect(screen.getByText('本轮已完成，用时40秒')).toBeVisible();
- });
- it('用户消息与轮尾总结不显示头像列',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  const events=baseEvents([
-   {id:'final',sessionId:'a',seq:'3',kind:'assistant.message',data:{content:'好的'},createdAt:'2026-11-19T00:00:30Z'},
-   {id:'end',sessionId:'a',seq:'4',kind:'turn.end',data:{status:'completed'},createdAt:'2026-11-19T00:00:40Z'},
-  ]);
-  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,events):original(name,args));
-  render(<App/>);await openSidebarSession(/会话 A/);await screen.findByText('好的');
-  expect(document.querySelector('.avatar')).toBeNull();
-  expect(screen.queryByText('Rust Harness')).not.toBeInTheDocument();
- });
-});
-describe('计划模式 composer 入口',()=>{
- it('+ 号立即进入计划模式，chip 可明确退出',async()=>{
-  await renderOpenA();
-  const chip=await screen.findByRole('button',{name:'计划模式'});
-  await waitFor(()=>expect(chip).toHaveAttribute('aria-pressed','false'));
-  fireEvent.click(screen.getByRole('button',{name:'添加内容'}));
-  fireEvent.click(screen.getByRole('menuitem',{name:/进入计划模式/}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_plan_set',{sessionId:'a',enabled:true}));
-  await waitFor(()=>expect(chip).toHaveAttribute('aria-pressed','true'));
-  expect(mocks.send).not.toHaveBeenCalled();
-  fireEvent.click(chip);
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_plan_set',{sessionId:'a',enabled:false}));
-  await waitFor(()=>expect(chip).toHaveAttribute('aria-pressed','false'));
- });
- it('/plan 带任务先启用再发送原文，无参数切换且不发送',async()=>{
-  mocks.send.mockResolvedValue(undefined);
-  await renderOpenA();
-  await waitFor(()=>expect(screen.getByRole('button',{name:'计划模式'})).toHaveAttribute('aria-pressed','false'));
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'/plan 调查导出'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','调查导出','m',expect.any(Function),undefined,'high'));
-  const setCall=mocks.command.mock.invocationCallOrder[mocks.command.mock.calls.findIndex(([name])=>name==='session_plan_set')];
-  expect(setCall).toBeLessThan(mocks.send.mock.invocationCallOrder[0]);
-  fireEvent.change(input,{target:{value:'/plan'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_plan_set',{sessionId:'a',enabled:false}));
-  expect(mocks.send).toHaveBeenCalledTimes(1);
- });
- it('启用失败保留任务并显示错误，不发送',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_plan_set'?Promise.reject(new Error('计划模式不可用')):original(name,args));
-  await renderOpenA();
-  await waitFor(()=>expect(screen.getByRole('button',{name:'计划模式'})).toHaveAttribute('aria-pressed','false'));
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'/plan 调查导出'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await screen.findByText('计划模式不可用');
-  expect(input).toHaveValue('/plan 调查导出');
-  expect(mocks.send).not.toHaveBeenCalled();
- });
- it('切换会话后读取对应状态，丢弃旧会话迟到结果',async()=>{
-  let resolveA!:(value:boolean)=>void;
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_plan_get'?(args.sessionId==='a'?new Promise(resolve=>{resolveA=resolve}):true):original(name,args));
-  await renderOpenA();
-  await waitFor(()=>expect(resolveA).toBeTypeOf('function'));
-  fireEvent.click(screen.getByRole('button',{name:/会话 B/}));
-  await screen.findByText('内容 b');
-  const chip=screen.getByRole('button',{name:'计划模式'});
-  await waitFor(()=>expect(chip).toHaveAttribute('aria-pressed','true'));
-  await act(async()=>resolveA(false));
-  expect(chip).toHaveAttribute('aria-pressed','true');
- });
-});
-describe('计划提交审批',()=>{
- for(const decision of ['批准','拒绝'])it(`计划审批可选择${decision}且不抢先改变模式`,async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_plan_get'?true:name==='question_list'?[{id:'plan-q',sessionId:'a',question:'是否批准以下计划并退出只读模式？\n\n第一步：检查',options:[{label:'批准'},{label:'拒绝'}]}]:original(name,args));
-  await renderOpenA();
-  await screen.findByText(/第一步：检查/);
-  await waitFor(()=>expect(screen.getByRole('button',{name:'计划模式'})).toHaveAttribute('aria-pressed','true'));
-  fireEvent.click(screen.getByLabelText(`选项 ${decision}`));
-  fireEvent.click(screen.getByRole('button',{name:'提交答复'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('question_resolve',{id:'plan-q',answer:{text:decision,source:'selected'}}));
-  expect(screen.getByRole('button',{name:'计划模式'})).toHaveAttribute('aria-pressed','true');
-  expect(mocks.command.mock.calls.some(([name])=>name==='session_plan_set')).toBe(false);
- });
-});
-describe('计划审批状态隔离',()=>{
- it('新提问不复用上一个提问的选中项',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_plan_get'?true:name==='question_list'?[{id:'one',sessionId:'a',question:'计划一',options:[{label:'批准'},{label:'拒绝'}]},{id:'two',sessionId:'a',question:'计划二',options:[{label:'批准'},{label:'拒绝'}]}]:original(name,args));
-  await renderOpenA();
-  await screen.findByText('计划一');
-  fireEvent.click(screen.getByLabelText('选项 批准'));
-  fireEvent.click(screen.getByRole('button',{name:'提交答复'}));
-  await screen.findByText('计划二');
-  expect(screen.getByRole('button',{name:'提交答复'})).toBeDisabled();
- });
-});
-describe('计划批准后状态同步',()=>{
- it('收到运行时退出事件才显示关闭',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_plan_get'?true:original(name,args));
-  mocks.send.mockImplementation(async(_id,_text,_model,receive)=>receive({type:'durable',event:{id:'exit',sessionId:'a',seq:'2',kind:'session.plan',data:{enabled:false},createdAt:''}}));
-  await renderOpenA();
-  await waitFor(()=>expect(screen.getByRole('button',{name:'计划模式'})).toHaveAttribute('aria-pressed','true'));
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'请提交计划'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(screen.getByRole('button',{name:'计划模式'})).toHaveAttribute('aria-pressed','false'));
- });
-});
-describe('计划模式安全边界',()=>{
- it('读取失败时状态未知且禁止切换和发送计划任务',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_plan_get'?Promise.reject(new Error('读取失败')):original(name,args));
-  await renderOpenA();
-  await screen.findByText('读取失败');
-  expect(screen.getByRole('button',{name:'计划模式'})).toBeDisabled();
-  expect(screen.getByRole('button',{name:'计划模式'})).toHaveTextContent('未知');
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'/plan 任务'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  expect(mocks.send).not.toHaveBeenCalled();
-  expect(mocks.command.mock.calls.some(([name])=>name==='session_plan_set')).toBe(false);
- });
- it('启用请求期间切走会话，迟到成功不会发送任务或污染新会话',async()=>{
-  let resolveSet!:()=>void;
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_plan_set'?new Promise<void>(resolve=>{resolveSet=resolve}):original(name,args));
-  await renderOpenA();
-  await waitFor(()=>expect(screen.getByRole('button',{name:'计划模式'})).toBeEnabled());
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'/plan 任务'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(resolveSet).toBeTypeOf('function'));
-  fireEvent.click(screen.getByRole('button',{name:/会话 B/}));
-  await screen.findByText('内容 b');
-  await act(async()=>resolveSet());
-  expect(mocks.send).not.toHaveBeenCalled();
-  expect(screen.getByRole('button',{name:'计划模式'})).toHaveAttribute('aria-pressed','false');
- });
- it('接收实时模式事件后更新当前会话状态',async()=>{
-  mocks.send.mockImplementation(async(_id,_text,_model,receive)=>receive({type:'durable',event:{id:'plan-event',sessionId:'a',seq:'2',kind:'session.plan',data:{enabled:true},createdAt:''}}));
-  await renderOpenA();
-  await waitFor(()=>expect(screen.getByRole('button',{name:'计划模式'})).toBeEnabled());
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'你好'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(screen.getByRole('button',{name:'计划模式'})).toHaveAttribute('aria-pressed','true'));
- });
-});
-describe('计划模式草稿安全',()=>{
- it('草稿的计划入口只标记待启用，发送时真实启用',async()=>{
-  const errors=vi.spyOn(console,'error').mockImplementation(()=>{});
-  try{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_create'?{id:'new-plan',workspaceId:'w',title:'新会话'}:original(name,args));
-  mocks.send.mockResolvedValue(undefined);
-  render(<App/>);
-  await screen.findByRole('heading',{name:/你想在/});
-  fireEvent.click(screen.getByRole('button',{name:'添加内容'}));
-  fireEvent.click(screen.getByRole('menuitem',{name:/进入计划模式/}));
-  expect(screen.getByRole('button',{name:'计划模式'})).toHaveTextContent('草稿待启用');
-  expect(mocks.command.mock.calls.some(([name])=>name==='session_plan_set')).toBe(false);
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'规划草稿'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_plan_set',{sessionId:'new-plan',enabled:true}));
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('new-plan','规划草稿','m',expect.any(Function),undefined,'high'));
-  await waitFor(()=>expect(screen.getByRole('button',{name:/新会话/})).toBeInTheDocument());
-  expect(errors.mock.calls.some(([message])=>String(message).includes('Each child in a list'))).toBe(false);
-  }finally{errors.mockRestore()}
- });
- it('草稿计划任务创建会话并成功启用模式之后才发送',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_create'?{id:'new-plan',workspaceId:'w',title:'新会话'}:original(name,args));
-  mocks.send.mockResolvedValue(undefined);
-  render(<App/>);
-  await screen.findByRole('heading',{name:/你想在/});
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'/plan 草稿任务'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_plan_set',{sessionId:'new-plan',enabled:true}));
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('new-plan','草稿任务','m',expect.any(Function),undefined,'high'));
- });
- it('草稿模式启用失败不发送任务',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_create'?{id:'new-plan',workspaceId:'w',title:'新会话'}:name==='session_plan_set'?Promise.reject(new Error('模式设置失败')):original(name,args));
-  render(<App/>);
-  await screen.findByRole('heading',{name:/你想在/});
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'/plan 草稿任务'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await screen.findByText('模式设置失败');
-  expect(mocks.send).not.toHaveBeenCalled();
- });
-});
-describe('设置入口',()=>{
- it('从侧栏打开全屏设置页，可切换分类并返回工作台',async()=>{
-  await renderOpenA();
-  fireEvent.click(screen.getByRole('button',{name:'设置'}));
-  const page=await screen.findByRole('dialog',{name:'设置'});
-  const navigation=within(page).getByRole('navigation',{name:'设置导航'});
-  expect(within(navigation).getByRole('button',{name:'能力预设'})).toBeInTheDocument();
-  expect(within(navigation).getByRole('button',{name:'技能'})).toBeInTheDocument();
-  expect(within(navigation).getByRole('button',{name:'插件与权限'})).toBeInTheDocument();
-  expect(within(navigation).getByRole('button',{name:'模型设置'})).toBeInTheDocument();
-  fireEvent.click(within(navigation).getByRole('button',{name:'技能'}));
-  expect(within(page).getByRole('heading',{name:'技能'})).toBeInTheDocument();
-  fireEvent.click(within(page).getByRole('button',{name:'关闭设置，返回工作台'}));
-  expect(screen.queryByRole('dialog',{name:'设置'})).not.toBeInTheDocument();
-  expect(screen.getByText('内容 a')).toBeInTheDocument();
- });
- it('关于选项卡展示版本与构建信息',async()=>{
-  await renderOpenA();
-  fireEvent.click(screen.getByRole('button',{name:'设置'}));
-  const page=await screen.findByRole('dialog',{name:'设置'});
-  const navigation=within(page).getByRole('navigation',{name:'设置导航'});
-  expect(within(navigation).getByRole('button',{name:'关于'})).toBeInTheDocument();
-  fireEvent.click(within(navigation).getByRole('button',{name:'关于'}));
-  expect(within(page).getByRole('heading',{name:'关于'})).toBeInTheDocument();
-  expect(await within(page).findByText('0.1.6')).toBeInTheDocument();
-  expect(within(page).getByText('开发构建')).toBeInTheDocument();
- });
-});
-describe('聊天交互',()=>{
- it('导出成功提示自动关闭，重复导出重新计时',async()=>{
-  vi.mocked(save).mockResolvedValue('D:/export.json');
-  await renderOpenA();
-  vi.useFakeTimers();
-  // 顶栏不再提供导出按钮，导出入口是会话行右键菜单的「导出会话」项。
-  expect(screen.queryByRole('button',{name:'导出会话'})).not.toBeInTheDocument();
-  await act(async()=>{fireEvent.contextMenu(screen.getByRole('button',{name:/会话 A/}))});
-  await act(async()=>{fireEvent.click(screen.getByRole('menuitem',{name:'导出会话'}))});
-  expect(mocks.command).toHaveBeenCalledWith('session_export',{sessionId:'a',path:'D:/export.json'});
-  expect(screen.getByText('会话已导出。')).toBeInTheDocument();
-  act(()=>vi.advanceTimersByTime(2000));
-  fireEvent.contextMenu(screen.getByRole('button',{name:/会话 A/}));
-  await act(async()=>{fireEvent.click(screen.getByRole('menuitem',{name:'导出会话'}))});
-  act(()=>vi.advanceTimersByTime(2000));
-  expect(screen.getByText('会话已导出。')).toBeInTheDocument();
-  act(()=>vi.advanceTimersByTime(1000));
-  expect(screen.queryByText('会话已导出。')).not.toBeInTheDocument();
- });
- it('草稿发送的迟到响应不污染当前会话，会话行仍并入侧栏',async()=>{
-  let resolveCreation!:(value:unknown)=>void;
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/project-A',name:'project-A'},{id:'other',sourcePath:'D:/project-B',name:'project-B'}];
-   if(name==='session_create')return new Promise(resolve=>{resolveCreation=resolve});
-   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A'},{id:'b',workspaceId:'w',title:'会话 B'},{id:'other-session',workspaceId:'other',title:'B 的会话'}];
-   return original(name,args);
-  });
-  await renderOpenA();
-  fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'发给迟到会话'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话',executionMode:'replica'}));
-  // 创建挂起期间切到 B 的会话：迟到响应不抢占 UI
-  fireEvent.click(screen.getByRole('button',{name:/B 的会话/}));
-  await screen.findByText('内容 other-session');
-  await act(async()=>resolveCreation({id:'late-session',workspaceId:'w',title:'A 迟到的新会话'}));
-  expect(screen.getByText('A 迟到的新会话')).toBeInTheDocument();
-  expect(screen.getByText('内容 other-session')).toBeInTheDocument();
-  // 首条消息归档到迟到会话
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('late-session','发给迟到会话','m',expect.any(Function),undefined,'high'));
- });
- it('切换会话只显示该会话的消息',async()=>{await renderOpenA();fireEvent.click(screen.getByRole('button',{name:/会话 B/}));await screen.findByText('内容 b');expect(screen.queryByText('内容 a')).not.toBeInTheDocument()});
- it('会话打开使用有界时间线页而非全量事件接口',async()=>{
-  await renderOpenA();
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_timeline_page',{sessionId:'a'}));
-  expect(mocks.command.mock.calls.some(([name])=>name==='session_events')).toBe(false);
- });
- it('在用户请求时以前页游标加载更早消息',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_timeline_page'&&args.beforeSeq==='4')return {sessionId:'a',events:[event('older-1','a','1','更早 1'),event('older-2','a','2','更早 2'),event('older-3','a','3','更早 3')],olderCursor:null,throughSeq:'6',hasOlder:false};
-   if(name==='session_timeline_page')return {sessionId:'a',events:[event('latest-4','a','4','最新 4'),event('latest-5','a','5','最新 5'),event('latest-6','a','6','最新 6')],olderCursor:'4',throughSeq:'6',hasOlder:true};
-   return original(name,args);
-  });
-  render(<App/>);
+async function openSidebarSession(title: RegExp) {
+  fireEvent.click(await screen.findByRole("button", { name: title }));
+}
+async function openSessionA() {
   await openSidebarSession(/会话 A/);
-  await screen.findByText('最新 4');
-  fireEvent.click(screen.getByRole('button',{name:'加载更早消息'}));
-  await screen.findByText('更早 1');
-  expect(mocks.command).toHaveBeenCalledWith('session_timeline_page',{sessionId:'a',beforeSeq:'4'});
- });
- it('切换会话后丢弃迟到的时间线页响应',async()=>{
-  let resolveA!:(page:ReturnType<typeof timeline>)=>void;
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_timeline_page'&&args.sessionId==='a')return new Promise(resolve=>{resolveA=resolve});
-   if(name==='session_timeline_page'&&args.sessionId==='b')return timeline('b',[event('b-1','b','1','会话 B 的内容')]);
-   return original(name,args);
-  });
-  render(<App/>);
-  await openSidebarSession(/会话 A/);
-  await waitFor(()=>expect(resolveA).toBeTypeOf('function'));
-  fireEvent.click(screen.getByRole('button',{name:/会话 B/}));
-  await screen.findByText('会话 B 的内容');
-  await act(async()=>resolveA(timeline('a',[event('a-late','a','1','迟到的 A 内容')])));
-  expect(screen.queryByText('迟到的 A 内容')).not.toBeInTheDocument();
-  expect(screen.getByText('会话 B 的内容')).toBeInTheDocument();
- });
- it('非活动会话的发送结束不会废弃当前会话的时间线加载',async()=>{
-  let releaseSend!:()=>void,resolveB!:(page:ReturnType<typeof timeline>)=>void;
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_timeline_page'&&args.sessionId==='b')return new Promise(resolve=>{resolveB=resolve});
-   return original(name,args);
-  });
-  mocks.send.mockImplementation(async()=>new Promise<void>(resolve=>{releaseSend=resolve}));
-  await renderOpenA();
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'发给 A 的消息'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(releaseSend).toBeTypeOf('function'));
-  fireEvent.click(screen.getByRole('button',{name:/会话 B/}));
-  await waitFor(()=>expect(resolveB).toBeTypeOf('function'));
-  await act(async()=>releaseSend());
-  await act(async()=>resolveB(timeline('b',[event('b-1','b','1','会话 B 的最新消息')])));
-  expect(await screen.findByText('会话 B 的最新消息')).toBeInTheDocument();
- });
- it('切换会话会清除被中断的更早页加载态',async()=>{
-  let resolveOlder!:(page:ReturnType<typeof timeline>)=>void;
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_timeline_page'&&args.sessionId==='a'&&args.beforeSeq==='4')return new Promise(resolve=>{resolveOlder=resolve});
-   if(name==='session_timeline_page'&&args.sessionId==='a')return {...timeline('a',[event('latest-4','a','4','最新消息')]),olderCursor:'4',hasOlder:true};
-   if(name==='session_timeline_page'&&args.sessionId==='b')return timeline('b',[event('b-1','b','1','会话 B 的内容')]);
-   return original(name,args);
-  });
-  render(<App/>);
-  await openSidebarSession(/会话 A/);
-  await screen.findByText('最新消息');
-  fireEvent.click(screen.getByRole('button',{name:'加载更早消息'}));
-  await waitFor(()=>expect(resolveOlder).toBeTypeOf('function'));
-  fireEvent.click(screen.getByRole('button',{name:/会话 B/}));
-  await screen.findByText('会话 B 的内容');
-  fireEvent.click(screen.getByRole('button',{name:/会话 A/}));
-  await screen.findByText('最新消息');
-  expect(screen.getByRole('button',{name:'加载更早消息'})).toBeEnabled();
-  await act(async()=>resolveOlder(timeline('a',[])));
- });
- it('完成回合折叠过程但始终显示 Markdown 最终总结',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,[{id:'start',sessionId:'a',seq:'1',kind:'turn.start',data:{runId:'r'},createdAt:'2026-11-05T00:00:00Z'},{id:'user',sessionId:'a',seq:'2',kind:'user.message',data:{content:'实现预览'},createdAt:'2026-11-05T00:00:01Z'},{id:'process',sessionId:'a',seq:'3',kind:'assistant.message',data:{content:'正在检查。'},createdAt:'2026-11-05T00:00:10Z'},{id:'call',sessionId:'a',seq:'4',kind:'tool.call',data:{name:'shell',arguments:{command:'cargo test'}},createdAt:'2026-11-05T00:01:00Z'},{id:'result',sessionId:'a',seq:'5',kind:'tool.result',data:{name:'shell',content:'ok'},createdAt:'2026-11-05T00:02:00Z'},{id:'final',sessionId:'a',seq:'6',kind:'assistant.message',data:{content:'## 最终总结\n\n- 已完成 **Markdown** 预览'},createdAt:'2026-11-05T00:03:00Z'},{id:'end',sessionId:'a',seq:'7',kind:'turn.end',data:{runId:'r',status:'completed'},createdAt:'2026-11-05T00:03:22Z'}]):original(name,args));
-  render(<App/>);
-  await openSidebarSession(/会话 A/);
-  await screen.findByRole('heading',{name:'最终总结',level:2});
-  expect(screen.getByText('已执行 · 1 条命令 · 用时3分22秒')).toBeVisible();
-  expect(screen.getByText('正在检查。')).not.toBeVisible();
-  fireEvent.click(screen.getByText('已执行 · 1 条命令 · 用时3分22秒'));
-  expect(screen.getByText('最终总结')).toBeVisible();
-  expect(screen.getByText('正在检查。')).toBeVisible();
- });
- it('发送期间合并增量，结束后读取持久化事件',async()=>{let release!:()=>void;mocks.send.mockImplementation(async(_id:string,_text:string,_model:string,receive:(e:LiveEvent)=>void)=>{receive({type:'delta',sessionId:'a',requestId:'r',index:0,text:'正在输出',reasoning:false});await new Promise<void>(r=>release=r)});await renderOpenA();fireEvent.change(screen.getByLabelText('消息'),{target:{value:'你好'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));await screen.findByText('正在输出');expect(screen.getByRole('button',{name:'取消生成'})).toBeInTheDocument();release();await waitFor(()=>expect(screen.queryByText('正在输出')).not.toBeInTheDocument());expect(mocks.send).toHaveBeenCalledWith('a','你好','m',expect.any(Function),undefined,'high')});
- it('首段输出前显示思考状态，流式内容到达后由其接替',async()=>{
-  let release!:()=>void,receive!:(event:LiveEvent)=>void;
-  mocks.send.mockImplementation(async(_id:string,_text:string,_model:string,onEvent:(event:LiveEvent)=>void)=>{receive=onEvent;await new Promise<void>(resolve=>release=resolve)});
-  await renderOpenA();fireEvent.change(screen.getByLabelText('消息'),{target:{value:'你好'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  expect(await screen.findByRole('status',{name:'正在思考'})).toBeVisible();
-  act(()=>receive({type:'delta',sessionId:'a',requestId:'r',index:0,text:'正在输出',reasoning:false}));
-  expect(screen.getByText('正在输出')).toBeVisible();expect(screen.queryByRole('status',{name:'正在思考'})).not.toBeInTheDocument();
-  await act(async()=>release());await waitFor(()=>expect(screen.queryByRole('status',{name:'正在思考'})).not.toBeInTheDocument());
- });
- it('当前会话等待审批时隐藏思考状态',async()=>{
-  const original=mocks.command.getMockImplementation()!;let approvalPending=false,release!:()=>void;
-  mocks.command.mockImplementation(async(name,args)=>name==='approval_list'&&approvalPending?[{id:'approval-1',sessionId:'a',tool:'shell',arguments:{command:'cargo test'},reason:'执行测试'}]:original(name,args));
-  mocks.send.mockImplementation(async()=>new Promise<void>(resolve=>release=resolve));
-  await renderOpenA();fireEvent.change(screen.getByLabelText('消息'),{target:{value:'请求'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  expect(await screen.findByRole('status',{name:'正在思考'})).toBeVisible();approvalPending=true;
-  await screen.findByRole('dialog',{name:'操作需要你的批准'},{timeout:3500});
-  expect(screen.queryByRole('status',{name:'正在思考'})).not.toBeInTheDocument();
-  await act(async()=>release());
- });
- it('取消生成后清除思考状态',async()=>{
-  let release!:()=>void;mocks.send.mockImplementation(async()=>new Promise<void>(resolve=>release=resolve));
-  await renderOpenA();fireEvent.change(screen.getByLabelText('消息'),{target:{value:'请求'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  expect(await screen.findByRole('status',{name:'正在思考'})).toBeVisible();fireEvent.click(screen.getByRole('button',{name:'取消生成'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_cancel',{sessionId:'a'}));await act(async()=>release());
-  await waitFor(()=>expect(screen.queryByRole('status',{name:'正在思考'})).not.toBeInTheDocument());
- });
- it('send 结束后不在历史事件回读期间重新显示思考状态',async()=>{
-  let releaseSend!:()=>void,releaseRefresh!:(page:ReturnType<typeof timeline>)=>void,eventReads=0;
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_timeline_page'&&args.sessionId==='a'&&++eventReads===2)return new Promise(resolve=>releaseRefresh=resolve);
-   return original(name,args);
-  });
-  mocks.send.mockImplementation(async()=>new Promise<void>(resolve=>releaseSend=resolve));
-  await renderOpenA();fireEvent.change(screen.getByLabelText('消息'),{target:{value:'请求'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  expect(await screen.findByRole('status',{name:'正在思考'})).toBeVisible();await act(async()=>releaseSend());await waitFor(()=>expect(releaseRefresh).toBeTypeOf('function'));
-  const visibleWhileHistoryIsLoading=screen.queryByRole('status',{name:'正在思考'})!==null;
-  await act(async()=>releaseRefresh(timeline('a',[{id:'end',sessionId:'a',seq:'2',kind:'turn.end',data:{runId:'r',status:'completed'},createdAt:''}])));
-  expect(visibleWhileHistoryIsLoading).toBe(false);expect(screen.queryByRole('status',{name:'正在思考'})).not.toBeInTheDocument();
- });
- it('发送错误可见且不插入假成功消息，也不在历史回读期间显示思考状态',async()=>{
-  let rejectSend!:(reason:unknown)=>void,releaseRefresh!:(page:ReturnType<typeof timeline>)=>void,eventReads=0;
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_timeline_page'&&args.sessionId==='a'&&++eventReads===2)return new Promise(resolve=>releaseRefresh=resolve);
-   return original(name,args);
-  });
-  mocks.send.mockImplementation(()=>new Promise<void>((_resolve,reject)=>rejectSend=reject));
-  await renderOpenA();fireEvent.change(screen.getByLabelText('消息'),{target:{value:'请求'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  expect(await screen.findByRole('status',{name:'正在思考'})).toBeVisible();await act(async()=>rejectSend(new Error('连接失败')));await screen.findByText('连接失败');
-  await waitFor(()=>expect(releaseRefresh).toBeTypeOf('function'));
-  const visibleWhileHistoryIsLoading=screen.queryByRole('status',{name:'正在思考'})!==null;
-  await act(async()=>releaseRefresh(timeline('a',[{id:'end',sessionId:'a',seq:'2',kind:'turn.end',data:{runId:'r',status:'error'},createdAt:''}])));
-  expect(visibleWhileHistoryIsLoading).toBe(false);expect(screen.queryByRole('status',{name:'正在思考'})).not.toBeInTheDocument();expect(screen.getByRole('button',{name:'继续任务'})).toBeInTheDocument();
- });
- it('审批通过传递真实请求id',async()=>{const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name,args)=>name==='approval_list'?[{id:'approval-1',sessionId:'a',tool:'shell',arguments:{command:'cargo test'},reason:'执行测试'}]:original(name,args));render(<App/>);await screen.findByRole('dialog',{name:'操作需要你的批准'});fireEvent.click(screen.getByRole('button',{name:'批准此次操作'}));await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('approval_resolve',{id:'approval-1',allow:true}))});
- it('权限模式选择器加载默认档并对当前会话保存切换',async()=>{await renderOpenA();const selector=screen.getByLabelText('权限模式');expect(selector).toHaveValue('ask');fireEvent.change(selector,{target:{value:'auto'}});await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('approval_mode_save',{mode:'auto',sessionId:'a'}));expect(screen.getByLabelText('权限模式')).toHaveValue('auto')});
- it('权限模式提供五档选项',async()=>{await renderOpenA();const selector=screen.getByLabelText('权限模式');const values=Array.from(selector.querySelectorAll('option')).map(o=>o.value);expect(values).toEqual(['ask','edit','guarded','auto','never'])});
-});
-describe('Agent 提问',()=>{
- const askPending=()=>[{id:'q-1',sessionId:'a',question:'先改哪个文件？',options:[{label:'session.rs',description:'存储层'},{label:'auth.rs'}]}];
- it('轮询到 pending 提问时弹出对话框',async()=>{const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name)=>name==='question_list'?askPending():original(name));render(<App/>);await openSidebarSession(/会话 A/);await screen.findByRole('dialog',{name:'Agent 需要你的输入'});expect(screen.getByText('先改哪个文件？')).toBeVisible();expect(screen.getByLabelText('选项 session.rs')).toBeInTheDocument()});
- it('切换到其他会话后提问卡片消失且原会话行显示待答复标记',async()=>{const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name,args)=>name==='question_list'?askPending():original(name,args));render(<App/>);await openSidebarSession(/会话 A/);await screen.findByRole('dialog',{name:'Agent 需要你的输入'});fireEvent.click(screen.getByRole('button',{name:/会话 B/}));await screen.findByText('内容 b');expect(screen.queryByRole('dialog',{name:'Agent 需要你的输入'})).not.toBeInTheDocument();expect(screen.getByText('待答复')).toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:/会话 A/}));await screen.findByRole('dialog',{name:'Agent 需要你的输入'})});
- it('提交选项答复传递真实id与selected来源',async()=>{const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name)=>name==='question_list'?askPending():original(name));render(<App/>);await openSidebarSession(/会话 A/);await screen.findByRole('dialog',{name:'Agent 需要你的输入'});fireEvent.click(screen.getByLabelText('选项 session.rs'));fireEvent.click(screen.getByRole('button',{name:'提交答复'}));await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('question_resolve',{id:'q-1',answer:{text:'session.rs',source:'selected'}}))});
- it('自由输入答复按text来源提交',async()=>{const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name)=>name==='question_list'?askPending():original(name));render(<App/>);await openSidebarSession(/会话 A/);await screen.findByRole('dialog',{name:'Agent 需要你的输入'});expect(screen.queryByLabelText('自定义答复')).not.toBeInTheDocument();fireEvent.click(screen.getByLabelText('选项 其他'));fireEvent.change(screen.getByLabelText('自定义答复'),{target:{value:'都先放一放'}});fireEvent.click(screen.getByRole('button',{name:'提交答复'}));await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('question_resolve',{id:'q-1',answer:{text:'都先放一放',source:'text'}}))});
- it('选中普通选项时隐藏自定义输入框，改选其他时显示',async()=>{const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name)=>name==='question_list'?askPending():original(name));render(<App/>);await openSidebarSession(/会话 A/);await screen.findByRole('dialog',{name:'Agent 需要你的输入'});fireEvent.click(screen.getByLabelText('选项 其他'));expect(screen.getByLabelText('自定义答复')).toBeInTheDocument();fireEvent.click(screen.getByLabelText('选项 session.rs'));expect(screen.queryByLabelText('自定义答复')).not.toBeInTheDocument();fireEvent.click(screen.getByLabelText('选项 其他'));expect(screen.getByLabelText('自定义答复')).toBeInTheDocument()});
- it('忽略按钮按unattended提交',async()=>{const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name)=>name==='question_list'?askPending():original(name));render(<App/>);await openSidebarSession(/会话 A/);await screen.findByRole('dialog',{name:'Agent 需要你的输入'});fireEvent.click(screen.getByRole('button',{name:'忽略'}));await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('question_resolve',{id:'q-1',answer:{text:'',source:'unattended'}}))});
- it('无选项提问仅渲染自由输入并提交',async()=>{const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name)=>name==='question_list'?[{id:'q-2',sessionId:'a',question:'继续吗？',options:[]}]:original(name));render(<App/>);await openSidebarSession(/会话 A/);await screen.findByRole('dialog',{name:'Agent 需要你的输入'});expect(screen.queryByText('选项 session.rs')).not.toBeInTheDocument();fireEvent.change(screen.getByLabelText('自定义答复'),{target:{value:'继续'}});fireEvent.click(screen.getByRole('button',{name:'提交答复'}));await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('question_resolve',{id:'q-2',answer:{text:'继续',source:'text'}}))});
- it('当前会话等待提问时隐藏思考状态',async()=>{const original=mocks.command.getMockImplementation()!;let questionPending=false,release!:()=>void;mocks.command.mockImplementation(async(name,args)=>name==='question_list'&&questionPending?askPending():original(name,args));mocks.send.mockImplementation(async()=>new Promise<void>(resolve=>release=resolve));await renderOpenA();fireEvent.change(screen.getByLabelText('消息'),{target:{value:'请求'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));expect(await screen.findByRole('status',{name:'正在思考'})).toBeVisible();questionPending=true;await screen.findByRole('dialog',{name:'Agent 需要你的输入'},{timeout:3500});expect(screen.queryByRole('status',{name:'正在思考'})).not.toBeInTheDocument();await act(async()=>release())});
- it('时间线回放按id配对显示提问与答复',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,[
-   {id:'start',sessionId:'a',seq:'1',kind:'turn.start',data:{runId:'r'},createdAt:''},
-   {id:'ask',sessionId:'a',seq:'2',kind:'ask.request',data:{id:'q-1',sessionId:'a',question:'先改哪个文件？',options:[{label:'session.rs'}]},createdAt:''},
-   {id:'resolved',sessionId:'a',seq:'3',kind:'ask.resolved',data:{id:'q-1',answer:'session.rs',source:'selected'},createdAt:''},
-   {id:'end',sessionId:'a',seq:'4',kind:'turn.end',data:{runId:'r',status:'completed'},createdAt:''},
-  ]):original(name,args));
-  render(<App/>);
-  await openSidebarSession(/会话 A/);
-  await screen.findByText('先改哪个文件？');
-  fireEvent.click(screen.getByText('本轮已完成'));
-  expect(screen.getByText('session.rs')).toBeVisible();
-  expect(screen.getByText(/答复：session\.rs/)).toBeVisible();
- });
- it('时间线回放显示未获得答复的自动结算',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,[
-   {id:'start',sessionId:'a',seq:'1',kind:'turn.start',data:{runId:'r'},createdAt:''},
-   {id:'ask',sessionId:'a',seq:'2',kind:'ask.request',data:{id:'q-3',sessionId:'a',question:'继续吗？',options:[]},createdAt:''},
-   {id:'resolved',sessionId:'a',seq:'3',kind:'ask.resolved',data:{id:'q-3',answer:'当前无用户在场（未答复）',source:'unattended'},createdAt:''},
-   {id:'end',sessionId:'a',seq:'4',kind:'turn.end',data:{runId:'r',status:'completed'},createdAt:''},
-  ]):original(name,args));
-  render(<App/>);
-  await openSidebarSession(/会话 A/);
-  await screen.findByText('继续吗？');
-  fireEvent.click(screen.getByText('本轮已完成'));
-  expect(screen.getByText(/未获得答复/)).toBeVisible();
- });
- it('提问挂起时发送按钮保留且发送消息按文本答复结算',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  let questionPending=false,release!:()=>void;
-  mocks.command.mockImplementation(async(name,args)=>name==='question_list'&&questionPending?askPending():original(name,args));
-  mocks.send.mockImplementation(async()=>new Promise<void>(resolve=>release=resolve));
-  await renderOpenA();
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'请求'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  expect(await screen.findByRole('status',{name:'正在思考'})).toBeVisible();
-  questionPending=true;
-  await screen.findByRole('dialog',{name:'Agent 需要你的输入'},{timeout:3500});
-  expect(screen.getByRole('button',{name:'发送消息'})).toBeInTheDocument();
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'先改 session.rs'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('question_resolve',{id:'q-1',answer:{text:'先改 session.rs',source:'text'}}));
-  expect(mocks.send).toHaveBeenCalledTimes(1);
-  await act(async()=>release());
- });
- it('提问挂起且带附件时发送仍走消息路径',async()=>{
-  const attachment={hash:'a'.repeat(64),name:'说明.txt',mediaType:'text/plain',size:12};
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='question_list'?askPending():name==='artifact_import'?attachment:original(name,args));
-  vi.mocked(open).mockResolvedValueOnce('C:/private/说明.txt');
-  render(<App/>);
-  await openSidebarSession(/会话 A/);
-  await screen.findByRole('dialog',{name:'Agent 需要你的输入'});
-  fireEvent.click(screen.getByRole('button',{name:'添加内容'}));
-  fireEvent.click(screen.getByRole('menuitem',{name:/^附件/}));
-  await screen.findByText('说明.txt');
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'读取附件'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','读取附件','m',expect.any(Function),[attachment.hash],'high'));
-  expect(mocks.command).not.toHaveBeenCalledWith('question_resolve',expect.anything());
- });
- it('提问卡可折叠展开，折叠后仅保留摘要与忽略入口',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name)=>name==='question_list'?askPending():original(name));
-  render(<App/>);
-  await openSidebarSession(/会话 A/);
-  await screen.findByRole('dialog',{name:'Agent 需要你的输入'});
-  fireEvent.click(screen.getByRole('button',{name:'折叠提问卡'}));
-  expect(screen.queryByLabelText('选项 session.rs')).not.toBeInTheDocument();
-  expect(screen.queryByRole('button',{name:'提交答复'})).not.toBeInTheDocument();
-  expect(screen.getByText('先改哪个文件？')).toBeInTheDocument();
-  expect(screen.getByRole('button',{name:'忽略提问'})).toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button',{name:'展开提问卡'}));
-  expect(screen.getByLabelText('选项 session.rs')).toBeInTheDocument();
-  expect(screen.getByRole('button',{name:'提交答复'})).toBeInTheDocument();
- });
- it('轮询刷新后提问卡保持折叠状态',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name)=>name==='question_list'?askPending():original(name));
-  render(<App/>);
-  await openSidebarSession(/会话 A/);
-  await screen.findByRole('dialog',{name:'Agent 需要你的输入'});
-  fireEvent.click(screen.getByRole('button',{name:'折叠提问卡'}));
-  expect(screen.queryByLabelText('选项 session.rs')).not.toBeInTheDocument();
-  await act(async()=>{await new Promise(resolve=>setTimeout(resolve,2300))});
-  expect(screen.getByRole('dialog',{name:'Agent 需要你的输入'})).toBeInTheDocument();
-  expect(screen.queryByLabelText('选项 session.rs')).not.toBeInTheDocument();
- });
- it('时间线回放标注文本答复来源',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,[
-   {id:'start',sessionId:'a',seq:'1',kind:'turn.start',data:{runId:'r'},createdAt:''},
-   {id:'ask',sessionId:'a',seq:'2',kind:'ask.request',data:{id:'q-4',sessionId:'a',question:'继续吗？',options:[]},createdAt:''},
-   {id:'resolved',sessionId:'a',seq:'3',kind:'ask.resolved',data:{id:'q-4',answer:'都先放一放',source:'text'},createdAt:''},
-   {id:'end',sessionId:'a',seq:'4',kind:'turn.end',data:{runId:'r',status:'completed'},createdAt:''},
-  ]):original(name,args));
-  render(<App/>);
-  await openSidebarSession(/会话 A/);
-  await screen.findByText('继续吗？');
-  fireEvent.click(screen.getByText('本轮已完成'));
-  expect(screen.getByText(/答复：都先放一放（文本答复）/)).toBeVisible();
- });
-});
-describe('侧栏会话入口',()=>{
- it('多项目时不再显示工作区切换下拉框，新建聊天按钮可用',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/A',name:'A'},{id:'other',sourcePath:'D:/B',name:'B'}];
-   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A'},{id:'other-session',workspaceId:'other',title:'B 的会话'}];
-   return original(name,args);
-  });
-  await renderOpenA();
-  expect(screen.queryByLabelText('工作区')).toBeNull();
-  expect(screen.getByRole('button',{name:'新建聊天'})).toBeEnabled();
- });
- it('不再显示侧栏顶部的工作区选择按钮',async()=>{await renderOpenA();expect(screen.queryByText('托管工作副本')).not.toBeInTheDocument()});
- it('无工作区时进入无项目草稿态，欢迎语与草稿 chip 显示「无项目」，侧栏空态保留打开入口',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [];
-   if(name==='session_list')return [];
-   return original(name,args);
-  });
-  render(<App/>);
-  await screen.findByLabelText('当前模型');
-  // 项目列表为空时按 no-project-sessions.md 直接进入无项目草稿态（不强制先建项目）
-  expect(await screen.findByRole('heading',{name:/你想在 无项目 中构建什么/})).toBeInTheDocument();
-  expect(screen.getByRole('button',{name:'选择项目'})).toHaveTextContent('无项目');
-  const nav=screen.getByText('打开工作区后，会话将保存在本机。').closest('nav')!;
-  expect(within(nav).getByRole('button',{name:/打开工作区/})).toBeEnabled();
- });
- it('没有激活项目时新建聊天进入草稿态并自动弹出项目菜单',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='workspace_list'?[]:original(name,args));
-  render(<App/>);
-  await screen.findByLabelText('当前模型');
-  const btn=screen.getByRole('button',{name:'新建聊天'});
-  expect(btn).toBeEnabled();
-  fireEvent.click(btn);
-  expect(await screen.findByRole('menu',{name:'选择项目'})).toBeInTheDocument();
-  expect(screen.getByRole('menuitem',{name:/新建项目/})).toBeInTheDocument();
-  expect(screen.getByText('想把什么变成现实？')).toBeInTheDocument();
-  expect(screen.getByRole('button',{name:'发送消息'})).toBeDisabled();
- });
- it('项目组头的新建按钮为该项目新建会话并自动切换',async()=>{
-  localStorage.clear();
-  let createdSession:{id:string;workspaceId:string;title:string}|null=null;
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/A',name:'A'},{id:'other',sourcePath:'D:/B',name:'B'}];
-   if(name==='session_list')return [...(createdSession?[createdSession]:[]),{id:'a',workspaceId:'w',title:'会话 A'},{id:'other-session',workspaceId:'other',title:'B 的会话'}];
-   if(name==='session_create'){createdSession={id:'created-other',workspaceId:'other',title:'B 的新会话'};return createdSession}
-   return original(name,args);
-  });
-  await renderOpenA();
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
-  fireEvent.click(screen.getByRole('button',{name:'在 B 新建聊天'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'other',title:'新会话',executionMode:'replica'}));
-  await screen.findByText('内容 created-other');
- });
- it('当前项目组头的新建按钮直接新建会话',async()=>{
-  localStorage.clear();
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_create'?{id:'new-w',workspaceId:'w',title:'新会话'}:original(name,args));
-  await renderOpenA();
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
-  fireEvent.click(screen.getByRole('button',{name:'在 project 新建聊天'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话',executionMode:'replica'}));
-  await screen.findByText('内容 new-w');
- });
-});
-describe('同步审阅（右侧面板）',()=>{
- const reviewed={path:'a.rs',kind:'modified',conflict:false,beforeHash:'before-a',afterHash:'reviewed-a',sourceHash:'source-a',beforeText:'old',afterText:'new'};
- const UNIFIED='--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n+new text\n';
- function reviewBackend(list:unknown[],applyError?:string,diff:unknown={path:'a.rs',unified:UNIFIED}){
-  mocks.command.mockImplementation(async(name:string)=>{
-   if(name==='workspace_diff')return list;
-   if(name==='workspace_file_diff')return diff;
-   if(name==='workspace_apply'){if(applyError)throw new Error(applyError);return []}
-   return [];
-  });
- }
- it('只应用选中文件，传递完整审阅快照且需要二次确认',async()=>{
-  reviewBackend([reviewed,{...reviewed,path:'b.rs'},{...reviewed,path:'conflict.rs',conflict:true}]);
-  render(<ChangesView workspaceId="w"/>);
-  await screen.findByText('a.rs');
-  fireEvent.click(screen.getByLabelText('选择 b.rs'));
-  expect(screen.getByLabelText('选择 conflict.rs')).toBeDisabled();
-  fireEvent.click(screen.getByRole('button',{name:'同步选中文件'}));
-  expect(mocks.command).not.toHaveBeenCalledWith('workspace_apply',expect.anything());
-  fireEvent.click(screen.getByRole('button',{name:'确认应用更改'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_apply',{workspaceId:'w',paths:['a.rs'],reviewed:[reviewed]}));
- });
- it('宿主拒绝过期审阅时保留错误且不声称已同步',async()=>{
-  reviewBackend([reviewed],'审阅后副本已改变，请重新审阅');
-  render(<ChangesView workspaceId="w"/>);
-  await screen.findByText('a.rs');
-  fireEvent.click(screen.getByRole('button',{name:/a\.rs$/}));
-  await screen.findByText('+new text');
-  fireEvent.click(screen.getByRole('button',{name:'同步选中文件'}));
-  fireEvent.click(screen.getByRole('button',{name:'确认应用更改'}));
-  await screen.findByText('审阅后副本已改变，请重新审阅');
-  expect(screen.queryByText('已将选中更改同步到原项目。')).not.toBeInTheDocument();
-  expect(screen.getByText('+new text')).toBeInTheDocument();
- });
- it('刷新差异后需要重新确认，保持展开的文件自动重算差异',async()=>{
-  reviewBackend([reviewed]);
-  render(<ChangesView workspaceId="w"/>);
-  await screen.findByText('a.rs');
-  fireEvent.click(screen.getByRole('button',{name:/a\.rs$/}));
-  await screen.findByText('+new text');
-  fireEvent.click(screen.getByRole('button',{name:'同步选中文件'}));
-  expect(screen.getByRole('button',{name:'确认应用更改'})).toBeInTheDocument();
-  reviewBackend([{...reviewed,afterHash:'updated',afterText:'updated text'}],undefined,{path:'a.rs',unified:'--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n+updated text\n'});
-  fireEvent.click(screen.getByRole('button',{name:'刷新'}));
-  await waitFor(()=>expect(screen.queryByRole('button',{name:'确认应用更改'})).not.toBeInTheDocument());
-  await screen.findByText('+updated text');
-  expect(screen.queryByText('+new text')).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button',{name:'同步选中文件'}));
-  fireEvent.click(screen.getByRole('button',{name:'确认应用更改'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_apply',{workspaceId:'w',paths:['a.rs'],reviewed:[{...reviewed,afterHash:'updated',afterText:'updated text'}]}));
- });
-});
-describe('右侧面板',()=>{
- it('顶栏“查看更改”开关面板：默认勾选非冲突文件，展开懒加载行级差异，Escape 关闭',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name:string,args:any)=>{
-   if(name==='workspace_diff')return [{path:'a.rs',kind:'modified',conflict:false,beforeHash:'b',afterHash:'a',sourceHash:null,beforeText:'old',afterText:'new'},{path:'conf.rs',kind:'modified',conflict:true,beforeHash:null,afterHash:null,sourceHash:null,beforeText:null,afterText:null}];
-   if(name==='workspace_file_diff')return {path:'a.rs',unified:'--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n-new\n+new text\n'};
-   return original(name,args);
-  });
-  await renderOpenA();
-  expect(screen.queryByRole('complementary',{name:'文件面板'})).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button',{name:'查看更改'}));
-  const panel=screen.getByRole('complementary',{name:'文件面板'});
-  await within(panel).findByText('a.rs');
-  expect(within(panel).getByLabelText('选择 conf.rs')).toBeDisabled();
-  fireEvent.click(within(panel).getByRole('button',{name:/a\.rs$/}));
-  await within(panel).findByText('+new text');
-  fireEvent.keyDown(document,{key:'Escape'});
-  expect(screen.queryByRole('complementary',{name:'文件面板'})).not.toBeInTheDocument();
-  expect(screen.getByRole('button',{name:'查看更改'})).toHaveAttribute('aria-expanded','false');
- });
- it('write 工具卡的文件按钮切到预览 tab 显示内容',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name:string,args:any)=>{
-   if(name==='session_timeline_page')return timeline(args.sessionId,[{id:'w1',sessionId:'a',seq:'1',kind:'tool.result',data:{name:'write',arguments:{path:'src/main.rs'},content:'已写入副本 src/main.rs'},createdAt:'2026-11-07T00:00:00Z'}]);
-   if(name==='workspace_file_preview')return {path:'src/main.rs',content:'fn main(){}',truncated:false,binary:false,sizeBytes:11};
-   return original(name,args);
-  });
-  render(<App/>);
-  await openSidebarSession(/会话 A/);
-  await screen.findByRole('button',{name:'main.rs'});
-  fireEvent.click(screen.getByRole('button',{name:'main.rs'}));
-  await screen.findByText('fn main(){}');
-  expect(screen.getAllByText('src/main.rs').length).toBe(2);
-  expect(screen.getByRole('tab',{name:'预览'})).toHaveAttribute('aria-selected','true');
- });
- it('edit 工具显示行级差异：调用行收敛，结果卡带统计与 diff 展开',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  const unified=['--- a/src/config.ts','+++ b/src/config.ts','@@ -1,2 +1,3 @@',' const a=1;','-const b=2;','+const b=3;','+const c=4;'].join('\n');
-  mocks.command.mockImplementation(async(name:string,args:any)=>name==='session_timeline_page'?timeline(args.sessionId,[
-   {id:'c1',sessionId:'a',seq:'1',kind:'tool.call',data:{id:'c1',name:'edit',arguments:{path:'src/config.ts',oldText:'const b=2;',newText:'const b=3;\nconst c=4;'}},createdAt:''},
-   {id:'r1',sessionId:'a',seq:'2',kind:'tool.result',data:{callId:'c1',name:'edit',content:'已修改副本 src/config.ts',isError:false,status:'completed',diff:unified,path:'src/config.ts'},createdAt:''},
-   ]):original(name,args));
-  render(<App/>);
-  await openSidebarSession(/会话 A/);
-  expect((await screen.findAllByText('编辑')).length).toBe(1);
-  expect(screen.getAllByRole('button',{name:'config.ts'})).toHaveLength(1);
-  expect(screen.queryByText('调用中')).not.toBeInTheDocument();
-  expect(screen.getAllByText('src')).toHaveLength(1);
-  expect(screen.getByText('+2')).toBeInTheDocument();
-  expect(screen.getByText('-1')).toBeInTheDocument();
-  fireEvent.click(screen.getByText('已完成'));
-  expect(await screen.findByText('+const b=3;')).toBeVisible();
-  expect(screen.getByText(/"oldText"/,{selector:'.t-sec pre'})).toBeVisible();
- });
- it('edit 失败结果无 diff，展开显示错误内容',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name:string,args:any)=>name==='session_timeline_page'?timeline(args.sessionId,[
-   {id:'r1',sessionId:'a',seq:'1',kind:'tool.result',data:{callId:'c1',name:'edit',content:'待替换文本必须在当前文件中恰好出现一次',isError:true,status:'error',diff:null,path:'src/config.ts'},createdAt:''},
-   ]):original(name,args));
-  render(<App/>);
-  await openSidebarSession(/会话 A/);
-  expect(await screen.findByText('执行失败')).toBeInTheDocument();
-  expect(screen.queryByText(/^\+\d+$/)).not.toBeInTheDocument();
-  fireEvent.click(screen.getByText('执行失败'));
-  expect(await screen.findByText(/恰好出现一次/)).toBeVisible();
- });
- it('write 工具结果显示写入标签与全新增 diff',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name:string,args:any)=>name==='session_timeline_page'?timeline(args.sessionId,[
-   {id:'r1',sessionId:'a',seq:'1',kind:'tool.result',data:{callId:'c1',name:'write',content:'已写入副本 docs/new.md',isError:false,status:'completed',diff:'--- /dev/null\n+++ b/docs/new.md\n@@ -0,0 +1,1 @@\n+# 标题',path:'docs/new.md'},createdAt:''},
-   ]):original(name,args));
-  render(<App/>);
-  await openSidebarSession(/会话 A/);
-  expect(await screen.findByText('写入')).toBeInTheDocument();
-  expect(screen.getByText('+1')).toBeInTheDocument();
-  fireEvent.click(screen.getByText('已完成'));
-  expect(await screen.findByText('+# 标题')).toBeVisible();
- });
- it('同文件连续编辑合并为一张文件卡，展开按序显示各次 diff',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  const first=['--- a/src/config.ts','+++ b/src/config.ts','@@ -1,2 +1,3 @@',' const a=1;','-const b=2;','+const b=3;','+const c=4;'].join('\n');
-  const second=['--- a/src/config.ts','+++ b/src/config.ts','@@ -1,3 +1,3 @@',' const a=1;','-const c=4;','+const c=5;'].join('\n');
-  mocks.command.mockImplementation(async(name:string,args:any)=>name==='session_timeline_page'?timeline(args.sessionId,[
-   {id:'c1',sessionId:'a',seq:'1',kind:'tool.call',data:{id:'c1',name:'edit',arguments:{path:'src/config.ts'}},createdAt:''},
-   {id:'r1',sessionId:'a',seq:'2',kind:'tool.result',data:{callId:'c1',name:'edit',content:'已修改副本 src/config.ts',isError:false,status:'completed',diff:first,path:'src/config.ts'},createdAt:''},
-   {id:'c2',sessionId:'a',seq:'3',kind:'tool.call',data:{id:'c2',name:'edit',arguments:{path:'src/config.ts'}},createdAt:''},
-   {id:'r2',sessionId:'a',seq:'4',kind:'tool.result',data:{callId:'c2',name:'edit',content:'已修改副本 src/config.ts',isError:false,status:'completed',diff:second,path:'src/config.ts'},createdAt:''},
-  ]):original(name,args));
-  render(<App/>);
-  await openSidebarSession(/会话 A/);
-  expect(await screen.findByText('编辑 ×2')).toBeInTheDocument();
-  expect(screen.getAllByRole('button',{name:'config.ts'})).toHaveLength(1);
-  expect(screen.getAllByText('src')).toHaveLength(1);
-  expect(screen.getByText('+3')).toBeInTheDocument();
-  expect(screen.getByText('-2')).toBeInTheDocument();
-  const card=screen.getByText('编辑 ×2').closest('details')!;
-  expect(card).not.toHaveAttribute('open');
-  fireEvent.click(screen.getByText('编辑 ×2'));
-  expect(card).toHaveAttribute('open');
-  expect(screen.getByText('第 1 次编辑')).toBeInTheDocument();
-  expect(screen.getByText('第 2 次编辑')).toBeInTheDocument();
-  expect(screen.getByText('+const b=3;')).toBeInTheDocument();
-  expect(screen.getByText('+const c=5;')).toBeInTheDocument();
-  expect(screen.queryByText(/oldText/)).not.toBeInTheDocument();
- });
- it('中间夹其他工具时同文件编辑不合并',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  const diff=['--- a/src/config.ts','+++ b/src/config.ts','@@ -1,1 +1,2 @@','-old','+new','+extra'].join('\n');
-  mocks.command.mockImplementation(async(name:string,args:any)=>name==='session_timeline_page'?timeline(args.sessionId,[
-   {id:'c1',sessionId:'a',seq:'1',kind:'tool.call',data:{id:'c1',name:'edit',arguments:{path:'src/config.ts'}},createdAt:''},
-   {id:'r1',sessionId:'a',seq:'2',kind:'tool.result',data:{callId:'c1',name:'edit',content:'已修改副本',isError:false,status:'completed',diff,path:'src/config.ts'},createdAt:''},
-   {id:'c2',sessionId:'a',seq:'3',kind:'tool.call',data:{id:'c2',name:'read',arguments:{path:'src/other.ts'}},createdAt:''},
-   {id:'r2',sessionId:'a',seq:'4',kind:'tool.result',data:{callId:'c2',name:'read',content:'other',isError:false,status:'completed'},createdAt:''},
-   {id:'c3',sessionId:'a',seq:'5',kind:'tool.call',data:{id:'c3',name:'edit',arguments:{path:'src/config.ts'}},createdAt:''},
-   {id:'r3',sessionId:'a',seq:'6',kind:'tool.result',data:{callId:'c3',name:'edit',content:'已修改副本',isError:false,status:'completed',diff,path:'src/config.ts'},createdAt:''},
-  ]):original(name,args));
-  render(<App/>);
-  await openSidebarSession(/会话 A/);
-  expect(await screen.findAllByRole('button',{name:'config.ts'})).toHaveLength(2);
-  expect(screen.queryByText('编辑 ×2')).not.toBeInTheDocument();
-  expect(screen.getAllByText('编辑',{selector:'.t-title'})).toHaveLength(2);
- });
- it('合并卡显示部分失败状态并只聚合成功 diff 的增删',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  const diff=['--- a/src/config.ts','+++ b/src/config.ts','@@ -1,1 +1,3 @@','-old','+new','+extra'].join('\n');
-  mocks.command.mockImplementation(async(name:string,args:any)=>name==='session_timeline_page'?timeline(args.sessionId,[
-   {id:'c1',sessionId:'a',seq:'1',kind:'tool.call',data:{id:'c1',name:'edit',arguments:{path:'src/config.ts'}},createdAt:''},
-   {id:'r1',sessionId:'a',seq:'2',kind:'tool.result',data:{callId:'c1',name:'edit',content:'已修改副本',isError:false,status:'completed',diff,path:'src/config.ts'},createdAt:''},
-   {id:'c2',sessionId:'a',seq:'3',kind:'tool.call',data:{id:'c2',name:'edit',arguments:{path:'src/config.ts'}},createdAt:''},
-   {id:'r2',sessionId:'a',seq:'4',kind:'tool.result',data:{callId:'c2',name:'edit',content:'替换失败',isError:true,status:'error',diff:null,path:'src/config.ts'},createdAt:''},
-  ]):original(name,args));
-  render(<App/>);
-  await openSidebarSession(/会话 A/);
-  expect(await screen.findByText('编辑 ×2')).toBeInTheDocument();
-  expect(screen.getByText('部分失败')).toBeInTheDocument();
-  const summary=screen.getByText('编辑 ×2').closest('summary')!;
-  expect(within(summary).getByText('+2')).toBeInTheDocument();
-  expect(within(summary).getByText('-1')).toBeInTheDocument();
-  fireEvent.click(screen.getByText('编辑 ×2'));
-  expect(screen.getByText('第 1 次编辑')).toBeInTheDocument();
-  expect(screen.getByText('第 2 次编辑')).toBeInTheDocument();
-  expect(screen.getAllByText('执行失败')).toHaveLength(1);
-  expect(screen.getByText('替换失败')).toBeInTheDocument();
- });
- it('完成回合内的同文件连续编辑同样合并',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  const diff=['--- a/src/config.ts','+++ b/src/config.ts','@@ -1,1 +1,2 @@','-old','+new','+extra'].join('\n');
-  mocks.command.mockImplementation(async(name:string,args:any)=>name==='session_timeline_page'?timeline(args.sessionId,[
-   {id:'t1',sessionId:'a',seq:'1',kind:'turn.start',data:{runId:'run'},createdAt:''},
-   {id:'u1',sessionId:'a',seq:'2',kind:'user.message',data:{content:'改两次'},createdAt:''},
-   {id:'a1',sessionId:'a',seq:'3',kind:'assistant.message',data:{content:'开始修改'},createdAt:''},
-   {id:'c1',sessionId:'a',seq:'4',kind:'tool.call',data:{id:'c1',name:'edit',arguments:{path:'src/config.ts'}},createdAt:''},
-   {id:'r1',sessionId:'a',seq:'5',kind:'tool.result',data:{callId:'c1',name:'edit',content:'已修改副本',isError:false,status:'completed',diff,path:'src/config.ts'},createdAt:''},
-   {id:'c2',sessionId:'a',seq:'6',kind:'tool.call',data:{id:'c2',name:'edit',arguments:{path:'src/config.ts'}},createdAt:''},
-   {id:'r2',sessionId:'a',seq:'7',kind:'tool.result',data:{callId:'c2',name:'edit',content:'已修改副本',isError:false,status:'completed',diff,path:'src/config.ts'},createdAt:''},
-   {id:'a2',sessionId:'a',seq:'8',kind:'assistant.message',data:{content:'修改完成'},createdAt:''},
-   {id:'t2',sessionId:'a',seq:'9',kind:'turn.end',data:{runId:'run',status:'completed'},createdAt:''},
-  ]):original(name,args));
-  render(<App/>);
-  await openSidebarSession(/会话 A/);
-  expect(await screen.findByText('编辑 ×2')).toBeInTheDocument();
-  expect(screen.getAllByRole('button',{name:'config.ts'})).toHaveLength(1);
-  expect(screen.getByText('+4')).toBeInTheDocument();
-  expect(screen.getByText('-2')).toBeInTheDocument();
- });
- it('/diff 斜杠命令打开更改视图',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name:string,args:any)=>name==='workspace_diff'?[]:original(name,args));
-  await renderOpenA();
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'/diff'}});
-  fireEvent.keyDown(input,{key:'Enter'});
-  await screen.findByText('工作副本没有待同步更改');
-  expect(screen.getByRole('complementary',{name:'文件面板'})).toBeInTheDocument();
- });
-});
-describe('事件状态',()=>{
- it('重复增量去重，会话隔离，持久化seq按大整数排序',()=>{const state=useChat.getState();const delta:LiveEvent={type:'delta',sessionId:'a',requestId:'r',index:0,text:'A',reasoning:false};state.receive(delta);state.receive(delta);state.receive({...delta,index:1,text:'B'});state.receive({...delta,sessionId:'b',text:'C'});expect(useChat.getState().streams.a.text).toBe('AB');expect(useChat.getState().streams.b.text).toBe('C');state.replace('a',[event('later','a','9007199254740993','later'),event('first','a','9007199254740992','first')]);expect(useChat.getState().events.a.map(e=>e.id)).toEqual(['first','later']);state.receive({type:'durable',event:event('final','a','9007199254740994','AB')});expect(useChat.getState().streams.a).toBeUndefined()});
-});
-
-const jobEvents:SessionEvent[]=[
- {id:'s1',sessionId:'a',seq:'1',kind:'job.started',data:{id:'job-1',command:'cargo test --all-features',status:'running'},createdAt:'2026-11-06T01:00:00Z'},
- {id:'c1',sessionId:'a',seq:'2',kind:'job.cancel_requested',data:{id:'job-1'},createdAt:'2026-11-06T01:01:00Z'},
- {id:'f1',sessionId:'a',seq:'3',kind:'job.finished',data:{id:'job-1',status:'cancelled',error:'已取消'},createdAt:'2026-11-06T01:01:05Z'},
- {id:'s2',sessionId:'a',seq:'4',kind:'job.started',data:{id:'job-2',command:'npm run build',status:'running'},createdAt:'2026-11-06T01:02:00Z'},
- {id:'f2',sessionId:'a',seq:'5',kind:'job.finished',data:{id:'job-2',status:'completed',output:{stdout:'built ok',stderr:'',exit_code:0}},createdAt:'2026-11-06T01:03:00Z'},
- {id:'sc1',sessionId:'a',seq:'6',kind:'schedule.created',data:{id:'sch-1',at:'2099-01-01T00:00:00Z',task:'以后执行',modelId:'missing',status:'pending'},createdAt:'2026-11-06T01:04:00Z'},
- {id:'sf1',sessionId:'a',seq:'7',kind:'schedule.finished',data:{id:'sch-1',status:'completed'},createdAt:'2026-11-06T01:05:00Z'},
- {id:'sa1',sessionId:'a',seq:'8',kind:'subagent.created',data:{sessionId:'child-1',source:'a'},createdAt:'2026-11-06T01:06:00Z'},
- {id:'sm1',sessionId:'a',seq:'9',kind:'subagent.message_sent',data:{sessionId:'child-1',content:'真实子任务'},createdAt:'2026-11-06T01:07:00Z'},
-];
-describe('后台任务可视化',()=>{
- it('消息流渲染后台任务、定时任务与子代理事件卡片',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,jobEvents):original(name,args));
-  render(<App/>);
-  await openSidebarSession(/会话 A/);
-  await screen.findByText('npm run build');
-  expect(screen.getAllByText('cargo test --all-features').length).toBeGreaterThan(0);
-  expect(screen.getByText('已取消')).toBeInTheDocument();
-  expect(screen.getByText(/已请求取消后台任务/)).toBeInTheDocument();
-  expect(screen.getByText(/built ok/)).toBeInTheDocument();
-  expect(screen.getByText('已创建子代理')).toBeInTheDocument();
-  expect(screen.getByText('真实子任务')).toBeInTheDocument();
- });
- it('渲染定时任务创建卡片与执行状态行，historyOnly 子代理不渲染',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,[...jobEvents,{id:'sa2',sessionId:'a',seq:'10',kind:'subagent.created',data:{sessionId:'ghost',source:'a',historyOnly:true},createdAt:'2026-11-06T01:08:00Z'}]):original(name,args));
-  render(<App/>);
-  await openSidebarSession(/会话 A/);
-  await screen.findByText('以后执行');
-  expect(screen.getByText('2099-01-01T00:00:00Z')).toBeInTheDocument();
-  expect(screen.getByText(/定时任务 sch-1：已完成/)).toBeInTheDocument();
-  expect(screen.queryByText('ghost')).not.toBeInTheDocument();
- });
- it('顶栏按钮统计未终结的后台任务并以浮层开关面板',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_timeline_page')return timeline(args.sessionId,jobEvents.filter(e=>['s1','f1','s2'].includes(e.id)));
-   if(name==='job_list')return [];
-   if(name==='schedule_list')return [];
-   return original(name,args);
-  });
-  render(<App/>);
-  await openSidebarSession(/会话 A/);
-  await screen.findByText('npm run build');
-  const button=screen.getByRole('button',{name:/^后台任务/});
-  expect(button).toHaveTextContent('1');
-  fireEvent.click(button);
-  const panel=await screen.findByRole('region',{name:'后台任务'});
-  expect(button).toHaveAttribute('aria-expanded','true');
-  expect(mocks.command).toHaveBeenCalledWith('job_list',{sessionId:'a'});
-  fireEvent.click(button);
-  expect(panel).not.toBeInTheDocument();
-  expect(button).toHaveAttribute('aria-expanded','false');
- });
- it('输入框终端图标位于子代理左侧，弹出浮层展示运行中任务与时长并可取消',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_timeline_page')return timeline(args.sessionId,jobEvents.filter(e=>['s2'].includes(e.id)));
-   if(name==='job_list')return [{id:'job-9',command:'Start-Sleep -Seconds 60',status:'running',cancelRequested:false,output:null,error:null,createdAt:new Date().toISOString()}];
-   if(name==='schedule_list')return [];
-   if(name==='job_cancel')return {};
-   return original(name,args);
-  });
-  render(<App/>);
-  // 草稿态未建会话：不渲染入口。
-  expect(screen.queryByRole('button',{name:'运行中后台任务'})).not.toBeInTheDocument();
-  await openSidebarSession(/会话 A/);
-  await screen.findByText('npm run build');
-  const composerBottom=document.querySelector('.composer-bottom')!;
-  const icon=screen.getByRole('button',{name:'运行中后台任务'});
-  const subagent=screen.getByRole('button',{name:'子代理'});
-  expect(composerBottom.contains(icon)).toBe(true);
-  // DOM 顺序在子代理按钮之前（子代理左侧）。
-  expect(icon.compareDocumentPosition(subagent)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(icon).toHaveTextContent('1');
-  fireEvent.click(icon);
-  const panel=await screen.findByRole('region',{name:'运行中后台任务'});
-  expect(panel).toHaveTextContent('Start-Sleep -Seconds 60');
-  expect(screen.getByLabelText('已运行时长').textContent).toMatch(/^\d{2}:\d{2}$/);
-  fireEvent.click(screen.getByRole('button',{name:'取消'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('job_cancel',{sessionId:'a',jobId:'job-9'}));
-  fireEvent.click(icon);
-  expect(panel).not.toBeInTheDocument();
- });
-});
-
-const terminalEvents:SessionEvent[]=[
- {id:'t1',sessionId:'a',seq:'1',kind:'terminal.opened',data:{id:'term-1',shell:'pwsh',status:'running'},createdAt:'2026-11-06T02:00:00Z'},
- {id:'t2',sessionId:'a',seq:'2',kind:'terminal.closed',data:{id:'term-1',status:'exited',exitCode:0,outputBlobHash:'blob-hash-1'},createdAt:'2026-11-06T02:01:00Z'},
- {id:'t3',sessionId:'a',seq:'3',kind:'terminal.closed',data:{id:'term-2',status:'interrupted',error:'应用中断，未重放终端副作用'},createdAt:'2026-11-06T02:02:00Z'},
-];
-describe('终端事件可视化',()=>{
- it('消息流渲染终端打开与关闭卡片',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,terminalEvents):original(name,args));
-  render(<App/>);
-  await openSidebarSession(/会话 A/);
-  await screen.findByText(/已打开交互式终端 term-1/);
-  expect(screen.getByText(/交互式终端已结束 term-1/)).toBeInTheDocument();
-  expect(screen.getByText('已退出')).toBeInTheDocument();
-  expect(screen.getByText('已中断')).toBeInTheDocument();
-  expect(screen.getByText(/blob-hash-1/)).toBeInTheDocument();
- });
-});
-
-
-describe('启动默认恢复上次项目',()=>{
- const twoWorkspaces=[
-  {id:'w',sourcePath:'D:/A',replicaPath:'D:/copy-a',createdAt:'',name:'A'},
-  {id:'w2',sourcePath:'D:/B',replicaPath:'D:/copy-b',createdAt:'',name:'B'}
- ];
- it('启动恢复上次打开的项目，而不是最早创建的项目',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return twoWorkspaces;
-   if(name==='default_selection_get')return {modelId:'m',effort:'high',workspaceId:'w2'};
-   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A'},{id:'b1',workspaceId:'w2',title:'B 的会话'}];
-   return original(name,args);
-  });
-  render(<App/>);
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_list',{workspaceId:'w2',allWorkspaces:true}));
-  // 草稿态占位符标明落点项目为 B（而非列表首位的 A）
-  await screen.findByPlaceholderText(/发送后将在 B 创建会话/);
- });
- it('上次项目已被移除（隐藏）时回退到列表第一个项目',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [...twoWorkspaces,{id:'gone',sourcePath:'D:/gone',replicaPath:'D:/copy-g',createdAt:'',name:'已移除',hidden:true}];
-   if(name==='default_selection_get')return {modelId:'m',effort:'high',workspaceId:'gone'};
-   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A'}];
-   return original(name,args);
-  });
-  render(<App/>);
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_list',{workspaceId:'w',allWorkspaces:true}));
-  await screen.findByPlaceholderText(/发送后将在 A 创建会话/);
- });
- it('切换项目后将 workspaceId 写回默认选择',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return twoWorkspaces;
-   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A'},{id:'b1',workspaceId:'w2',title:'B 的会话'}];
-   return original(name,args);
-  });
-  render(<App/>);
-  await screen.findByRole('button',{name:/会话 A/});
-  // 跨项目打开侧栏会话：先切工作区再经 pendingJump 跳转
-  fireEvent.click(screen.getByRole('button',{name:/B 的会话/}));
-  await screen.findByText('内容 b1');
-  expect(mocks.command).toHaveBeenCalledWith('session_list',{workspaceId:'w2',allWorkspaces:true});
-  expect(mocks.command).toHaveBeenCalledWith('default_selection_save',{selection:{modelId:'m',effort:'high',workspaceId:'w2'}});
- });
-});
-
-
-describe('工作区的首次会话',()=>{
- it('启动默认不打开历史会话，直接进入新会话草稿态',async()=>{
-  render(<App/>);
-  await screen.findByRole('button',{name:/会话 A/});
-  expect(screen.queryByText('内容 a')).not.toBeInTheDocument();
-  expect(mocks.command.mock.calls.some(([name])=>name==='session_timeline_page')).toBe(false);
-  expect(screen.getByText('新会话')).toBeInTheDocument();
-  expect(screen.getByLabelText('消息')).toBeEnabled();
- });
- it('启动草稿态点击侧栏会话可打开历史会话',async()=>{
-  render(<App/>);
+  await screen.findByText("内容 a");
+}
+async function renderOpenA() {
+  const utils = render(<App />);
   await openSessionA();
-  expect(mocks.command).toHaveBeenCalledWith('session_timeline_page',{sessionId:'a'});
- }); it('选择没有会话的新工作区后进入草稿态，发送首条消息时创建会话',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [];
-   if(name==='workspace_open')return {id:'fresh',sourcePath:'D:/fresh',replicaPath:'D:/copy-fresh',createdAt:'',name:'fresh',pinned:false,executionMode:'direct'};
-   if(name==='session_list')return [];
-   if(name==='session_create')return {id:'first',workspaceId:'fresh',title:'新会话'};
-   if(name==='session_timeline_page')return timeline(args.sessionId,[]);
-   return original(name,args);
+  return utils;
+}
+beforeAll(assertNoAppGlobalStyle);
+beforeEach(() => {
+  mocks.listeners.clear();
+  useChat.setState({
+    events: {},
+    streams: {},
+    statuses: {},
+    timelines: {},
+    timelineLru: [],
+    pinnedTimelineIds: [],
   });
-  vi.mocked(open).mockResolvedValueOnce('D:/fresh');
-  render(<App/>);await screen.findByLabelText('当前模型');
-  // 无工作区进入无项目草稿态：打开工作区入口在侧栏空态，欢迎页不再提供该按钮
-  const nav=screen.getByText('打开工作区后，会话将保存在本机。').closest('nav')!;
-  fireEvent.click(within(nav).getByRole('button',{name:/打开工作区/}));
-  // 命名弹窗预填目录名，确认后携带名称创建
-  const dialog=await screen.findByRole('dialog',{name:'打开工作区'});
-  expect(screen.getByLabelText('项目名称')).toHaveValue('fresh');
-  fireEvent.click(within(dialog).getByRole('button',{name:'创建'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_open',{path:'D:/fresh',name:'fresh',executionMode:'direct'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_list',{workspaceId:'fresh',allWorkspaces:true}));
-  // 创建后进入草稿态：不自动创建会话，欢迎语带项目名，可直接输入
-  await waitFor(()=>expect(screen.getByRole('heading',{name:/你想在 fresh 中构建什么/})).toBeInTheDocument());
-  expect(mocks.command.mock.calls.filter(([name])=>name==='session_create')).toHaveLength(0);
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'梳理项目结构'}});
-  expect(input).toHaveValue('梳理项目结构');
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'fresh',title:'新会话',executionMode:'direct'}));
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('first','梳理项目结构','m',expect.any(Function),undefined,'high'));
- });
- it('启动时无会话的工作区进入草稿态，发送首条消息时才创建',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_list')return [];
-   if(name==='session_create')return {id:'restored',workspaceId:'w',title:'新会话'};
-   if(name==='session_timeline_page')return timeline(args.sessionId,[]);
-   return original(name,args);
+  useSidePanel.getState().reset();
+  mocks.command.mockReset();
+  mocks.send.mockReset();
+  mocks.resume.mockReset();
+  vi.mocked(open).mockReset();
+  vi.mocked(save).mockReset();
+  mocks.command.mockImplementation(async (name: string, args: any) => {
+    if (name === "workspace_list")
+      return [
+        {
+          id: "w",
+          sourcePath: "D:/project",
+          replicaPath: "D:/copy",
+          createdAt: "",
+          name: "project",
+        },
+      ];
+    if (name === "model_list")
+      return [
+        {
+          id: "m",
+          name: "测试模型",
+          compatibility: "standard",
+          providerId: "custom",
+          apiMode: "chatCompletions",
+          maxOutputTokens: null,
+          baseUrl: "https://example.test",
+          model: "m",
+          credentialRef: "",
+          proxy: null,
+          efforts: ["low", "high"],
+          effort: null,
+          enabled: true,
+          builtin: false,
+        },
+      ];
+    if (name === "provider_list")
+      return [
+        {
+          id: "custom",
+          name: "自定义供应商",
+          builtin: false,
+          compatibility: "standard",
+          endpoints: [{ apiMode: "chatCompletions", baseUrl: "https://example.test" }],
+          defaultModel: "m",
+          credentialRef: "",
+          proxy: null,
+          enabled: true,
+          builtinModels: [],
+          disabledModels: [],
+        },
+      ];
+    if (name === "default_selection_get") return null;
+    if (name === "session_list")
+      return [
+        { id: "a", workspaceId: "w", title: "会话 A" },
+        { id: "b", workspaceId: "w", title: "会话 B" },
+      ];
+    if (name === "session_timeline_page")
+      return timeline(args.sessionId, [
+        event(`e-${args.sessionId}`, args.sessionId, "1", `内容 ${args.sessionId}`),
+      ]);
+    if (name === "approval_list") return [];
+    if (name === "question_list") return [];
+    if (name === "approval_mode_get") return "ask";
+    if (name === "session_plan_get") return false;
+    if (name === "session_title_generate") throw new Error("测试未配置标题生成结果");
+    return [];
   });
-  render(<App/>);
-  await screen.findByRole('heading',{name:/你想在 project 中构建什么/});
-  expect(mocks.command.mock.calls.filter(([name])=>name==='session_create')).toHaveLength(0);
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'开始干活'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话',executionMode:'replica'}));
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('restored','开始干活','m',expect.any(Function),undefined,'high'));
- });
- it('草稿首条发送后首轮执行期间，新建聊天按钮与输入框恢复可用',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_list')return [];
-   if(name==='session_create')return {id:'restored',workspaceId:'w',title:'新会话'};
-   if(name==='session_timeline_page')return timeline(args.sessionId,[]);
-   return original(name,args);
-  });
-  // 首轮 turn 挂起不返回，模拟执行中的长回合
-  mocks.send.mockReturnValue(new Promise(()=>{}));
-  render(<App/>);
-  await screen.findByRole('heading',{name:/你想在 project 中构建什么/});
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'开始干活'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('restored','开始干活','m',expect.any(Function),undefined,'high'));
-  // 会话已创建、首轮执行中：创建态解除，与既有会话发消息行为一致
-  await waitFor(()=>expect(screen.getByRole('button',{name:'新建聊天'})).toBeEnabled());
-  expect(screen.getByLabelText('消息')).toBeEnabled();
-  expect(screen.getByLabelText('消息')).not.toHaveAttribute('placeholder','正在准备会话…');
-  expect(screen.getByRole('button',{name:'取消生成'})).toBeInTheDocument();
- });
- it('草稿态发送时创建会话失败会显示错误，再次发送可重试',async()=>{
-  let fail=true;
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_list')return [];
-   if(name==='session_create'){if(fail)throw new Error('创建会话失败');return {id:'retry',workspaceId:'w',title:'新会话'};}
-   if(name==='session_timeline_page')return timeline(args.sessionId,[]);
-   return original(name,args);
-  });
-  render(<App/>);await screen.findByRole('heading',{name:/你想在 project 中构建什么/});
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'第一次'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await screen.findByText('创建会话失败');
-  fail=false;
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'第二次'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('retry','第二次','m',expect.any(Function),undefined,'high'));
- });
- it('草稿态欢迎语带项目名，chip 菜单可搜索过滤项目',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/A',replicaPath:'D:/ca',createdAt:'',name:'project',pinned:false},{id:'other',sourcePath:'D:/B',replicaPath:'D:/cb',createdAt:'',name:'其他项目',pinned:false}];
-   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A',createdAt:'',updatedAt:new Date().toISOString(),parentId:null}];
-   return original(name,args);
-  });
-  await renderOpenA();
-  fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
-  expect(screen.getByRole('heading',{name:/你想在 project 中构建什么/})).toBeInTheDocument();
-  const menu=screen.getByRole('menu',{name:'选择项目'});
-  expect(within(menu).getByRole('menuitem',{name:/其他项目/})).toBeInTheDocument();
-  fireEvent.change(within(menu).getByLabelText('搜索项目'),{target:{value:'其他'}});
-  expect(within(menu).getByRole('menuitem',{name:/其他项目/})).toBeInTheDocument();
-  expect(within(menu).queryByRole('menuitem',{name:/project/})).not.toBeInTheDocument();
-  fireEvent.change(within(menu).getByLabelText('搜索项目'),{target:{value:'zzz'}});
-  expect(screen.getByText('没有匹配的项目')).toBeInTheDocument();
- });
- it('草稿态切换项目后发送在目标项目创建会话并切换工作区',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/A',replicaPath:'D:/ca',createdAt:'',name:'project',pinned:false},{id:'other',sourcePath:'D:/B',replicaPath:'D:/cb',createdAt:'',name:'other-pj',pinned:false}];
-   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A',createdAt:'',updatedAt:new Date().toISOString(),parentId:null}];
-   if(name==='session_create')return {id:'in-other',workspaceId:'other',title:'新会话'};
-   if(name==='session_timeline_page')return timeline(args.sessionId,[]);
-   return original(name,args);
-  });
-  render(<App/>);await screen.findByLabelText('当前模型');
-  fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
-  const menu=screen.getByRole('menu',{name:'选择项目'});
-  fireEvent.click(within(menu).getByRole('menuitem',{name:/other-pj/}));
-  expect(screen.getByRole('heading',{name:/你想在 other-pj 中构建什么/})).toBeInTheDocument();
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'在别的项目开始'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'other',title:'新会话',executionMode:'replica'}));
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('in-other','在别的项目开始','m',expect.any(Function),undefined,'high'));
-  await waitFor(()=>expect(screen.getAllByText('other-pj').length).toBeGreaterThanOrEqual(1));
- });
- it('草稿态菜单的新建项目入口走目录选择与命名弹窗',async()=>{
-  vi.mocked(open).mockResolvedValueOnce('D:/newdir');
-  await renderOpenA();
-  fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
-  const menu=screen.getByRole('menu',{name:'选择项目'});
-  fireEvent.click(within(menu).getByRole('menuitem',{name:/新建项目/}));
-  const dialog=await screen.findByRole('dialog',{name:'打开工作区'});
-  expect(screen.getByLabelText('项目名称')).toHaveValue('newdir');
- });
- it('草稿首会话的迟到响应不能覆盖已切换到的会话，会话行仍并入侧栏',async()=>{
-  let resolveCreation!:(value:unknown)=>void;
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/A',name:'A'},{id:'other',sourcePath:'D:/B',name:'B'}];
-   if(name==='session_list')return [{id:'other-session',workspaceId:'other',title:'B 的会话'}];
-   if(name==='session_create')return new Promise(resolve=>{resolveCreation=resolve});
-   return original(name,args);
-  });
-  render(<App/>);
-  await screen.findByRole('heading',{name:/你想在 A 中构建什么/});
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'首个任务'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话',executionMode:'replica'}));
-  fireEvent.click(await screen.findByRole('button',{name:/B 的会话/}));
-  await screen.findByText('内容 other-session');
-  await act(async()=>resolveCreation({id:'late',workspaceId:'w',title:'A 迟到的会话'}));
-  expect(screen.getByText('A 迟到的会话')).toBeInTheDocument();
-  expect(screen.getByLabelText('消息')).toBeEnabled();
-  expect(screen.getByText('内容 other-session')).toBeInTheDocument();
- });
- it('组头新建挂起期间重复点击复用同一创建请求',async()=>{
-  let resolveCreation!:(value:unknown)=>void;
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [{id:'other',sourcePath:'D:/B',name:'B'},{id:'w',sourcePath:'D:/A',name:'A'}];
-   if(name==='session_list')return [{id:'b1',workspaceId:'other',title:'B 的旧会话'}];
-   if(name==='session_create')return new Promise(resolve=>{resolveCreation=resolve});
-   return original(name,args);
-  });
-  localStorage.clear();
-  render(<App/>);
-  await screen.findByText('B 的旧会话');
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
-  fireEvent.click(screen.getByRole('button',{name:'在 B 新建聊天'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'other',title:'新会话',executionMode:'replica'}));
-  // 挂起期间重复点击：复用同一创建请求，不重复调 session_create
-  fireEvent.click(screen.getByRole('button',{name:'在 B 新建聊天'}));
-  await act(async()=>resolveCreation({id:'b2',workspaceId:'other',title:'B 的新会话'}));
-  expect(mocks.command.mock.calls.filter(([name])=>name==='session_create')).toHaveLength(1);
-  await waitFor(()=>expect(screen.getAllByText('B 的新会话').length).toBeGreaterThanOrEqual(1));
- });
 });
-
-
-describe('附件与完整输出',()=>{
- const attachment={hash:'a'.repeat(64),name:'说明.txt',mediaType:'text/plain',size:12};
- it('通过加号菜单选择附件后只将宿主返回的hash随消息发送',async()=>{
-  const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name,args)=>name==='artifact_import'?attachment:original(name,args));vi.mocked(open).mockResolvedValueOnce('C:/private/说明.txt');
-  await renderOpenA();fireEvent.click(screen.getByRole('button',{name:'添加内容'}));fireEvent.click(screen.getByRole('menuitem',{name:/^附件/}));await screen.findByText('说明.txt');fireEvent.change(screen.getByLabelText('消息'),{target:{value:'读取附件'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','读取附件','m',expect.any(Function),[attachment.hash],'high'));expect(mocks.command).toHaveBeenCalledWith('artifact_import',{sessionId:'a',path:'C:/private/说明.txt'});
- });
- it('导入期间禁止发送，切换会话后丢弃迟到的附件',async()=>{
-  let finish!:(value:unknown)=>void;const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name,args)=>name==='artifact_import'?new Promise(resolve=>finish=resolve):original(name,args));vi.mocked(open).mockResolvedValueOnce('C:/private/说明.txt');
-  await renderOpenA();fireEvent.change(screen.getByLabelText('消息'),{target:{value:'任务'}});fireEvent.click(screen.getByRole('button',{name:'添加内容'}));fireEvent.click(screen.getByRole('menuitem',{name:/^附件/}));await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('artifact_import',expect.anything()));expect(screen.getByRole('button',{name:'发送消息'})).toBeDisabled();fireEvent.click(screen.getByRole('button',{name:/会话 B/}));await screen.findByText('内容 b');await act(async()=>finish(attachment));expect(screen.queryByText('说明.txt')).not.toBeInTheDocument();
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'无附件'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('b','无附件','m',expect.any(Function),undefined,'high'));
- });
- it('附件和大输出卡片通过保存对话框导出真实完整内容',async()=>{
-  const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,[{id:'attached',sessionId:'a',seq:'1',kind:'user.message',data:{content:'查看',attachments:[attachment]},createdAt:''},{id:'output',sessionId:'a',seq:'2',kind:'tool.result',data:{name:'read',content:'预览',artifact:{...attachment,name:'完整输出.txt'}},createdAt:''}]):original(name,args));vi.mocked(save).mockResolvedValueOnce('C:/saved/output.txt');
-  render(<App/>);await openSidebarSession(/会话 A/);await screen.findByRole('button',{name:'下载 完整输出.txt'});fireEvent.click(screen.getByRole('button',{name:'下载 完整输出.txt'}));await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('artifact_save',{sessionId:'a',hash:attachment.hash,path:'C:/saved/output.txt'}));expect(screen.getByRole('button',{name:'下载 说明.txt'})).toBeInTheDocument();
- });
-});
-
-describe('子代理与任务状态可视化',()=>{
- it('子代理事件渲染卡片并跳转子会话；列表隐藏子代理，由输入框下方面板承载',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'父会话'},{id:'child',workspaceId:'w',title:'依赖梳理子任务',parentId:'a'}];
-   if(name==='session_active_list')return ['child'];
-   if(name==='session_timeline_page')return timeline(args.sessionId,args.sessionId==='a'?[
-    {id:'s1',sessionId:'a',seq:'1',kind:'subagent.created',data:{sessionId:'child'},createdAt:''},
-    {id:'s2',sessionId:'a',seq:'2',kind:'subagent.message_sent',data:{sessionId:'child',content:'梳理依赖'},createdAt:''}
-    ]:[event(`e-${args.sessionId}`,args.sessionId,'1',`内容 ${args.sessionId}`)]);
-   return original(name,args);
-  });
-  render(<App/>);
-  await openSidebarSession(/父会话/);
-  await screen.findByText('已创建子代理');
-  expect(screen.getByText('已向子代理投递任务')).toBeInTheDocument();
-  expect(screen.getByText('梳理依赖')).toBeInTheDocument();
-  expect(screen.getAllByLabelText('子代理运行中').length).toBeGreaterThan(0);
-  // 列表不再显示子代理会话（无「子任务」徽标、无子代理行）；入口收敛到输入框下方的 Bot 图标。
-  expect(screen.queryByText('子任务')).not.toBeInTheDocument();
-  expect(screen.queryByText('依赖梳理子任务')).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button',{name:'子代理'}));
-  await screen.findByText('依赖梳理子任务');
-  expect(screen.getAllByLabelText('子代理运行中').length).toBeGreaterThan(0);
-  fireEvent.click(screen.getByRole('button',{name:'停止子代理'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_cancel',{sessionId:'child'}));
-  fireEvent.click(screen.getAllByRole('button',{name:'查看会话'})[0]);
-  await screen.findByText('内容 child');
- });
- it('fork 副本中的历史派生记录不提供跳转',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,[
-   {id:'s1',sessionId:'a',seq:'1',kind:'subagent.created',data:{sessionId:'child',historyOnly:true},createdAt:''}
-   ]):original(name,args));
-  render(<App/>);
-  await openSidebarSession(/会话 A/);
-  await screen.findByText('历史派生记录，原父子关系属于源会话。');
-  expect(screen.queryByRole('button',{name:'查看会话'})).not.toBeInTheDocument();
- });
- it('todo与plan状态事件渲染为zcode卡片，查看完整计划打开右侧抽屉',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name:string,args:any)=>{
-   if(name==='session_timeline_page')return timeline(args.sessionId,[
-    {id:'t1',sessionId:'a',seq:'1',kind:'todo.state',data:{items:[{text:'已完成项',done:true},{text:'待办项'}]},createdAt:''},
-    {id:'p1',sessionId:'a',seq:'2',kind:'plan.state',data:{content:'## 分三步走'},createdAt:''}
-   ]);
-   if(name==='plan_overview')return [{sessionId:'a',sessionTitle:'会话 A',workspaceId:'w',kind:'plan.state',data:{content:'完整计划'},updatedAt:''}];
-   return original(name,args);
-  });
-  render(<App/>);
-  await openSidebarSession(/会话 A/);
-  await screen.findByText('待办清单');
-  // 历史回放的待办卡默认收起；折叠头含当前项与完成进度
-  const todoCard=document.querySelector('details.zc-card') as HTMLDetailsElement;
-  expect(todoCard).not.toBeNull();
-  expect(todoCard.open).toBe(false);
-  expect(todoCard.querySelector('summary')?.textContent).toContain('1/2');
-  fireEvent.click(todoCard.querySelector('summary')!);
-  expect(todoCard.querySelector('.zc-row.done')?.textContent).toContain('已完成项');
-  expect(todoCard.querySelector('.zc-row.current')?.textContent).toContain('待办项');
-  // 计划卡：白卡 + Markdown 预览 + 复制 + 悬浮「查看完整计划」
-  const planCard=document.querySelector('.zc-plan') as HTMLElement;
-  expect(planCard).not.toBeNull();
-  expect(within(planCard).getByText('计划')).toBeInTheDocument();
-  expect(within(planCard).getByRole('heading',{name:'分三步走',level:2})).toBeInTheDocument();
-  expect(within(planCard).getByRole('button',{name:'复制计划'})).toBeInTheDocument();
-  // 历史回放不自动弹抽屉；点击「查看完整计划」打开右侧计划视图并加载数据
-  expect(useSidePanel.getState().open).toBe(false);
-  fireEvent.click(within(planCard).getByRole('button',{name:/查看完整计划/}));
-  const drawer=await screen.findByRole('complementary',{name:'文件面板'});
-  expect(within(drawer).getByRole('tab',{name:'计划'})).toHaveAttribute('aria-selected','true');
-  expect(useSidePanel.getState()).toMatchObject({open:true,view:'plans'});
-  expect(await within(drawer).findByText('完整计划')).toBeInTheDocument();
- });
- it('实时写入计划后自动打开右侧计划抽屉并刷新面板数据',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  let planOverviewCalls=0;
-  mocks.command.mockImplementation(async(name:string,args:any)=>{
-   if(name==='plan_overview'){planOverviewCalls++;return planOverviewCalls===1?[]:[{sessionId:'a',sessionTitle:'会话 A',workspaceId:'w',kind:'plan.state',data:{content:'实时计划'},updatedAt:''}]}
-   return original(name,args);
-  });
-  mocks.send.mockImplementation(async(_id:string,_text:string,_model:string,onEvent:(e:LiveEvent)=>void)=>{
-   onEvent({type:'durable',event:{id:'lp1',sessionId:'a',seq:'2',kind:'plan.state',data:{content:'实时计划'},createdAt:''}});
-  });
-  await renderOpenA();
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'写个计划'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  // plan_write 实时事件 → 右侧抽屉自动弹出「计划」视图
-  await waitFor(()=>expect(useSidePanel.getState()).toMatchObject({open:true,view:'plans'}));
-  const drawer=await screen.findByRole('complementary',{name:'文件面板'});
-  expect(await within(drawer).findByText('实时计划')).toBeInTheDocument();
- });
-});
-describe('计划与目标面板',()=>{
- it('侧边栏入口打开面板并跨会话汇总，可跳转同工作区会话',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='plan_overview'?[
-   {sessionId:'a',sessionTitle:'会话 A',workspaceId:'w',kind:'todo.state',data:{items:[{text:'修复登录',done:true},{text:'补充测试'}]},updatedAt:'2026-11-06T10:00:00Z'},
-   {sessionId:'a',sessionTitle:'会话 A',workspaceId:'w',kind:'plan.state',data:{content:'## 先写测试'},updatedAt:'2026-11-06T09:00:00Z'}
-  ]:original(name,args));
-  const {container}=await renderOpenA();
-  fireEvent.click(screen.getByRole('button',{name:'计划与目标'}));
-  const dialog=await screen.findByRole('complementary',{name:'文件面板'});
-  expect(await within(dialog).findByText('会话 A')).toBeInTheDocument();
-  expect(within(dialog).getByRole('tab',{name:'计划'})).toHaveAttribute('aria-selected','true');
-  expect(screen.queryByRole('dialog',{name:'计划与目标'})).not.toBeInTheDocument();
-  expect(container.querySelector('.todo-list li.done')?.textContent).toContain('修复登录');
-  expect(container.querySelector('.todo-list li:not(.done)')?.textContent).toContain('补充测试');
-  expect(within(dialog).getByRole('heading',{name:'先写测试',level:2})).toBeInTheDocument();
-  fireEvent.click(within(dialog).getByRole('button',{name:'当前会话'}));
-  await waitFor(()=>expect(screen.queryByRole('complementary',{name:'文件面板'})).not.toBeInTheDocument());
- });
-});
-describe('计划抽屉跨工作区',()=>{
- it('跳转同工作区的其他会话后关闭抽屉',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='plan_overview'?[{sessionId:'b',sessionTitle:'B 的计划',workspaceId:'w',kind:'plan.state',data:{content:'计划'},updatedAt:''}]:original(name,args));
-  await renderOpenA();
-  fireEvent.click(screen.getByRole('button',{name:'计划与目标'}));
-  const panel=screen.getByRole('complementary',{name:'文件面板'});
-  await within(panel).findByText('B 的计划');
-  fireEvent.click(within(panel).getByRole('button',{name:'查看会话'}));
-  await screen.findByText('内容 b');
-  expect(screen.queryByRole('complementary',{name:'文件面板'})).not.toBeInTheDocument();
- });
- it('跨工作区跳转等待目标列表并重置抽屉',async()=>{
-  let resolveList!:(value:unknown)=>void;
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [{id:'w',name:'A'},{id:'other',name:'B'}];
-   if(name==='session_list'&&args.workspaceId==='other')return new Promise(resolve=>{resolveList=resolve});
-   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A'},{id:'other-session',workspaceId:'other',title:'跨区会话'}];
-   if(name==='plan_overview')return [{sessionId:'other-session',sessionTitle:'跨区计划',workspaceId:'other',kind:'plan.state',data:{content:'跨区内容'},updatedAt:''}];
-   return original(name,args);
-  });
-  await renderOpenA();
-  fireEvent.click(screen.getByRole('button',{name:'计划与目标'}));
-  const panel=screen.getByRole('complementary',{name:'文件面板'});
-  await within(panel).findByText('跨区计划');
-  fireEvent.click(within(panel).getByRole('button',{name:'查看会话'}));
-  await waitFor(()=>expect(resolveList).toBeTypeOf('function'));
-  expect(useSidePanel.getState()).toMatchObject({open:false,view:'changes',previewPath:null,webUrl:null});
-  await act(async()=>resolveList([{id:'a',workspaceId:'w',title:'会话 A'},{id:'other-session',workspaceId:'other',title:'跨区会话'}]));
-  await screen.findByText('内容 other-session');
- });
- it('没有工作区也能打开全局计划抽屉',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='workspace_list'?[]:name==='plan_overview'?[]:original(name,args));
-  render(<App/>);
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_list'));
-  fireEvent.click(screen.getByRole('button',{name:'计划与目标'}));
-  const panel=screen.getByRole('complementary',{name:'文件面板'});
-  expect(await within(panel).findByText('还没有任何计划或目标')).toBeInTheDocument();
-  expect(within(panel).getByRole('tab',{name:'计划'})).toHaveAttribute('aria-selected','true');
-  expect(within(panel).getByRole('tab',{name:'更改'})).toBeDisabled();
-  expect(within(panel).getByRole('tab',{name:'预览'})).toBeDisabled();
- });
-});
-describe('模型选择',()=>{
- const builtinCatalog=[
-  {id:'deepseek',name:'DeepSeek',builtin:true,compatibility:'deepSeek',endpoints:[{apiMode:'anthropic',baseUrl:'https://api.deepseek.com/anthropic'}],defaultModel:'deepseek-flash',credentialRef:'',proxy:null,enabled:true,builtinModels:[{id:'deepseek-flash',name:'DeepSeek Flash',efforts:['disabled','enabled']}],disabledModels:[]},
-  {id:'bigmodel',name:'智谱 Coding Plan',builtin:true,compatibility:'bigModel',endpoints:[{apiMode:'anthropic',baseUrl:'https://open.bigmodel.cn/api/anthropic'}],defaultModel:'glm-5.3',credentialRef:'',proxy:null,enabled:true,builtinModels:[{id:'glm-5.3',name:'GLM-5.3',efforts:['low','high','max']}],disabledModels:['glm-5.3']},
- ];
- const models=[
-  {id:'builtin:deepseek:deepseek-flash',name:'DeepSeek Flash',compatibility:'deepSeek',providerId:'deepseek',apiMode:'anthropic',maxOutputTokens:null,baseUrl:'https://api.deepseek.com/anthropic',model:'deepseek-flash',credentialRef:'',proxy:null,efforts:['disabled','enabled'],effort:null,enabled:true,builtin:true},
-  {id:'custom',name:'自定义 GLM',compatibility:'bigModel',providerId:'bigmodel',apiMode:'anthropic',maxOutputTokens:null,baseUrl:'https://open.bigmodel.cn/api/anthropic',model:'glm-5.3',credentialRef:'',proxy:null,efforts:['low','high','max'],effort:'high',enabled:true,builtin:false},
-  {id:'builtin:bigmodel:glm-5.3',name:'GLM-5.3',compatibility:'bigModel',providerId:'bigmodel',apiMode:'anthropic',maxOutputTokens:null,baseUrl:'https://open.bigmodel.cn/api/anthropic',model:'glm-5.3',credentialRef:'',proxy:null,efforts:['low','high','max'],effort:null,enabled:false,builtin:true},
- ];
- function modelApp(){const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name:string,args:any)=>{
-  if(name==='provider_list')return structuredClone(builtinCatalog);
-  if(name==='model_list')return structuredClone(models);
-  if(name==='default_selection_get')return null;
-  if(name==='default_selection_save')return null;
-  return original(name,args);
- })}
- it('触发按钮显示当前模型与档位徽标，点击展开浮层卡片',async()=>{
-  modelApp();render(<App/>);
-  const trigger=await screen.findByLabelText('当前模型');
-  expect(trigger).toHaveTextContent('DeepSeek Flash');
-  // 默认档位即模型最高档
-  expect(within(trigger).getByText('enabled')).toBeInTheDocument();
-  fireEvent.click(trigger);
-  const menu=screen.getByRole('listbox',{name:'选择模型'});
-  expect(within(menu).getByText('DeepSeek')).toBeInTheDocument();
-  expect(within(menu).getByText('智谱 Coding Plan')).toBeInTheDocument();
-  // 停用模型灰显展示并标注原因，点击不产生任何选择
-  const disabledRow=within(menu).getByText('GLM-5.3').closest('button')!;
-  expect(disabledRow.className).toContain('disabled');
-  expect(within(disabledRow).getByText(/已停用/)).toBeInTheDocument();
-  fireEvent.click(disabledRow);
-  expect(mocks.command).not.toHaveBeenCalledWith('default_selection_save',expect.anything());
-  // 档位滑块存在，当前档位为最高档
-  expect(screen.getByLabelText('推理档位')).toHaveAttribute('aria-valuetext','enabled');
- });
- it('搜索过滤模型；选模型保持卡片展开并持久化，档位回落最高档；会话流出现临时切换标记',async()=>{
-  mocks.send.mockResolvedValue(undefined);
-  modelApp();await renderOpenA();
-  fireEvent.click(screen.getByLabelText('当前模型'));
-  fireEvent.change(screen.getByLabelText('搜索模型'),{target:{value:'自定义'}});
-  const menu=screen.getByRole('listbox',{name:'选择模型'});
-  expect(within(menu).queryByText('DeepSeek Flash')).not.toBeInTheDocument();
-  fireEvent.click(within(menu).getByText('自定义 GLM'));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('default_selection_save',{selection:{modelId:'custom',effort:'max',workspaceId:'w'}}));
-  // 卡片保持展开，滑块区已切换为新模型档位，可直接继续调档
-  expect(screen.getByRole('listbox',{name:'选择模型'})).toBeInTheDocument();
-  expect(screen.getByLabelText('推理档位')).toHaveAttribute('aria-valuetext','max');
-  fireEvent.change(screen.getByLabelText('推理档位'),{target:{value:'1'}});
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('default_selection_save',{selection:{modelId:'custom',effort:'high',workspaceId:'w'}}));
-  // 会话流插入临时切换标记（不落库）
-  expect(screen.getByText(/模型已切换：DeepSeek Flash → 自定义 GLM · 档位 max/)).toBeInTheDocument();
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'你好'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','你好','custom',expect.any(Function),undefined,'high'));
- });
- it('切换标记锚定切换点：后续回复渲染在标记之后，不再跟随最新回复',async()=>{
-  mocks.send.mockImplementation(async(_id,_text,_model,receive)=>receive({type:'durable',event:{id:'reply-2',sessionId:'a',seq:'2',kind:'assistant.message',data:{content:'切换后的回复'},createdAt:''}}));
-  modelApp();await renderOpenA();
-  fireEvent.click(screen.getByLabelText('当前模型'));
-  fireEvent.click(within(screen.getByRole('listbox',{name:'选择模型'})).getByText('自定义 GLM'));
-  const noteText=/模型已切换：DeepSeek Flash → 自定义 GLM · 档位 max/;
-  expect(screen.getByText(noteText)).toBeInTheDocument();
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'你好'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await screen.findByText('切换后的回复');
-  expect(screen.getAllByText(noteText)).toHaveLength(1);
-  const note=screen.getByText(noteText);
-  const history=screen.getByText('内容 a');
-  const reply=screen.getByText('切换后的回复');
-  expect(history.compareDocumentPosition(note)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(note.compareDocumentPosition(reply)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
- });
- it('点击当前模型行关闭卡片，Esc 亦可关闭',async()=>{
-  modelApp();render(<App/>);
-  fireEvent.click(await screen.findByLabelText('当前模型'));
-  fireEvent.click(within(screen.getByRole('listbox',{name:'选择模型'})).getByText('DeepSeek Flash'));
-  expect(screen.queryByRole('listbox',{name:'选择模型'})).not.toBeInTheDocument();
-  fireEvent.click(screen.getByLabelText('当前模型'));
-  fireEvent.keyDown(screen.getByLabelText('搜索模型'),{key:'Escape'});
-  expect(screen.queryByRole('listbox',{name:'选择模型'})).not.toBeInTheDocument();
- });
- it('启动恢复上次选择；失效选择回退首个可用模型并将档位归到最高档',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name:string,args:any)=>{
-   if(name==='model_list')return structuredClone(models);
-   if(name==='provider_list')return structuredClone(builtinCatalog);
-   if(name==='default_selection_get')return {modelId:'missing-model',effort:'max'};
-   return original(name,args);
-  });
-  render(<App/>);
-  const trigger=await screen.findByLabelText('当前模型');
-  expect(trigger).toHaveTextContent('DeepSeek Flash');
-  expect(within(trigger).getByText('enabled')).toBeInTheDocument();
- });
- it('无档位模型隐藏档位徽标与滑块区',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name:string,args:any)=>{
-   if(name==='model_list')return [{...structuredClone(models[0]),efforts:[],effort:null}];
-   if(name==='provider_list')return structuredClone(builtinCatalog);
-   if(name==='default_selection_get')return null;
-   return original(name,args);
-  });
-  render(<App/>);
-  const trigger=await screen.findByLabelText('当前模型');
-  expect(trigger.querySelector('.model-trigger-effort')).toBeNull();
-  fireEvent.click(trigger);
-  expect(screen.queryByLabelText('推理档位')).not.toBeInTheDocument();
- });
- it('/model 斜杠命令打开浮层卡片',async()=>{
-  modelApp();await renderOpenA();
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'/model'}});
-  fireEvent.keyDown(input,{key:'Enter'});
-  expect(screen.getByRole('listbox',{name:'选择模型'})).toBeInTheDocument();
- });
-});
-describe('侧聊派生',()=>{
- const forkToSide=()=>{const original=mocks.command.getMockImplementation()!;mocks.command.mockImplementation(async(name:string,args:any)=>{
-  if(name==='session_fork')return {id:'side-1',workspaceId:'w',title:'会话 A · 侧聊',parentId:'a',createdAt:'',updatedAt:''};
-  return original(name,args);
- })};
- it('菜单执行 /side：派生侧聊并在右侧抽屉打开，主会话保持不变',async()=>{
-  forkToSide();await renderOpenA();
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'/si'}});
-  fireEvent.keyDown(input,{key:'Enter'});
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_fork',{sessionId:'a',asSide:true}));
-  await waitFor(()=>expect(mocks.command.mock.calls.some(([name,args])=>name==='session_timeline_page'&&args.sessionId==='side-1')).toBe(true));
-  expect(useSidePanel.getState()).toMatchObject({open:true,view:'chat',chatSessionId:'side-1',chatParentSessionId:'a'});
-  expect(await screen.findByRole('complementary',{name:'侧聊面板'})).toBeInTheDocument();
-  expect(await screen.findByText(/已创建侧聊「会话 A · 侧聊」，已在右侧打开/)).toBeInTheDocument();
-  // 主会话没有被切换：标题与消息仍在。
-  expect(screen.getByText('内容 a')).toBeVisible();
- });
- it('输入 /side 文字 发送：命令不进主会话，文字作为侧聊首条消息',async()=>{
-  mocks.send.mockResolvedValue(undefined);
-  forkToSide();await renderOpenA();
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'/side 顺便问个问题'}});
-  fireEvent.keyDown(input,{key:'Enter'});
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_fork',{sessionId:'a',asSide:true}));
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('side-1','顺便问个问题','m',expect.any(Function),undefined,'high'));
-  expect(mocks.send.mock.calls.some(call=>String(call[1]).includes('/side'))).toBe(false);
-  expect(screen.getByText('内容 a')).toBeVisible();
- });
- it('父会话登记卡的「查看会话」在抽屉打开侧聊而非切换主会话',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name:string,args:any)=>{
-   if(name==='session_timeline_page'&&args.sessionId==='a')return timeline('a',[event('e-a','a','1','内容 a'),{id:'side-card',sessionId:'a',seq:'2',kind:'subagent.created',data:{sessionId:'side-1',source:'side'},createdAt:''}]);
-   return original(name,args);
-  });
-  render(<App/>);await openSidebarSession(/会话 A/);await screen.findByText('内容 a');
-  fireEvent.click(await screen.findByRole('button',{name:'查看会话'}));
-  expect(useSidePanel.getState()).toMatchObject({open:true,view:'chat',chatSessionId:'side-1',chatParentSessionId:'a'});
-  expect(screen.getByText('内容 a')).toBeVisible();
- });
- it('回合运行中从菜单执行 /side 给出等待提示且不派生',async()=>{
-  mocks.send.mockReturnValue(new Promise(()=>{}));
-  forkToSide();await renderOpenA();
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'执行中'}});
-  fireEvent.keyDown(input,{key:'Enter'});
-  fireEvent.change(input,{target:{value:'/si'}});
-  fireEvent.keyDown(input,{key:'Enter'});
-  expect(await screen.findByText(/会话运行中，请等回合结束后再派生侧聊/)).toBeInTheDocument();
-  expect(mocks.command.mock.calls.some(([name])=>name==='session_fork')).toBe(false);
- });
-});
-describe('斜杠命令补全',()=>{
- it('输入 / 显示候选菜单，过滤收窄，Esc 关闭后 token 变化重开',async()=>{
-  await renderOpenA();
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'/'}});
-  const menu=screen.getByRole('listbox',{name:'斜杠命令补全'});
-  expect(within(menu).getByText('/clear')).toBeInTheDocument();
-  expect(within(menu).getByText('/help')).toBeInTheDocument();
-  fireEvent.change(input,{target:{value:'/he'}});
-  expect(within(screen.getByRole('listbox',{name:'斜杠命令补全'})).getByText('/help')).toBeInTheDocument();
-  expect(screen.queryByText('/clear')).not.toBeInTheDocument();
-  fireEvent.keyDown(input,{key:'Escape'});
-  expect(screen.queryByRole('listbox',{name:'斜杠命令补全'})).not.toBeInTheDocument();
-  fireEvent.change(input,{target:{value:'/hel'}});
-  expect(screen.getByRole('listbox',{name:'斜杠命令补全'})).toBeInTheDocument();
- });
- it('ArrowDown 循环选择，Tab 补全为规范名',async()=>{
-  await renderOpenA();
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'/c'}});
-  const options=within(screen.getByRole('listbox',{name:'斜杠命令补全'})).getAllByRole('option');
-  expect(options.map(option=>option.textContent)).toEqual(['/clear重开新会话','/compact压缩历史为摘要']);
-  expect(options[0]).toHaveAttribute('aria-selected','true');
-  fireEvent.keyDown(input,{key:'ArrowDown'});
-  expect(options[1]).toHaveAttribute('aria-selected','true');
-  fireEvent.keyDown(input,{key:'Tab'});
-  expect(input).toHaveValue('/compact ');
- });
- it('Enter 执行选中命令：/clear 回到草稿态',async()=>{
-  await renderOpenA();
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'/cl'}});
-  fireEvent.keyDown(input,{key:'Enter'});
-  // /clear 进入草稿态：欢迎语带当前项目名，不立即创建会话
-  await screen.findByRole('heading',{name:/你想在 project 中构建什么/});
-  expect(mocks.command.mock.calls.filter(([name])=>name==='session_create')).toHaveLength(0);
- });
- it('光标移出首 token 后菜单关闭，Enter 走普通发送',async()=>{
-  mocks.send.mockResolvedValue(undefined);
-  await renderOpenA();
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'/clear 帮我重开'}});
-  expect(screen.queryByRole('listbox',{name:'斜杠命令补全'})).not.toBeInTheDocument();
-  fireEvent.keyDown(input,{key:'Enter'});
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','/clear 帮我重开','m',expect.any(Function),undefined,'high'));
- });
- it('草稿态输入 / 仍显示候选，隐藏依赖会话的命令',async()=>{
-  render(<App/>);
-  await screen.findByRole('heading',{name:/你想在/});
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'/'}});
-  const menu=screen.getByRole('listbox',{name:'斜杠命令补全'});
-  expect(within(menu).getByText('/help')).toBeInTheDocument();
-  expect(within(menu).queryByText('/init')).not.toBeInTheDocument();
-  expect(within(menu).queryByText('/compact')).not.toBeInTheDocument();
-  fireEvent.change(input,{target:{value:'/in'}});
-  expect(screen.queryByRole('listbox',{name:'斜杠命令补全'})).not.toBeInTheDocument();
- });
- it('草稿态执行 /help 显示可用命令提示',async()=>{
-  render(<App/>);
-  await screen.findByRole('heading',{name:/你想在/});
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'/he'}});
-  fireEvent.keyDown(input,{key:'Enter'});
-  expect(await screen.findByText(/可用命令：/)).toBeInTheDocument();
- });
- it('Enter 选中 /goal 激活目标模式：不发送消息并出现目标图标',async()=>{
-  mocks.send.mockResolvedValue(undefined);
-  await renderOpenA();
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'/go'}});
-  fireEvent.keyDown(input,{key:'Enter'});
-  expect(mocks.send).not.toHaveBeenCalled();
-  expect(input).toHaveValue('');
-  expect(screen.getByRole('button',{name:'目标模式'})).toBeInTheDocument();
- });
- it('目标模式下发送的消息展开为预置提示词，发送后目标图标消失',async()=>{
-  mocks.send.mockResolvedValue(undefined);
-  await renderOpenA();
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'/goal'}});
-  fireEvent.keyDown(input,{key:'Enter'});
-  expect(screen.getByRole('button',{name:'目标模式'})).toBeInTheDocument();
-  fireEvent.change(input,{target:{value:'完成导出功能'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a',`${GOAL_PROMPT}\n\n目标：完成导出功能`,'m',expect.any(Function),undefined,'high'));
-  expect(screen.queryByRole('button',{name:'目标模式'})).not.toBeInTheDocument();
- });
- it('点击目标图标取消目标模式，后续消息按原文发送',async()=>{
-  mocks.send.mockResolvedValue(undefined);
-  await renderOpenA();
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'/goal'}});
-  fireEvent.keyDown(input,{key:'Enter'});
-  fireEvent.click(screen.getByRole('button',{name:'目标模式'}));
-  expect(screen.queryByRole('button',{name:'目标模式'})).not.toBeInTheDocument();
-  fireEvent.change(input,{target:{value:'普通消息'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','普通消息','m',expect.any(Function),undefined,'high'));
- });
- it('菜单关闭后输入 /goal 回车同样激活目标模式',async()=>{
-  mocks.send.mockResolvedValue(undefined);
-  await renderOpenA();
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'/goal'}});
-  fireEvent.keyDown(input,{key:'Escape'});
-  fireEvent.keyDown(input,{key:'Enter'});
-  expect(mocks.send).not.toHaveBeenCalled();
-  expect(screen.getByRole('button',{name:'目标模式'})).toBeInTheDocument();
- });
- it('切换会话后目标模式退出',async()=>{
-  mocks.send.mockResolvedValue(undefined);
-  await renderOpenA();
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'/goal'}});
-  fireEvent.keyDown(input,{key:'Enter'});
-  expect(screen.getByRole('button',{name:'目标模式'})).toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button',{name:/会话 B/}));
-  await screen.findByText('内容 b');
-  expect(screen.queryByRole('button',{name:'目标模式'})).not.toBeInTheDocument();
- });
-});
-describe('草稿内容保留',()=>{
- it('草稿输入在切换会话再新建聊天后保留，可继续编辑',async()=>{
-  let resolveSessions!:(value:unknown)=>void;
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_list'?new Promise(resolve=>{resolveSessions=resolve}):original(name,args));
-  render(<App/>);
-  await screen.findByRole('heading',{name:/你想在 project 中构建什么/});
-  await waitFor(()=>expect(resolveSessions).toBeTypeOf('function'));
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'帮我梳理导出模块'}});
-  const sessionButton=screen.findByRole('button',{name:/会话 A/});
-  await act(async()=>resolveSessions([{id:'a',workspaceId:'w',title:'会话 A'},{id:'b',workspaceId:'w',title:'会话 B'}]));
-  fireEvent.click(await sessionButton);
-  await screen.findByText('内容 a');
-  expect(input).toHaveValue('');
-  fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
-  expect(screen.getByRole('heading',{name:/你想在 project 中构建什么/})).toBeInTheDocument();
-  expect(screen.getByLabelText('消息')).toHaveValue('帮我梳理导出模块');
- });
- it('草稿发送成功后草稿内容清空，不再恢复',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.send.mockResolvedValue(undefined);
-  mocks.command.mockImplementation(async(name:string,args:any)=>{
-   if(name==='session_create')return {id:'fresh',workspaceId:'w',title:'新会话'};
-   if(name==='session_timeline_page')return timeline(args.sessionId,[]);
-   return original(name,args);
-  });
-  render(<App/>);
-  await screen.findByRole('heading',{name:/你想在 project 中构建什么/});
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'首条任务'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('fresh','首条任务','m',expect.any(Function),undefined,'high'));
-  fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
-  await screen.findByRole('heading',{name:/你想在 project 中构建什么/});
-  expect(screen.getByLabelText('消息')).toHaveValue('');
- });
- it('草稿内容按落点项目分桶，切换落点互不覆盖',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name:string,args:any)=>{
-   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/A',replicaPath:'D:/ca',createdAt:'',name:'project',pinned:false},{id:'other',sourcePath:'D:/B',replicaPath:'D:/cb',createdAt:'',name:'other-pj',pinned:false}];
-   return original(name,args);
-  });
-  render(<App/>);
-  await screen.findByRole('heading',{name:/你想在 project 中构建什么/});
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'A 项目的问题'}});
-  fireEvent.click(screen.getByRole('button',{name:'选择项目'}));
-  fireEvent.click(within(screen.getByRole('menu',{name:'选择项目'})).getByRole('menuitem',{name:/other-pj/}));
-  expect(screen.getByRole('heading',{name:/你想在 other-pj 中构建什么/})).toBeInTheDocument();
-  expect(input).toHaveValue('');
-  fireEvent.change(input,{target:{value:'B 项目的问题'}});
-  fireEvent.click(screen.getByRole('button',{name:'选择项目'}));
-  fireEvent.click(within(screen.getByRole('menu',{name:'选择项目'})).getByRole('menuitem',{name:/project/}));
-  expect(input).toHaveValue('A 项目的问题');
-  fireEvent.click(screen.getByRole('button',{name:'选择项目'}));
-  fireEvent.click(within(screen.getByRole('menu',{name:'选择项目'})).getByRole('menuitem',{name:/other-pj/}));
-  expect(input).toHaveValue('B 项目的问题');
- });
- it('跨工作区切换后各项目草稿独立保留',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  const now=new Date().toISOString();
-  mocks.command.mockImplementation(async(name:string,args:any)=>{
-   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/A',replicaPath:'D:/ca',createdAt:'',name:'project',pinned:false},{id:'other',sourcePath:'D:/B',replicaPath:'D:/cb',createdAt:'',name:'other-pj',pinned:false}];
-   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A',createdAt:'',updatedAt:now,parentId:null},{id:'other-session',workspaceId:'other',title:'B 的会话',createdAt:'',updatedAt:now,parentId:null}];
-   return original(name,args);
-  });
-  render(<App/>);
-  await screen.findByRole('heading',{name:/你想在 project 中构建什么/});
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'A 的草稿'}});
-  fireEvent.click(await screen.findByRole('button',{name:/B 的会话/}));
-  await screen.findByText('内容 other-session');
-  expect(input).toHaveValue('');
-  fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
-  expect(screen.getByRole('heading',{name:/你想在 other-pj 中构建什么/})).toBeInTheDocument();
-  fireEvent.change(input,{target:{value:'B 的草稿'}});
-  fireEvent.click(screen.getByRole('button',{name:/会话 A/}));
-  await screen.findByText('内容 a');
-  fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
-  expect(screen.getByRole('heading',{name:/你想在 project 中构建什么/})).toBeInTheDocument();
-  expect(screen.getByLabelText('消息')).toHaveValue('A 的草稿');
-  fireEvent.click(screen.getByRole('button',{name:/B 的会话/}));
-  await screen.findByText('内容 other-session');
-  fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
-  expect(screen.getByRole('heading',{name:/你想在 other-pj 中构建什么/})).toBeInTheDocument();
-  expect(screen.getByLabelText('消息')).toHaveValue('B 的草稿');
- });
-});
-describe('草稿态技能补全',()=>{
- it('输入 $ 显示技能候选，并按草稿目标项目加载技能',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name:string,args:any)=>{
-   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/project',replicaPath:'D:/copy',createdAt:'',name:'project'},{id:'w2',sourcePath:'D:/project2',replicaPath:'D:/copy2',createdAt:'',name:'项目二'}];
-   if(name==='skill_list')return [{name:'alpha',description:'技能 A',path:'D:/skills/alpha',scope:'workspace',enabled:true,brokenReason:null}];
-   return original(name,args);
-  });
-  render(<App/>);
-  await screen.findByRole('heading',{name:/你想在/});
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('skill_list',{workspaceId:'w'}));
-  fireEvent.click(screen.getByRole('button',{name:'选择项目'}));
-  fireEvent.click(screen.getByRole('menuitem',{name:/项目二/}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('skill_list',{workspaceId:'w2'}));
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'$al'}});
-  expect(within(screen.getByRole('listbox',{name:'技能补全'})).getByText('$alpha')).toBeInTheDocument();
- });
-});
-
-describe('补全弹层滚动跟随',()=>{
- // jsdom 未实现 scrollIntoView：测试期间替换为 spy，结束后还原。
- let scrollIntoView:ReturnType<typeof vi.fn>;
- beforeEach(()=>{scrollIntoView=vi.fn();(Element.prototype as any).scrollIntoView=scrollIntoView});
- afterEach(()=>{delete (Element.prototype as any).scrollIntoView});
- it('斜杠菜单方向键移动选中项时列表滚动跟随',async()=>{
-  await renderOpenA();
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'/'}});
-  fireEvent.keyDown(input,{key:'ArrowDown'});
-  expect(scrollIntoView).toHaveBeenCalled();
-  expect(scrollIntoView).toHaveBeenLastCalledWith({block:'nearest'});
- });
- it('技能菜单键盘选择滚动跟随，Tab 补全选中项为规范名',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  const skills=Array.from({length:20},(_,i)=>({name:`skill-${i}`,description:`技能描述 ${i}`,path:`D:/skills/skill-${i}`,scope:'workspace',enabled:true,brokenReason:null}));
-  mocks.command.mockImplementation(async(name:string,args:any)=>name==='skill_list'?skills:original(name,args));
-  await renderOpenA();
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'$'}});
-  const options=within(screen.getByRole('listbox',{name:'技能补全'})).getAllByRole('option');
-  expect(options).toHaveLength(20);
-  expect(options[0]).toHaveAttribute('aria-selected','true');
-  fireEvent.keyDown(input,{key:'ArrowDown'});
-  expect(options[1]).toHaveAttribute('aria-selected','true');
-  expect(scrollIntoView).toHaveBeenCalled();
-  expect(scrollIntoView).toHaveBeenLastCalledWith({block:'nearest'});
-  fireEvent.keyDown(input,{key:'Tab'});
-  expect(input).toHaveValue('$skill-1 ');
- });
-});
-
-describe('加号添加菜单',()=>{
- it('点 + 弹出菜单，计划启用模式而目标插入斜杠命令',async()=>{
-  await renderOpenA();
-  const plus=screen.getByRole('button',{name:'添加内容'});
-  expect(screen.queryByRole('menu',{name:'添加内容'})).not.toBeInTheDocument();
-  fireEvent.click(plus);
-  const menu=screen.getByRole('menu',{name:'添加内容'});
-  expect(plus).toHaveAttribute('aria-expanded','true');
-  expect(within(menu).getByRole('menuitem',{name:/^附件/})).toBeInTheDocument();
-  fireEvent.click(within(menu).getByRole('menuitem',{name:/^进入计划模式/}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_plan_set',{sessionId:'a',enabled:true}));
-  expect(screen.getByLabelText('消息')).toHaveValue('');
-  expect(screen.queryByRole('menu',{name:'添加内容'})).not.toBeInTheDocument();
-  expect(mocks.send).not.toHaveBeenCalled();
-  fireEvent.click(plus);
-  fireEvent.click(screen.getByRole('menuitem',{name:/^目标/}));
-  expect(screen.getByLabelText('消息')).toHaveValue('/goal ');
- });
- it('Escape 与点击外部关闭菜单',async()=>{
-  await renderOpenA();
-  fireEvent.click(screen.getByRole('button',{name:'添加内容'}));
-  expect(screen.getByRole('menu',{name:'添加内容'})).toBeInTheDocument();
-  fireEvent.keyDown(screen.getByLabelText('消息'),{key:'Escape'});
-  expect(screen.queryByRole('menu',{name:'添加内容'})).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button',{name:'添加内容'}));
-  fireEvent.mouseDown(screen.getByRole('button',{name:'新建聊天'}));
-  expect(screen.queryByRole('menu',{name:'添加内容'})).not.toBeInTheDocument();
- });
- it('/plan 带参数发送任务原文，无参数退出且不再发送',async()=>{
-  mocks.send.mockResolvedValue(undefined);
-  await renderOpenA();
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'/plan 为导出制定计划'}});
-  fireEvent.keyDown(input,{key:'Enter'});
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','为导出制定计划','m',expect.any(Function),undefined,'high'));
-  fireEvent.change(input,{target:{value:'/plan'}});
-  fireEvent.keyDown(input,{key:'Enter'});
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_plan_set',{sessionId:'a',enabled:false}));
-  expect(mocks.send).toHaveBeenCalledTimes(1);
- });
- it('/goal 带参数发送展开为预置提示词',async()=>{
-  mocks.send.mockResolvedValue(undefined);
-  await renderOpenA();
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'/goal 完成导出功能'}});
-  fireEvent.keyDown(input,{key:'Enter'});
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a',`${GOAL_PROMPT}\n\n目标：完成导出功能`,'m',expect.any(Function),undefined,'high'));
- });
-});
-
-describe('会话列表视图',()=>{
- function installSessionMocks(){
-  mocks.command.mockImplementation(async(name:string,args:any)=>{
-   if(name==='workspace_list')return [
-    {id:'w',sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',name:'alpha',pinned:false},
-    {id:'other',sourcePath:'D:/beta',replicaPath:'D:/copy-b',createdAt:'',name:'beta',pinned:false}];
-   if(name==='session_list')return [
-    {id:'a',workspaceId:'w',title:'会话 A',createdAt:'',updatedAt:new Date().toISOString(),parentId:null},
-    {id:'b',workspaceId:'other',title:'B 的会话',createdAt:'',updatedAt:new Date().toISOString(),parentId:null}];
-   if(name==='workspace_set_pinned')return {id:args.workspaceId,sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',name:'alpha',pinned:args.pinned};
-   if(name==='session_timeline_page')return timeline(args.sessionId,[event(`e-${args.sessionId}`,args.sessionId,'1',`内容 ${args.sessionId}`)]);
-   return [];
-  });
- }
- it('「最近」视图按时间分组并展示跨工作区会话，switch 切到「项目」按工作区分组',async()=>{
-  localStorage.clear();installSessionMocks();
-  await renderOpenA();
-  const sessionList=screen.getByRole('navigation',{name:'会话列表'});
-  expect(sessionList).toHaveClass('session-scrollbar');
-  // 回归：switch 外不应再有「最近」文本（spec：标题行右侧仅 switch 内嵌两词）
-  for(const el of screen.getAllByText('最近')) expect(el.closest('.view-switch')).not.toBeNull();
-  // 最近视图：今天分组下同时出现两个项目的会话
-  expect(screen.getByText('今天')).toBeInTheDocument();
-  expect(screen.getByRole('button',{name:/会话 A/})).toBeInTheDocument();
-  expect(screen.getByRole('button',{name:/B 的会话/})).toBeInTheDocument();
-  const sw=screen.getByRole('switch',{name:'切换视图：项目 / 最近'});
-  expect(sw).toHaveAttribute('aria-checked','false');
-  fireEvent.click(sw);
-  expect(sw).toHaveAttribute('aria-checked','true');
-  // 项目视图：两个工作区成组，组内含各自会话
-  expect(screen.getByRole('button',{name:/^alpha \d+$/})).toBeInTheDocument();
-  expect(screen.getByRole('button',{name:/^beta \d+$/})).toBeInTheDocument();
-  expect(screen.getAllByRole('button',{name:/会话 A/}).length).toBeGreaterThan(0);
-  expect(screen.getAllByRole('button',{name:/B 的会话/}).length).toBeGreaterThan(0);
-  expect(localStorage.getItem('sessionView')).toBe('project');
- });
- it('switch 内「项目」位于「最近」左侧（DOM 顺序在前）',async()=>{
-  localStorage.clear();installSessionMocks();
-  await renderOpenA();
-  const sw=screen.getByRole('switch',{name:'切换视图：项目 / 最近'});
-  const labels=[...sw.querySelectorAll('.sw-label')].map(el=>el.textContent);
-  expect(labels).toEqual(['项目','最近']);
- });
- it('会话标题栏将标题固定在左侧，并在右侧提供存档入口',async()=>{
-  localStorage.clear();installSessionMocks();
-  await renderOpenA();
-  const topbar=document.querySelector('.topbar');
-  const breadcrumb=topbar?.querySelector('.breadcrumb');
-  expect(topbar).not.toBeNull();
-  expect(breadcrumb).not.toBeNull();
-  expect(within(breadcrumb as HTMLElement).getByText('会话 A')).toBeInTheDocument();
-  expect(breadcrumb?.firstElementChild).toHaveClass('topbar-session-title');
-  expect(breadcrumb?.querySelector('.topbar-session-title')).toHaveTextContent('会话 A');
-  expect(breadcrumb?.querySelector('.workspace-context')).toHaveTextContent('alpha');
-  expect(topbar?.firstElementChild).toBe(breadcrumb);
-  expect(within(topbar as HTMLElement).getByRole('button',{name:'存档会话'})).toBeInTheDocument();
-  expect(topbar?.lastElementChild).toContainElement(within(topbar as HTMLElement).getByRole('button',{name:'存档会话'}));
- });
- it.each(['项目','最近'])('%s视图会话行不再显示行内日期',async view=>{
-  localStorage.clear();installSessionMocks();
-  await renderOpenA();
-  if(view==='项目')fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
-  expect(document.querySelector('.session-time')).toBeNull();
- });
- it.each(['项目','最近'])('%s视图悬停会话行浮现完整标题与时间，移出后收起',async view=>{
-  localStorage.clear();
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name:string,args:any)=>{
-   if(name==='session_list')return [
-    {id:'a',workspaceId:'w',title:'会话 A',createdAt:'',updatedAt:'2026-11-08T09:05:00',parentId:null},
-    {id:'b',workspaceId:'other',title:'B 的会话',createdAt:'',updatedAt:'2026-11-07T18:24:00',parentId:null}];
-   return original(name,args);
-  });
-  await renderOpenA();
-  if(view==='项目')fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
-  const row=screen.getByRole('button',{name:/会话 A/});
-  fireEvent.mouseEnter(row);
-  const pop=await screen.findByRole('tooltip');
-  expect(pop.textContent).toContain('会话 A');
-  expect(pop.textContent).toContain('2026年11月8日 09:05');
-  fireEvent.mouseLeave(row);
-  await waitFor(()=>expect(screen.queryByRole('tooltip')).not.toBeInTheDocument());
- });
- it('项目组可置顶并调用 workspace_set_pinned，搜索按标题过滤',async()=>{
-  localStorage.clear();installSessionMocks();
-  await renderOpenA();
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
-  fireEvent.click(screen.getByRole('button',{name:'置顶 alpha'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_set_pinned',{workspaceId:'w',pinned:true}));
-  // 置顶的 alpha 排在 beta 之前
-  const names=screen.getAllByRole('button',{name:/^(alpha|beta) \d+$/}).map(b=>b.textContent);
-  expect(names[0]).toContain('alpha');
-  // 搜索按标题过滤，无匹配时给出空态
-  fireEvent.change(screen.getByLabelText('搜索会话'),{target:{value:'不存在'}});
-  expect(screen.getByText('无匹配会话。')).toBeInTheDocument();
-  fireEvent.change(screen.getByLabelText('搜索会话'),{target:{value:'B'}});
-  expect(screen.queryByRole('button',{name:/会话 A/})).not.toBeInTheDocument();
-  expect(screen.getAllByRole('button',{name:/B 的会话/}).length).toBeGreaterThan(0);
- });
- it('置顶失败时回滚乐观更新并显示错误',async()=>{
-  localStorage.clear();
-  mocks.command.mockImplementation(async(name:string,args:any)=>{
-   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',name:'alpha',pinned:false}];
-   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A',createdAt:'',updatedAt:new Date().toISOString(),parentId:null}];
-   if(name==='workspace_set_pinned')throw new Error('写入失败');
-   if(name==='session_timeline_page')return timeline(args.sessionId,[event(`e-${args.sessionId}`,args.sessionId,'1',`内容 ${args.sessionId}`)]);
-   return [];
-  });
-  await renderOpenA();
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
-  fireEvent.click(screen.getByRole('button',{name:'置顶 alpha'}));
-  await screen.findByText('写入失败');
-  expect(screen.getByRole('button',{name:'置顶 alpha'})).toBeInTheDocument();
- });
- it('项目视图下无会话的项目仍保留组头，搜索时才隐藏空项目',async()=>{
-  localStorage.clear();
-  mocks.command.mockImplementation(async(name:string,args:any)=>{
-   if(name==='workspace_list')return [
-    {id:'w',sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',name:'alpha',pinned:false},
-    {id:'empty',sourcePath:'D:/empty',replicaPath:'D:/copy-e',createdAt:'',name:'empty-proj',pinned:false}];
-   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A',createdAt:'',updatedAt:new Date().toISOString(),parentId:null}];
-   if(name==='session_timeline_page')return timeline(args.sessionId,[event(`e-${args.sessionId}`,args.sessionId,'1',`内容 ${args.sessionId}`)]);
-   return [];
-  });
-  await renderOpenA();
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
-  // 无会话项目仍成组（计数 0），组头新建与置顶入口可用
-  expect(screen.getByRole('button',{name:/^empty-proj 0$/})).toBeInTheDocument();
-  expect(screen.getByRole('button',{name:'在 empty-proj 新建聊天'})).toBeInTheDocument();
-  expect(screen.getAllByRole('button',{name:/^(alpha|empty-proj) \d+$/})).toHaveLength(2);
-  fireEvent.click(screen.getByRole('button',{name:'置顶 empty-proj'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_set_pinned',{workspaceId:'empty',pinned:true}));
-  // 搜索按标题过滤时空项目组不出现，无匹配时显示空态
-  fireEvent.change(screen.getByLabelText('搜索会话'),{target:{value:'不存在'}});
-  expect(screen.getByText('无匹配会话。')).toBeInTheDocument();
-  expect(screen.queryByRole('button',{name:/^empty-proj 0$/})).not.toBeInTheDocument();
- });
-});
-
-describe('项目编辑',()=>{
- function namingBackend(options:{empty?:boolean;updateError?:string;executionMode?:'direct'|'replica'|'worktree'}={}){
-  const original=mocks.command.getMockImplementation()!;
-  const ws={id:'w',sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',name:'alpha',pinned:false,hidden:false,executionMode:options.executionMode??'replica',worktrees:{}};
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return options.empty?[]:[ws];
-   if(name==='workspace_update'){if(options.updateError)throw new Error(options.updateError);return {...ws,name:args.name,executionMode:args.executionMode}}
-   if(name==='workspace_open')return {id:'fresh',sourcePath:args.path,replicaPath:'D:/copy',createdAt:'',name:args.name||'alpha-dir',executionMode:args.executionMode};
-   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A',createdAt:'',updatedAt:new Date().toISOString(),parentId:null}];
-   if(name==='session_timeline_page')return timeline(args.sessionId,[event(`e-${args.sessionId}`,args.sessionId,'1',`内容 ${args.sessionId}`)]);
-   return original(name,args);
-  });
- }
- async function openEditDialog(){
-  await renderOpenA();
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
-  const sessionNav=screen.getByRole('navigation',{name:'会话列表'});
-  // 组头不再提供内联编辑按钮，编辑入口只在右键菜单。
-  expect(screen.queryByRole('button',{name:'编辑 alpha'})).not.toBeInTheDocument();
-  fireEvent.contextMenu(within(sessionNav).getByText('alpha'));
-  fireEvent.click(await screen.findByRole('menuitem',{name:'编辑'}));
-  return screen.findByRole('dialog',{name:'编辑项目'});
- }
- it('打开工作区时名称留空则回退目录名',async()=>{
-  localStorage.clear();namingBackend({empty:true});
-  vi.mocked(open).mockResolvedValueOnce('D:/alpha-dir');
-  render(<App/>);await screen.findByLabelText('当前模型');
-  // 无项目草稿态：从 chip 菜单的「新建项目」进入打开工作区流程
-  fireEvent.click(screen.getByRole('button',{name:'选择项目'}));
-  fireEvent.click(screen.getByRole('menuitem',{name:/新建项目/}));
-  await screen.findByRole('dialog',{name:'打开工作区'});
-  expect(screen.getByText('留空则使用目录名「alpha-dir」。')).toBeInTheDocument();
-  fireEvent.change(screen.getByLabelText('项目名称'),{target:{value:'  '}});
-  fireEvent.click(screen.getByRole('button',{name:'创建'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_open',{path:'D:/alpha-dir',name:null,executionMode:'direct'}));
-  // 后端归一化后的目录名显示在面包屑上
-  await waitFor(()=>expect(screen.getAllByText('alpha-dir').length).toBeGreaterThanOrEqual(1));
- });
- it('项目右键菜单可编辑并立即显示新名称',async()=>{
-  localStorage.clear();namingBackend();
-  const dialog=await openEditDialog();
-  expect(screen.getByLabelText('项目名称')).toHaveValue('alpha');
-  expect(screen.getByLabelText('默认执行位置')).toHaveValue('replica');
-  fireEvent.change(screen.getByLabelText('项目名称'),{target:{value:'新名字'}});
-  fireEvent.click(within(dialog).getByRole('button',{name:'保存'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_update',{workspaceId:'w',name:'新名字',executionMode:'replica'}));
-  expect(screen.getByRole('button',{name:/^新名字 \d+$/})).toBeInTheDocument();
-  expect(screen.queryByRole('button',{name:/^alpha \d+$/})).not.toBeInTheDocument();
-  expect(await screen.findByText('项目已重命名为「新名字」。')).toBeInTheDocument();
- });
- it('编辑留空提交时显示后端错误且名称不变',async()=>{
-  localStorage.clear();namingBackend({updateError:'名称不能为空'});
-  const dialog=await openEditDialog();
-  fireEvent.change(screen.getByLabelText('项目名称'),{target:{value:'  '}});
-  fireEvent.click(within(dialog).getByRole('button',{name:'保存'}));
-  await screen.findByText('名称不能为空');
-  expect(screen.getByRole('button',{name:/^alpha \d+$/})).toBeInTheDocument();
- });
- it('编辑弹窗默认选中当前默认执行位置并可切换',async()=>{
-  localStorage.clear();namingBackend();
-  const dialog=await openEditDialog();
-  const mode=screen.getByLabelText('默认执行位置');
-  expect(mode).toHaveValue('replica');
-  fireEvent.change(mode,{target:{value:'direct'}});
-  expect(await screen.findByText(/切换从下一回合起对未固化执行位置的会话生效/)).toBeInTheDocument();
-  fireEvent.click(within(dialog).getByRole('button',{name:'保存'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_update',{workspaceId:'w',name:'alpha',executionMode:'direct'}));
-  expect(await screen.findByText(/默认执行位置已切换为直接/)).toBeInTheDocument();
- });
- it('默认执行位置切换失败时展示后端原因',async()=>{
-  localStorage.clear();namingBackend({updateError:'隔离副本重建失败'});
-  const dialog=await openEditDialog();
-  fireEvent.change(screen.getByLabelText('默认执行位置'),{target:{value:'direct'}});
-  fireEvent.click(within(dialog).getByRole('button',{name:'保存'}));
-  await screen.findByText('隔离副本重建失败');
-  expect(screen.getByRole('button',{name:/^alpha \d+$/})).toBeInTheDocument();
- });
- it('旧 worktree 项目编辑时显示直接模式并保留旧会话说明',async()=>{
-  localStorage.clear();namingBackend({executionMode:'worktree'});
-  const dialog=await openEditDialog();
-  expect(screen.getByLabelText('默认执行位置')).toHaveValue('direct');
-  expect(within(dialog).getByText(/旧版 worktree 模式创建/)).toBeInTheDocument();
-  fireEvent.click(within(dialog).getByRole('button',{name:'保存'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_update',{workspaceId:'w',name:'alpha',executionMode:'direct'}));
- });
- it('中文与空格路径预填目录名并随创建提交',async()=>{
-  localStorage.clear();namingBackend({empty:true});
-  vi.mocked(open).mockResolvedValueOnce('D:/我的 项目');
-  render(<App/>);await screen.findByLabelText('当前模型');
-  // 无项目草稿态：从 chip 菜单的「新建项目」进入打开工作区流程
-  fireEvent.click(screen.getByRole('button',{name:'选择项目'}));
-  fireEvent.click(screen.getByRole('menuitem',{name:/新建项目/}));
-  await screen.findByRole('dialog',{name:'打开工作区'});
-  // 预填保留空格与中文；确认后原样携带名称提交
-  expect(screen.getByLabelText('项目名称')).toHaveValue('我的 项目');
-  fireEvent.click(screen.getByRole('button',{name:'创建'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_open',{path:'D:/我的 项目',name:'我的 项目',executionMode:'direct'}));
-  // 后端返回的中文名称显示在面包屑上
-  await waitFor(()=>expect(screen.getAllByText('我的 项目').length).toBeGreaterThanOrEqual(1));
- });
- it('草稿执行位置默认直接并随会话创建提交',async()=>{
-  localStorage.clear();
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/project',replicaPath:'D:/copy',createdAt:'',name:'project',executionMode:'direct',worktrees:{}}];
-   if(name==='session_create')return {id:'direct-1',workspaceId:'w',title:'新会话'};
-   return original(name,args);
-  });
-  await renderOpenA();
-  fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
-  const mode=await screen.findByLabelText('执行位置');
-  expect(mode).toHaveValue('direct');
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'直接改'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话',executionMode:'direct'}));
- });
- it('草稿选择 worktree 后会话创建携带 worktree',async()=>{
-  localStorage.clear();
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/project',replicaPath:'D:/copy',createdAt:'',name:'project',executionMode:'direct',worktrees:{}}];
-   if(name==='session_create')return {id:'worktree-1',workspaceId:'w',title:'新会话'};
-   return original(name,args);
-  });
-  await renderOpenA();
-  fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
-  fireEvent.change(await screen.findByLabelText('执行位置'),{target:{value:'worktree'}});
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'隔离改'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话',executionMode:'worktree'}));
- });
- it('副本项目的草稿默认副本且可改为直接',async()=>{
-  localStorage.clear();namingBackend();
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_create'?{id:'replica-1',workspaceId:'w',title:'新会话'}:original(name,args));
-  await renderOpenA();
-  fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
-  const mode=await screen.findByLabelText('执行位置');
-  expect(mode).toHaveValue('replica');
-  fireEvent.change(mode,{target:{value:'direct'}});
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'直连'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'w',title:'新会话',executionMode:'direct'}));
- });
-});
-
-describe('会话命名',()=>{
- beforeEach(()=>localStorage.clear());
- it('重命名旧会话后仍按更新时间排序',async()=>{
-  const newer={id:'newer',workspaceId:'w',title:'较新的会话',createdAt:'',updatedAt:'2026-11-09T11:00:00Z',parentId:null};
-  const older={id:'older',workspaceId:'w',title:'较旧的会话',createdAt:'',updatedAt:'2026-11-08T11:00:00Z',parentId:null};
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',name:'alpha'}];
-   if(name==='session_list')return [newer,older];
-   if(name==='session_timeline_page')return timeline(args.sessionId,args.sessionId==='newer'?[event('e-newer','newer','1','新会话内容')]:[]);
-   if(name==='session_rename')return {...older,title:args.title};
-   return original(name,args);
-  });
-  render(<App/>);await openSidebarSession(/较新的会话/);await screen.findByText('新会话内容');
-  const sessionRows=()=>screen.getAllByRole('button').filter(button=>button.classList.contains('session-row'));
-  expect(sessionRows().map(button=>button.querySelector('.session-title')?.textContent)).toEqual(['较新的会话','较旧的会话']);
-  fireEvent.contextMenu(screen.getByRole('button',{name:/较旧的会话/}));
-  fireEvent.click(await screen.findByRole('menuitem',{name:'重命名'}));
-  const dialog=await screen.findByRole('dialog',{name:'重命名会话'});
-  fireEvent.change(screen.getByLabelText('会话名称'),{target:{value:'已重命名的旧会话'}});
-  fireEvent.click(within(dialog).getByRole('button',{name:'保存'}));
-  await screen.findByText('已重命名的旧会话');
-  expect(sessionRows().map(button=>button.querySelector('.session-title')?.textContent)).toEqual(['较新的会话','已重命名的旧会话']);
- });
- it('首问后的标题响应按新的更新时间重新排序',async()=>{
-  const newer={id:'newer',workspaceId:'w',title:'较新的会话',createdAt:'',updatedAt:'2026-11-09T11:00:00Z',parentId:null};
-  const older={id:'older',workspaceId:'w',title:'新会话',createdAt:'',updatedAt:'2026-11-08T11:00:00Z',parentId:null};
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_list')return [newer,older];
-   if(name==='session_timeline_page')return timeline(args.sessionId,args.sessionId==='newer'?[event('e-newer','newer','1','较新会话内容')]:[]);
-   if(name==='session_title_generate')return {...older,title:'首问自动标题',updatedAt:'2026-11-09T12:00:00Z'};
-   return original(name,args);
-  });
-  render(<App/>);await openSidebarSession(/较新的会话/);await screen.findByText('较新会话内容');
-  fireEvent.click(screen.getByRole('button',{name:/新会话/}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_timeline_page',{sessionId:'older'}));
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'今天首次提问'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_title_generate',{sessionId:'older',text:'今天首次提问',modelId:'m',effort:'high',attachmentNames:[]}));
-  expect(await screen.findAllByText('首问自动标题')).toHaveLength(2);
-  const titles=screen.getAllByRole('button').filter(button=>button.classList.contains('session-row')).map(button=>button.querySelector('.session-title')?.textContent);
-  expect(titles).toEqual(['首问自动标题','较新的会话']);
- });
- it.each(['最近','项目'])('在%s视图右键会话可重命名并更新列表和面包屑',async view=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_rename'?{id:args.sessionId,workspaceId:'w',title:args.title,createdAt:'',updatedAt:''}:original(name,args));
-  await renderOpenA();
-  if(view==='项目')fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
-  fireEvent.contextMenu(screen.getByRole('button',{name:/会话 A/}));
-  fireEvent.click(await screen.findByRole('menuitem',{name:'重命名'}));
-  const dialog=await screen.findByRole('dialog',{name:'重命名会话'});
-  expect(screen.getByLabelText('会话名称')).toHaveValue('会话 A');
-  fireEvent.change(screen.getByLabelText('会话名称'),{target:{value:'重命名后的会话'}});
-  fireEvent.click(within(dialog).getByRole('button',{name:'保存'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_rename',{sessionId:'a',title:'重命名后的会话'}));
-  expect(await screen.findAllByText('重命名后的会话')).toHaveLength(2);
-  expect(screen.queryByRole('menu',{name:'会话操作'})).not.toBeInTheDocument();
- });
- it('首问创建草稿会话时并行生成标题和发送消息',async()=>{
-  let resolveTitle!:(value:unknown)=>void;
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_list')return [];
-   if(name==='session_create')return {id:'first',workspaceId:'w',title:'新会话',createdAt:'',updatedAt:''};
-   if(name==='session_title_generate')return new Promise(resolve=>{resolveTitle=resolve});
-   if(name==='session_timeline_page')return timeline(args.sessionId,[]);
-   return original(name,args);
-  });
-  render(<App/>);await screen.findByRole('button',{name:'选择项目'});
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'修复登录状态刷新后丢失'}});
-  await waitFor(()=>expect(screen.getByRole('button',{name:'发送消息'})).toBeEnabled());
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_title_generate',{sessionId:'first',text:'修复登录状态刷新后丢失',modelId:'m',effort:'high',attachmentNames:[]}));
-  expect(mocks.send).toHaveBeenCalledWith('first','修复登录状态刷新后丢失','m',expect.any(Function),undefined,'high');
-  await act(async()=>resolveTitle({id:'first',workspaceId:'w',title:'修复登录状态丢失',createdAt:'',updatedAt:''}));
-  expect(await screen.findAllByText('修复登录状态丢失')).toHaveLength(2);
- });
- it('标题命令失败不会阻止用户首问发送',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_list')return [];
-   if(name==='session_create')return {id:'first',workspaceId:'w',title:'新会话',createdAt:'',updatedAt:''};
-   if(name==='session_title_generate')throw new Error('标题服务不可用');
-   if(name==='session_timeline_page')return timeline(args.sessionId,[]);
-   return original(name,args);
-  });
-  render(<App/>);await screen.findByRole('button',{name:'选择项目'});
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'检查构建错误'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('first','检查构建错误','m',expect.any(Function),undefined,'high'));
-  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
- });
- it('已有空会话的首问也触发标题生成',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_list')return [{id:'blank',workspaceId:'w',title:'新会话',createdAt:'',updatedAt:''}];
-   if(name==='session_timeline_page'&&args.sessionId==='blank')return timeline(args.sessionId,[]);
-   if(name==='session_title_generate')return {id:'blank',workspaceId:'w',title:'空会话首问',createdAt:'',updatedAt:''};
-   return original(name,args);
-  });
-  render(<App/>);await openSidebarSession(/新会话/);
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_timeline_page',{sessionId:'blank'}));
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'梳理项目入口'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_title_generate',{sessionId:'blank',text:'梳理项目入口',modelId:'m',effort:'high',attachmentNames:[]}));
-  expect(await screen.findAllByText('空会话首问')).toHaveLength(2);
- });
- it('空会话的首条 /init 也并行生成标题',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_list')return [{id:'blank',workspaceId:'w',title:'新会话',createdAt:'',updatedAt:'',parentId:null}];
-   if(name==='session_timeline_page'&&args.sessionId==='blank')return timeline(args.sessionId,[]);
-   if(name==='session_title_generate')return {id:'blank',workspaceId:'w',title:'初始化项目说明',createdAt:'',updatedAt:''};
-   return original(name,args);
-  });
-  render(<App/>);await openSidebarSession(/新会话/);
-  const input=screen.getByLabelText('消息');
-  fireEvent.change(input,{target:{value:'/init'}});
-  fireEvent.keyDown(input,{key:'Enter'});
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_title_generate',{sessionId:'blank',text:INIT_PROMPT,modelId:'m',effort:'high',attachmentNames:[]}));
-  expect(mocks.send).toHaveBeenCalledWith('blank',INIT_PROMPT,'m',expect.any(Function),undefined,'high');
-  expect(await screen.findAllByText('初始化项目说明')).toHaveLength(2);
- });
- it('迟到的自动标题响应不会覆盖人工重命名',async()=>{
-  let resolveTitle!:(value:unknown)=>void;
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_list')return [{id:'blank',workspaceId:'w',title:'新会话',createdAt:'',updatedAt:'',parentId:null}];
-   if(name==='session_timeline_page'&&args.sessionId==='blank')return timeline(args.sessionId,[]);
-   if(name==='session_title_generate')return new Promise(resolve=>{resolveTitle=resolve});
-   if(name==='session_rename')return {id:'blank',workspaceId:'w',title:args.title,createdAt:'',updatedAt:'',parentId:null};
-   return original(name,args);
-  });
-  render(<App/>);await openSidebarSession(/新会话/);
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'首个问题'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_title_generate',{sessionId:'blank',text:'首个问题',modelId:'m',effort:'high',attachmentNames:[]}));
-  fireEvent.contextMenu(screen.getByRole('button',{name:/新会话/}));
-  fireEvent.click(await screen.findByRole('menuitem',{name:'重命名'}));
-  const dialog=await screen.findByRole('dialog',{name:'重命名会话'});
-  fireEvent.change(screen.getByLabelText('会话名称'),{target:{value:'人工标题'}});
-  fireEvent.click(within(dialog).getByRole('button',{name:'保存'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_rename',{sessionId:'blank',title:'人工标题'}));
-  await act(async()=>resolveTitle({id:'blank',workspaceId:'w',title:'自动生成标题',createdAt:'',updatedAt:'',parentId:null}));
-  expect(await screen.findAllByText('人工标题')).toHaveLength(2);
-  expect(screen.queryByText('自动生成标题')).not.toBeInTheDocument();
- });
- it('迟到的会话列表快照不会覆盖已生成标题',async()=>{
-  let resolveTitle!:(value:unknown)=>void,resolveList!:(value:unknown)=>void;
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [
-    {id:'w',sourcePath:'D:/alpha',replicaPath:'D:/copy-a',createdAt:'',name:'alpha'},
-    {id:'other',sourcePath:'D:/beta',replicaPath:'D:/copy-b',createdAt:'',name:'beta'}];
-   if(name==='session_list'&&args.workspaceId==='w')return [
-    {id:'blank',workspaceId:'w',title:'新会话',createdAt:'',updatedAt:'2026-11-09T11:00:00Z',parentId:null},
-    {id:'other-session',workspaceId:'other',title:'B 的会话',createdAt:'',updatedAt:'2026-11-09T10:00:00Z',parentId:null}];
-   if(name==='session_list'&&args.workspaceId==='other')return new Promise(resolve=>{resolveList=resolve});
-   if(name==='session_timeline_page'&&args.sessionId==='blank')return timeline(args.sessionId,[]);
-   if(name==='session_timeline_page'&&args.sessionId==='other-session')return timeline(args.sessionId,[event('e-other','other-session','1','B 的内容')]);
-   if(name==='session_title_generate')return new Promise(resolve=>{resolveTitle=resolve});
-   return original(name,args);
-  });
-  render(<App/>);await openSidebarSession(/新会话/);
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'首个问题'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_title_generate',{sessionId:'blank',text:'首个问题',modelId:'m',effort:'high',attachmentNames:[]}));
-  fireEvent.click(screen.getByRole('button',{name:/B 的会话/}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_list',{workspaceId:'other',allWorkspaces:true}));
-  await act(async()=>resolveTitle({id:'blank',workspaceId:'w',title:'生成完成标题',createdAt:'',updatedAt:'2026-11-09T11:00:00Z',parentId:null}));
-  expect(await screen.findByText('生成完成标题')).toBeInTheDocument();
-  await act(async()=>resolveList([
-   {id:'blank',workspaceId:'w',title:'新会话',createdAt:'',updatedAt:'2026-11-09T11:00:00Z',parentId:null},
-   {id:'other-session',workspaceId:'other',title:'B 的会话',createdAt:'',updatedAt:'2026-11-09T10:00:00Z',parentId:null}]));
-  expect(screen.getByText('生成完成标题')).toBeInTheDocument();
- });
- it('有历史用户消息的会话不再生成首次标题',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_list')return [{id:'used',workspaceId:'w',title:'新会话',createdAt:'',updatedAt:''}];
-   if(name==='session_timeline_page'&&args.sessionId==='used')return timeline(args.sessionId,[{id:'old-user',sessionId:'used',seq:'1',kind:'user.message',data:{content:'之前的问题'},createdAt:''}]);
-   return original(name,args);
-  });
-  render(<App/>);await openSidebarSession(/新会话/);await screen.findByText('之前的问题');
-  await waitFor(()=>expect(useChat.getState().events.used?.[0]?.kind).toBe('user.message'));
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'后续问题'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('used','后续问题','m',expect.any(Function),undefined,'high'));
-  expect(mocks.command).not.toHaveBeenCalledWith('session_title_generate',expect.anything());
- });
- it('会话右键菜单可复制会话ID',async()=>{
-  const copy=vi.fn().mockResolvedValue(undefined);
-  Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:copy}});
-  await renderOpenA();
-  fireEvent.contextMenu(screen.getByRole('button',{name:/会话 A/}));
-  fireEvent.click(await screen.findByRole('menuitem',{name:'复制会话ID'}));
-  await waitFor(()=>expect(copy).toHaveBeenCalledWith('a'));
-  await waitFor(()=>expect(screen.queryByRole('menu',{name:'会话操作'})).not.toBeInTheDocument());
- });
- it('会话右键菜单可用 Escape 和点击外部关闭',async()=>{
-  await renderOpenA();
-  fireEvent.contextMenu(screen.getByRole('button',{name:/会话 A/}));
-  expect(await screen.findByRole('menu',{name:'会话操作'})).toBeInTheDocument();
-  fireEvent.keyDown(document,{key:'Escape'});
-  await waitFor(()=>expect(screen.queryByRole('menu',{name:'会话操作'})).not.toBeInTheDocument());
-  fireEvent.contextMenu(screen.getByRole('button',{name:/会话 A/}));
-  expect(await screen.findByRole('menu',{name:'会话操作'})).toBeInTheDocument();
-  fireEvent.mouseDown(document.body);
-  await waitFor(()=>expect(screen.queryByRole('menu',{name:'会话操作'})).not.toBeInTheDocument());
- });
- it('会话重命名拒绝空白标题',async()=>{
-  await renderOpenA();
-  fireEvent.contextMenu(screen.getByRole('button',{name:/会话 A/}));
-  fireEvent.click(await screen.findByRole('menuitem',{name:'重命名'}));
-  const dialog=await screen.findByRole('dialog',{name:'重命名会话'});
-  fireEvent.change(screen.getByLabelText('会话名称'),{target:{value:'  '}});
-  fireEvent.click(within(dialog).getByRole('button',{name:'保存'}));
-  expect(await within(dialog).findByRole('alert')).toHaveTextContent('不能为空');
-  expect(mocks.command).not.toHaveBeenCalledWith('session_rename',expect.anything());
- });
- it('取消重命名不提交且保留原标题',async()=>{
-  await renderOpenA();
-  fireEvent.contextMenu(screen.getByRole('button',{name:/会话 A/}));
-  fireEvent.click(await screen.findByRole('menuitem',{name:'重命名'}));
-  const dialog=await screen.findByRole('dialog',{name:'重命名会话'});
-  fireEvent.change(screen.getByLabelText('会话名称'),{target:{value:'临时标题'}});
-  fireEvent.click(within(dialog).getByRole('button',{name:'取消'}));
-  expect(mocks.command).not.toHaveBeenCalledWith('session_rename',expect.anything());
-  expect(screen.getByRole('button',{name:/会话 A/})).toBeInTheDocument();
- });
- it('重命名保存失败时保留对话框和列表标题',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_rename'?Promise.reject(new Error('存储失败')):original(name,args));
-  await renderOpenA();
-  fireEvent.contextMenu(screen.getByRole('button',{name:/会话 A/}));
-  fireEvent.click(await screen.findByRole('menuitem',{name:'重命名'}));
-  const dialog=await screen.findByRole('dialog',{name:'重命名会话'});
-  fireEvent.change(screen.getByLabelText('会话名称'),{target:{value:'新标题'}});
-  fireEvent.click(within(dialog).getByRole('button',{name:'保存'}));
-  expect(await within(dialog).findByRole('alert')).toHaveTextContent('存储失败');
-  expect(screen.getByRole('button',{name:/会话 A/})).toBeInTheDocument();
- });
- it.each(['成功','失败'])('旧的重命名请求%s返回时不影响新打开的对话框',async outcome=>{
-  let resolveRename!:(value:unknown)=>void,rejectRename!:(reason:unknown)=>void;
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_rename'&&args.sessionId==='a')return new Promise((resolve,reject)=>{resolveRename=resolve;rejectRename=reject});
-   return original(name,args);
-  });
-  await renderOpenA();
-  fireEvent.contextMenu(screen.getByRole('button',{name:/会话 A/}));
-  fireEvent.click(await screen.findByRole('menuitem',{name:'重命名'}));
-  let dialog=await screen.findByRole('dialog',{name:'重命名会话'});
-  fireEvent.change(screen.getByLabelText('会话名称'),{target:{value:'A 的新标题'}});
-  fireEvent.click(within(dialog).getByRole('button',{name:'保存'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_rename',{sessionId:'a',title:'A 的新标题'}));
-  fireEvent.click(within(dialog).getByRole('button',{name:'取消'}));
-  fireEvent.contextMenu(screen.getByRole('button',{name:/会话 B/}));
-  fireEvent.click(await screen.findByRole('menuitem',{name:'重命名'}));
-  dialog=await screen.findByRole('dialog',{name:'重命名会话'});
-  fireEvent.change(screen.getByLabelText('会话名称'),{target:{value:'B 的编辑草稿'}});
-  await act(async()=>{
-   if(outcome==='成功')resolveRename({id:'a',workspaceId:'w',title:'A 的新标题',createdAt:'',updatedAt:'',parentId:null});
-   else rejectRename(new Error('A 保存失败'));
-  });
-  expect(screen.getByRole('dialog',{name:'重命名会话'})).toBeInTheDocument();
-  expect(screen.getByLabelText('会话名称')).toHaveValue('B 的编辑草稿');
-  if(outcome==='失败')expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument();
- });
- it('同一标题弹窗正在保存时忽略重复提交',async()=>{
-  let resolveRename!:(value:unknown)=>void;
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_rename'&&args.sessionId==='a'?new Promise(resolve=>{resolveRename=resolve}):original(name,args));
-  await renderOpenA();
-  fireEvent.contextMenu(screen.getByRole('button',{name:/会话 A/}));
-  fireEvent.click(await screen.findByRole('menuitem',{name:'重命名'}));
-  const dialog=await screen.findByRole('dialog',{name:'重命名会话'});
-  fireEvent.change(screen.getByLabelText('会话名称'),{target:{value:'新的标题'}});
-  const saveButton=within(dialog).getByRole('button',{name:'保存'});
-  fireEvent.click(saveButton);fireEvent.click(saveButton);
-  await waitFor(()=>expect(mocks.command.mock.calls.filter(([name,args])=>name==='session_rename'&&args.sessionId==='a')).toHaveLength(1));
-  await act(async()=>resolveRename({id:'a',workspaceId:'w',title:'新的标题',createdAt:'',updatedAt:'',parentId:null}));
- });
-});
-it('会话中的助手链接和用户网址打开网页抽屉',async()=>{
- const original=mocks.command.getMockImplementation()!;
- mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline('a',[
-  {id:'u',sessionId:'a',seq:'1',kind:'user.message',data:{content:'请看 https://example.org/test。'},createdAt:''},
-  event('e','a','2','[站点](https://example.com/path)')
- ]):original(name,args));
- render(<App/>);
- await openSidebarSession(/会话 A/);
-
- const link=await screen.findByRole('link',{name:'站点'});
- expect(link.isConnected).toBe(true);
- fireEvent.click(link);
- expect(useSidePanel.getState()).toMatchObject({view:'web',webUrl:'https://example.com/path'});
- const userLink=screen.getByRole('link',{name:'https://example.org/test'});
- fireEvent.click(userLink);
- expect(useSidePanel.getState().webUrl).toBe('https://example.org/test');
-});
-it('链接右键菜单复制完整地址并可在默认浏览器中打开',async()=>{
- const original=mocks.command.getMockImplementation()!;
- mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline('a',[event('e','a','1','[站点](https://example.com/path?q=1)')]):original(name,args));
- const copy=vi.fn().mockResolvedValue(undefined);
- Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:copy}});
- render(<App/>);
- await openSidebarSession(/会话 A/);
- fireEvent.contextMenu(await screen.findByRole('link',{name:'站点'}));
- fireEvent.click(screen.getByRole('menuitem',{name:'复制链接'}));
- await waitFor(()=>expect(copy).toHaveBeenCalledWith('https://example.com/path?q=1'));
- fireEvent.contextMenu(screen.getByRole('link',{name:'站点'}));
- fireEvent.click(screen.getByRole('menuitem',{name:'在默认浏览器中打开'}));
- await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('open_external_link',{url:'https://example.com/path?q=1'}));
-});
-it('用户消息中的网址不包含句末标点',async()=>{
- const original=mocks.command.getMockImplementation()!;
- mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline('a',[
-  {id:'u',sessionId:'a',seq:'1',kind:'user.message',data:{content:'访问 https://example.org/page. 然后继续'},createdAt:''},
-  event('e','a','2','完成')
- ]):original(name,args));
- render(<App/>);
- await openSidebarSession(/会话 A/);
- expect(await screen.findByRole('link',{name:'https://example.org/page'})).toHaveAttribute('href','https://example.org/page');
-});
-it('非 HTTP Markdown 链接保留原有地址与行为',async()=>{
- const original=mocks.command.getMockImplementation()!;
- mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline('a',[event('e','a','1','[邮件](mailto:hello@example.com)')]):original(name,args));
- render(<App/>);
- await openSidebarSession(/会话 A/);
- const link=await screen.findByRole('link',{name:'邮件'});
- expect(link).toHaveAttribute('href','mailto:hello@example.com');
-});
-
-describe('会话存档',()=>{
- const session=(id:string,title:string,extra:Partial<import('./types').SessionInfo>={})=>({id,workspaceId:'w',title,createdAt:'2026-11-01T00:00:00Z',updatedAt:'2026-11-08T00:00:00Z',parentId:null,...extra});
- it('悬停浮层显示时点击行内存档按钮：会话移除后浮层立即收起',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_list')return args.archived?[]:[session('a','会话 A'),session('b','会话 B')];
-   if(name==='session_archive')return session('a','会话 A',{archivedAt:'2026-11-09T00:00:00Z'});
-   return original(name,args);
-  });
-  await renderOpenA();
-  const row=screen.getByRole('button',{name:/会话 A/});
-  fireEvent.mouseEnter(row);
-  await screen.findByRole('tooltip');
-  // 回归：光标未离开会话行（无 mouseLeave）时点击行内存档按钮，行随存档移除后浮层不得驻留
-  fireEvent.click(within(row).getByRole('button',{name:'存档会话'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_archive',{sessionId:'a'}));
-  await waitFor(()=>expect(screen.queryByRole('tooltip')).not.toBeInTheDocument());
- });
- it('右键菜单存档会话：调用 session_archive 并从任务列表移除',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_list')return args.archived?[]:[session('a','会话 A'),session('b','会话 B')];
-   if(name==='session_archive')return session('a','会话 A',{archivedAt:'2026-11-09T00:00:00Z'});
-   return original(name,args);
-  });
-  await renderOpenA();
-  const row=screen.getByRole('button',{name:/会话 A/});
-  fireEvent.contextMenu(row);
-  fireEvent.click(await screen.findByRole('menuitem',{name:'存档'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_archive',{sessionId:'a'}));
-  await waitFor(()=>expect(screen.queryByText('会话 A')).not.toBeInTheDocument());
-  expect(screen.getByText('已存档会话「会话 A」。')).toBeInTheDocument();
- });
- it('存档当前会话后统一回到新会话草稿态，不自动打开同项目其他会话',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_list')return [session('a','会话 A'),session('sub','检查计划模式安全接入点',{parentId:'a'}),session('b','会话 B')];
-   if(name==='session_archive')return session('a','会话 A',{archivedAt:'2026-11-09T00:00:00Z'});
-   return original(name,args);
-  });
-  await renderOpenA();
-  const row=screen.getByRole('button',{name:/会话 A/});
-  fireEvent.click(within(row).getByRole('button',{name:'存档会话'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_archive',{sessionId:'a'}));
-  // 统一回主页：欢迎页带项目名、输入框可用，同项目其他会话与子代理会话都不自动打开
-  expect(await screen.findByRole('heading',{name:/你想在 project 中构建什么/})).toBeInTheDocument();
-  expect(screen.getByLabelText('消息')).toBeEnabled();
-  expect(mocks.command.mock.calls.some(([name,args])=>name==='session_timeline_page'&&(args.sessionId==='b'||args.sessionId==='sub'))).toBe(false);
- });
- it('存档项目唯一主会话后回到新会话草稿态，不加载子代理会话内容',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_list')return [session('a','会话 A'),session('sub','检查计划模式安全接入点',{parentId:'a'})];
-   if(name==='session_archive')return session('a','会话 A',{archivedAt:'2026-11-09T00:00:00Z'});
-   return original(name,args);
-  });
-  await renderOpenA();
-  const row=screen.getByRole('button',{name:/会话 A/});
-  fireEvent.click(within(row).getByRole('button',{name:'存档会话'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_archive',{sessionId:'a'}));
-  expect(await screen.findByRole('heading',{name:/你想在 project 中构建什么/})).toBeInTheDocument();
-  expect(mocks.command.mock.calls.some(([name,args])=>name==='session_timeline_page'&&args.sessionId==='sub')).toBe(false);
- });
- it('设置存档管理按项目显示归档会话并可恢复到列表',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_list')return args.archived?[session('old','已归档的旧会话',{archivedAt:'2026-11-09T00:00:00Z'})]:[session('a','会话 A'),session('b','会话 B')];
-   if(name==='session_restore')return session('old','已归档的旧会话');
-   return original(name,args);
-  });
-  await renderOpenA();
-  fireEvent.click(screen.getByRole('button',{name:'设置'}));
-  const page=await screen.findByRole('dialog',{name:'设置'});
-  fireEvent.click(within(page).getByRole('button',{name:'存档管理'}));
-  expect(await within(page).findByText('已归档的旧会话')).toBeInTheDocument();
-  expect(within(page).getByText(/归档于/)).toBeInTheDocument();
-  fireEvent.click(within(page).getByRole('button',{name:'恢复'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_restore',{sessionId:'old'}));
-  fireEvent.click(within(page).getByRole('button',{name:'关闭设置，返回工作台'}));
-  expect(await screen.findByText('已归档的旧会话')).toBeInTheDocument();
-  expect(screen.getByText('已恢复会话「已归档的旧会话」。')).toBeInTheDocument();
- });
- it('无归档数据时存档管理显示空态',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_list')return args.archived?[]:[session('a','会话 A'),session('b','会话 B')];
-   return original(name,args);
-  });
-  await renderOpenA();
-  fireEvent.click(screen.getByRole('button',{name:'设置'}));
-  const page=await screen.findByRole('dialog',{name:'设置'});
-  fireEvent.click(within(page).getByRole('button',{name:'存档管理'}));
-  expect(await within(page).findByText(/还没有归档的会话/)).toBeInTheDocument();
- });
-});
-describe('项目移除（隐藏语义）',()=>{
- it('组头右键打开项目菜单，确认后隐藏项目并提示重新显示',async()=>{
-  localStorage.removeItem('sessionView');
-  localStorage.removeItem('sessionCollapsed');
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/project',replicaPath:'D:/copy',createdAt:'',name:'项目A',pinned:false,hidden:false},{id:'w2',sourcePath:'D:/project-2',replicaPath:'D:/copy2',createdAt:'',name:'项目B',pinned:false,hidden:false}];
-   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A'}];
-   if(name==='workspace_remove')return {workspaceId:'w2',stoppedSessions:0};
-   return original(name,args);
-  });
-  render(<App/>);
-  await screen.findByRole('button',{name:/会话 A/});
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
-  fireEvent.contextMenu(screen.getByText('项目B'));
-  fireEvent.click(await screen.findByRole('menuitem',{name:'移除项目'}));
-  const dialog=await screen.findByRole('dialog',{name:'移除项目「项目B」'});
-  fireEvent.click(within(dialog).getByRole('button',{name:'移除项目'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_remove',{workspaceId:'w2',stopRunning:false}));
-  expect(await screen.findByText(/已移除项目「项目B」，数据全部保留/)).toBeInTheDocument();
-  await waitFor(()=>expect(screen.queryByText('项目B')).not.toBeInTheDocument());
- });
- it('有运行中会话时确认按钮为「移除并停止运行」并带 stopRunning',async()=>{
-  localStorage.removeItem('sessionView');
-  localStorage.removeItem('sessionCollapsed');
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/project',replicaPath:'D:/copy',createdAt:'',name:'运行项目',pinned:false,hidden:false}];
-   if(name==='session_list')return [{id:'a',workspaceId:'w',title:'会话 A'}];
-   if(name==='session_active_list')return ['a'];
-   if(name==='workspace_remove')return {workspaceId:'w',stoppedSessions:1};
-   return original(name,args);
-  });
-  render(<App/>);
-  await screen.findByRole('button',{name:/会话 A/});
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
-  const sessionNav=screen.getByRole('navigation',{name:'会话列表'});
-  fireEvent.contextMenu(within(sessionNav).getByText('运行项目'));
-  fireEvent.click(await screen.findByRole('menuitem',{name:'移除项目'}));
-  const dialog=await screen.findByRole('dialog',{name:'移除项目「运行项目」'});
-  expect(within(dialog).getByText(/该项目还有运行中的对话或 Agent/)).toBeInTheDocument();
-  fireEvent.click(within(dialog).getByRole('button',{name:'移除项目（移除并停止运行）'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_remove',{workspaceId:'w',stopRunning:true}));
- });
- it('打开项目后重新显示同目录隐藏项目并提示',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_open')return {id:'new-w',sourcePath:'D:/project',replicaPath:'D:/copy',createdAt:'',name:'项目A',pinned:false,hidden:false,executionMode:'replica',worktrees:{}};
-   if(name==='workspace_reveal_hidden')return {workspaceId:'new-w',revealed:1};
-   if(name==='session_list')return [];
-   return original(name,args);
-  });
-  vi.mocked(open).mockResolvedValue('D:/project');
-  render(<App/>);
-  await screen.findByRole('button',{name:'新建聊天'});
-  fireEvent.click(screen.getByRole('button',{name:'新建聊天'}));
-  fireEvent.click(screen.getByRole('menuitem',{name:/新建项目/}));
-  await screen.findByRole('dialog',{name:'打开工作区'});
-  fireEvent.click(screen.getByRole('button',{name:'创建'}));
-  expect(await screen.findByText(/重新显示 1 个同目录隐藏项目/)).toBeInTheDocument();
-  expect(mocks.command).toHaveBeenCalledWith('workspace_reveal_hidden',{workspaceId:'new-w'});
- });
- it('隐藏项目的归档会话仍显示在存档管理且可恢复',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [{id:'w',sourcePath:'D:/keep',replicaPath:'D:/keep-copy',createdAt:'',name:'正常项目',pinned:false,hidden:false},{id:'gone',sourcePath:'D:/gone',replicaPath:'D:/gone-copy',createdAt:'',name:'隐藏项目',pinned:false,hidden:true}];
-   if(name==='session_list'&&args.archived)return [{id:'arc',workspaceId:'gone',title:'隐藏项目的归档会话',archivedAt:'2026-11-13T00:00:00Z'}];
-   if(name==='session_list')return [];
-   return original(name,args);
-  });
-  render(<App/>);
-  fireEvent.click(screen.getByRole('button',{name:'设置'}));
-  const page=await screen.findByRole('dialog',{name:'设置'});
-  fireEvent.click(within(page).getByRole('button',{name:'存档管理'}));
-  expect(await screen.findByText('隐藏项目')).toBeInTheDocument();
-  expect(screen.getByRole('button',{name:'恢复'})).toBeEnabled();
- });
-});
-describe('项目右键打开目录',()=>{
- it('右键项目菜单首项「打开项目目录」调用 workspace_open_dir',async()=>{
-  localStorage.removeItem('sessionView');
-  localStorage.removeItem('sessionCollapsed');
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [{id:'w2',sourcePath:'D:/project-2',replicaPath:'D:/copy2',createdAt:'',name:'项目B',pinned:false,hidden:false}];
-   if(name==='session_list')return [];
-   return original(name,args);
-  });
-  render(<App/>);
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
-  const sessionNav=screen.getByRole('navigation',{name:'会话列表'});
-  fireEvent.contextMenu(await within(sessionNav).findByText('项目B'));
-  fireEvent.click(await screen.findByRole('menuitem',{name:'打开项目目录'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_open_dir',{workspaceId:'w2'}));
-  expect(screen.queryByRole('menu',{name:'项目操作'})).not.toBeInTheDocument();
- });
- it('打开目录失败时顶部错误区展示原因',async()=>{
-  localStorage.removeItem('sessionView');
-  localStorage.removeItem('sessionCollapsed');
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [{id:'w2',sourcePath:'D:/project-2',replicaPath:'D:/copy2',createdAt:'',name:'项目B',pinned:false,hidden:false}];
-   if(name==='session_list')return [];
-   if(name==='workspace_open_dir')return Promise.reject(new Error('项目目录不存在或已被移动：D:/project-2'));
-   return original(name,args);
-  });
-  render(<App/>);
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
-  const sessionNav=screen.getByRole('navigation',{name:'会话列表'});
-  fireEvent.contextMenu(await within(sessionNav).findByText('项目B'));
-  fireEvent.click(await screen.findByRole('menuitem',{name:'打开项目目录'}));
-  expect(await screen.findByText('项目目录不存在或已被移动：D:/project-2')).toBeInTheDocument();
- });
-});
-describe('消息引用',()=>{
- const withSelection=async(body:()=>Promise<void>)=>{
-  const spy=vi.spyOn(window,'getSelection').mockReturnValue({toString:()=>'引用内容',removeAllRanges:()=>{}} as Selection);
-  try{await body()}finally{spy.mockRestore()}
- };
- it('有选区时右键菜单出现「引用」，点击后以附件式引用条显示且可删除',async()=>{
-  await withSelection(async()=>{
-   await renderOpenA();
-   fireEvent.contextMenu(screen.getByText('内容 a'));
-   const item=await screen.findByRole('menuitem',{name:/引用/});
-   expect(item).toBeEnabled();
-   fireEvent.click(item);
-   expect(await screen.findByTitle('引用内容')).toBeInTheDocument();
-   fireEvent.click(screen.getByRole('button',{name:'删除引用 1'}));
-   expect(screen.queryByTitle('引用内容')).toBeNull();
-  });
- });
- it('无选区时右键菜单「引用」禁用',async()=>{
-  const spy=vi.spyOn(window,'getSelection').mockReturnValue({toString:()=>'',removeAllRanges:()=>{}} as Selection);
-  try{
-   await renderOpenA();
-   fireEvent.contextMenu(screen.getByText('内容 a'));
-   expect(await screen.findByRole('menuitem',{name:/引用/})).toBeDisabled();
-  }finally{spy.mockRestore()}
- });
- it('发送时携带引用，发送成功后清空',async()=>{
-  mocks.send.mockResolvedValue(undefined);
-  await withSelection(async()=>{
-   await renderOpenA();
-   fireEvent.contextMenu(screen.getByText('内容 a'));
-   fireEvent.click(await screen.findByRole('menuitem',{name:/引用/}));
-   const input=screen.getByLabelText('消息');
-   fireEvent.change(input,{target:{value:'请看引用'}});
-   fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-   await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','请看引用','m',expect.any(Function),undefined,'high',['引用内容']));
-   await waitFor(()=>expect(screen.queryByTitle('引用内容')).toBeNull());
-  });
- });
- it('仅引用无正文也可发送',async()=>{
-  mocks.send.mockResolvedValue(undefined);
-  await withSelection(async()=>{
-   await renderOpenA();
-   fireEvent.contextMenu(screen.getByText('内容 a'));
-   fireEvent.click(await screen.findByRole('menuitem',{name:/引用/}));
-   const button=screen.getByRole('button',{name:'发送消息'});
-   expect(button).toBeEnabled();
-   fireEvent.click(button);
-   await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('a','','m',expect.any(Function),undefined,'high',['引用内容']));
-  });
- });
- it('时间线渲染用户消息的引用块',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'?timeline(args.sessionId,[
-   {...event(`u-${args.sessionId}`,args.sessionId,'1','带引用的消息'),kind:'user.message',data:{content:'带引用的消息',quotes:['引用甲','引用乙']}},
-   event(`e-${args.sessionId}`,args.sessionId,'2','回复内容'),
-  ]):original(name,args));
-  render(<App/>);
-  await openSidebarSession(/会话 A/);
-  await screen.findByText('带引用的消息');
-  expect(screen.getByText(/引用甲/)).toBeInTheDocument();
-  expect(screen.getByText(/引用乙/)).toBeInTheDocument();
- });
-});
-describe('滚动到底按钮',()=>{
- // jsdom 无布局：给滚动容器注入 scrollHeight/clientHeight 后配合 fireEvent.scroll 驱动显隐逻辑。
- const metrics=(conversation:HTMLElement,scrollHeight:number,clientHeight:number)=>{
-  Object.defineProperty(conversation,'scrollHeight',{configurable:true,value:scrollHeight});
-  Object.defineProperty(conversation,'clientHeight',{configurable:true,value:clientHeight});
- };
- const restoreMetrics=(conversation:HTMLElement)=>{
-  delete (conversation as unknown as Record<string,unknown>).scrollHeight;
-  delete (conversation as unknown as Record<string,unknown>).clientHeight;
- };
- it('位于底部时不显示按钮；上滚离开底部后出现',async()=>{
-  await renderOpenA();
-  const conversation=screen.getByLabelText('聊天消息');
-  metrics(conversation,1200,400);
-  try{
-   conversation.scrollTop=840;
-   fireEvent.scroll(conversation);
-   expect(screen.queryByRole('button',{name:'滚动到底部'})).toBeNull();
-   conversation.scrollTop=200;
-   fireEvent.scroll(conversation);
-   expect(screen.getByRole('button',{name:'滚动到底部'})).toBeInTheDocument();
-  }finally{restoreMetrics(conversation)}
- });
- it('点击按钮滚回底部并恢复自动跟随，按钮隐藏',async()=>{
-  await renderOpenA();
-  const conversation=screen.getByLabelText('聊天消息');
-  metrics(conversation,1200,400);
-  const proto=Element.prototype as unknown as Record<string,unknown>;
-  const originalScrollTo=proto.scrollTo;
-  const scrollTo=vi.fn();
-  proto.scrollTo=scrollTo;
-  try{
-   conversation.scrollTop=200;
-   fireEvent.scroll(conversation);
-   fireEvent.click(screen.getByRole('button',{name:'滚动到底部'}));
-   expect(scrollTo).toHaveBeenCalledWith({top:1200,behavior:'smooth'});
-   expect(screen.queryByRole('button',{name:'滚动到底部'})).toBeNull();
-  }finally{proto.scrollTo=originalScrollTo;restoreMetrics(conversation)}
- });
- it('滚回底部附近后按钮隐藏',async()=>{
-  await renderOpenA();
-  const conversation=screen.getByLabelText('聊天消息');
-  metrics(conversation,1200,400);
-  try{
-   conversation.scrollTop=200;
-   fireEvent.scroll(conversation);
-   expect(screen.getByRole('button',{name:'滚动到底部'})).toBeInTheDocument();
-   conversation.scrollTop=800;
-   fireEvent.scroll(conversation);
-   expect(screen.queryByRole('button',{name:'滚动到底部'})).toBeNull();
-  }finally{restoreMetrics(conversation)}
- });
- it('切换会话后按钮重置隐藏',async()=>{
-  await renderOpenA();
-  const conversation=screen.getByLabelText('聊天消息');
-  metrics(conversation,1200,400);
-  try{
-   conversation.scrollTop=200;
-   fireEvent.scroll(conversation);
-   expect(screen.getByRole('button',{name:'滚动到底部'})).toBeInTheDocument();
-   fireEvent.click(screen.getByRole('button',{name:/会话 B/}));
-   await screen.findByText('内容 b');
-   expect(screen.queryByRole('button',{name:'滚动到底部'})).toBeNull();
-  }finally{restoreMetrics(conversation)}
- });
-});
-
-describe('同源重复项目合并',()=>{
- // keep 创建时间更早（合并时自动成为保留方）；两条记录均可见，「项目」视图出现两个同名组。
- const dupWorkspaces=[
-  {id:'keep',sourcePath:'D:/rust',replicaPath:'D:/copy-keep',createdAt:'2026-11-06T00:00:00Z',name:'rust-harness',pinned:false,hidden:false,executionMode:'replica',worktrees:{}},
-  {id:'dup',sourcePath:'D:/rust',replicaPath:'D:/copy-dup',createdAt:'2026-11-16T00:00:00Z',name:'rust-harness',pinned:false,hidden:false,executionMode:'worktree',worktrees:{}},
- ];
- it('同源重复时组头显示重复标记且右键菜单出现合并入口',async()=>{
-  localStorage.removeItem('sessionView');
-  localStorage.removeItem('sessionCollapsed');
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return dupWorkspaces;
-   if(name==='session_list')return [{id:'a',workspaceId:'keep',title:'会话 A',updatedAt:'2026-11-10T00:00:00Z'}];
-   return original(name,args);
-  });
-  render(<App/>);
-  await screen.findByRole('button',{name:/会话 A/});
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
-  const sessionNav=screen.getByRole('navigation',{name:'会话列表'});
-  expect(within(sessionNav).getAllByText('重复').length).toBeGreaterThan(0);
-  fireEvent.contextMenu(within(sessionNav).getAllByText('rust-harness')[0]);
-  expect(await screen.findByRole('menuitem',{name:'合并同源项目…'})).toBeInTheDocument();
- });
- it('无重复时不出现合并入口',async()=>{
-  localStorage.removeItem('sessionView');
-  localStorage.removeItem('sessionCollapsed');
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return [dupWorkspaces[0]];
-   if(name==='session_list')return [{id:'a',workspaceId:'keep',title:'会话 A'}];
-   return original(name,args);
-  });
-  render(<App/>);
-  await screen.findByRole('button',{name:/会话 A/});
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
-  const sessionNav=screen.getByRole('navigation',{name:'会话列表'});
-  fireEvent.contextMenu(within(sessionNav).getByText('rust-harness'));
-  expect(await screen.findByRole('menuitem',{name:'移除项目'})).toBeInTheDocument();
-  expect(screen.queryByRole('menuitem',{name:'合并同源项目…'})).not.toBeInTheDocument();
- });
- it('确认合并后调用 workspace_merge 并刷新项目与会话列表',async()=>{
-  localStorage.removeItem('sessionView');
-  localStorage.removeItem('sessionCollapsed');
-  const original=mocks.command.getMockImplementation()!;
-  let merged=false;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_merge'){merged=true;return {fromWorkspaceId:'dup',toWorkspaceId:'keep',movedSessions:1,movedAutomations:2,movedSchedules:0,leftoverWorktrees:['D:/rust/.worktrees/harness-dup0123']};}
-   if(name==='workspace_list')return merged?[dupWorkspaces[0]]:dupWorkspaces;
-   if(name==='session_list')return args.allWorkspaces?[{id:'a',workspaceId:'keep',title:'会话 A',updatedAt:'2026-11-10T00:00:00Z'},{id:'b',workspaceId:'dup',title:'重复项目会话',updatedAt:'2026-11-16T01:00:00Z'}]:[{id:'a',workspaceId:'keep',title:'会话 A',updatedAt:'2026-11-10T00:00:00Z'}];
-   return original(name,args);
-  });
-  render(<App/>);
-  await screen.findByRole('button',{name:/会话 A/});
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
-  const sessionNav=screen.getByRole('navigation',{name:'会话列表'});
-  // 组排序按组内最新会话倒序：dup 有更新的会话排前，右键的组是较新的 dup，
-  // 保留方仍应自动落在创建时间最早的 keep。
-  fireEvent.contextMenu(within(sessionNav).getAllByText('rust-harness')[0]);
-  fireEvent.click(await screen.findByRole('menuitem',{name:'合并同源项目…'}));
-  const dialog=await screen.findByRole('dialog',{name:'合并同源项目'});
-  expect(within(dialog).getByText(/自动选择创建时间最早/)).toBeInTheDocument();
-  expect(within(dialog).getByText(/待并入并删除记录的项目/)).toBeInTheDocument();
-  expect(within(dialog).getByText(/副本中未同步的改动将随之删除/)).toBeInTheDocument();
-  expect(within(dialog).getByText(/不会自动删除/)).toBeInTheDocument();
-  fireEvent.click(within(dialog).getByRole('button',{name:'合并'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_merge',{fromWorkspaceId:'dup',toWorkspaceId:'keep',stopRunning:false}));
-  expect(await screen.findByText(/已合并 1 个重复项目：1 个会话与 2 个自动化任务挂到保留项目/)).toBeInTheDocument();
-  expect(screen.getByText(/仍有 1 个会话 worktree 残留/)).toBeInTheDocument();
-  // 合并后重拉：重复标记消失（workspace_list 再返回去重后的列表）。
-  await waitFor(()=>expect(screen.queryByText('重复')).not.toBeInTheDocument());
- });
- it('待并入项目运行中时提示停止并带 stopRunning=true',async()=>{
-  localStorage.removeItem('sessionView');
-  localStorage.removeItem('sessionCollapsed');
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='workspace_list')return dupWorkspaces;
-   if(name==='session_list')return [{id:'a',workspaceId:'keep',title:'会话 A',updatedAt:'2026-11-10T00:00:00Z'},{id:'b',workspaceId:'dup',title:'重复项目会话',updatedAt:'2026-11-16T01:00:00Z'}];
-   if(name==='session_active_list')return ['b'];
-   if(name==='workspace_merge')return {fromWorkspaceId:'dup',toWorkspaceId:'keep',movedSessions:1,movedAutomations:0,movedSchedules:0,leftoverWorktrees:[]};
-   return original(name,args);
-  });
-  render(<App/>);
-  await screen.findByRole('button',{name:/会话 A/});
-  fireEvent.click(screen.getByRole('switch',{name:'切换视图：项目 / 最近'}));
-  const sessionNav=screen.getByRole('navigation',{name:'会话列表'});
-  fireEvent.contextMenu(within(sessionNav).getAllByText('rust-harness')[0]);
-  fireEvent.click(await screen.findByRole('menuitem',{name:'合并同源项目…'}));
-  const dialog=await screen.findByRole('dialog',{name:'合并同源项目'});
-  expect(within(dialog).getByText(/待并入项目还有运行中的对话或 Agent/)).toBeInTheDocument();
-  fireEvent.click(within(dialog).getByRole('button',{name:'合并'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('workspace_merge',{fromWorkspaceId:'dup',toWorkspaceId:'keep',stopRunning:true}));
- });
-});
-
-describe('侧栏宽度拖拽',()=>{
- // jsdom 可能缺 PointerEvent 与 setPointerCapture：fireEvent.pointerMove 需要它们携带 clientX。
- beforeEach(()=>{
-  Element.prototype.setPointerCapture=Element.prototype.setPointerCapture??(()=>{});
-  Element.prototype.releasePointerCapture=Element.prototype.releasePointerCapture??(()=>{});
-  if(typeof window.PointerEvent!=='function'){
-   const PE=class extends MouseEvent{pointerId:number;constructor(type:string,init:Record<string,unknown>={}){super(type,init as MouseEventInit);this.pointerId=Number(init.pointerId??0)}};
-   (window as unknown as {PointerEvent:unknown}).PointerEvent=PE;
-   (globalThis as unknown as {PointerEvent:unknown}).PointerEvent=PE;
+afterEach(() => {
+  try {
+    assertNoAppGlobalStyle();
+  } finally {
+    cleanup();
+    vi.useRealTimers();
   }
- });
- afterEach(()=>{localStorage.removeItem('sidebar-width')});
- it('侧栏渲染宽度分隔条，默认 264px',async()=>{
-  render(<App/>);
-  await screen.findByRole('button',{name:/会话 A/});
-  expect(screen.getByRole('complementary',{name:'项目列表'}).style.width).toBe('264px');
-  expect(screen.getByRole('separator',{name:'调整列表宽度'})).toBeInTheDocument();
- });
- it('拖拽右缘分隔条调宽并记忆，限制 200px 到 40% 视口',async()=>{
-  render(<App/>);
-  await screen.findByRole('button',{name:/会话 A/});
-  const sidebar=screen.getByRole('complementary',{name:'项目列表'});
-  const resizer=screen.getByRole('separator',{name:'调整列表宽度'});
-  fireEvent.pointerDown(resizer,{pointerId:1});
-  fireEvent.pointerMove(resizer,{pointerId:1,clientX:500});
-  const max=Math.min(window.innerWidth*0.4,480);
-  expect(sidebar.style.width).toBe(`${Math.min(500,max)}px`);
-  fireEvent.pointerMove(resizer,{pointerId:1,clientX:100});
-  expect(sidebar.style.width).toBe('200px');
-  fireEvent.pointerUp(resizer,{pointerId:1});
-  expect(localStorage.getItem('sidebar-width')).toBe('200');
- });
- it('已保存的宽度在启动时恢复',async()=>{
-  localStorage.setItem('sidebar-width','380');
-  render(<App/>);
-  await screen.findByRole('button',{name:/会话 A/});
-  expect(screen.getByRole('complementary',{name:'项目列表'}).style.width).toBe('380px');
- });
 });
-describe('无项目会话',()=>{
- beforeEach(()=>{localStorage.removeItem('sessionView');localStorage.removeItem('sessionCollapsed')});
- it('草稿态 chip 菜单可选「无项目」，发送以空串落点创建会话',async()=>{
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_list')return [];
-   if(name==='session_create')return {id:'np1',workspaceId:'',title:'新会话'};
-   if(name==='session_timeline_page')return timeline(args.sessionId,[]);
-   return original(name,args);
+describe("中断后继续", () => {
+  it("最近回合结束事件不在当前页时使用分页元数据", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_timeline_page"
+        ? {
+            ...timeline(args.sessionId, [event("tail", "a", "5", "历史信息")]),
+            turns: [
+              { startSeq: "1", endSeq: "3", runId: "run", status: "error", finalMessageId: null },
+            ],
+          }
+        : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByText("历史信息");
+    expect(screen.getByRole("button", { name: "继续任务" })).toBeEnabled();
   });
-  render(<App/>);
-  await screen.findByRole('heading',{name:/你想在 project 中构建什么/});
-  fireEvent.click(screen.getByRole('button',{name:'选择项目'}));
-  const menu=screen.getByRole('menu',{name:'选择项目'});
-  fireEvent.click(within(menu).getByRole('menuitem',{name:/无项目/}));
-  await screen.findByRole('heading',{name:/你想在 无项目 中构建什么/});
-  expect(screen.getByPlaceholderText(/发送后将在 无项目 创建会话/)).toBeInTheDocument();
-  expect(mocks.command.mock.calls.filter(([name])=>name==='session_create')).toHaveLength(0);
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'独立问答'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_create',{workspaceId:'',title:'新会话',executionMode:'direct'}));
-  await waitFor(()=>expect(mocks.send).toHaveBeenCalledWith('np1','独立问答','m',expect.any(Function),undefined,'high'));
- });
- it('无项目会话激活后面包屑显示「无项目」，自动化与技能列表仍可拉取',async()=>{
-  localStorage.setItem('sessionView','project');
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_list')return [{id:'np1',workspaceId:'',title:'无项目讨论',createdAt:'',updatedAt:new Date().toISOString(),parentId:null},{id:'a',workspaceId:'w',title:'会话 A',createdAt:'',updatedAt:new Date(Date.now()-60000).toISOString(),parentId:null}];
-   if(name==='session_timeline_page')return timeline(args.sessionId,[event('e-np1','np1','1','内容 np1')]);
-   return original(name,args);
+  it.each(["cancelled", "interrupted", "error"])("回合状态 %s 可以继续", async (status) => {
+    const original = mocks.command.getMockImplementation()!;
+    const events: SessionEvent[] = [
+      { id: "start", sessionId: "a", seq: "1", kind: "turn.start", data: {}, createdAt: "" },
+      {
+        id: "user",
+        sessionId: "a",
+        seq: "2",
+        kind: "user.message",
+        data: { content: "处理任务" },
+        createdAt: "",
+      },
+      { id: "end", sessionId: "a", seq: "3", kind: "turn.end", data: { status }, createdAt: "" },
+    ];
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_timeline_page" ? timeline(args.sessionId, events) : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByText("处理任务");
+    expect(screen.getByRole("button", { name: "继续任务" })).toBeEnabled();
   });
-  render(<App/>);
-  // 「无项目」组固定排在项目组之后
-  const wsNames=screen.getAllByText(/^无项目$/).length;
-  expect(wsNames).toBeGreaterThan(0);
-  fireEvent.click(await screen.findByRole('button',{name:/无项目讨论/}));
-  await screen.findByText('内容 np1');
-  const breadcrumb=document.querySelector('.workspace-name');
-  expect(breadcrumb?.textContent).toBe('无项目');
- });
- it('「无项目」组不提供重命名与置顶入口',async()=>{
-  localStorage.setItem('sessionView','project');
-  const original=mocks.command.getMockImplementation()!;
-  mocks.command.mockImplementation(async(name,args)=>{
-   if(name==='session_list')return [{id:'np1',workspaceId:'',title:'无项目讨论',createdAt:'',updatedAt:new Date().toISOString(),parentId:null},{id:'a',workspaceId:'w',title:'会话 A',createdAt:'',updatedAt:new Date(Date.now()-60000).toISOString(),parentId:null}];
-   if(name==='session_timeline_page')return timeline(args.sessionId,[]);
-   return original(name,args);
+  it("完成的回合不会显示继续按钮", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    const events: SessionEvent[] = [
+      { id: "start", sessionId: "a", seq: "1", kind: "turn.start", data: {}, createdAt: "" },
+      {
+        id: "user",
+        sessionId: "a",
+        seq: "2",
+        kind: "user.message",
+        data: { content: "处理任务" },
+        createdAt: "",
+      },
+      {
+        id: "end",
+        sessionId: "a",
+        seq: "3",
+        kind: "turn.end",
+        data: { status: "completed" },
+        createdAt: "",
+      },
+    ];
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_timeline_page" ? timeline(args.sessionId, events) : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByText("处理任务");
+    expect(screen.queryByRole("button", { name: "继续任务" })).toBeNull();
+    expect(screen.getByRole("button", { name: "发送消息" })).toBeDisabled();
   });
-  render(<App/>);
-  const groupHead=await screen.findByRole('button',{name:/^无项目 \d+$/});
-  // 组头内不含重命名/置顶按钮（无项目组只保留折叠与新建）
-  expect(within(groupHead.closest('.ws-head') as HTMLElement).queryByLabelText(/重命名 无项目/)).not.toBeInTheDocument();
-  expect(within(groupHead.closest('.ws-head') as HTMLElement).queryByLabelText(/置顶 无项目/)).not.toBeInTheDocument();
- });
+  it("中断后空输入框可继续，有文字时恢复发送", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    const events: SessionEvent[] = [
+      {
+        id: "start",
+        sessionId: "a",
+        seq: "1",
+        kind: "turn.start",
+        data: { runId: "run" },
+        createdAt: "",
+      },
+      {
+        id: "user",
+        sessionId: "a",
+        seq: "2",
+        kind: "user.message",
+        data: { content: "处理任务" },
+        createdAt: "",
+      },
+      {
+        id: "end",
+        sessionId: "a",
+        seq: "3",
+        kind: "turn.end",
+        data: { runId: "run", status: "cancelled" },
+        createdAt: "",
+      },
+    ];
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_timeline_page" ? timeline(args.sessionId, events) : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByText("处理任务");
+    const resume = await screen.findByRole("button", { name: "继续任务" });
+    expect(resume).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "补充要求" } });
+    expect(screen.getByRole("button", { name: "发送消息" })).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "继续任务" }));
+    await waitFor(() =>
+      expect(mocks.resume).toHaveBeenCalledWith("a", "3", "m", expect.any(Function), "high"),
+    );
+  });
+});
+describe("Shell 命令时间线", () => {
+  it("完成回合中配对命令与结果，过程默认折叠且命令行收起为内联行", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    const events: SessionEvent[] = [
+      { id: "start", sessionId: "a", seq: "1", kind: "turn.start", data: {}, createdAt: "" },
+      {
+        id: "call",
+        sessionId: "a",
+        seq: "2",
+        kind: "tool.call",
+        data: { id: "c1", name: "shell", arguments: { command: "cargo test" } },
+        createdAt: "",
+      },
+      {
+        id: "other",
+        sessionId: "a",
+        seq: "3",
+        kind: "tool.call",
+        data: { id: "c2", name: "read", arguments: { path: "a.txt" } },
+        createdAt: "",
+      },
+      {
+        id: "result",
+        sessionId: "a",
+        seq: "4",
+        kind: "tool.result",
+        data: {
+          callId: "c1",
+          name: "shell",
+          content: JSON.stringify({ stdout: "测试通过", stderr: "", exit_code: 0 }),
+          status: "completed",
+        },
+        createdAt: "",
+      },
+      {
+        id: "final",
+        sessionId: "a",
+        seq: "5",
+        kind: "assistant.message",
+        data: { content: "已完成检查" },
+        createdAt: "",
+      },
+      {
+        id: "end",
+        sessionId: "a",
+        seq: "6",
+        kind: "turn.end",
+        data: { status: "completed" },
+        createdAt: "",
+      },
+    ];
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_timeline_page" ? timeline(args.sessionId, events) : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByText("已完成检查");
+    const process = screen.getByText("已执行 · 1 条命令").closest("details")!;
+    expect(process.open).toBe(false);
+    fireEvent.click(screen.getByText("已执行 · 1 条命令"));
+    const row = screen.getByRole("button", { name: /已执行/ });
+    expect(row).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getAllByRole("button", { name: /已执行|正在执行/ })).toHaveLength(1);
+    expect(screen.queryByText("已完成")).toBeNull();
+    fireEvent.click(row);
+    expect(screen.getByText("测试通过")).toBeVisible();
+    expect(screen.getByText("退出码 0")).toBeVisible();
+    expect(screen.getByText("读取", { selector: ".t-title" })).toBeInTheDocument();
+  });
+});
+describe("用户消息气泡", () => {
+  it("用户消息正文与引用包裹在气泡容器内", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    const events: SessionEvent[] = [
+      {
+        id: "user",
+        sessionId: "a",
+        seq: "1",
+        kind: "user.message",
+        data: { content: "帮我看下状态", quotes: ["旧讨论"] },
+        createdAt: "",
+      },
+      {
+        id: "final",
+        sessionId: "a",
+        seq: "2",
+        kind: "assistant.message",
+        data: { content: "好的" },
+        createdAt: "",
+      },
+    ];
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_timeline_page" ? timeline(args.sessionId, events) : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByText("好的");
+    const bubble = document.querySelector(".user-bubble") as HTMLElement | null;
+    expect(bubble).not.toBeNull();
+    expect(within(bubble!).getByText("帮我看下状态")).toBeInTheDocument();
+    expect(within(bubble!).getByText("旧讨论")).toBeInTheDocument();
+    expect(within(bubble!).queryByText("好的")).toBeNull();
+  });
+});
+describe("过程合并组", () => {
+  const baseEvents = (extra: SessionEvent[]): SessionEvent[] => [
+    {
+      id: "start",
+      sessionId: "a",
+      seq: "1",
+      kind: "turn.start",
+      data: {},
+      createdAt: "2026-11-19T00:00:00Z",
+    },
+    {
+      id: "user",
+      sessionId: "a",
+      seq: "2",
+      kind: "user.message",
+      data: { content: "跑一下测试" },
+      createdAt: "2026-11-19T00:00:01Z",
+    },
+    ...extra,
+  ];
+  const shellCall = {
+    id: "call",
+    sessionId: "a",
+    seq: "3",
+    kind: "tool.call",
+    data: { id: "c1", name: "shell", arguments: { command: "npm test" } },
+    createdAt: "2026-11-19T00:00:10Z",
+  };
+  const shellResult = {
+    id: "result",
+    sessionId: "a",
+    seq: "4",
+    kind: "tool.result",
+    data: {
+      callId: "c1",
+      name: "shell",
+      content: JSON.stringify({ stdout: "ok", stderr: "", exit_code: 0 }),
+      status: "completed",
+    },
+    createdAt: "2026-11-19T00:00:40Z",
+  };
+  it("运行中回合过程收进合并组，组头统计带扫光且可折叠", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    const events = baseEvents([
+      shellCall,
+      shellResult,
+      {
+        id: "empty",
+        sessionId: "a",
+        seq: "5",
+        kind: "assistant.message",
+        data: {},
+        createdAt: "2026-11-19T00:00:45Z",
+      },
+      {
+        id: "note",
+        sessionId: "a",
+        seq: "6",
+        kind: "assistant.message",
+        data: { content: "测试通过，继续检查。" },
+        createdAt: "2026-11-19T00:00:50Z",
+      },
+    ]);
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_timeline_page" ? timeline(args.sessionId, events) : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByText("跑一下测试");
+    const head = screen.getByText("正在执行 · 1 条命令");
+    expect(head.closest(".process-group")!.querySelector(".process-stat")).toHaveClass(
+      "is-running",
+    );
+    expect(screen.queryByText("测试通过，继续检查。")).toBeVisible();
+    expect(screen.queryByText("正在思考与执行")).not.toBeInTheDocument();
+    fireEvent.click(head);
+    expect((head.closest(".process-group") as HTMLDetailsElement)!.open).toBe(false);
+    fireEvent.click(head);
+    expect(screen.getByText("测试通过，继续检查。")).toBeVisible();
+  });
+  it("完成回合组头为统计加用时，纯对话回合回退本轮已完成", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    const withTool = baseEvents([
+      shellCall,
+      shellResult,
+      {
+        id: "final",
+        sessionId: "a",
+        seq: "5",
+        kind: "assistant.message",
+        data: { content: "全部通过" },
+        createdAt: "2026-11-19T00:01:10Z",
+      },
+      {
+        id: "end",
+        sessionId: "a",
+        seq: "6",
+        kind: "turn.end",
+        data: { status: "completed" },
+        createdAt: "2026-11-19T00:01:22Z",
+      },
+    ]);
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_timeline_page" ? timeline(args.sessionId, withTool) : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByText("全部通过");
+    expect(screen.getByText("已执行 · 1 条命令 · 用时1分22秒")).toBeVisible();
+    expect(screen.queryByText("正在执行")).not.toBeInTheDocument();
+    // replaceTimelinePage 会保留 seq 大于 throughSeq 的旧事件：plain 的 seq 须整体高于 withTool 才能整回合替换。
+    const plain = [
+      {
+        id: "p-start",
+        sessionId: "a",
+        seq: "10",
+        kind: "turn.start",
+        data: {},
+        createdAt: "2026-11-19T00:02:00Z",
+      },
+      {
+        id: "p-user",
+        sessionId: "a",
+        seq: "11",
+        kind: "user.message",
+        data: { content: "纯对话" },
+        createdAt: "2026-11-19T00:02:01Z",
+      },
+      {
+        id: "p-mid",
+        sessionId: "a",
+        seq: "12",
+        kind: "assistant.message",
+        data: { content: "思考中" },
+        createdAt: "2026-11-19T00:02:10Z",
+      },
+      {
+        id: "p-final",
+        sessionId: "a",
+        seq: "13",
+        kind: "assistant.message",
+        data: { content: "纯对话总结" },
+        createdAt: "2026-11-19T00:02:20Z",
+      },
+      {
+        id: "p-end",
+        sessionId: "a",
+        seq: "14",
+        kind: "turn.end",
+        data: { status: "completed" },
+        createdAt: "2026-11-19T00:02:40Z",
+      },
+    ];
+    act(() => useChat.getState().replaceTimelinePage("a", timeline("a", plain)));
+    expect(screen.getByText("本轮已完成，用时40秒")).toBeVisible();
+  });
+  it("用户消息与轮尾总结不显示头像列", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    const events = baseEvents([
+      {
+        id: "final",
+        sessionId: "a",
+        seq: "3",
+        kind: "assistant.message",
+        data: { content: "好的" },
+        createdAt: "2026-11-19T00:00:30Z",
+      },
+      {
+        id: "end",
+        sessionId: "a",
+        seq: "4",
+        kind: "turn.end",
+        data: { status: "completed" },
+        createdAt: "2026-11-19T00:00:40Z",
+      },
+    ]);
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_timeline_page" ? timeline(args.sessionId, events) : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByText("好的");
+    expect(document.querySelector(".avatar")).toBeNull();
+    expect(screen.queryByText("Rust Harness")).not.toBeInTheDocument();
+  });
+});
+describe("计划模式 composer 入口", () => {
+  it("+ 号立即进入计划模式，chip 可明确退出", async () => {
+    await renderOpenA();
+    const chip = await screen.findByRole("button", { name: "计划模式" });
+    await waitFor(() => expect(chip).toHaveAttribute("aria-pressed", "false"));
+    fireEvent.click(screen.getByRole("button", { name: "添加内容" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /进入计划模式/ }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_plan_set", {
+        sessionId: "a",
+        enabled: true,
+      }),
+    );
+    await waitFor(() => expect(chip).toHaveAttribute("aria-pressed", "true"));
+    expect(mocks.send).not.toHaveBeenCalled();
+    fireEvent.click(chip);
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_plan_set", {
+        sessionId: "a",
+        enabled: false,
+      }),
+    );
+    await waitFor(() => expect(chip).toHaveAttribute("aria-pressed", "false"));
+  });
+  it("/plan 带任务先启用再发送原文，无参数切换且不发送", async () => {
+    mocks.send.mockResolvedValue(undefined);
+    await renderOpenA();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "计划模式" })).toHaveAttribute(
+        "aria-pressed",
+        "false",
+      ),
+    );
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "/plan 调查导出" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.send).toHaveBeenCalledWith(
+        "a",
+        "调查导出",
+        "m",
+        expect.any(Function),
+        undefined,
+        "high",
+      ),
+    );
+    const setCall =
+      mocks.command.mock.invocationCallOrder[
+        mocks.command.mock.calls.findIndex(([name]) => name === "session_plan_set")
+      ];
+    expect(setCall).toBeLessThan(mocks.send.mock.invocationCallOrder[0]);
+    fireEvent.change(input, { target: { value: "/plan" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_plan_set", {
+        sessionId: "a",
+        enabled: false,
+      }),
+    );
+    expect(mocks.send).toHaveBeenCalledTimes(1);
+  });
+  it("启用失败保留任务并显示错误，不发送", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_plan_set"
+        ? Promise.reject(new Error("计划模式不可用"))
+        : original(name, args),
+    );
+    await renderOpenA();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "计划模式" })).toHaveAttribute(
+        "aria-pressed",
+        "false",
+      ),
+    );
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "/plan 调查导出" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await screen.findByText("计划模式不可用");
+    expect(input).toHaveValue("/plan 调查导出");
+    expect(mocks.send).not.toHaveBeenCalled();
+  });
+  it("切换会话后读取对应状态，丢弃旧会话迟到结果", async () => {
+    let resolveA!: (value: boolean) => void;
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_plan_get"
+        ? args.sessionId === "a"
+          ? new Promise((resolve) => {
+              resolveA = resolve;
+            })
+          : true
+        : original(name, args),
+    );
+    await renderOpenA();
+    await waitFor(() => expect(resolveA).toBeTypeOf("function"));
+    fireEvent.click(screen.getByRole("button", { name: /会话 B/ }));
+    await screen.findByText("内容 b");
+    const chip = screen.getByRole("button", { name: "计划模式" });
+    await waitFor(() => expect(chip).toHaveAttribute("aria-pressed", "true"));
+    await act(async () => resolveA(false));
+    expect(chip).toHaveAttribute("aria-pressed", "true");
+  });
+});
+describe("计划提交审批", () => {
+  for (const decision of ["批准", "拒绝"])
+    it(`计划审批可选择${decision}且不抢先改变模式`, async () => {
+      const original = mocks.command.getMockImplementation()!;
+      mocks.command.mockImplementation(async (name, args) =>
+        name === "session_plan_get"
+          ? true
+          : name === "question_list"
+            ? [
+                {
+                  id: "plan-q",
+                  sessionId: "a",
+                  question: "是否批准以下计划并退出只读模式？\n\n第一步：检查",
+                  options: [{ label: "批准" }, { label: "拒绝" }],
+                },
+              ]
+            : original(name, args),
+      );
+      await renderOpenA();
+      await screen.findByText(/第一步：检查/);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "计划模式" })).toHaveAttribute(
+          "aria-pressed",
+          "true",
+        ),
+      );
+      fireEvent.click(screen.getByLabelText(`选项 ${decision}`));
+      fireEvent.click(screen.getByRole("button", { name: "提交答复" }));
+      await waitFor(() =>
+        expect(mocks.command).toHaveBeenCalledWith("question_resolve", {
+          id: "plan-q",
+          answer: { text: decision, source: "selected" },
+        }),
+      );
+      expect(screen.getByRole("button", { name: "计划模式" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+      expect(mocks.command.mock.calls.some(([name]) => name === "session_plan_set")).toBe(false);
+    });
+});
+describe("计划审批状态隔离", () => {
+  it("新提问不复用上一个提问的选中项", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_plan_get"
+        ? true
+        : name === "question_list"
+          ? [
+              {
+                id: "one",
+                sessionId: "a",
+                question: "计划一",
+                options: [{ label: "批准" }, { label: "拒绝" }],
+              },
+              {
+                id: "two",
+                sessionId: "a",
+                question: "计划二",
+                options: [{ label: "批准" }, { label: "拒绝" }],
+              },
+            ]
+          : original(name, args),
+    );
+    await renderOpenA();
+    await screen.findByText("计划一");
+    fireEvent.click(screen.getByLabelText("选项 批准"));
+    fireEvent.click(screen.getByRole("button", { name: "提交答复" }));
+    await screen.findByText("计划二");
+    expect(screen.getByRole("button", { name: "提交答复" })).toBeDisabled();
+  });
+});
+describe("计划批准后状态同步", () => {
+  it("收到运行时退出事件才显示关闭", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_plan_get" ? true : original(name, args),
+    );
+    mocks.send.mockImplementation(async (_id, _text, _model, receive) =>
+      receive({
+        type: "durable",
+        event: {
+          id: "exit",
+          sessionId: "a",
+          seq: "2",
+          kind: "session.plan",
+          data: { enabled: false },
+          createdAt: "",
+        },
+      }),
+    );
+    await renderOpenA();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "计划模式" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      ),
+    );
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "请提交计划" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "计划模式" })).toHaveAttribute(
+        "aria-pressed",
+        "false",
+      ),
+    );
+  });
+});
+describe("计划模式安全边界", () => {
+  it("读取失败时状态未知且禁止切换和发送计划任务", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_plan_get" ? Promise.reject(new Error("读取失败")) : original(name, args),
+    );
+    await renderOpenA();
+    await screen.findByText("读取失败");
+    expect(screen.getByRole("button", { name: "计划模式" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "计划模式" })).toHaveTextContent("未知");
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "/plan 任务" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    expect(mocks.send).not.toHaveBeenCalled();
+    expect(mocks.command.mock.calls.some(([name]) => name === "session_plan_set")).toBe(false);
+  });
+  it("启用请求期间切走会话，迟到成功不会发送任务或污染新会话", async () => {
+    let resolveSet!: () => void;
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_plan_set"
+        ? new Promise<void>((resolve) => {
+            resolveSet = resolve;
+          })
+        : original(name, args),
+    );
+    await renderOpenA();
+    await waitFor(() => expect(screen.getByRole("button", { name: "计划模式" })).toBeEnabled());
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "/plan 任务" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() => expect(resolveSet).toBeTypeOf("function"));
+    fireEvent.click(screen.getByRole("button", { name: /会话 B/ }));
+    await screen.findByText("内容 b");
+    await act(async () => resolveSet());
+    expect(mocks.send).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "计划模式" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+  });
+  it("接收实时模式事件后更新当前会话状态", async () => {
+    mocks.send.mockImplementation(async (_id, _text, _model, receive) =>
+      receive({
+        type: "durable",
+        event: {
+          id: "plan-event",
+          sessionId: "a",
+          seq: "2",
+          kind: "session.plan",
+          data: { enabled: true },
+          createdAt: "",
+        },
+      }),
+    );
+    await renderOpenA();
+    await waitFor(() => expect(screen.getByRole("button", { name: "计划模式" })).toBeEnabled());
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "你好" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "计划模式" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      ),
+    );
+  });
+});
+describe("计划模式草稿安全", () => {
+  it("草稿的计划入口只标记待启用，发送时真实启用", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const original = mocks.command.getMockImplementation()!;
+      mocks.command.mockImplementation(async (name, args) =>
+        name === "session_create"
+          ? { id: "new-plan", workspaceId: "w", title: "新会话" }
+          : original(name, args),
+      );
+      mocks.send.mockResolvedValue(undefined);
+      render(<App />);
+      await screen.findByRole("heading", { name: /你想在/ });
+      fireEvent.click(screen.getByRole("button", { name: "添加内容" }));
+      fireEvent.click(screen.getByRole("menuitem", { name: /进入计划模式/ }));
+      expect(screen.getByRole("button", { name: "计划模式" })).toHaveTextContent("草稿待启用");
+      expect(mocks.command.mock.calls.some(([name]) => name === "session_plan_set")).toBe(false);
+      fireEvent.change(screen.getByLabelText("消息"), { target: { value: "规划草稿" } });
+      fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+      await waitFor(() =>
+        expect(mocks.command).toHaveBeenCalledWith("session_plan_set", {
+          sessionId: "new-plan",
+          enabled: true,
+        }),
+      );
+      await waitFor(() =>
+        expect(mocks.send).toHaveBeenCalledWith(
+          "new-plan",
+          "规划草稿",
+          "m",
+          expect.any(Function),
+          undefined,
+          "high",
+        ),
+      );
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: /新会话/ })).toBeInTheDocument(),
+      );
+      expect(
+        errors.mock.calls.some(([message]) => String(message).includes("Each child in a list")),
+      ).toBe(false);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+  it("草稿计划任务创建会话并成功启用模式之后才发送", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_create"
+        ? { id: "new-plan", workspaceId: "w", title: "新会话" }
+        : original(name, args),
+    );
+    mocks.send.mockResolvedValue(undefined);
+    render(<App />);
+    await screen.findByRole("heading", { name: /你想在/ });
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "/plan 草稿任务" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_plan_set", {
+        sessionId: "new-plan",
+        enabled: true,
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.send).toHaveBeenCalledWith(
+        "new-plan",
+        "草稿任务",
+        "m",
+        expect.any(Function),
+        undefined,
+        "high",
+      ),
+    );
+  });
+  it("草稿模式启用失败不发送任务", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_create"
+        ? { id: "new-plan", workspaceId: "w", title: "新会话" }
+        : name === "session_plan_set"
+          ? Promise.reject(new Error("模式设置失败"))
+          : original(name, args),
+    );
+    render(<App />);
+    await screen.findByRole("heading", { name: /你想在/ });
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "/plan 草稿任务" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await screen.findByText("模式设置失败");
+    expect(mocks.send).not.toHaveBeenCalled();
+  });
+});
+describe("设置入口", () => {
+  it("从侧栏打开全屏设置页，可切换分类并返回工作台", async () => {
+    await renderOpenA();
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    const page = await screen.findByRole("dialog", { name: "设置" });
+    const navigation = within(page).getByRole("navigation", { name: "设置导航" });
+    expect(within(navigation).getByRole("button", { name: "能力预设" })).toBeInTheDocument();
+    expect(within(navigation).getByRole("button", { name: "技能" })).toBeInTheDocument();
+    expect(within(navigation).getByRole("button", { name: "插件与权限" })).toBeInTheDocument();
+    expect(within(navigation).getByRole("button", { name: "模型设置" })).toBeInTheDocument();
+    fireEvent.click(within(navigation).getByRole("button", { name: "技能" }));
+    expect(within(page).getByRole("heading", { name: "技能" })).toBeInTheDocument();
+    fireEvent.click(within(page).getByRole("button", { name: "关闭设置，返回工作台" }));
+    expect(screen.queryByRole("dialog", { name: "设置" })).not.toBeInTheDocument();
+    expect(screen.getByText("内容 a")).toBeInTheDocument();
+  });
+  it("关于选项卡展示版本与构建信息", async () => {
+    await renderOpenA();
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    const page = await screen.findByRole("dialog", { name: "设置" });
+    const navigation = within(page).getByRole("navigation", { name: "设置导航" });
+    expect(within(navigation).getByRole("button", { name: "关于" })).toBeInTheDocument();
+    fireEvent.click(within(navigation).getByRole("button", { name: "关于" }));
+    expect(within(page).getByRole("heading", { name: "关于" })).toBeInTheDocument();
+    expect(await within(page).findByText("0.1.6")).toBeInTheDocument();
+    expect(within(page).getByText("开发构建")).toBeInTheDocument();
+  });
+});
+describe("聊天交互", () => {
+  it("导出成功提示自动关闭，重复导出重新计时", async () => {
+    vi.mocked(save).mockResolvedValue("D:/export.json");
+    await renderOpenA();
+    vi.useFakeTimers();
+    // 顶栏不再提供导出按钮，导出入口是会话行右键菜单的「导出会话」项。
+    expect(screen.queryByRole("button", { name: "导出会话" })).not.toBeInTheDocument();
+    await act(async () => {
+      fireEvent.contextMenu(screen.getByRole("button", { name: /会话 A/ }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("menuitem", { name: "导出会话" }));
+    });
+    expect(mocks.command).toHaveBeenCalledWith("session_export", {
+      sessionId: "a",
+      path: "D:/export.json",
+    });
+    expect(screen.getByText("会话已导出。")).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(2000));
+    fireEvent.contextMenu(screen.getByRole("button", { name: /会话 A/ }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("menuitem", { name: "导出会话" }));
+    });
+    act(() => vi.advanceTimersByTime(2000));
+    expect(screen.getByText("会话已导出。")).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(1000));
+    expect(screen.queryByText("会话已导出。")).not.toBeInTheDocument();
+  });
+  it("草稿发送的迟到响应不污染当前会话，会话行仍并入侧栏", async () => {
+    let resolveCreation!: (value: unknown) => void;
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list")
+        return [
+          { id: "w", sourcePath: "D:/project-A", name: "project-A" },
+          { id: "other", sourcePath: "D:/project-B", name: "project-B" },
+        ];
+      if (name === "session_create")
+        return new Promise((resolve) => {
+          resolveCreation = resolve;
+        });
+      if (name === "session_list")
+        return [
+          { id: "a", workspaceId: "w", title: "会话 A" },
+          { id: "b", workspaceId: "w", title: "会话 B" },
+          { id: "other-session", workspaceId: "other", title: "B 的会话" },
+        ];
+      return original(name, args);
+    });
+    await renderOpenA();
+    fireEvent.click(screen.getByRole("button", { name: "新建聊天" }));
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "发给迟到会话" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_create", {
+        workspaceId: "w",
+        title: "新会话",
+        executionMode: "replica",
+      }),
+    );
+    // 创建挂起期间切到 B 的会话：迟到响应不抢占 UI
+    fireEvent.click(screen.getByRole("button", { name: /B 的会话/ }));
+    await screen.findByText("内容 other-session");
+    await act(async () =>
+      resolveCreation({ id: "late-session", workspaceId: "w", title: "A 迟到的新会话" }),
+    );
+    expect(screen.getByText("A 迟到的新会话")).toBeInTheDocument();
+    expect(screen.getByText("内容 other-session")).toBeInTheDocument();
+    // 首条消息归档到迟到会话
+    await waitFor(() =>
+      expect(mocks.send).toHaveBeenCalledWith(
+        "late-session",
+        "发给迟到会话",
+        "m",
+        expect.any(Function),
+        undefined,
+        "high",
+      ),
+    );
+  });
+  it("切换会话只显示该会话的消息", async () => {
+    await renderOpenA();
+    fireEvent.click(screen.getByRole("button", { name: /会话 B/ }));
+    await screen.findByText("内容 b");
+    expect(screen.queryByText("内容 a")).not.toBeInTheDocument();
+  });
+  it("会话打开使用有界时间线页而非全量事件接口", async () => {
+    await renderOpenA();
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_timeline_page", { sessionId: "a" }),
+    );
+    expect(mocks.command.mock.calls.some(([name]) => name === "session_events")).toBe(false);
+  });
+  it("在用户请求时以前页游标加载更早消息", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_timeline_page" && args.beforeSeq === "4")
+        return {
+          sessionId: "a",
+          events: [
+            event("older-1", "a", "1", "更早 1"),
+            event("older-2", "a", "2", "更早 2"),
+            event("older-3", "a", "3", "更早 3"),
+          ],
+          olderCursor: null,
+          throughSeq: "6",
+          hasOlder: false,
+        };
+      if (name === "session_timeline_page")
+        return {
+          sessionId: "a",
+          events: [
+            event("latest-4", "a", "4", "最新 4"),
+            event("latest-5", "a", "5", "最新 5"),
+            event("latest-6", "a", "6", "最新 6"),
+          ],
+          olderCursor: "4",
+          throughSeq: "6",
+          hasOlder: true,
+        };
+      return original(name, args);
+    });
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByText("最新 4");
+    fireEvent.click(screen.getByRole("button", { name: "加载更早消息" }));
+    await screen.findByText("更早 1");
+    expect(mocks.command).toHaveBeenCalledWith("session_timeline_page", {
+      sessionId: "a",
+      beforeSeq: "4",
+    });
+  });
+  it("切换会话后丢弃迟到的时间线页响应", async () => {
+    let resolveA!: (page: ReturnType<typeof timeline>) => void;
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_timeline_page" && args.sessionId === "a")
+        return new Promise((resolve) => {
+          resolveA = resolve;
+        });
+      if (name === "session_timeline_page" && args.sessionId === "b")
+        return timeline("b", [event("b-1", "b", "1", "会话 B 的内容")]);
+      return original(name, args);
+    });
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await waitFor(() => expect(resolveA).toBeTypeOf("function"));
+    fireEvent.click(screen.getByRole("button", { name: /会话 B/ }));
+    await screen.findByText("会话 B 的内容");
+    await act(async () => resolveA(timeline("a", [event("a-late", "a", "1", "迟到的 A 内容")])));
+    expect(screen.queryByText("迟到的 A 内容")).not.toBeInTheDocument();
+    expect(screen.getByText("会话 B 的内容")).toBeInTheDocument();
+  });
+  it("非活动会话的发送结束不会废弃当前会话的时间线加载", async () => {
+    let releaseSend!: () => void, resolveB!: (page: ReturnType<typeof timeline>) => void;
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_timeline_page" && args.sessionId === "b")
+        return new Promise((resolve) => {
+          resolveB = resolve;
+        });
+      return original(name, args);
+    });
+    mocks.send.mockImplementation(
+      async () =>
+        new Promise<void>((resolve) => {
+          releaseSend = resolve;
+        }),
+    );
+    await renderOpenA();
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "发给 A 的消息" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() => expect(releaseSend).toBeTypeOf("function"));
+    fireEvent.click(screen.getByRole("button", { name: /会话 B/ }));
+    await waitFor(() => expect(resolveB).toBeTypeOf("function"));
+    await act(async () => releaseSend());
+    await act(async () => resolveB(timeline("b", [event("b-1", "b", "1", "会话 B 的最新消息")])));
+    expect(await screen.findByText("会话 B 的最新消息")).toBeInTheDocument();
+  });
+  it("切换会话会清除被中断的更早页加载态", async () => {
+    let resolveOlder!: (page: ReturnType<typeof timeline>) => void;
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_timeline_page" && args.sessionId === "a" && args.beforeSeq === "4")
+        return new Promise((resolve) => {
+          resolveOlder = resolve;
+        });
+      if (name === "session_timeline_page" && args.sessionId === "a")
+        return {
+          ...timeline("a", [event("latest-4", "a", "4", "最新消息")]),
+          olderCursor: "4",
+          hasOlder: true,
+        };
+      if (name === "session_timeline_page" && args.sessionId === "b")
+        return timeline("b", [event("b-1", "b", "1", "会话 B 的内容")]);
+      return original(name, args);
+    });
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByText("最新消息");
+    fireEvent.click(screen.getByRole("button", { name: "加载更早消息" }));
+    await waitFor(() => expect(resolveOlder).toBeTypeOf("function"));
+    fireEvent.click(screen.getByRole("button", { name: /会话 B/ }));
+    await screen.findByText("会话 B 的内容");
+    fireEvent.click(screen.getByRole("button", { name: /会话 A/ }));
+    await screen.findByText("最新消息");
+    expect(screen.getByRole("button", { name: "加载更早消息" })).toBeEnabled();
+    await act(async () => resolveOlder(timeline("a", [])));
+  });
+  it("完成回合折叠过程但始终显示 Markdown 最终总结", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_timeline_page"
+        ? timeline(args.sessionId, [
+            {
+              id: "start",
+              sessionId: "a",
+              seq: "1",
+              kind: "turn.start",
+              data: { runId: "r" },
+              createdAt: "2026-11-05T00:00:00Z",
+            },
+            {
+              id: "user",
+              sessionId: "a",
+              seq: "2",
+              kind: "user.message",
+              data: { content: "实现预览" },
+              createdAt: "2026-11-05T00:00:01Z",
+            },
+            {
+              id: "process",
+              sessionId: "a",
+              seq: "3",
+              kind: "assistant.message",
+              data: { content: "正在检查。" },
+              createdAt: "2026-11-05T00:00:10Z",
+            },
+            {
+              id: "call",
+              sessionId: "a",
+              seq: "4",
+              kind: "tool.call",
+              data: { name: "shell", arguments: { command: "cargo test" } },
+              createdAt: "2026-11-05T00:01:00Z",
+            },
+            {
+              id: "result",
+              sessionId: "a",
+              seq: "5",
+              kind: "tool.result",
+              data: { name: "shell", content: "ok" },
+              createdAt: "2026-11-05T00:02:00Z",
+            },
+            {
+              id: "final",
+              sessionId: "a",
+              seq: "6",
+              kind: "assistant.message",
+              data: { content: "## 最终总结\n\n- 已完成 **Markdown** 预览" },
+              createdAt: "2026-11-05T00:03:00Z",
+            },
+            {
+              id: "end",
+              sessionId: "a",
+              seq: "7",
+              kind: "turn.end",
+              data: { runId: "r", status: "completed" },
+              createdAt: "2026-11-05T00:03:22Z",
+            },
+          ])
+        : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByRole("heading", { name: "最终总结", level: 2 });
+    expect(screen.getByText("已执行 · 1 条命令 · 用时3分22秒")).toBeVisible();
+    expect(screen.getByText("正在检查。")).not.toBeVisible();
+    fireEvent.click(screen.getByText("已执行 · 1 条命令 · 用时3分22秒"));
+    expect(screen.getByText("最终总结")).toBeVisible();
+    expect(screen.getByText("正在检查。")).toBeVisible();
+  });
+  it("发送期间合并增量，结束后读取持久化事件", async () => {
+    let release!: () => void;
+    mocks.send.mockImplementation(
+      async (_id: string, _text: string, _model: string, receive: (e: LiveEvent) => void) => {
+        receive({
+          type: "delta",
+          sessionId: "a",
+          requestId: "r",
+          index: 0,
+          text: "正在输出",
+          reasoning: false,
+        });
+        await new Promise<void>((r) => (release = r));
+      },
+    );
+    await renderOpenA();
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "你好" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await screen.findByText("正在输出");
+    expect(screen.getByRole("button", { name: "取消生成" })).toBeInTheDocument();
+    release();
+    await waitFor(() => expect(screen.queryByText("正在输出")).not.toBeInTheDocument());
+    expect(mocks.send).toHaveBeenCalledWith(
+      "a",
+      "你好",
+      "m",
+      expect.any(Function),
+      undefined,
+      "high",
+    );
+  });
+  it("首段输出前显示思考状态，流式内容到达后由其接替", async () => {
+    let release!: () => void, receive!: (event: LiveEvent) => void;
+    mocks.send.mockImplementation(
+      async (_id: string, _text: string, _model: string, onEvent: (event: LiveEvent) => void) => {
+        receive = onEvent;
+        await new Promise<void>((resolve) => (release = resolve));
+      },
+    );
+    await renderOpenA();
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "你好" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    expect(await screen.findByRole("status", { name: "正在思考" })).toBeVisible();
+    act(() =>
+      receive({
+        type: "delta",
+        sessionId: "a",
+        requestId: "r",
+        index: 0,
+        text: "正在输出",
+        reasoning: false,
+      }),
+    );
+    expect(screen.getByText("正在输出")).toBeVisible();
+    expect(screen.queryByRole("status", { name: "正在思考" })).not.toBeInTheDocument();
+    await act(async () => release());
+    await waitFor(() =>
+      expect(screen.queryByRole("status", { name: "正在思考" })).not.toBeInTheDocument(),
+    );
+  });
+  it("当前会话等待审批时隐藏思考状态", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    let approvalPending = false,
+      release!: () => void;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "approval_list" && approvalPending
+        ? [
+            {
+              id: "approval-1",
+              sessionId: "a",
+              tool: "shell",
+              arguments: { command: "cargo test" },
+              reason: "执行测试",
+            },
+          ]
+        : original(name, args),
+    );
+    mocks.send.mockImplementation(async () => new Promise<void>((resolve) => (release = resolve)));
+    await renderOpenA();
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "请求" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    expect(await screen.findByRole("status", { name: "正在思考" })).toBeVisible();
+    approvalPending = true;
+    await screen.findByRole("dialog", { name: "操作需要你的批准" }, { timeout: 3500 });
+    expect(screen.queryByRole("status", { name: "正在思考" })).not.toBeInTheDocument();
+    await act(async () => release());
+  });
+  it("取消生成后清除思考状态", async () => {
+    let release!: () => void;
+    mocks.send.mockImplementation(async () => new Promise<void>((resolve) => (release = resolve)));
+    await renderOpenA();
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "请求" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    expect(await screen.findByRole("status", { name: "正在思考" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "取消生成" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_cancel", { sessionId: "a" }),
+    );
+    await act(async () => release());
+    await waitFor(() =>
+      expect(screen.queryByRole("status", { name: "正在思考" })).not.toBeInTheDocument(),
+    );
+  });
+  it("send 结束后不在历史事件回读期间重新显示思考状态", async () => {
+    let releaseSend!: () => void,
+      releaseRefresh!: (page: ReturnType<typeof timeline>) => void,
+      eventReads = 0;
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_timeline_page" && args.sessionId === "a" && ++eventReads === 2)
+        return new Promise((resolve) => (releaseRefresh = resolve));
+      return original(name, args);
+    });
+    mocks.send.mockImplementation(
+      async () => new Promise<void>((resolve) => (releaseSend = resolve)),
+    );
+    await renderOpenA();
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "请求" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    expect(await screen.findByRole("status", { name: "正在思考" })).toBeVisible();
+    await act(async () => releaseSend());
+    await waitFor(() => expect(releaseRefresh).toBeTypeOf("function"));
+    const visibleWhileHistoryIsLoading =
+      screen.queryByRole("status", { name: "正在思考" }) !== null;
+    await act(async () =>
+      releaseRefresh(
+        timeline("a", [
+          {
+            id: "end",
+            sessionId: "a",
+            seq: "2",
+            kind: "turn.end",
+            data: { runId: "r", status: "completed" },
+            createdAt: "",
+          },
+        ]),
+      ),
+    );
+    expect(visibleWhileHistoryIsLoading).toBe(false);
+    expect(screen.queryByRole("status", { name: "正在思考" })).not.toBeInTheDocument();
+  });
+  it("发送错误可见且不插入假成功消息，也不在历史回读期间显示思考状态", async () => {
+    let rejectSend!: (reason: unknown) => void,
+      releaseRefresh!: (page: ReturnType<typeof timeline>) => void,
+      eventReads = 0;
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_timeline_page" && args.sessionId === "a" && ++eventReads === 2)
+        return new Promise((resolve) => (releaseRefresh = resolve));
+      return original(name, args);
+    });
+    mocks.send.mockImplementation(
+      () => new Promise<void>((_resolve, reject) => (rejectSend = reject)),
+    );
+    await renderOpenA();
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "请求" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    expect(await screen.findByRole("status", { name: "正在思考" })).toBeVisible();
+    await act(async () => rejectSend(new Error("连接失败")));
+    await screen.findByText("连接失败");
+    await waitFor(() => expect(releaseRefresh).toBeTypeOf("function"));
+    const visibleWhileHistoryIsLoading =
+      screen.queryByRole("status", { name: "正在思考" }) !== null;
+    await act(async () =>
+      releaseRefresh(
+        timeline("a", [
+          {
+            id: "end",
+            sessionId: "a",
+            seq: "2",
+            kind: "turn.end",
+            data: { runId: "r", status: "error" },
+            createdAt: "",
+          },
+        ]),
+      ),
+    );
+    expect(visibleWhileHistoryIsLoading).toBe(false);
+    expect(screen.queryByRole("status", { name: "正在思考" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "继续任务" })).toBeInTheDocument();
+  });
+  it("审批通过传递真实请求id", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "approval_list"
+        ? [
+            {
+              id: "approval-1",
+              sessionId: "a",
+              tool: "shell",
+              arguments: { command: "cargo test" },
+              reason: "执行测试",
+            },
+          ]
+        : original(name, args),
+    );
+    render(<App />);
+    await screen.findByRole("dialog", { name: "操作需要你的批准" });
+    fireEvent.click(screen.getByRole("button", { name: "批准此次操作" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("approval_resolve", {
+        id: "approval-1",
+        allow: true,
+      }),
+    );
+  });
+  it("权限模式选择器加载默认档并对当前会话保存切换", async () => {
+    await renderOpenA();
+    const selector = screen.getByLabelText("权限模式");
+    expect(selector).toHaveValue("ask");
+    fireEvent.change(selector, { target: { value: "auto" } });
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("approval_mode_save", {
+        mode: "auto",
+        sessionId: "a",
+      }),
+    );
+    expect(screen.getByLabelText("权限模式")).toHaveValue("auto");
+  });
+  it("权限模式提供五档选项", async () => {
+    await renderOpenA();
+    const selector = screen.getByLabelText("权限模式");
+    const values = Array.from(selector.querySelectorAll("option")).map((o) => o.value);
+    expect(values).toEqual(["ask", "edit", "guarded", "auto", "never"]);
+  });
+});
+describe("Agent 提问", () => {
+  const askPending = () => [
+    {
+      id: "q-1",
+      sessionId: "a",
+      question: "先改哪个文件？",
+      options: [{ label: "session.rs", description: "存储层" }, { label: "auth.rs" }],
+    },
+  ];
+  it("轮询到 pending 提问时弹出对话框", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name) =>
+      name === "question_list" ? askPending() : original(name),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByRole("dialog", { name: "Agent 需要你的输入" });
+    expect(screen.getByText("先改哪个文件？")).toBeVisible();
+    expect(screen.getByLabelText("选项 session.rs")).toBeInTheDocument();
+  });
+  it("切换到其他会话后提问卡片消失且原会话行显示待答复标记", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "question_list" ? askPending() : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByRole("dialog", { name: "Agent 需要你的输入" });
+    fireEvent.click(screen.getByRole("button", { name: /会话 B/ }));
+    await screen.findByText("内容 b");
+    expect(screen.queryByRole("dialog", { name: "Agent 需要你的输入" })).not.toBeInTheDocument();
+    expect(screen.getByText("待答复")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /会话 A/ }));
+    await screen.findByRole("dialog", { name: "Agent 需要你的输入" });
+  });
+  it("提交选项答复传递真实id与selected来源", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name) =>
+      name === "question_list" ? askPending() : original(name),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByRole("dialog", { name: "Agent 需要你的输入" });
+    fireEvent.click(screen.getByLabelText("选项 session.rs"));
+    fireEvent.click(screen.getByRole("button", { name: "提交答复" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("question_resolve", {
+        id: "q-1",
+        answer: { text: "session.rs", source: "selected" },
+      }),
+    );
+  });
+  it("自由输入答复按text来源提交", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name) =>
+      name === "question_list" ? askPending() : original(name),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByRole("dialog", { name: "Agent 需要你的输入" });
+    expect(screen.queryByLabelText("自定义答复")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("选项 其他"));
+    fireEvent.change(screen.getByLabelText("自定义答复"), { target: { value: "都先放一放" } });
+    fireEvent.click(screen.getByRole("button", { name: "提交答复" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("question_resolve", {
+        id: "q-1",
+        answer: { text: "都先放一放", source: "text" },
+      }),
+    );
+  });
+  it("选中普通选项时隐藏自定义输入框，改选其他时显示", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name) =>
+      name === "question_list" ? askPending() : original(name),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByRole("dialog", { name: "Agent 需要你的输入" });
+    fireEvent.click(screen.getByLabelText("选项 其他"));
+    expect(screen.getByLabelText("自定义答复")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("选项 session.rs"));
+    expect(screen.queryByLabelText("自定义答复")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("选项 其他"));
+    expect(screen.getByLabelText("自定义答复")).toBeInTheDocument();
+  });
+  it("忽略按钮按unattended提交", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name) =>
+      name === "question_list" ? askPending() : original(name),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByRole("dialog", { name: "Agent 需要你的输入" });
+    fireEvent.click(screen.getByRole("button", { name: "忽略" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("question_resolve", {
+        id: "q-1",
+        answer: { text: "", source: "unattended" },
+      }),
+    );
+  });
+  it("无选项提问仅渲染自由输入并提交", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name) =>
+      name === "question_list"
+        ? [{ id: "q-2", sessionId: "a", question: "继续吗？", options: [] }]
+        : original(name),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByRole("dialog", { name: "Agent 需要你的输入" });
+    expect(screen.queryByText("选项 session.rs")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("自定义答复"), { target: { value: "继续" } });
+    fireEvent.click(screen.getByRole("button", { name: "提交答复" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("question_resolve", {
+        id: "q-2",
+        answer: { text: "继续", source: "text" },
+      }),
+    );
+  });
+  it("当前会话等待提问时隐藏思考状态", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    let questionPending = false,
+      release!: () => void;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "question_list" && questionPending ? askPending() : original(name, args),
+    );
+    mocks.send.mockImplementation(async () => new Promise<void>((resolve) => (release = resolve)));
+    await renderOpenA();
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "请求" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    expect(await screen.findByRole("status", { name: "正在思考" })).toBeVisible();
+    questionPending = true;
+    await screen.findByRole("dialog", { name: "Agent 需要你的输入" }, { timeout: 3500 });
+    expect(screen.queryByRole("status", { name: "正在思考" })).not.toBeInTheDocument();
+    await act(async () => release());
+  });
+  it("时间线回放按id配对显示提问与答复", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_timeline_page"
+        ? timeline(args.sessionId, [
+            {
+              id: "start",
+              sessionId: "a",
+              seq: "1",
+              kind: "turn.start",
+              data: { runId: "r" },
+              createdAt: "",
+            },
+            {
+              id: "ask",
+              sessionId: "a",
+              seq: "2",
+              kind: "ask.request",
+              data: {
+                id: "q-1",
+                sessionId: "a",
+                question: "先改哪个文件？",
+                options: [{ label: "session.rs" }],
+              },
+              createdAt: "",
+            },
+            {
+              id: "resolved",
+              sessionId: "a",
+              seq: "3",
+              kind: "ask.resolved",
+              data: { id: "q-1", answer: "session.rs", source: "selected" },
+              createdAt: "",
+            },
+            {
+              id: "end",
+              sessionId: "a",
+              seq: "4",
+              kind: "turn.end",
+              data: { runId: "r", status: "completed" },
+              createdAt: "",
+            },
+          ])
+        : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByText("先改哪个文件？");
+    fireEvent.click(screen.getByText("本轮已完成"));
+    expect(screen.getByText("session.rs")).toBeVisible();
+    expect(screen.getByText(/答复：session\.rs/)).toBeVisible();
+  });
+  it("时间线回放显示未获得答复的自动结算", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_timeline_page"
+        ? timeline(args.sessionId, [
+            {
+              id: "start",
+              sessionId: "a",
+              seq: "1",
+              kind: "turn.start",
+              data: { runId: "r" },
+              createdAt: "",
+            },
+            {
+              id: "ask",
+              sessionId: "a",
+              seq: "2",
+              kind: "ask.request",
+              data: { id: "q-3", sessionId: "a", question: "继续吗？", options: [] },
+              createdAt: "",
+            },
+            {
+              id: "resolved",
+              sessionId: "a",
+              seq: "3",
+              kind: "ask.resolved",
+              data: { id: "q-3", answer: "当前无用户在场（未答复）", source: "unattended" },
+              createdAt: "",
+            },
+            {
+              id: "end",
+              sessionId: "a",
+              seq: "4",
+              kind: "turn.end",
+              data: { runId: "r", status: "completed" },
+              createdAt: "",
+            },
+          ])
+        : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByText("继续吗？");
+    fireEvent.click(screen.getByText("本轮已完成"));
+    expect(screen.getByText(/未获得答复/)).toBeVisible();
+  });
+  it("提问挂起时发送按钮保留且发送消息按文本答复结算", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    let questionPending = false,
+      release!: () => void;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "question_list" && questionPending ? askPending() : original(name, args),
+    );
+    mocks.send.mockImplementation(async () => new Promise<void>((resolve) => (release = resolve)));
+    await renderOpenA();
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "请求" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    expect(await screen.findByRole("status", { name: "正在思考" })).toBeVisible();
+    questionPending = true;
+    await screen.findByRole("dialog", { name: "Agent 需要你的输入" }, { timeout: 3500 });
+    expect(screen.getByRole("button", { name: "发送消息" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "先改 session.rs" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("question_resolve", {
+        id: "q-1",
+        answer: { text: "先改 session.rs", source: "text" },
+      }),
+    );
+    expect(mocks.send).toHaveBeenCalledTimes(1);
+    await act(async () => release());
+  });
+  it("提问挂起且带附件时发送仍走消息路径", async () => {
+    const attachment = {
+      hash: "a".repeat(64),
+      name: "说明.txt",
+      mediaType: "text/plain",
+      size: 12,
+    };
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "question_list"
+        ? askPending()
+        : name === "artifact_import"
+          ? attachment
+          : original(name, args),
+    );
+    vi.mocked(open).mockResolvedValueOnce("C:/private/说明.txt");
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByRole("dialog", { name: "Agent 需要你的输入" });
+    fireEvent.click(screen.getByRole("button", { name: "添加内容" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^附件/ }));
+    await screen.findByText("说明.txt");
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "读取附件" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.send).toHaveBeenCalledWith(
+        "a",
+        "读取附件",
+        "m",
+        expect.any(Function),
+        [attachment.hash],
+        "high",
+      ),
+    );
+    expect(mocks.command).not.toHaveBeenCalledWith("question_resolve", expect.anything());
+  });
+  it("提问卡可折叠展开，折叠后仅保留摘要与忽略入口", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name) =>
+      name === "question_list" ? askPending() : original(name),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByRole("dialog", { name: "Agent 需要你的输入" });
+    fireEvent.click(screen.getByRole("button", { name: "折叠提问卡" }));
+    expect(screen.queryByLabelText("选项 session.rs")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "提交答复" })).not.toBeInTheDocument();
+    expect(screen.getByText("先改哪个文件？")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "忽略提问" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "展开提问卡" }));
+    expect(screen.getByLabelText("选项 session.rs")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "提交答复" })).toBeInTheDocument();
+  });
+  it("轮询刷新后提问卡保持折叠状态", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name) =>
+      name === "question_list" ? askPending() : original(name),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByRole("dialog", { name: "Agent 需要你的输入" });
+    fireEvent.click(screen.getByRole("button", { name: "折叠提问卡" }));
+    expect(screen.queryByLabelText("选项 session.rs")).not.toBeInTheDocument();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 2300));
+    });
+    expect(screen.getByRole("dialog", { name: "Agent 需要你的输入" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("选项 session.rs")).not.toBeInTheDocument();
+  });
+  it("时间线回放标注文本答复来源", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_timeline_page"
+        ? timeline(args.sessionId, [
+            {
+              id: "start",
+              sessionId: "a",
+              seq: "1",
+              kind: "turn.start",
+              data: { runId: "r" },
+              createdAt: "",
+            },
+            {
+              id: "ask",
+              sessionId: "a",
+              seq: "2",
+              kind: "ask.request",
+              data: { id: "q-4", sessionId: "a", question: "继续吗？", options: [] },
+              createdAt: "",
+            },
+            {
+              id: "resolved",
+              sessionId: "a",
+              seq: "3",
+              kind: "ask.resolved",
+              data: { id: "q-4", answer: "都先放一放", source: "text" },
+              createdAt: "",
+            },
+            {
+              id: "end",
+              sessionId: "a",
+              seq: "4",
+              kind: "turn.end",
+              data: { runId: "r", status: "completed" },
+              createdAt: "",
+            },
+          ])
+        : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByText("继续吗？");
+    fireEvent.click(screen.getByText("本轮已完成"));
+    expect(screen.getByText(/答复：都先放一放（文本答复）/)).toBeVisible();
+  });
+});
+describe("侧栏会话入口", () => {
+  it("多项目时不再显示工作区切换下拉框，新建聊天按钮可用", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list")
+        return [
+          { id: "w", sourcePath: "D:/A", name: "A" },
+          { id: "other", sourcePath: "D:/B", name: "B" },
+        ];
+      if (name === "session_list")
+        return [
+          { id: "a", workspaceId: "w", title: "会话 A" },
+          { id: "other-session", workspaceId: "other", title: "B 的会话" },
+        ];
+      return original(name, args);
+    });
+    await renderOpenA();
+    expect(screen.queryByLabelText("工作区")).toBeNull();
+    expect(screen.getByRole("button", { name: "新建聊天" })).toBeEnabled();
+  });
+  it("不再显示侧栏顶部的工作区选择按钮", async () => {
+    await renderOpenA();
+    expect(screen.queryByText("托管工作副本")).not.toBeInTheDocument();
+  });
+  it("无工作区时进入无项目草稿态，欢迎语与草稿 chip 显示「无项目」，侧栏空态保留打开入口", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list") return [];
+      if (name === "session_list") return [];
+      return original(name, args);
+    });
+    render(<App />);
+    await screen.findByLabelText("当前模型");
+    // 项目列表为空时按 no-project-sessions.md 直接进入无项目草稿态（不强制先建项目）
+    expect(
+      await screen.findByRole("heading", { name: /你想在 无项目 中构建什么/ }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "选择项目" })).toHaveTextContent("无项目");
+    const nav = screen.getByText("打开工作区后，会话将保存在本机。").closest("nav")!;
+    expect(within(nav).getByRole("button", { name: /打开工作区/ })).toBeEnabled();
+  });
+  it("没有激活项目时新建聊天进入草稿态并自动弹出项目菜单", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "workspace_list" ? [] : original(name, args),
+    );
+    render(<App />);
+    await screen.findByLabelText("当前模型");
+    const btn = screen.getByRole("button", { name: "新建聊天" });
+    expect(btn).toBeEnabled();
+    fireEvent.click(btn);
+    expect(await screen.findByRole("menu", { name: "选择项目" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /新建项目/ })).toBeInTheDocument();
+    expect(screen.getByText("想把什么变成现实？")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "发送消息" })).toBeDisabled();
+  });
+  it("项目组头的新建按钮为该项目新建会话并自动切换", async () => {
+    localStorage.clear();
+    let createdSession: { id: string; workspaceId: string; title: string } | null = null;
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list")
+        return [
+          { id: "w", sourcePath: "D:/A", name: "A" },
+          { id: "other", sourcePath: "D:/B", name: "B" },
+        ];
+      if (name === "session_list")
+        return [
+          ...(createdSession ? [createdSession] : []),
+          { id: "a", workspaceId: "w", title: "会话 A" },
+          { id: "other-session", workspaceId: "other", title: "B 的会话" },
+        ];
+      if (name === "session_create") {
+        createdSession = { id: "created-other", workspaceId: "other", title: "B 的新会话" };
+        return createdSession;
+      }
+      return original(name, args);
+    });
+    await renderOpenA();
+    fireEvent.click(screen.getByRole("switch", { name: "切换视图：项目 / 最近" }));
+    fireEvent.click(screen.getByRole("button", { name: "在 B 新建聊天" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_create", {
+        workspaceId: "other",
+        title: "新会话",
+        executionMode: "replica",
+      }),
+    );
+    await screen.findByText("内容 created-other");
+  });
+  it("当前项目组头的新建按钮直接新建会话", async () => {
+    localStorage.clear();
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_create"
+        ? { id: "new-w", workspaceId: "w", title: "新会话" }
+        : original(name, args),
+    );
+    await renderOpenA();
+    fireEvent.click(screen.getByRole("switch", { name: "切换视图：项目 / 最近" }));
+    fireEvent.click(screen.getByRole("button", { name: "在 project 新建聊天" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_create", {
+        workspaceId: "w",
+        title: "新会话",
+        executionMode: "replica",
+      }),
+    );
+    await screen.findByText("内容 new-w");
+  });
+});
+describe("同步审阅（右侧面板）", () => {
+  const reviewed = {
+    path: "a.rs",
+    kind: "modified",
+    conflict: false,
+    beforeHash: "before-a",
+    afterHash: "reviewed-a",
+    sourceHash: "source-a",
+    beforeText: "old",
+    afterText: "new",
+  };
+  const UNIFIED = "--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n+new text\n";
+  function reviewBackend(
+    list: unknown[],
+    applyError?: string,
+    diff: unknown = { path: "a.rs", unified: UNIFIED },
+  ) {
+    mocks.command.mockImplementation(async (name: string) => {
+      if (name === "workspace_diff") return list;
+      if (name === "workspace_file_diff") return diff;
+      if (name === "workspace_apply") {
+        if (applyError) throw new Error(applyError);
+        return [];
+      }
+      return [];
+    });
+  }
+  it("只应用选中文件，传递完整审阅快照且需要二次确认", async () => {
+    reviewBackend([
+      reviewed,
+      { ...reviewed, path: "b.rs" },
+      { ...reviewed, path: "conflict.rs", conflict: true },
+    ]);
+    render(<ChangesView workspaceId="w" />);
+    await screen.findByText("a.rs");
+    fireEvent.click(screen.getByLabelText("选择 b.rs"));
+    expect(screen.getByLabelText("选择 conflict.rs")).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "同步选中文件" }));
+    expect(mocks.command).not.toHaveBeenCalledWith("workspace_apply", expect.anything());
+    fireEvent.click(screen.getByRole("button", { name: "确认应用更改" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("workspace_apply", {
+        workspaceId: "w",
+        paths: ["a.rs"],
+        reviewed: [reviewed],
+      }),
+    );
+  });
+  it("宿主拒绝过期审阅时保留错误且不声称已同步", async () => {
+    reviewBackend([reviewed], "审阅后副本已改变，请重新审阅");
+    render(<ChangesView workspaceId="w" />);
+    await screen.findByText("a.rs");
+    fireEvent.click(screen.getByRole("button", { name: /a\.rs$/ }));
+    await screen.findByText("+new text");
+    fireEvent.click(screen.getByRole("button", { name: "同步选中文件" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认应用更改" }));
+    await screen.findByText("审阅后副本已改变，请重新审阅");
+    expect(screen.queryByText("已将选中更改同步到原项目。")).not.toBeInTheDocument();
+    expect(screen.getByText("+new text")).toBeInTheDocument();
+  });
+  it("刷新差异后需要重新确认，保持展开的文件自动重算差异", async () => {
+    reviewBackend([reviewed]);
+    render(<ChangesView workspaceId="w" />);
+    await screen.findByText("a.rs");
+    fireEvent.click(screen.getByRole("button", { name: /a\.rs$/ }));
+    await screen.findByText("+new text");
+    fireEvent.click(screen.getByRole("button", { name: "同步选中文件" }));
+    expect(screen.getByRole("button", { name: "确认应用更改" })).toBeInTheDocument();
+    reviewBackend([{ ...reviewed, afterHash: "updated", afterText: "updated text" }], undefined, {
+      path: "a.rs",
+      unified: "--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n+updated text\n",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "确认应用更改" })).not.toBeInTheDocument(),
+    );
+    await screen.findByText("+updated text");
+    expect(screen.queryByText("+new text")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "同步选中文件" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认应用更改" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("workspace_apply", {
+        workspaceId: "w",
+        paths: ["a.rs"],
+        reviewed: [{ ...reviewed, afterHash: "updated", afterText: "updated text" }],
+      }),
+    );
+  });
+});
+describe("右侧面板", () => {
+  it("顶栏“查看更改”开关面板：默认勾选非冲突文件，展开懒加载行级差异，Escape 关闭", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name: string, args: any) => {
+      if (name === "workspace_diff")
+        return [
+          {
+            path: "a.rs",
+            kind: "modified",
+            conflict: false,
+            beforeHash: "b",
+            afterHash: "a",
+            sourceHash: null,
+            beforeText: "old",
+            afterText: "new",
+          },
+          {
+            path: "conf.rs",
+            kind: "modified",
+            conflict: true,
+            beforeHash: null,
+            afterHash: null,
+            sourceHash: null,
+            beforeText: null,
+            afterText: null,
+          },
+        ];
+      if (name === "workspace_file_diff")
+        return {
+          path: "a.rs",
+          unified: "--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n-new\n+new text\n",
+        };
+      return original(name, args);
+    });
+    await renderOpenA();
+    expect(screen.queryByRole("complementary", { name: "文件面板" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "查看更改" }));
+    const panel = screen.getByRole("complementary", { name: "文件面板" });
+    await within(panel).findByText("a.rs");
+    expect(within(panel).getByLabelText("选择 conf.rs")).toBeDisabled();
+    fireEvent.click(within(panel).getByRole("button", { name: /a\.rs$/ }));
+    await within(panel).findByText("+new text");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("complementary", { name: "文件面板" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "查看更改" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+  });
+  it("write 工具卡的文件按钮切到预览 tab 显示内容", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name: string, args: any) => {
+      if (name === "session_timeline_page")
+        return timeline(args.sessionId, [
+          {
+            id: "w1",
+            sessionId: "a",
+            seq: "1",
+            kind: "tool.result",
+            data: {
+              name: "write",
+              arguments: { path: "src/main.rs" },
+              content: "已写入副本 src/main.rs",
+            },
+            createdAt: "2026-11-07T00:00:00Z",
+          },
+        ]);
+      if (name === "workspace_file_preview")
+        return {
+          path: "src/main.rs",
+          content: "fn main(){}",
+          truncated: false,
+          binary: false,
+          sizeBytes: 11,
+        };
+      return original(name, args);
+    });
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByRole("button", { name: "main.rs" });
+    fireEvent.click(screen.getByRole("button", { name: "main.rs" }));
+    await screen.findByText("fn main(){}");
+    expect(screen.getAllByText("src/main.rs").length).toBe(2);
+    expect(screen.getByRole("tab", { name: "预览" })).toHaveAttribute("aria-selected", "true");
+  });
+  it("edit 工具显示行级差异：调用行收敛，结果卡带统计与 diff 展开", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    const unified = [
+      "--- a/src/config.ts",
+      "+++ b/src/config.ts",
+      "@@ -1,2 +1,3 @@",
+      " const a=1;",
+      "-const b=2;",
+      "+const b=3;",
+      "+const c=4;",
+    ].join("\n");
+    mocks.command.mockImplementation(async (name: string, args: any) =>
+      name === "session_timeline_page"
+        ? timeline(args.sessionId, [
+            {
+              id: "c1",
+              sessionId: "a",
+              seq: "1",
+              kind: "tool.call",
+              data: {
+                id: "c1",
+                name: "edit",
+                arguments: {
+                  path: "src/config.ts",
+                  oldText: "const b=2;",
+                  newText: "const b=3;\nconst c=4;",
+                },
+              },
+              createdAt: "",
+            },
+            {
+              id: "r1",
+              sessionId: "a",
+              seq: "2",
+              kind: "tool.result",
+              data: {
+                callId: "c1",
+                name: "edit",
+                content: "已修改副本 src/config.ts",
+                isError: false,
+                status: "completed",
+                diff: unified,
+                path: "src/config.ts",
+              },
+              createdAt: "",
+            },
+          ])
+        : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    expect((await screen.findAllByText("编辑")).length).toBe(1);
+    expect(screen.getAllByRole("button", { name: "config.ts" })).toHaveLength(1);
+    expect(screen.queryByText("调用中")).not.toBeInTheDocument();
+    expect(screen.getAllByText("src")).toHaveLength(1);
+    expect(screen.getByText("+2")).toBeInTheDocument();
+    expect(screen.getByText("-1")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("已完成"));
+    expect(await screen.findByText("+const b=3;")).toBeVisible();
+    expect(screen.getByText(/"oldText"/, { selector: ".t-sec pre" })).toBeVisible();
+  });
+  it("edit 失败结果无 diff，展开显示错误内容", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name: string, args: any) =>
+      name === "session_timeline_page"
+        ? timeline(args.sessionId, [
+            {
+              id: "r1",
+              sessionId: "a",
+              seq: "1",
+              kind: "tool.result",
+              data: {
+                callId: "c1",
+                name: "edit",
+                content: "待替换文本必须在当前文件中恰好出现一次",
+                isError: true,
+                status: "error",
+                diff: null,
+                path: "src/config.ts",
+              },
+              createdAt: "",
+            },
+          ])
+        : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    expect(await screen.findByText("执行失败")).toBeInTheDocument();
+    expect(screen.queryByText(/^\+\d+$/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("执行失败"));
+    expect(await screen.findByText(/恰好出现一次/)).toBeVisible();
+  });
+  it("write 工具结果显示写入标签与全新增 diff", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name: string, args: any) =>
+      name === "session_timeline_page"
+        ? timeline(args.sessionId, [
+            {
+              id: "r1",
+              sessionId: "a",
+              seq: "1",
+              kind: "tool.result",
+              data: {
+                callId: "c1",
+                name: "write",
+                content: "已写入副本 docs/new.md",
+                isError: false,
+                status: "completed",
+                diff: "--- /dev/null\n+++ b/docs/new.md\n@@ -0,0 +1,1 @@\n+# 标题",
+                path: "docs/new.md",
+              },
+              createdAt: "",
+            },
+          ])
+        : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    expect(await screen.findByText("写入")).toBeInTheDocument();
+    expect(screen.getByText("+1")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("已完成"));
+    expect(await screen.findByText("+# 标题")).toBeVisible();
+  });
+  it("同文件连续编辑合并为一张文件卡，展开按序显示各次 diff", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    const first = [
+      "--- a/src/config.ts",
+      "+++ b/src/config.ts",
+      "@@ -1,2 +1,3 @@",
+      " const a=1;",
+      "-const b=2;",
+      "+const b=3;",
+      "+const c=4;",
+    ].join("\n");
+    const second = [
+      "--- a/src/config.ts",
+      "+++ b/src/config.ts",
+      "@@ -1,3 +1,3 @@",
+      " const a=1;",
+      "-const c=4;",
+      "+const c=5;",
+    ].join("\n");
+    mocks.command.mockImplementation(async (name: string, args: any) =>
+      name === "session_timeline_page"
+        ? timeline(args.sessionId, [
+            {
+              id: "c1",
+              sessionId: "a",
+              seq: "1",
+              kind: "tool.call",
+              data: { id: "c1", name: "edit", arguments: { path: "src/config.ts" } },
+              createdAt: "",
+            },
+            {
+              id: "r1",
+              sessionId: "a",
+              seq: "2",
+              kind: "tool.result",
+              data: {
+                callId: "c1",
+                name: "edit",
+                content: "已修改副本 src/config.ts",
+                isError: false,
+                status: "completed",
+                diff: first,
+                path: "src/config.ts",
+              },
+              createdAt: "",
+            },
+            {
+              id: "c2",
+              sessionId: "a",
+              seq: "3",
+              kind: "tool.call",
+              data: { id: "c2", name: "edit", arguments: { path: "src/config.ts" } },
+              createdAt: "",
+            },
+            {
+              id: "r2",
+              sessionId: "a",
+              seq: "4",
+              kind: "tool.result",
+              data: {
+                callId: "c2",
+                name: "edit",
+                content: "已修改副本 src/config.ts",
+                isError: false,
+                status: "completed",
+                diff: second,
+                path: "src/config.ts",
+              },
+              createdAt: "",
+            },
+          ])
+        : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    expect(await screen.findByText("编辑 ×2")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "config.ts" })).toHaveLength(1);
+    expect(screen.getAllByText("src")).toHaveLength(1);
+    expect(screen.getByText("+3")).toBeInTheDocument();
+    expect(screen.getByText("-2")).toBeInTheDocument();
+    const card = screen.getByText("编辑 ×2").closest("details")!;
+    expect(card).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByText("编辑 ×2"));
+    expect(card).toHaveAttribute("open");
+    expect(screen.getByText("第 1 次编辑")).toBeInTheDocument();
+    expect(screen.getByText("第 2 次编辑")).toBeInTheDocument();
+    expect(screen.getByText("+const b=3;")).toBeInTheDocument();
+    expect(screen.getByText("+const c=5;")).toBeInTheDocument();
+    expect(screen.queryByText(/oldText/)).not.toBeInTheDocument();
+  });
+  it("中间夹其他工具时同文件编辑不合并", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    const diff = [
+      "--- a/src/config.ts",
+      "+++ b/src/config.ts",
+      "@@ -1,1 +1,2 @@",
+      "-old",
+      "+new",
+      "+extra",
+    ].join("\n");
+    mocks.command.mockImplementation(async (name: string, args: any) =>
+      name === "session_timeline_page"
+        ? timeline(args.sessionId, [
+            {
+              id: "c1",
+              sessionId: "a",
+              seq: "1",
+              kind: "tool.call",
+              data: { id: "c1", name: "edit", arguments: { path: "src/config.ts" } },
+              createdAt: "",
+            },
+            {
+              id: "r1",
+              sessionId: "a",
+              seq: "2",
+              kind: "tool.result",
+              data: {
+                callId: "c1",
+                name: "edit",
+                content: "已修改副本",
+                isError: false,
+                status: "completed",
+                diff,
+                path: "src/config.ts",
+              },
+              createdAt: "",
+            },
+            {
+              id: "c2",
+              sessionId: "a",
+              seq: "3",
+              kind: "tool.call",
+              data: { id: "c2", name: "read", arguments: { path: "src/other.ts" } },
+              createdAt: "",
+            },
+            {
+              id: "r2",
+              sessionId: "a",
+              seq: "4",
+              kind: "tool.result",
+              data: {
+                callId: "c2",
+                name: "read",
+                content: "other",
+                isError: false,
+                status: "completed",
+              },
+              createdAt: "",
+            },
+            {
+              id: "c3",
+              sessionId: "a",
+              seq: "5",
+              kind: "tool.call",
+              data: { id: "c3", name: "edit", arguments: { path: "src/config.ts" } },
+              createdAt: "",
+            },
+            {
+              id: "r3",
+              sessionId: "a",
+              seq: "6",
+              kind: "tool.result",
+              data: {
+                callId: "c3",
+                name: "edit",
+                content: "已修改副本",
+                isError: false,
+                status: "completed",
+                diff,
+                path: "src/config.ts",
+              },
+              createdAt: "",
+            },
+          ])
+        : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    expect(await screen.findAllByRole("button", { name: "config.ts" })).toHaveLength(2);
+    expect(screen.queryByText("编辑 ×2")).not.toBeInTheDocument();
+    expect(screen.getAllByText("编辑", { selector: ".t-title" })).toHaveLength(2);
+  });
+  it("合并卡显示部分失败状态并只聚合成功 diff 的增删", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    const diff = [
+      "--- a/src/config.ts",
+      "+++ b/src/config.ts",
+      "@@ -1,1 +1,3 @@",
+      "-old",
+      "+new",
+      "+extra",
+    ].join("\n");
+    mocks.command.mockImplementation(async (name: string, args: any) =>
+      name === "session_timeline_page"
+        ? timeline(args.sessionId, [
+            {
+              id: "c1",
+              sessionId: "a",
+              seq: "1",
+              kind: "tool.call",
+              data: { id: "c1", name: "edit", arguments: { path: "src/config.ts" } },
+              createdAt: "",
+            },
+            {
+              id: "r1",
+              sessionId: "a",
+              seq: "2",
+              kind: "tool.result",
+              data: {
+                callId: "c1",
+                name: "edit",
+                content: "已修改副本",
+                isError: false,
+                status: "completed",
+                diff,
+                path: "src/config.ts",
+              },
+              createdAt: "",
+            },
+            {
+              id: "c2",
+              sessionId: "a",
+              seq: "3",
+              kind: "tool.call",
+              data: { id: "c2", name: "edit", arguments: { path: "src/config.ts" } },
+              createdAt: "",
+            },
+            {
+              id: "r2",
+              sessionId: "a",
+              seq: "4",
+              kind: "tool.result",
+              data: {
+                callId: "c2",
+                name: "edit",
+                content: "替换失败",
+                isError: true,
+                status: "error",
+                diff: null,
+                path: "src/config.ts",
+              },
+              createdAt: "",
+            },
+          ])
+        : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    expect(await screen.findByText("编辑 ×2")).toBeInTheDocument();
+    expect(screen.getByText("部分失败")).toBeInTheDocument();
+    const summary = screen.getByText("编辑 ×2").closest("summary")!;
+    expect(within(summary).getByText("+2")).toBeInTheDocument();
+    expect(within(summary).getByText("-1")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("编辑 ×2"));
+    expect(screen.getByText("第 1 次编辑")).toBeInTheDocument();
+    expect(screen.getByText("第 2 次编辑")).toBeInTheDocument();
+    expect(screen.getAllByText("执行失败")).toHaveLength(1);
+    expect(screen.getByText("替换失败")).toBeInTheDocument();
+  });
+  it("完成回合内的同文件连续编辑同样合并", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    const diff = [
+      "--- a/src/config.ts",
+      "+++ b/src/config.ts",
+      "@@ -1,1 +1,2 @@",
+      "-old",
+      "+new",
+      "+extra",
+    ].join("\n");
+    mocks.command.mockImplementation(async (name: string, args: any) =>
+      name === "session_timeline_page"
+        ? timeline(args.sessionId, [
+            {
+              id: "t1",
+              sessionId: "a",
+              seq: "1",
+              kind: "turn.start",
+              data: { runId: "run" },
+              createdAt: "",
+            },
+            {
+              id: "u1",
+              sessionId: "a",
+              seq: "2",
+              kind: "user.message",
+              data: { content: "改两次" },
+              createdAt: "",
+            },
+            {
+              id: "a1",
+              sessionId: "a",
+              seq: "3",
+              kind: "assistant.message",
+              data: { content: "开始修改" },
+              createdAt: "",
+            },
+            {
+              id: "c1",
+              sessionId: "a",
+              seq: "4",
+              kind: "tool.call",
+              data: { id: "c1", name: "edit", arguments: { path: "src/config.ts" } },
+              createdAt: "",
+            },
+            {
+              id: "r1",
+              sessionId: "a",
+              seq: "5",
+              kind: "tool.result",
+              data: {
+                callId: "c1",
+                name: "edit",
+                content: "已修改副本",
+                isError: false,
+                status: "completed",
+                diff,
+                path: "src/config.ts",
+              },
+              createdAt: "",
+            },
+            {
+              id: "c2",
+              sessionId: "a",
+              seq: "6",
+              kind: "tool.call",
+              data: { id: "c2", name: "edit", arguments: { path: "src/config.ts" } },
+              createdAt: "",
+            },
+            {
+              id: "r2",
+              sessionId: "a",
+              seq: "7",
+              kind: "tool.result",
+              data: {
+                callId: "c2",
+                name: "edit",
+                content: "已修改副本",
+                isError: false,
+                status: "completed",
+                diff,
+                path: "src/config.ts",
+              },
+              createdAt: "",
+            },
+            {
+              id: "a2",
+              sessionId: "a",
+              seq: "8",
+              kind: "assistant.message",
+              data: { content: "修改完成" },
+              createdAt: "",
+            },
+            {
+              id: "t2",
+              sessionId: "a",
+              seq: "9",
+              kind: "turn.end",
+              data: { runId: "run", status: "completed" },
+              createdAt: "",
+            },
+          ])
+        : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    expect(await screen.findByText("编辑 ×2")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "config.ts" })).toHaveLength(1);
+    expect(screen.getByText("+4")).toBeInTheDocument();
+    expect(screen.getByText("-2")).toBeInTheDocument();
+  });
+  it("/diff 斜杠命令打开更改视图", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name: string, args: any) =>
+      name === "workspace_diff" ? [] : original(name, args),
+    );
+    await renderOpenA();
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "/diff" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByText("工作副本没有待同步更改");
+    expect(screen.getByRole("complementary", { name: "文件面板" })).toBeInTheDocument();
+  });
+});
+describe("事件状态", () => {
+  it("重复增量去重，会话隔离，持久化seq按大整数排序", () => {
+    const state = useChat.getState();
+    const delta: LiveEvent = {
+      type: "delta",
+      sessionId: "a",
+      requestId: "r",
+      index: 0,
+      text: "A",
+      reasoning: false,
+    };
+    state.receive(delta);
+    state.receive(delta);
+    state.receive({ ...delta, index: 1, text: "B" });
+    state.receive({ ...delta, sessionId: "b", text: "C" });
+    expect(useChat.getState().streams.a.text).toBe("AB");
+    expect(useChat.getState().streams.b.text).toBe("C");
+    state.replace("a", [
+      event("later", "a", "9007199254740993", "later"),
+      event("first", "a", "9007199254740992", "first"),
+    ]);
+    expect(useChat.getState().events.a.map((e) => e.id)).toEqual(["first", "later"]);
+    state.receive({ type: "durable", event: event("final", "a", "9007199254740994", "AB") });
+    expect(useChat.getState().streams.a).toBeUndefined();
+  });
 });
 
-describe('运行中插话',()=>{
- it('运行中可以发送插话，同时保留停止按钮和原回合',async()=>{
-  let release!:()=>void;
-  mocks.send.mockImplementation(async(_id:string,_text:string,_model:string,receive:(e:LiveEvent)=>void)=>{
-   receive({type:'durable',event:{id:'start-steer',sessionId:'a',seq:'2',kind:'turn.start',data:{runId:'run-1'},createdAt:''}});
-   await new Promise<void>(resolve=>release=resolve);
+const jobEvents: SessionEvent[] = [
+  {
+    id: "s1",
+    sessionId: "a",
+    seq: "1",
+    kind: "job.started",
+    data: { id: "job-1", command: "cargo test --all-features", status: "running" },
+    createdAt: "2026-11-06T01:00:00Z",
+  },
+  {
+    id: "c1",
+    sessionId: "a",
+    seq: "2",
+    kind: "job.cancel_requested",
+    data: { id: "job-1" },
+    createdAt: "2026-11-06T01:01:00Z",
+  },
+  {
+    id: "f1",
+    sessionId: "a",
+    seq: "3",
+    kind: "job.finished",
+    data: { id: "job-1", status: "cancelled", error: "已取消" },
+    createdAt: "2026-11-06T01:01:05Z",
+  },
+  {
+    id: "s2",
+    sessionId: "a",
+    seq: "4",
+    kind: "job.started",
+    data: { id: "job-2", command: "npm run build", status: "running" },
+    createdAt: "2026-11-06T01:02:00Z",
+  },
+  {
+    id: "f2",
+    sessionId: "a",
+    seq: "5",
+    kind: "job.finished",
+    data: {
+      id: "job-2",
+      status: "completed",
+      output: { stdout: "built ok", stderr: "", exit_code: 0 },
+    },
+    createdAt: "2026-11-06T01:03:00Z",
+  },
+  {
+    id: "sc1",
+    sessionId: "a",
+    seq: "6",
+    kind: "schedule.created",
+    data: {
+      id: "sch-1",
+      at: "2099-01-01T00:00:00Z",
+      task: "以后执行",
+      modelId: "missing",
+      status: "pending",
+    },
+    createdAt: "2026-11-06T01:04:00Z",
+  },
+  {
+    id: "sf1",
+    sessionId: "a",
+    seq: "7",
+    kind: "schedule.finished",
+    data: { id: "sch-1", status: "completed" },
+    createdAt: "2026-11-06T01:05:00Z",
+  },
+  {
+    id: "sa1",
+    sessionId: "a",
+    seq: "8",
+    kind: "subagent.created",
+    data: { sessionId: "child-1", source: "a" },
+    createdAt: "2026-11-06T01:06:00Z",
+  },
+  {
+    id: "sm1",
+    sessionId: "a",
+    seq: "9",
+    kind: "subagent.message_sent",
+    data: { sessionId: "child-1", content: "真实子任务" },
+    createdAt: "2026-11-06T01:07:00Z",
+  },
+];
+describe("后台任务可视化", () => {
+  it("消息流渲染后台任务、定时任务与子代理事件卡片", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_timeline_page" ? timeline(args.sessionId, jobEvents) : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByText("npm run build");
+    expect(screen.getAllByText("cargo test --all-features").length).toBeGreaterThan(0);
+    expect(screen.getByText("已取消")).toBeInTheDocument();
+    expect(screen.getByText(/已请求取消后台任务/)).toBeInTheDocument();
+    expect(screen.getByText(/built ok/)).toBeInTheDocument();
+    expect(screen.getByText("已创建子代理")).toBeInTheDocument();
+    expect(screen.getByText("真实子任务")).toBeInTheDocument();
+  });
+  it("渲染定时任务创建卡片与执行状态行，historyOnly 子代理不渲染", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_timeline_page"
+        ? timeline(args.sessionId, [
+            ...jobEvents,
+            {
+              id: "sa2",
+              sessionId: "a",
+              seq: "10",
+              kind: "subagent.created",
+              data: { sessionId: "ghost", source: "a", historyOnly: true },
+              createdAt: "2026-11-06T01:08:00Z",
+            },
+          ])
+        : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByText("以后执行");
+    expect(screen.getByText("2099-01-01T00:00:00Z")).toBeInTheDocument();
+    expect(screen.getByText(/定时任务 sch-1：已完成/)).toBeInTheDocument();
+    expect(screen.queryByText("ghost")).not.toBeInTheDocument();
+  });
+  it("顶栏按钮统计未终结的后台任务并以浮层开关面板", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_timeline_page")
+        return timeline(
+          args.sessionId,
+          jobEvents.filter((e) => ["s1", "f1", "s2"].includes(e.id)),
+        );
+      if (name === "job_list") return [];
+      if (name === "schedule_list") return [];
+      return original(name, args);
+    });
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByText("npm run build");
+    const button = screen.getByRole("button", { name: /^后台任务/ });
+    expect(button).toHaveTextContent("1");
+    fireEvent.click(button);
+    const panel = await screen.findByRole("region", { name: "后台任务" });
+    expect(button).toHaveAttribute("aria-expanded", "true");
+    expect(mocks.command).toHaveBeenCalledWith("job_list", { sessionId: "a" });
+    fireEvent.click(button);
+    expect(panel).not.toBeInTheDocument();
+    expect(button).toHaveAttribute("aria-expanded", "false");
+  });
+  it("输入框终端图标位于子代理左侧，弹出浮层展示运行中任务与时长并可取消", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_timeline_page")
+        return timeline(
+          args.sessionId,
+          jobEvents.filter((e) => ["s2"].includes(e.id)),
+        );
+      if (name === "job_list")
+        return [
+          {
+            id: "job-9",
+            command: "Start-Sleep -Seconds 60",
+            status: "running",
+            cancelRequested: false,
+            output: null,
+            error: null,
+            createdAt: new Date().toISOString(),
+          },
+        ];
+      if (name === "schedule_list") return [];
+      if (name === "job_cancel") return {};
+      return original(name, args);
+    });
+    render(<App />);
+    // 草稿态未建会话：不渲染入口。
+    expect(screen.queryByRole("button", { name: "运行中后台任务" })).not.toBeInTheDocument();
+    await openSidebarSession(/会话 A/);
+    await screen.findByText("npm run build");
+    const composerBottom = document.querySelector(".composer-bottom")!;
+    const icon = screen.getByRole("button", { name: "运行中后台任务" });
+    const subagent = screen.getByRole("button", { name: "子代理" });
+    expect(composerBottom.contains(icon)).toBe(true);
+    // DOM 顺序在子代理按钮之前（子代理左侧）。
+    expect(icon.compareDocumentPosition(subagent) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(icon).toHaveTextContent("1");
+    fireEvent.click(icon);
+    const panel = await screen.findByRole("region", { name: "运行中后台任务" });
+    expect(panel).toHaveTextContent("Start-Sleep -Seconds 60");
+    expect(screen.getByLabelText("已运行时长").textContent).toMatch(/^\d{2}:\d{2}$/);
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("job_cancel", { sessionId: "a", jobId: "job-9" }),
+    );
+    fireEvent.click(icon);
+    expect(panel).not.toBeInTheDocument();
+  });
+});
+
+const terminalEvents: SessionEvent[] = [
+  {
+    id: "t1",
+    sessionId: "a",
+    seq: "1",
+    kind: "terminal.opened",
+    data: { id: "term-1", shell: "pwsh", status: "running" },
+    createdAt: "2026-11-06T02:00:00Z",
+  },
+  {
+    id: "t2",
+    sessionId: "a",
+    seq: "2",
+    kind: "terminal.closed",
+    data: { id: "term-1", status: "exited", exitCode: 0, outputBlobHash: "blob-hash-1" },
+    createdAt: "2026-11-06T02:01:00Z",
+  },
+  {
+    id: "t3",
+    sessionId: "a",
+    seq: "3",
+    kind: "terminal.closed",
+    data: { id: "term-2", status: "interrupted", error: "应用中断，未重放终端副作用" },
+    createdAt: "2026-11-06T02:02:00Z",
+  },
+];
+describe("终端事件可视化", () => {
+  it("消息流渲染终端打开与关闭卡片", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_timeline_page"
+        ? timeline(args.sessionId, terminalEvents)
+        : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByText(/已打开交互式终端 term-1/);
+    expect(screen.getByText(/交互式终端已结束 term-1/)).toBeInTheDocument();
+    expect(screen.getByText("已退出")).toBeInTheDocument();
+    expect(screen.getByText("已中断")).toBeInTheDocument();
+    expect(screen.getByText(/blob-hash-1/)).toBeInTheDocument();
+  });
+});
+
+describe("启动默认恢复上次项目", () => {
+  const twoWorkspaces = [
+    { id: "w", sourcePath: "D:/A", replicaPath: "D:/copy-a", createdAt: "", name: "A" },
+    { id: "w2", sourcePath: "D:/B", replicaPath: "D:/copy-b", createdAt: "", name: "B" },
+  ];
+  it("启动恢复上次打开的项目，而不是最早创建的项目", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list") return twoWorkspaces;
+      if (name === "default_selection_get")
+        return { modelId: "m", effort: "high", workspaceId: "w2" };
+      if (name === "session_list")
+        return [
+          { id: "a", workspaceId: "w", title: "会话 A" },
+          { id: "b1", workspaceId: "w2", title: "B 的会话" },
+        ];
+      return original(name, args);
+    });
+    render(<App />);
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_list", {
+        workspaceId: "w2",
+        allWorkspaces: true,
+      }),
+    );
+    // 草稿态占位符标明落点项目为 B（而非列表首位的 A）
+    await screen.findByPlaceholderText(/发送后将在 B 创建会话/);
+  });
+  it("上次项目已被移除（隐藏）时回退到列表第一个项目", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list")
+        return [
+          ...twoWorkspaces,
+          {
+            id: "gone",
+            sourcePath: "D:/gone",
+            replicaPath: "D:/copy-g",
+            createdAt: "",
+            name: "已移除",
+            hidden: true,
+          },
+        ];
+      if (name === "default_selection_get")
+        return { modelId: "m", effort: "high", workspaceId: "gone" };
+      if (name === "session_list") return [{ id: "a", workspaceId: "w", title: "会话 A" }];
+      return original(name, args);
+    });
+    render(<App />);
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_list", {
+        workspaceId: "w",
+        allWorkspaces: true,
+      }),
+    );
+    await screen.findByPlaceholderText(/发送后将在 A 创建会话/);
+  });
+  it("切换项目后将 workspaceId 写回默认选择", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list") return twoWorkspaces;
+      if (name === "session_list")
+        return [
+          { id: "a", workspaceId: "w", title: "会话 A" },
+          { id: "b1", workspaceId: "w2", title: "B 的会话" },
+        ];
+      return original(name, args);
+    });
+    render(<App />);
+    await screen.findByRole("button", { name: /会话 A/ });
+    // 跨项目打开侧栏会话：先切工作区再经 pendingJump 跳转
+    fireEvent.click(screen.getByRole("button", { name: /B 的会话/ }));
+    await screen.findByText("内容 b1");
+    expect(mocks.command).toHaveBeenCalledWith("session_list", {
+      workspaceId: "w2",
+      allWorkspaces: true,
+    });
+    expect(mocks.command).toHaveBeenCalledWith("default_selection_save", {
+      selection: { modelId: "m", effort: "high", workspaceId: "w2" },
+    });
+  });
+});
+
+describe("工作区的首次会话", () => {
+  it("启动默认不打开历史会话，直接进入新会话草稿态", async () => {
+    render(<App />);
+    await screen.findByRole("button", { name: /会话 A/ });
+    expect(screen.queryByText("内容 a")).not.toBeInTheDocument();
+    expect(mocks.command.mock.calls.some(([name]) => name === "session_timeline_page")).toBe(false);
+    expect(screen.getByText("新会话")).toBeInTheDocument();
+    expect(screen.getByLabelText("消息")).toBeEnabled();
+  });
+  it("启动草稿态点击侧栏会话可打开历史会话", async () => {
+    render(<App />);
+    await openSessionA();
+    expect(mocks.command).toHaveBeenCalledWith("session_timeline_page", { sessionId: "a" });
+  });
+  it("选择没有会话的新工作区后进入草稿态，发送首条消息时创建会话", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list") return [];
+      if (name === "workspace_open")
+        return {
+          id: "fresh",
+          sourcePath: "D:/fresh",
+          replicaPath: "D:/copy-fresh",
+          createdAt: "",
+          name: "fresh",
+          pinned: false,
+          executionMode: "direct",
+        };
+      if (name === "session_list") return [];
+      if (name === "session_create") return { id: "first", workspaceId: "fresh", title: "新会话" };
+      if (name === "session_timeline_page") return timeline(args.sessionId, []);
+      return original(name, args);
+    });
+    vi.mocked(open).mockResolvedValueOnce("D:/fresh");
+    render(<App />);
+    await screen.findByLabelText("当前模型");
+    // 无工作区进入无项目草稿态：打开工作区入口在侧栏空态，欢迎页不再提供该按钮
+    const nav = screen.getByText("打开工作区后，会话将保存在本机。").closest("nav")!;
+    fireEvent.click(within(nav).getByRole("button", { name: /打开工作区/ }));
+    // 命名弹窗预填目录名，确认后携带名称创建
+    const dialog = await screen.findByRole("dialog", { name: "打开工作区" });
+    expect(screen.getByLabelText("项目名称")).toHaveValue("fresh");
+    fireEvent.click(within(dialog).getByRole("button", { name: "创建" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("workspace_open", {
+        path: "D:/fresh",
+        name: "fresh",
+        executionMode: "direct",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_list", {
+        workspaceId: "fresh",
+        allWorkspaces: true,
+      }),
+    );
+    // 创建后进入草稿态：不自动创建会话，欢迎语带项目名，可直接输入
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: /你想在 fresh 中构建什么/ })).toBeInTheDocument(),
+    );
+    expect(mocks.command.mock.calls.filter(([name]) => name === "session_create")).toHaveLength(0);
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "梳理项目结构" } });
+    expect(input).toHaveValue("梳理项目结构");
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_create", {
+        workspaceId: "fresh",
+        title: "新会话",
+        executionMode: "direct",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.send).toHaveBeenCalledWith(
+        "first",
+        "梳理项目结构",
+        "m",
+        expect.any(Function),
+        undefined,
+        "high",
+      ),
+    );
+  });
+  it("启动时无会话的工作区进入草稿态，发送首条消息时才创建", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_list") return [];
+      if (name === "session_create") return { id: "restored", workspaceId: "w", title: "新会话" };
+      if (name === "session_timeline_page") return timeline(args.sessionId, []);
+      return original(name, args);
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: /你想在 project 中构建什么/ });
+    expect(mocks.command.mock.calls.filter(([name]) => name === "session_create")).toHaveLength(0);
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "开始干活" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_create", {
+        workspaceId: "w",
+        title: "新会话",
+        executionMode: "replica",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.send).toHaveBeenCalledWith(
+        "restored",
+        "开始干活",
+        "m",
+        expect.any(Function),
+        undefined,
+        "high",
+      ),
+    );
+  });
+  it("草稿首条发送后首轮执行期间，新建聊天按钮与输入框恢复可用", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_list") return [];
+      if (name === "session_create") return { id: "restored", workspaceId: "w", title: "新会话" };
+      if (name === "session_timeline_page") return timeline(args.sessionId, []);
+      return original(name, args);
+    });
+    // 首轮 turn 挂起不返回，模拟执行中的长回合
+    mocks.send.mockReturnValue(new Promise(() => {}));
+    render(<App />);
+    await screen.findByRole("heading", { name: /你想在 project 中构建什么/ });
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "开始干活" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.send).toHaveBeenCalledWith(
+        "restored",
+        "开始干活",
+        "m",
+        expect.any(Function),
+        undefined,
+        "high",
+      ),
+    );
+    // 会话已创建、首轮执行中：创建态解除，与既有会话发消息行为一致
+    await waitFor(() => expect(screen.getByRole("button", { name: "新建聊天" })).toBeEnabled());
+    expect(screen.getByLabelText("消息")).toBeEnabled();
+    expect(screen.getByLabelText("消息")).not.toHaveAttribute("placeholder", "正在准备会话…");
+    expect(screen.getByRole("button", { name: "取消生成" })).toBeInTheDocument();
+  });
+  it("草稿态发送时创建会话失败会显示错误，再次发送可重试", async () => {
+    let fail = true;
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_list") return [];
+      if (name === "session_create") {
+        if (fail) throw new Error("创建会话失败");
+        return { id: "retry", workspaceId: "w", title: "新会话" };
+      }
+      if (name === "session_timeline_page") return timeline(args.sessionId, []);
+      return original(name, args);
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: /你想在 project 中构建什么/ });
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "第一次" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await screen.findByText("创建会话失败");
+    fail = false;
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "第二次" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.send).toHaveBeenCalledWith(
+        "retry",
+        "第二次",
+        "m",
+        expect.any(Function),
+        undefined,
+        "high",
+      ),
+    );
+  });
+  it("草稿态欢迎语带项目名，chip 菜单可搜索过滤项目", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list")
+        return [
+          {
+            id: "w",
+            sourcePath: "D:/A",
+            replicaPath: "D:/ca",
+            createdAt: "",
+            name: "project",
+            pinned: false,
+          },
+          {
+            id: "other",
+            sourcePath: "D:/B",
+            replicaPath: "D:/cb",
+            createdAt: "",
+            name: "其他项目",
+            pinned: false,
+          },
+        ];
+      if (name === "session_list")
+        return [
+          {
+            id: "a",
+            workspaceId: "w",
+            title: "会话 A",
+            createdAt: "",
+            updatedAt: new Date().toISOString(),
+            parentId: null,
+          },
+        ];
+      return original(name, args);
+    });
+    await renderOpenA();
+    fireEvent.click(screen.getByRole("button", { name: "新建聊天" }));
+    expect(screen.getByRole("heading", { name: /你想在 project 中构建什么/ })).toBeInTheDocument();
+    const menu = screen.getByRole("menu", { name: "选择项目" });
+    expect(within(menu).getByRole("menuitem", { name: /其他项目/ })).toBeInTheDocument();
+    fireEvent.change(within(menu).getByLabelText("搜索项目"), { target: { value: "其他" } });
+    expect(within(menu).getByRole("menuitem", { name: /其他项目/ })).toBeInTheDocument();
+    expect(within(menu).queryByRole("menuitem", { name: /project/ })).not.toBeInTheDocument();
+    fireEvent.change(within(menu).getByLabelText("搜索项目"), { target: { value: "zzz" } });
+    expect(screen.getByText("没有匹配的项目")).toBeInTheDocument();
+  });
+  it("草稿态切换项目后发送在目标项目创建会话并切换工作区", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list")
+        return [
+          {
+            id: "w",
+            sourcePath: "D:/A",
+            replicaPath: "D:/ca",
+            createdAt: "",
+            name: "project",
+            pinned: false,
+          },
+          {
+            id: "other",
+            sourcePath: "D:/B",
+            replicaPath: "D:/cb",
+            createdAt: "",
+            name: "other-pj",
+            pinned: false,
+          },
+        ];
+      if (name === "session_list")
+        return [
+          {
+            id: "a",
+            workspaceId: "w",
+            title: "会话 A",
+            createdAt: "",
+            updatedAt: new Date().toISOString(),
+            parentId: null,
+          },
+        ];
+      if (name === "session_create")
+        return { id: "in-other", workspaceId: "other", title: "新会话" };
+      if (name === "session_timeline_page") return timeline(args.sessionId, []);
+      return original(name, args);
+    });
+    render(<App />);
+    await screen.findByLabelText("当前模型");
+    fireEvent.click(screen.getByRole("button", { name: "新建聊天" }));
+    const menu = screen.getByRole("menu", { name: "选择项目" });
+    fireEvent.click(within(menu).getByRole("menuitem", { name: /other-pj/ }));
+    expect(screen.getByRole("heading", { name: /你想在 other-pj 中构建什么/ })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "在别的项目开始" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_create", {
+        workspaceId: "other",
+        title: "新会话",
+        executionMode: "replica",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.send).toHaveBeenCalledWith(
+        "in-other",
+        "在别的项目开始",
+        "m",
+        expect.any(Function),
+        undefined,
+        "high",
+      ),
+    );
+    await waitFor(() => expect(screen.getAllByText("other-pj").length).toBeGreaterThanOrEqual(1));
+  });
+  it("草稿态菜单的新建项目入口走目录选择与命名弹窗", async () => {
+    vi.mocked(open).mockResolvedValueOnce("D:/newdir");
+    await renderOpenA();
+    fireEvent.click(screen.getByRole("button", { name: "新建聊天" }));
+    const menu = screen.getByRole("menu", { name: "选择项目" });
+    fireEvent.click(within(menu).getByRole("menuitem", { name: /新建项目/ }));
+    const dialog = await screen.findByRole("dialog", { name: "打开工作区" });
+    expect(screen.getByLabelText("项目名称")).toHaveValue("newdir");
+  });
+  it("草稿首会话的迟到响应不能覆盖已切换到的会话，会话行仍并入侧栏", async () => {
+    let resolveCreation!: (value: unknown) => void;
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list")
+        return [
+          { id: "w", sourcePath: "D:/A", name: "A" },
+          { id: "other", sourcePath: "D:/B", name: "B" },
+        ];
+      if (name === "session_list")
+        return [{ id: "other-session", workspaceId: "other", title: "B 的会话" }];
+      if (name === "session_create")
+        return new Promise((resolve) => {
+          resolveCreation = resolve;
+        });
+      return original(name, args);
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: /你想在 A 中构建什么/ });
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "首个任务" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_create", {
+        workspaceId: "w",
+        title: "新会话",
+        executionMode: "replica",
+      }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /B 的会话/ }));
+    await screen.findByText("内容 other-session");
+    await act(async () => resolveCreation({ id: "late", workspaceId: "w", title: "A 迟到的会话" }));
+    expect(screen.getByText("A 迟到的会话")).toBeInTheDocument();
+    expect(screen.getByLabelText("消息")).toBeEnabled();
+    expect(screen.getByText("内容 other-session")).toBeInTheDocument();
+  });
+  it("组头新建挂起期间重复点击复用同一创建请求", async () => {
+    let resolveCreation!: (value: unknown) => void;
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list")
+        return [
+          { id: "other", sourcePath: "D:/B", name: "B" },
+          { id: "w", sourcePath: "D:/A", name: "A" },
+        ];
+      if (name === "session_list") return [{ id: "b1", workspaceId: "other", title: "B 的旧会话" }];
+      if (name === "session_create")
+        return new Promise((resolve) => {
+          resolveCreation = resolve;
+        });
+      return original(name, args);
+    });
+    localStorage.clear();
+    render(<App />);
+    await screen.findByText("B 的旧会话");
+    fireEvent.click(screen.getByRole("switch", { name: "切换视图：项目 / 最近" }));
+    fireEvent.click(screen.getByRole("button", { name: "在 B 新建聊天" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_create", {
+        workspaceId: "other",
+        title: "新会话",
+        executionMode: "replica",
+      }),
+    );
+    // 挂起期间重复点击：复用同一创建请求，不重复调 session_create
+    fireEvent.click(screen.getByRole("button", { name: "在 B 新建聊天" }));
+    await act(async () => resolveCreation({ id: "b2", workspaceId: "other", title: "B 的新会话" }));
+    expect(mocks.command.mock.calls.filter(([name]) => name === "session_create")).toHaveLength(1);
+    await waitFor(() => expect(screen.getAllByText("B 的新会话").length).toBeGreaterThanOrEqual(1));
+  });
+});
+
+describe("附件与完整输出", () => {
+  const attachment = { hash: "a".repeat(64), name: "说明.txt", mediaType: "text/plain", size: 12 };
+  it("通过加号菜单选择附件后只将宿主返回的hash随消息发送", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "artifact_import" ? attachment : original(name, args),
+    );
+    vi.mocked(open).mockResolvedValueOnce("C:/private/说明.txt");
+    await renderOpenA();
+    fireEvent.click(screen.getByRole("button", { name: "添加内容" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^附件/ }));
+    await screen.findByText("说明.txt");
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "读取附件" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.send).toHaveBeenCalledWith(
+        "a",
+        "读取附件",
+        "m",
+        expect.any(Function),
+        [attachment.hash],
+        "high",
+      ),
+    );
+    expect(mocks.command).toHaveBeenCalledWith("artifact_import", {
+      sessionId: "a",
+      path: "C:/private/说明.txt",
+    });
+  });
+  it("导入期间禁止发送，切换会话后丢弃迟到的附件", async () => {
+    let finish!: (value: unknown) => void;
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "artifact_import"
+        ? new Promise((resolve) => (finish = resolve))
+        : original(name, args),
+    );
+    vi.mocked(open).mockResolvedValueOnce("C:/private/说明.txt");
+    await renderOpenA();
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "任务" } });
+    fireEvent.click(screen.getByRole("button", { name: "添加内容" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^附件/ }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("artifact_import", expect.anything()),
+    );
+    expect(screen.getByRole("button", { name: "发送消息" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /会话 B/ }));
+    await screen.findByText("内容 b");
+    await act(async () => finish(attachment));
+    expect(screen.queryByText("说明.txt")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "无附件" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.send).toHaveBeenCalledWith(
+        "b",
+        "无附件",
+        "m",
+        expect.any(Function),
+        undefined,
+        "high",
+      ),
+    );
+  });
+  it("附件和大输出卡片通过保存对话框导出真实完整内容", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_timeline_page"
+        ? timeline(args.sessionId, [
+            {
+              id: "attached",
+              sessionId: "a",
+              seq: "1",
+              kind: "user.message",
+              data: { content: "查看", attachments: [attachment] },
+              createdAt: "",
+            },
+            {
+              id: "output",
+              sessionId: "a",
+              seq: "2",
+              kind: "tool.result",
+              data: {
+                name: "read",
+                content: "预览",
+                artifact: { ...attachment, name: "完整输出.txt" },
+              },
+              createdAt: "",
+            },
+          ])
+        : original(name, args),
+    );
+    vi.mocked(save).mockResolvedValueOnce("C:/saved/output.txt");
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByRole("button", { name: "下载 完整输出.txt" });
+    fireEvent.click(screen.getByRole("button", { name: "下载 完整输出.txt" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("artifact_save", {
+        sessionId: "a",
+        hash: attachment.hash,
+        path: "C:/saved/output.txt",
+      }),
+    );
+    expect(screen.getByRole("button", { name: "下载 说明.txt" })).toBeInTheDocument();
+  });
+});
+
+describe("子代理与任务状态可视化", () => {
+  it("子代理事件渲染卡片并跳转子会话；列表隐藏子代理，由输入框下方面板承载", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_list")
+        return [
+          { id: "a", workspaceId: "w", title: "父会话" },
+          { id: "child", workspaceId: "w", title: "依赖梳理子任务", parentId: "a" },
+        ];
+      if (name === "session_active_list") return ["child"];
+      if (name === "session_timeline_page")
+        return timeline(
+          args.sessionId,
+          args.sessionId === "a"
+            ? [
+                {
+                  id: "s1",
+                  sessionId: "a",
+                  seq: "1",
+                  kind: "subagent.created",
+                  data: { sessionId: "child" },
+                  createdAt: "",
+                },
+                {
+                  id: "s2",
+                  sessionId: "a",
+                  seq: "2",
+                  kind: "subagent.message_sent",
+                  data: { sessionId: "child", content: "梳理依赖" },
+                  createdAt: "",
+                },
+              ]
+            : [event(`e-${args.sessionId}`, args.sessionId, "1", `内容 ${args.sessionId}`)],
+        );
+      return original(name, args);
+    });
+    render(<App />);
+    await openSidebarSession(/父会话/);
+    await screen.findByText("已创建子代理");
+    expect(screen.getByText("已向子代理投递任务")).toBeInTheDocument();
+    expect(screen.getByText("梳理依赖")).toBeInTheDocument();
+    expect(screen.getAllByLabelText("子代理运行中").length).toBeGreaterThan(0);
+    // 列表不再显示子代理会话（无「子任务」徽标、无子代理行）；入口收敛到输入框下方的 Bot 图标。
+    expect(screen.queryByText("子任务")).not.toBeInTheDocument();
+    expect(screen.queryByText("依赖梳理子任务")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "子代理" }));
+    await screen.findByText("依赖梳理子任务");
+    expect(screen.getAllByLabelText("子代理运行中").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "停止子代理" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_cancel", { sessionId: "child" }),
+    );
+    fireEvent.click(screen.getAllByRole("button", { name: "查看会话" })[0]);
+    await screen.findByText("内容 child");
+  });
+  it("fork 副本中的历史派生记录不提供跳转", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_timeline_page"
+        ? timeline(args.sessionId, [
+            {
+              id: "s1",
+              sessionId: "a",
+              seq: "1",
+              kind: "subagent.created",
+              data: { sessionId: "child", historyOnly: true },
+              createdAt: "",
+            },
+          ])
+        : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByText("历史派生记录，原父子关系属于源会话。");
+    expect(screen.queryByRole("button", { name: "查看会话" })).not.toBeInTheDocument();
+  });
+  it("todo与plan状态事件渲染为zcode卡片，查看完整计划打开右侧抽屉", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name: string, args: any) => {
+      if (name === "session_timeline_page")
+        return timeline(args.sessionId, [
+          {
+            id: "t1",
+            sessionId: "a",
+            seq: "1",
+            kind: "todo.state",
+            data: { items: [{ text: "已完成项", done: true }, { text: "待办项" }] },
+            createdAt: "",
+          },
+          {
+            id: "p1",
+            sessionId: "a",
+            seq: "2",
+            kind: "plan.state",
+            data: { content: "## 分三步走" },
+            createdAt: "",
+          },
+        ]);
+      if (name === "plan_overview")
+        return [
+          {
+            sessionId: "a",
+            sessionTitle: "会话 A",
+            workspaceId: "w",
+            kind: "plan.state",
+            data: { content: "完整计划" },
+            updatedAt: "",
+          },
+        ];
+      return original(name, args);
+    });
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByText("待办清单");
+    // 历史回放的待办卡默认收起；折叠头含当前项与完成进度
+    const todoCard = document.querySelector("details.zc-card") as HTMLDetailsElement;
+    expect(todoCard).not.toBeNull();
+    expect(todoCard.open).toBe(false);
+    expect(todoCard.querySelector("summary")?.textContent).toContain("1/2");
+    fireEvent.click(todoCard.querySelector("summary")!);
+    expect(todoCard.querySelector(".zc-row.done")?.textContent).toContain("已完成项");
+    expect(todoCard.querySelector(".zc-row.current")?.textContent).toContain("待办项");
+    // 计划卡：白卡 + Markdown 预览 + 复制 + 悬浮「查看完整计划」
+    const planCard = document.querySelector(".zc-plan") as HTMLElement;
+    expect(planCard).not.toBeNull();
+    expect(within(planCard).getByText("计划")).toBeInTheDocument();
+    expect(
+      within(planCard).getByRole("heading", { name: "分三步走", level: 2 }),
+    ).toBeInTheDocument();
+    expect(within(planCard).getByRole("button", { name: "复制计划" })).toBeInTheDocument();
+    // 历史回放不自动弹抽屉；点击「查看完整计划」打开右侧计划视图并加载数据
+    expect(useSidePanel.getState().open).toBe(false);
+    fireEvent.click(within(planCard).getByRole("button", { name: /查看完整计划/ }));
+    const drawer = await screen.findByRole("complementary", { name: "文件面板" });
+    expect(within(drawer).getByRole("tab", { name: "计划" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(useSidePanel.getState()).toMatchObject({ open: true, view: "plans" });
+    expect(await within(drawer).findByText("完整计划")).toBeInTheDocument();
+  });
+  it("实时写入计划后自动打开右侧计划抽屉并刷新面板数据", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    let planOverviewCalls = 0;
+    mocks.command.mockImplementation(async (name: string, args: any) => {
+      if (name === "plan_overview") {
+        planOverviewCalls++;
+        return planOverviewCalls === 1
+          ? []
+          : [
+              {
+                sessionId: "a",
+                sessionTitle: "会话 A",
+                workspaceId: "w",
+                kind: "plan.state",
+                data: { content: "实时计划" },
+                updatedAt: "",
+              },
+            ];
+      }
+      return original(name, args);
+    });
+    mocks.send.mockImplementation(
+      async (_id: string, _text: string, _model: string, onEvent: (e: LiveEvent) => void) => {
+        onEvent({
+          type: "durable",
+          event: {
+            id: "lp1",
+            sessionId: "a",
+            seq: "2",
+            kind: "plan.state",
+            data: { content: "实时计划" },
+            createdAt: "",
+          },
+        });
+      },
+    );
+    await renderOpenA();
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "写个计划" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    // plan_write 实时事件 → 右侧抽屉自动弹出「计划」视图
+    await waitFor(() =>
+      expect(useSidePanel.getState()).toMatchObject({ open: true, view: "plans" }),
+    );
+    const drawer = await screen.findByRole("complementary", { name: "文件面板" });
+    expect(await within(drawer).findByText("实时计划")).toBeInTheDocument();
+  });
+});
+describe("计划与目标面板", () => {
+  it("侧边栏入口打开面板并跨会话汇总，可跳转同工作区会话", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "plan_overview"
+        ? [
+            {
+              sessionId: "a",
+              sessionTitle: "会话 A",
+              workspaceId: "w",
+              kind: "todo.state",
+              data: { items: [{ text: "修复登录", done: true }, { text: "补充测试" }] },
+              updatedAt: "2026-11-06T10:00:00Z",
+            },
+            {
+              sessionId: "a",
+              sessionTitle: "会话 A",
+              workspaceId: "w",
+              kind: "plan.state",
+              data: { content: "## 先写测试" },
+              updatedAt: "2026-11-06T09:00:00Z",
+            },
+          ]
+        : original(name, args),
+    );
+    const { container } = await renderOpenA();
+    fireEvent.click(screen.getByRole("button", { name: "计划与目标" }));
+    const dialog = await screen.findByRole("complementary", { name: "文件面板" });
+    expect(await within(dialog).findByText("会话 A")).toBeInTheDocument();
+    expect(within(dialog).getByRole("tab", { name: "计划" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.queryByRole("dialog", { name: "计划与目标" })).not.toBeInTheDocument();
+    expect(container.querySelector(".todo-list li.done")?.textContent).toContain("修复登录");
+    expect(container.querySelector(".todo-list li:not(.done)")?.textContent).toContain("补充测试");
+    expect(within(dialog).getByRole("heading", { name: "先写测试", level: 2 })).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "当前会话" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("complementary", { name: "文件面板" })).not.toBeInTheDocument(),
+    );
+  });
+});
+describe("计划抽屉跨工作区", () => {
+  it("跳转同工作区的其他会话后关闭抽屉", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "plan_overview"
+        ? [
+            {
+              sessionId: "b",
+              sessionTitle: "B 的计划",
+              workspaceId: "w",
+              kind: "plan.state",
+              data: { content: "计划" },
+              updatedAt: "",
+            },
+          ]
+        : original(name, args),
+    );
+    await renderOpenA();
+    fireEvent.click(screen.getByRole("button", { name: "计划与目标" }));
+    const panel = screen.getByRole("complementary", { name: "文件面板" });
+    await within(panel).findByText("B 的计划");
+    fireEvent.click(within(panel).getByRole("button", { name: "查看会话" }));
+    await screen.findByText("内容 b");
+    expect(screen.queryByRole("complementary", { name: "文件面板" })).not.toBeInTheDocument();
+  });
+  it("跨工作区跳转等待目标列表并重置抽屉", async () => {
+    let resolveList!: (value: unknown) => void;
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list")
+        return [
+          { id: "w", name: "A" },
+          { id: "other", name: "B" },
+        ];
+      if (name === "session_list" && args.workspaceId === "other")
+        return new Promise((resolve) => {
+          resolveList = resolve;
+        });
+      if (name === "session_list")
+        return [
+          { id: "a", workspaceId: "w", title: "会话 A" },
+          { id: "other-session", workspaceId: "other", title: "跨区会话" },
+        ];
+      if (name === "plan_overview")
+        return [
+          {
+            sessionId: "other-session",
+            sessionTitle: "跨区计划",
+            workspaceId: "other",
+            kind: "plan.state",
+            data: { content: "跨区内容" },
+            updatedAt: "",
+          },
+        ];
+      return original(name, args);
+    });
+    await renderOpenA();
+    fireEvent.click(screen.getByRole("button", { name: "计划与目标" }));
+    const panel = screen.getByRole("complementary", { name: "文件面板" });
+    await within(panel).findByText("跨区计划");
+    fireEvent.click(within(panel).getByRole("button", { name: "查看会话" }));
+    await waitFor(() => expect(resolveList).toBeTypeOf("function"));
+    expect(useSidePanel.getState()).toMatchObject({
+      open: false,
+      view: "changes",
+      previewPath: null,
+      webUrl: null,
+    });
+    await act(async () =>
+      resolveList([
+        { id: "a", workspaceId: "w", title: "会话 A" },
+        { id: "other-session", workspaceId: "other", title: "跨区会话" },
+      ]),
+    );
+    await screen.findByText("内容 other-session");
+  });
+  it("没有工作区也能打开全局计划抽屉", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "workspace_list" ? [] : name === "plan_overview" ? [] : original(name, args),
+    );
+    render(<App />);
+    await waitFor(() => expect(mocks.command).toHaveBeenCalledWith("workspace_list"));
+    fireEvent.click(screen.getByRole("button", { name: "计划与目标" }));
+    const panel = screen.getByRole("complementary", { name: "文件面板" });
+    expect(await within(panel).findByText("还没有任何计划或目标")).toBeInTheDocument();
+    expect(within(panel).getByRole("tab", { name: "计划" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(within(panel).getByRole("tab", { name: "更改" })).toBeDisabled();
+    expect(within(panel).getByRole("tab", { name: "预览" })).toBeDisabled();
+  });
+});
+describe("模型选择", () => {
+  const builtinCatalog = [
+    {
+      id: "deepseek",
+      name: "DeepSeek",
+      builtin: true,
+      compatibility: "deepSeek",
+      endpoints: [{ apiMode: "anthropic", baseUrl: "https://api.deepseek.com/anthropic" }],
+      defaultModel: "deepseek-flash",
+      credentialRef: "",
+      proxy: null,
+      enabled: true,
+      builtinModels: [
+        { id: "deepseek-flash", name: "DeepSeek Flash", efforts: ["disabled", "enabled"] },
+      ],
+      disabledModels: [],
+    },
+    {
+      id: "bigmodel",
+      name: "智谱 Coding Plan",
+      builtin: true,
+      compatibility: "bigModel",
+      endpoints: [{ apiMode: "anthropic", baseUrl: "https://open.bigmodel.cn/api/anthropic" }],
+      defaultModel: "glm-5.3",
+      credentialRef: "",
+      proxy: null,
+      enabled: true,
+      builtinModels: [{ id: "glm-5.3", name: "GLM-5.3", efforts: ["low", "high", "max"] }],
+      disabledModels: ["glm-5.3"],
+    },
+  ];
+  const models = [
+    {
+      id: "builtin:deepseek:deepseek-flash",
+      name: "DeepSeek Flash",
+      compatibility: "deepSeek",
+      providerId: "deepseek",
+      apiMode: "anthropic",
+      maxOutputTokens: null,
+      baseUrl: "https://api.deepseek.com/anthropic",
+      model: "deepseek-flash",
+      credentialRef: "",
+      proxy: null,
+      efforts: ["disabled", "enabled"],
+      effort: null,
+      enabled: true,
+      builtin: true,
+    },
+    {
+      id: "custom",
+      name: "自定义 GLM",
+      compatibility: "bigModel",
+      providerId: "bigmodel",
+      apiMode: "anthropic",
+      maxOutputTokens: null,
+      baseUrl: "https://open.bigmodel.cn/api/anthropic",
+      model: "glm-5.3",
+      credentialRef: "",
+      proxy: null,
+      efforts: ["low", "high", "max"],
+      effort: "high",
+      enabled: true,
+      builtin: false,
+    },
+    {
+      id: "builtin:bigmodel:glm-5.3",
+      name: "GLM-5.3",
+      compatibility: "bigModel",
+      providerId: "bigmodel",
+      apiMode: "anthropic",
+      maxOutputTokens: null,
+      baseUrl: "https://open.bigmodel.cn/api/anthropic",
+      model: "glm-5.3",
+      credentialRef: "",
+      proxy: null,
+      efforts: ["low", "high", "max"],
+      effort: null,
+      enabled: false,
+      builtin: true,
+    },
+  ];
+  function modelApp() {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name: string, args: any) => {
+      if (name === "provider_list") return structuredClone(builtinCatalog);
+      if (name === "model_list") return structuredClone(models);
+      if (name === "default_selection_get") return null;
+      if (name === "default_selection_save") return null;
+      return original(name, args);
+    });
+  }
+  it("触发按钮显示当前模型与档位徽标，点击展开浮层卡片", async () => {
+    modelApp();
+    render(<App />);
+    const trigger = await screen.findByLabelText("当前模型");
+    expect(trigger).toHaveTextContent("DeepSeek Flash");
+    // 默认档位即模型最高档
+    expect(within(trigger).getByText("enabled")).toBeInTheDocument();
+    fireEvent.click(trigger);
+    const menu = screen.getByRole("listbox", { name: "选择模型" });
+    expect(within(menu).getByText("DeepSeek")).toBeInTheDocument();
+    expect(within(menu).getByText("智谱 Coding Plan")).toBeInTheDocument();
+    // 停用模型灰显展示并标注原因，点击不产生任何选择
+    const disabledRow = within(menu).getByText("GLM-5.3").closest("button")!;
+    expect(disabledRow.className).toContain("disabled");
+    expect(within(disabledRow).getByText(/已停用/)).toBeInTheDocument();
+    fireEvent.click(disabledRow);
+    expect(mocks.command).not.toHaveBeenCalledWith("default_selection_save", expect.anything());
+    // 档位滑块存在，当前档位为最高档
+    expect(screen.getByLabelText("推理档位")).toHaveAttribute("aria-valuetext", "enabled");
+  });
+  it("搜索过滤模型；选模型保持卡片展开并持久化，档位回落最高档；会话流出现临时切换标记", async () => {
+    mocks.send.mockResolvedValue(undefined);
+    modelApp();
+    await renderOpenA();
+    fireEvent.click(screen.getByLabelText("当前模型"));
+    fireEvent.change(screen.getByLabelText("搜索模型"), { target: { value: "自定义" } });
+    const menu = screen.getByRole("listbox", { name: "选择模型" });
+    expect(within(menu).queryByText("DeepSeek Flash")).not.toBeInTheDocument();
+    fireEvent.click(within(menu).getByText("自定义 GLM"));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("default_selection_save", {
+        selection: { modelId: "custom", effort: "max", workspaceId: "w" },
+      }),
+    );
+    // 卡片保持展开，滑块区已切换为新模型档位，可直接继续调档
+    expect(screen.getByRole("listbox", { name: "选择模型" })).toBeInTheDocument();
+    expect(screen.getByLabelText("推理档位")).toHaveAttribute("aria-valuetext", "max");
+    fireEvent.change(screen.getByLabelText("推理档位"), { target: { value: "1" } });
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("default_selection_save", {
+        selection: { modelId: "custom", effort: "high", workspaceId: "w" },
+      }),
+    );
+    // 会话流插入临时切换标记（不落库）
+    expect(
+      screen.getByText(/模型已切换：DeepSeek Flash → 自定义 GLM · 档位 max/),
+    ).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "你好" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.send).toHaveBeenCalledWith(
+        "a",
+        "你好",
+        "custom",
+        expect.any(Function),
+        undefined,
+        "high",
+      ),
+    );
+  });
+  it("切换标记锚定切换点：后续回复渲染在标记之后，不再跟随最新回复", async () => {
+    mocks.send.mockImplementation(async (_id, _text, _model, receive) =>
+      receive({
+        type: "durable",
+        event: {
+          id: "reply-2",
+          sessionId: "a",
+          seq: "2",
+          kind: "assistant.message",
+          data: { content: "切换后的回复" },
+          createdAt: "",
+        },
+      }),
+    );
+    modelApp();
+    await renderOpenA();
+    fireEvent.click(screen.getByLabelText("当前模型"));
+    fireEvent.click(
+      within(screen.getByRole("listbox", { name: "选择模型" })).getByText("自定义 GLM"),
+    );
+    const noteText = /模型已切换：DeepSeek Flash → 自定义 GLM · 档位 max/;
+    expect(screen.getByText(noteText)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "你好" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await screen.findByText("切换后的回复");
+    expect(screen.getAllByText(noteText)).toHaveLength(1);
+    const note = screen.getByText(noteText);
+    const history = screen.getByText("内容 a");
+    const reply = screen.getByText("切换后的回复");
+    expect(history.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(note.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+  it("点击当前模型行关闭卡片，Esc 亦可关闭", async () => {
+    modelApp();
+    render(<App />);
+    fireEvent.click(await screen.findByLabelText("当前模型"));
+    fireEvent.click(
+      within(screen.getByRole("listbox", { name: "选择模型" })).getByText("DeepSeek Flash"),
+    );
+    expect(screen.queryByRole("listbox", { name: "选择模型" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("当前模型"));
+    fireEvent.keyDown(screen.getByLabelText("搜索模型"), { key: "Escape" });
+    expect(screen.queryByRole("listbox", { name: "选择模型" })).not.toBeInTheDocument();
+  });
+  it("启动恢复上次选择；失效选择回退首个可用模型并将档位归到最高档", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name: string, args: any) => {
+      if (name === "model_list") return structuredClone(models);
+      if (name === "provider_list") return structuredClone(builtinCatalog);
+      if (name === "default_selection_get") return { modelId: "missing-model", effort: "max" };
+      return original(name, args);
+    });
+    render(<App />);
+    const trigger = await screen.findByLabelText("当前模型");
+    expect(trigger).toHaveTextContent("DeepSeek Flash");
+    expect(within(trigger).getByText("enabled")).toBeInTheDocument();
+  });
+  it("无档位模型隐藏档位徽标与滑块区", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name: string, args: any) => {
+      if (name === "model_list")
+        return [{ ...structuredClone(models[0]), efforts: [], effort: null }];
+      if (name === "provider_list") return structuredClone(builtinCatalog);
+      if (name === "default_selection_get") return null;
+      return original(name, args);
+    });
+    render(<App />);
+    const trigger = await screen.findByLabelText("当前模型");
+    expect(trigger.querySelector(".model-trigger-effort")).toBeNull();
+    fireEvent.click(trigger);
+    expect(screen.queryByLabelText("推理档位")).not.toBeInTheDocument();
+  });
+  it("/model 斜杠命令打开浮层卡片", async () => {
+    modelApp();
+    await renderOpenA();
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "/model" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByRole("listbox", { name: "选择模型" })).toBeInTheDocument();
+  });
+});
+describe("侧聊派生", () => {
+  const forkToSide = () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name: string, args: any) => {
+      if (name === "session_fork")
+        return {
+          id: "side-1",
+          workspaceId: "w",
+          title: "会话 A · 侧聊",
+          parentId: "a",
+          createdAt: "",
+          updatedAt: "",
+        };
+      return original(name, args);
+    });
+  };
+  it("菜单执行 /side：派生侧聊并在右侧抽屉打开，主会话保持不变", async () => {
+    forkToSide();
+    await renderOpenA();
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "/si" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_fork", { sessionId: "a", asSide: true }),
+    );
+    await waitFor(() =>
+      expect(
+        mocks.command.mock.calls.some(
+          ([name, args]) => name === "session_timeline_page" && args.sessionId === "side-1",
+        ),
+      ).toBe(true),
+    );
+    expect(useSidePanel.getState()).toMatchObject({
+      open: true,
+      view: "chat",
+      chatSessionId: "side-1",
+      chatParentSessionId: "a",
+    });
+    expect(await screen.findByRole("complementary", { name: "侧聊面板" })).toBeInTheDocument();
+    expect(
+      await screen.findByText(/已创建侧聊「会话 A · 侧聊」，已在右侧打开/),
+    ).toBeInTheDocument();
+    // 主会话没有被切换：标题与消息仍在。
+    expect(screen.getByText("内容 a")).toBeVisible();
+  });
+  it("输入 /side 文字 发送：命令不进主会话，文字作为侧聊首条消息", async () => {
+    mocks.send.mockResolvedValue(undefined);
+    forkToSide();
+    await renderOpenA();
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "/side 顺便问个问题" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_fork", { sessionId: "a", asSide: true }),
+    );
+    await waitFor(() =>
+      expect(mocks.send).toHaveBeenCalledWith(
+        "side-1",
+        "顺便问个问题",
+        "m",
+        expect.any(Function),
+        undefined,
+        "high",
+      ),
+    );
+    expect(mocks.send.mock.calls.some((call) => String(call[1]).includes("/side"))).toBe(false);
+    expect(screen.getByText("内容 a")).toBeVisible();
+  });
+  it("父会话登记卡的「查看会话」在抽屉打开侧聊而非切换主会话", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name: string, args: any) => {
+      if (name === "session_timeline_page" && args.sessionId === "a")
+        return timeline("a", [
+          event("e-a", "a", "1", "内容 a"),
+          {
+            id: "side-card",
+            sessionId: "a",
+            seq: "2",
+            kind: "subagent.created",
+            data: { sessionId: "side-1", source: "side" },
+            createdAt: "",
+          },
+        ]);
+      return original(name, args);
+    });
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByText("内容 a");
+    fireEvent.click(await screen.findByRole("button", { name: "查看会话" }));
+    expect(useSidePanel.getState()).toMatchObject({
+      open: true,
+      view: "chat",
+      chatSessionId: "side-1",
+      chatParentSessionId: "a",
+    });
+    expect(screen.getByText("内容 a")).toBeVisible();
+  });
+  it("回合运行中从菜单执行 /side 给出等待提示且不派生", async () => {
+    mocks.send.mockReturnValue(new Promise(() => {}));
+    forkToSide();
+    await renderOpenA();
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "执行中" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.change(input, { target: { value: "/si" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(await screen.findByText(/会话运行中，请等回合结束后再派生侧聊/)).toBeInTheDocument();
+    expect(mocks.command.mock.calls.some(([name]) => name === "session_fork")).toBe(false);
+  });
+});
+describe("斜杠命令补全", () => {
+  it("输入 / 显示候选菜单，过滤收窄，Esc 关闭后 token 变化重开", async () => {
+    await renderOpenA();
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "/" } });
+    const menu = screen.getByRole("listbox", { name: "斜杠命令补全" });
+    expect(within(menu).getByText("/clear")).toBeInTheDocument();
+    expect(within(menu).getByText("/help")).toBeInTheDocument();
+    fireEvent.change(input, { target: { value: "/he" } });
+    expect(
+      within(screen.getByRole("listbox", { name: "斜杠命令补全" })).getByText("/help"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("/clear")).not.toBeInTheDocument();
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.queryByRole("listbox", { name: "斜杠命令补全" })).not.toBeInTheDocument();
+    fireEvent.change(input, { target: { value: "/hel" } });
+    expect(screen.getByRole("listbox", { name: "斜杠命令补全" })).toBeInTheDocument();
+  });
+  it("ArrowDown 循环选择，Tab 补全为规范名", async () => {
+    await renderOpenA();
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "/c" } });
+    const options = within(screen.getByRole("listbox", { name: "斜杠命令补全" })).getAllByRole(
+      "option",
+    );
+    expect(options.map((option) => option.textContent)).toEqual([
+      "/clear重开新会话",
+      "/compact压缩历史为摘要",
+    ]);
+    expect(options[0]).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(options[1]).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(input, { key: "Tab" });
+    expect(input).toHaveValue("/compact ");
+  });
+  it("Enter 执行选中命令：/clear 回到草稿态", async () => {
+    await renderOpenA();
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "/cl" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    // /clear 进入草稿态：欢迎语带当前项目名，不立即创建会话
+    await screen.findByRole("heading", { name: /你想在 project 中构建什么/ });
+    expect(mocks.command.mock.calls.filter(([name]) => name === "session_create")).toHaveLength(0);
+  });
+  it("光标移出首 token 后菜单关闭，Enter 走普通发送", async () => {
+    mocks.send.mockResolvedValue(undefined);
+    await renderOpenA();
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "/clear 帮我重开" } });
+    expect(screen.queryByRole("listbox", { name: "斜杠命令补全" })).not.toBeInTheDocument();
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(mocks.send).toHaveBeenCalledWith(
+        "a",
+        "/clear 帮我重开",
+        "m",
+        expect.any(Function),
+        undefined,
+        "high",
+      ),
+    );
+  });
+  it("草稿态输入 / 仍显示候选，隐藏依赖会话的命令", async () => {
+    render(<App />);
+    await screen.findByRole("heading", { name: /你想在/ });
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "/" } });
+    const menu = screen.getByRole("listbox", { name: "斜杠命令补全" });
+    expect(within(menu).getByText("/help")).toBeInTheDocument();
+    expect(within(menu).queryByText("/init")).not.toBeInTheDocument();
+    expect(within(menu).queryByText("/compact")).not.toBeInTheDocument();
+    fireEvent.change(input, { target: { value: "/in" } });
+    expect(screen.queryByRole("listbox", { name: "斜杠命令补全" })).not.toBeInTheDocument();
+  });
+  it("草稿态执行 /help 显示可用命令提示", async () => {
+    render(<App />);
+    await screen.findByRole("heading", { name: /你想在/ });
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "/he" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(await screen.findByText(/可用命令：/)).toBeInTheDocument();
+  });
+  it("Enter 选中 /goal 激活目标模式：不发送消息并出现目标图标", async () => {
+    mocks.send.mockResolvedValue(undefined);
+    await renderOpenA();
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "/go" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(mocks.send).not.toHaveBeenCalled();
+    expect(input).toHaveValue("");
+    expect(screen.getByRole("button", { name: "目标模式" })).toBeInTheDocument();
+  });
+  it("目标模式下发送的消息展开为预置提示词，发送后目标图标消失", async () => {
+    mocks.send.mockResolvedValue(undefined);
+    await renderOpenA();
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "/goal" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByRole("button", { name: "目标模式" })).toBeInTheDocument();
+    fireEvent.change(input, { target: { value: "完成导出功能" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.send).toHaveBeenCalledWith(
+        "a",
+        `${GOAL_PROMPT}\n\n目标：完成导出功能`,
+        "m",
+        expect.any(Function),
+        undefined,
+        "high",
+      ),
+    );
+    expect(screen.queryByRole("button", { name: "目标模式" })).not.toBeInTheDocument();
+  });
+  it("点击目标图标取消目标模式，后续消息按原文发送", async () => {
+    mocks.send.mockResolvedValue(undefined);
+    await renderOpenA();
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "/goal" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: "目标模式" }));
+    expect(screen.queryByRole("button", { name: "目标模式" })).not.toBeInTheDocument();
+    fireEvent.change(input, { target: { value: "普通消息" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.send).toHaveBeenCalledWith(
+        "a",
+        "普通消息",
+        "m",
+        expect.any(Function),
+        undefined,
+        "high",
+      ),
+    );
+  });
+  it("菜单关闭后输入 /goal 回车同样激活目标模式", async () => {
+    mocks.send.mockResolvedValue(undefined);
+    await renderOpenA();
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "/goal" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(mocks.send).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "目标模式" })).toBeInTheDocument();
+  });
+  it("切换会话后目标模式退出", async () => {
+    mocks.send.mockResolvedValue(undefined);
+    await renderOpenA();
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "/goal" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByRole("button", { name: "目标模式" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /会话 B/ }));
+    await screen.findByText("内容 b");
+    expect(screen.queryByRole("button", { name: "目标模式" })).not.toBeInTheDocument();
+  });
+});
+describe("草稿内容保留", () => {
+  it("草稿输入在切换会话再新建聊天后保留，可继续编辑", async () => {
+    let resolveSessions!: (value: unknown) => void;
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_list"
+        ? new Promise((resolve) => {
+            resolveSessions = resolve;
+          })
+        : original(name, args),
+    );
+    render(<App />);
+    await screen.findByRole("heading", { name: /你想在 project 中构建什么/ });
+    await waitFor(() => expect(resolveSessions).toBeTypeOf("function"));
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "帮我梳理导出模块" } });
+    const sessionButton = screen.findByRole("button", { name: /会话 A/ });
+    await act(async () =>
+      resolveSessions([
+        { id: "a", workspaceId: "w", title: "会话 A" },
+        { id: "b", workspaceId: "w", title: "会话 B" },
+      ]),
+    );
+    fireEvent.click(await sessionButton);
+    await screen.findByText("内容 a");
+    expect(input).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: "新建聊天" }));
+    expect(screen.getByRole("heading", { name: /你想在 project 中构建什么/ })).toBeInTheDocument();
+    expect(screen.getByLabelText("消息")).toHaveValue("帮我梳理导出模块");
+  });
+  it("草稿发送成功后草稿内容清空，不再恢复", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.send.mockResolvedValue(undefined);
+    mocks.command.mockImplementation(async (name: string, args: any) => {
+      if (name === "session_create") return { id: "fresh", workspaceId: "w", title: "新会话" };
+      if (name === "session_timeline_page") return timeline(args.sessionId, []);
+      return original(name, args);
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: /你想在 project 中构建什么/ });
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "首条任务" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.send).toHaveBeenCalledWith(
+        "fresh",
+        "首条任务",
+        "m",
+        expect.any(Function),
+        undefined,
+        "high",
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "新建聊天" }));
+    await screen.findByRole("heading", { name: /你想在 project 中构建什么/ });
+    expect(screen.getByLabelText("消息")).toHaveValue("");
+  });
+  it("草稿内容按落点项目分桶，切换落点互不覆盖", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name: string, args: any) => {
+      if (name === "workspace_list")
+        return [
+          {
+            id: "w",
+            sourcePath: "D:/A",
+            replicaPath: "D:/ca",
+            createdAt: "",
+            name: "project",
+            pinned: false,
+          },
+          {
+            id: "other",
+            sourcePath: "D:/B",
+            replicaPath: "D:/cb",
+            createdAt: "",
+            name: "other-pj",
+            pinned: false,
+          },
+        ];
+      return original(name, args);
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: /你想在 project 中构建什么/ });
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "A 项目的问题" } });
+    fireEvent.click(screen.getByRole("button", { name: "选择项目" }));
+    fireEvent.click(
+      within(screen.getByRole("menu", { name: "选择项目" })).getByRole("menuitem", {
+        name: /other-pj/,
+      }),
+    );
+    expect(screen.getByRole("heading", { name: /你想在 other-pj 中构建什么/ })).toBeInTheDocument();
+    expect(input).toHaveValue("");
+    fireEvent.change(input, { target: { value: "B 项目的问题" } });
+    fireEvent.click(screen.getByRole("button", { name: "选择项目" }));
+    fireEvent.click(
+      within(screen.getByRole("menu", { name: "选择项目" })).getByRole("menuitem", {
+        name: /project/,
+      }),
+    );
+    expect(input).toHaveValue("A 项目的问题");
+    fireEvent.click(screen.getByRole("button", { name: "选择项目" }));
+    fireEvent.click(
+      within(screen.getByRole("menu", { name: "选择项目" })).getByRole("menuitem", {
+        name: /other-pj/,
+      }),
+    );
+    expect(input).toHaveValue("B 项目的问题");
+  });
+  it("跨工作区切换后各项目草稿独立保留", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    const now = new Date().toISOString();
+    mocks.command.mockImplementation(async (name: string, args: any) => {
+      if (name === "workspace_list")
+        return [
+          {
+            id: "w",
+            sourcePath: "D:/A",
+            replicaPath: "D:/ca",
+            createdAt: "",
+            name: "project",
+            pinned: false,
+          },
+          {
+            id: "other",
+            sourcePath: "D:/B",
+            replicaPath: "D:/cb",
+            createdAt: "",
+            name: "other-pj",
+            pinned: false,
+          },
+        ];
+      if (name === "session_list")
+        return [
+          {
+            id: "a",
+            workspaceId: "w",
+            title: "会话 A",
+            createdAt: "",
+            updatedAt: now,
+            parentId: null,
+          },
+          {
+            id: "other-session",
+            workspaceId: "other",
+            title: "B 的会话",
+            createdAt: "",
+            updatedAt: now,
+            parentId: null,
+          },
+        ];
+      return original(name, args);
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: /你想在 project 中构建什么/ });
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "A 的草稿" } });
+    fireEvent.click(await screen.findByRole("button", { name: /B 的会话/ }));
+    await screen.findByText("内容 other-session");
+    expect(input).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: "新建聊天" }));
+    expect(screen.getByRole("heading", { name: /你想在 other-pj 中构建什么/ })).toBeInTheDocument();
+    fireEvent.change(input, { target: { value: "B 的草稿" } });
+    fireEvent.click(screen.getByRole("button", { name: /会话 A/ }));
+    await screen.findByText("内容 a");
+    fireEvent.click(screen.getByRole("button", { name: "新建聊天" }));
+    expect(screen.getByRole("heading", { name: /你想在 project 中构建什么/ })).toBeInTheDocument();
+    expect(screen.getByLabelText("消息")).toHaveValue("A 的草稿");
+    fireEvent.click(screen.getByRole("button", { name: /B 的会话/ }));
+    await screen.findByText("内容 other-session");
+    fireEvent.click(screen.getByRole("button", { name: "新建聊天" }));
+    expect(screen.getByRole("heading", { name: /你想在 other-pj 中构建什么/ })).toBeInTheDocument();
+    expect(screen.getByLabelText("消息")).toHaveValue("B 的草稿");
+  });
+});
+describe("草稿态技能补全", () => {
+  it("输入 $ 显示技能候选，并按草稿目标项目加载技能", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name: string, args: any) => {
+      if (name === "workspace_list")
+        return [
+          {
+            id: "w",
+            sourcePath: "D:/project",
+            replicaPath: "D:/copy",
+            createdAt: "",
+            name: "project",
+          },
+          {
+            id: "w2",
+            sourcePath: "D:/project2",
+            replicaPath: "D:/copy2",
+            createdAt: "",
+            name: "项目二",
+          },
+        ];
+      if (name === "skill_list")
+        return [
+          {
+            name: "alpha",
+            description: "技能 A",
+            path: "D:/skills/alpha",
+            scope: "workspace",
+            enabled: true,
+            brokenReason: null,
+          },
+        ];
+      return original(name, args);
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: /你想在/ });
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("skill_list", { workspaceId: "w" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "选择项目" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /项目二/ }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("skill_list", { workspaceId: "w2" }),
+    );
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "$al" } });
+    expect(
+      within(screen.getByRole("listbox", { name: "技能补全" })).getByText("$alpha"),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("补全弹层滚动跟随", () => {
+  // jsdom 未实现 scrollIntoView：测试期间替换为 spy，结束后还原。
+  let scrollIntoView: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    scrollIntoView = vi.fn();
+    (Element.prototype as any).scrollIntoView = scrollIntoView;
+  });
+  afterEach(() => {
+    delete (Element.prototype as any).scrollIntoView;
+  });
+  it("斜杠菜单方向键移动选中项时列表滚动跟随", async () => {
+    await renderOpenA();
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "/" } });
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(scrollIntoView).toHaveBeenCalled();
+    expect(scrollIntoView).toHaveBeenLastCalledWith({ block: "nearest" });
+  });
+  it("技能菜单键盘选择滚动跟随，Tab 补全选中项为规范名", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    const skills = Array.from({ length: 20 }, (_, i) => ({
+      name: `skill-${i}`,
+      description: `技能描述 ${i}`,
+      path: `D:/skills/skill-${i}`,
+      scope: "workspace",
+      enabled: true,
+      brokenReason: null,
+    }));
+    mocks.command.mockImplementation(async (name: string, args: any) =>
+      name === "skill_list" ? skills : original(name, args),
+    );
+    await renderOpenA();
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "$" } });
+    const options = within(screen.getByRole("listbox", { name: "技能补全" })).getAllByRole(
+      "option",
+    );
+    expect(options).toHaveLength(20);
+    expect(options[0]).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(options[1]).toHaveAttribute("aria-selected", "true");
+    expect(scrollIntoView).toHaveBeenCalled();
+    expect(scrollIntoView).toHaveBeenLastCalledWith({ block: "nearest" });
+    fireEvent.keyDown(input, { key: "Tab" });
+    expect(input).toHaveValue("$skill-1 ");
+  });
+});
+
+describe("加号添加菜单", () => {
+  it("点 + 弹出菜单，计划启用模式而目标插入斜杠命令", async () => {
+    await renderOpenA();
+    const plus = screen.getByRole("button", { name: "添加内容" });
+    expect(screen.queryByRole("menu", { name: "添加内容" })).not.toBeInTheDocument();
+    fireEvent.click(plus);
+    const menu = screen.getByRole("menu", { name: "添加内容" });
+    expect(plus).toHaveAttribute("aria-expanded", "true");
+    expect(within(menu).getByRole("menuitem", { name: /^附件/ })).toBeInTheDocument();
+    fireEvent.click(within(menu).getByRole("menuitem", { name: /^进入计划模式/ }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_plan_set", {
+        sessionId: "a",
+        enabled: true,
+      }),
+    );
+    expect(screen.getByLabelText("消息")).toHaveValue("");
+    expect(screen.queryByRole("menu", { name: "添加内容" })).not.toBeInTheDocument();
+    expect(mocks.send).not.toHaveBeenCalled();
+    fireEvent.click(plus);
+    fireEvent.click(screen.getByRole("menuitem", { name: /^目标/ }));
+    expect(screen.getByLabelText("消息")).toHaveValue("/goal ");
+  });
+  it("Escape 与点击外部关闭菜单", async () => {
+    await renderOpenA();
+    fireEvent.click(screen.getByRole("button", { name: "添加内容" }));
+    expect(screen.getByRole("menu", { name: "添加内容" })).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByLabelText("消息"), { key: "Escape" });
+    expect(screen.queryByRole("menu", { name: "添加内容" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "添加内容" }));
+    fireEvent.mouseDown(screen.getByRole("button", { name: "新建聊天" }));
+    expect(screen.queryByRole("menu", { name: "添加内容" })).not.toBeInTheDocument();
+  });
+  it("/plan 带参数发送任务原文，无参数退出且不再发送", async () => {
+    mocks.send.mockResolvedValue(undefined);
+    await renderOpenA();
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "/plan 为导出制定计划" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(mocks.send).toHaveBeenCalledWith(
+        "a",
+        "为导出制定计划",
+        "m",
+        expect.any(Function),
+        undefined,
+        "high",
+      ),
+    );
+    fireEvent.change(input, { target: { value: "/plan" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_plan_set", {
+        sessionId: "a",
+        enabled: false,
+      }),
+    );
+    expect(mocks.send).toHaveBeenCalledTimes(1);
+  });
+  it("/goal 带参数发送展开为预置提示词", async () => {
+    mocks.send.mockResolvedValue(undefined);
+    await renderOpenA();
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "/goal 完成导出功能" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(mocks.send).toHaveBeenCalledWith(
+        "a",
+        `${GOAL_PROMPT}\n\n目标：完成导出功能`,
+        "m",
+        expect.any(Function),
+        undefined,
+        "high",
+      ),
+    );
+  });
+});
+
+describe("会话列表视图", () => {
+  function installSessionMocks() {
+    mocks.command.mockImplementation(async (name: string, args: any) => {
+      if (name === "workspace_list")
+        return [
+          {
+            id: "w",
+            sourcePath: "D:/alpha",
+            replicaPath: "D:/copy-a",
+            createdAt: "",
+            name: "alpha",
+            pinned: false,
+          },
+          {
+            id: "other",
+            sourcePath: "D:/beta",
+            replicaPath: "D:/copy-b",
+            createdAt: "",
+            name: "beta",
+            pinned: false,
+          },
+        ];
+      if (name === "session_list")
+        return [
+          {
+            id: "a",
+            workspaceId: "w",
+            title: "会话 A",
+            createdAt: "",
+            updatedAt: new Date().toISOString(),
+            parentId: null,
+          },
+          {
+            id: "b",
+            workspaceId: "other",
+            title: "B 的会话",
+            createdAt: "",
+            updatedAt: new Date().toISOString(),
+            parentId: null,
+          },
+        ];
+      if (name === "workspace_set_pinned")
+        return {
+          id: args.workspaceId,
+          sourcePath: "D:/alpha",
+          replicaPath: "D:/copy-a",
+          createdAt: "",
+          name: "alpha",
+          pinned: args.pinned,
+        };
+      if (name === "session_timeline_page")
+        return timeline(args.sessionId, [
+          event(`e-${args.sessionId}`, args.sessionId, "1", `内容 ${args.sessionId}`),
+        ]);
+      return [];
+    });
+  }
+  it("「最近」视图按时间分组并展示跨工作区会话，switch 切到「项目」按工作区分组", async () => {
+    localStorage.clear();
+    installSessionMocks();
+    await renderOpenA();
+    const sessionList = screen.getByRole("navigation", { name: "会话列表" });
+    expect(sessionList).toHaveClass("session-scrollbar");
+    // 回归：switch 外不应再有「最近」文本（spec：标题行右侧仅 switch 内嵌两词）
+    for (const el of screen.getAllByText("最近")) expect(el.closest(".view-switch")).not.toBeNull();
+    // 最近视图：今天分组下同时出现两个项目的会话
+    expect(screen.getByText("今天")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /会话 A/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /B 的会话/ })).toBeInTheDocument();
+    const sw = screen.getByRole("switch", { name: "切换视图：项目 / 最近" });
+    expect(sw).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(sw);
+    expect(sw).toHaveAttribute("aria-checked", "true");
+    // 项目视图：两个工作区成组，组内含各自会话
+    expect(screen.getByRole("button", { name: /^alpha \d+$/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^beta \d+$/ })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /会话 A/ }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: /B 的会话/ }).length).toBeGreaterThan(0);
+    expect(localStorage.getItem("sessionView")).toBe("project");
+  });
+  it("switch 内「项目」位于「最近」左侧（DOM 顺序在前）", async () => {
+    localStorage.clear();
+    installSessionMocks();
+    await renderOpenA();
+    const sw = screen.getByRole("switch", { name: "切换视图：项目 / 最近" });
+    const labels = [...sw.querySelectorAll(".sw-label")].map((el) => el.textContent);
+    expect(labels).toEqual(["项目", "最近"]);
+  });
+  it("会话标题栏将标题固定在左侧，并在右侧提供存档入口", async () => {
+    localStorage.clear();
+    installSessionMocks();
+    await renderOpenA();
+    const topbar = document.querySelector(".topbar");
+    const breadcrumb = topbar?.querySelector(".breadcrumb");
+    expect(topbar).not.toBeNull();
+    expect(breadcrumb).not.toBeNull();
+    expect(within(breadcrumb as HTMLElement).getByText("会话 A")).toBeInTheDocument();
+    expect(breadcrumb?.firstElementChild).toHaveClass("topbar-session-title");
+    expect(breadcrumb?.querySelector(".topbar-session-title")).toHaveTextContent("会话 A");
+    expect(breadcrumb?.querySelector(".workspace-context")).toHaveTextContent("alpha");
+    expect(topbar?.firstElementChild).toBe(breadcrumb);
+    expect(
+      within(topbar as HTMLElement).getByRole("button", { name: "存档会话" }),
+    ).toBeInTheDocument();
+    expect(topbar?.lastElementChild).toContainElement(
+      within(topbar as HTMLElement).getByRole("button", { name: "存档会话" }),
+    );
+  });
+  it.each(["项目", "最近"])("%s视图会话行不再显示行内日期", async (view) => {
+    localStorage.clear();
+    installSessionMocks();
+    await renderOpenA();
+    if (view === "项目")
+      fireEvent.click(screen.getByRole("switch", { name: "切换视图：项目 / 最近" }));
+    expect(document.querySelector(".session-time")).toBeNull();
+  });
+  it.each(["项目", "最近"])("%s视图悬停会话行浮现完整标题与时间，移出后收起", async (view) => {
+    localStorage.clear();
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name: string, args: any) => {
+      if (name === "session_list")
+        return [
+          {
+            id: "a",
+            workspaceId: "w",
+            title: "会话 A",
+            createdAt: "",
+            updatedAt: "2026-11-08T09:05:00",
+            parentId: null,
+          },
+          {
+            id: "b",
+            workspaceId: "other",
+            title: "B 的会话",
+            createdAt: "",
+            updatedAt: "2026-11-07T18:24:00",
+            parentId: null,
+          },
+        ];
+      return original(name, args);
+    });
+    await renderOpenA();
+    if (view === "项目")
+      fireEvent.click(screen.getByRole("switch", { name: "切换视图：项目 / 最近" }));
+    const row = screen.getByRole("button", { name: /会话 A/ });
+    fireEvent.mouseEnter(row);
+    const pop = await screen.findByRole("tooltip");
+    expect(pop.textContent).toContain("会话 A");
+    expect(pop.textContent).toContain("2026年11月8日 09:05");
+    fireEvent.mouseLeave(row);
+    await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
+  });
+  it("项目组可置顶并调用 workspace_set_pinned，搜索按标题过滤", async () => {
+    localStorage.clear();
+    installSessionMocks();
+    await renderOpenA();
+    fireEvent.click(screen.getByRole("switch", { name: "切换视图：项目 / 最近" }));
+    fireEvent.click(screen.getByRole("button", { name: "置顶 alpha" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("workspace_set_pinned", {
+        workspaceId: "w",
+        pinned: true,
+      }),
+    );
+    // 置顶的 alpha 排在 beta 之前
+    const names = screen
+      .getAllByRole("button", { name: /^(alpha|beta) \d+$/ })
+      .map((b) => b.textContent);
+    expect(names[0]).toContain("alpha");
+    // 搜索按标题过滤，无匹配时给出空态
+    fireEvent.change(screen.getByLabelText("搜索会话"), { target: { value: "不存在" } });
+    expect(screen.getByText("无匹配会话。")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("搜索会话"), { target: { value: "B" } });
+    expect(screen.queryByRole("button", { name: /会话 A/ })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /B 的会话/ }).length).toBeGreaterThan(0);
+  });
+  it("置顶失败时回滚乐观更新并显示错误", async () => {
+    localStorage.clear();
+    mocks.command.mockImplementation(async (name: string, args: any) => {
+      if (name === "workspace_list")
+        return [
+          {
+            id: "w",
+            sourcePath: "D:/alpha",
+            replicaPath: "D:/copy-a",
+            createdAt: "",
+            name: "alpha",
+            pinned: false,
+          },
+        ];
+      if (name === "session_list")
+        return [
+          {
+            id: "a",
+            workspaceId: "w",
+            title: "会话 A",
+            createdAt: "",
+            updatedAt: new Date().toISOString(),
+            parentId: null,
+          },
+        ];
+      if (name === "workspace_set_pinned") throw new Error("写入失败");
+      if (name === "session_timeline_page")
+        return timeline(args.sessionId, [
+          event(`e-${args.sessionId}`, args.sessionId, "1", `内容 ${args.sessionId}`),
+        ]);
+      return [];
+    });
+    await renderOpenA();
+    fireEvent.click(screen.getByRole("switch", { name: "切换视图：项目 / 最近" }));
+    fireEvent.click(screen.getByRole("button", { name: "置顶 alpha" }));
+    await screen.findByText("写入失败");
+    expect(screen.getByRole("button", { name: "置顶 alpha" })).toBeInTheDocument();
+  });
+  it("项目视图下无会话的项目仍保留组头，搜索时才隐藏空项目", async () => {
+    localStorage.clear();
+    mocks.command.mockImplementation(async (name: string, args: any) => {
+      if (name === "workspace_list")
+        return [
+          {
+            id: "w",
+            sourcePath: "D:/alpha",
+            replicaPath: "D:/copy-a",
+            createdAt: "",
+            name: "alpha",
+            pinned: false,
+          },
+          {
+            id: "empty",
+            sourcePath: "D:/empty",
+            replicaPath: "D:/copy-e",
+            createdAt: "",
+            name: "empty-proj",
+            pinned: false,
+          },
+        ];
+      if (name === "session_list")
+        return [
+          {
+            id: "a",
+            workspaceId: "w",
+            title: "会话 A",
+            createdAt: "",
+            updatedAt: new Date().toISOString(),
+            parentId: null,
+          },
+        ];
+      if (name === "session_timeline_page")
+        return timeline(args.sessionId, [
+          event(`e-${args.sessionId}`, args.sessionId, "1", `内容 ${args.sessionId}`),
+        ]);
+      return [];
+    });
+    await renderOpenA();
+    fireEvent.click(screen.getByRole("switch", { name: "切换视图：项目 / 最近" }));
+    // 无会话项目仍成组（计数 0），组头新建与置顶入口可用
+    expect(screen.getByRole("button", { name: /^empty-proj 0$/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "在 empty-proj 新建聊天" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /^(alpha|empty-proj) \d+$/ })).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "置顶 empty-proj" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("workspace_set_pinned", {
+        workspaceId: "empty",
+        pinned: true,
+      }),
+    );
+    // 搜索按标题过滤时空项目组不出现，无匹配时显示空态
+    fireEvent.change(screen.getByLabelText("搜索会话"), { target: { value: "不存在" } });
+    expect(screen.getByText("无匹配会话。")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^empty-proj 0$/ })).not.toBeInTheDocument();
+  });
+});
+
+describe("项目编辑", () => {
+  function namingBackend(
+    options: {
+      empty?: boolean;
+      updateError?: string;
+      executionMode?: "direct" | "replica" | "worktree";
+    } = {},
+  ) {
+    const original = mocks.command.getMockImplementation()!;
+    const ws = {
+      id: "w",
+      sourcePath: "D:/alpha",
+      replicaPath: "D:/copy-a",
+      createdAt: "",
+      name: "alpha",
+      pinned: false,
+      hidden: false,
+      executionMode: options.executionMode ?? "replica",
+      worktrees: {},
+    };
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list") return options.empty ? [] : [ws];
+      if (name === "workspace_update") {
+        if (options.updateError) throw new Error(options.updateError);
+        return { ...ws, name: args.name, executionMode: args.executionMode };
+      }
+      if (name === "workspace_open")
+        return {
+          id: "fresh",
+          sourcePath: args.path,
+          replicaPath: "D:/copy",
+          createdAt: "",
+          name: args.name || "alpha-dir",
+          executionMode: args.executionMode,
+        };
+      if (name === "session_list")
+        return [
+          {
+            id: "a",
+            workspaceId: "w",
+            title: "会话 A",
+            createdAt: "",
+            updatedAt: new Date().toISOString(),
+            parentId: null,
+          },
+        ];
+      if (name === "session_timeline_page")
+        return timeline(args.sessionId, [
+          event(`e-${args.sessionId}`, args.sessionId, "1", `内容 ${args.sessionId}`),
+        ]);
+      return original(name, args);
+    });
+  }
+  async function openEditDialog() {
+    await renderOpenA();
+    fireEvent.click(screen.getByRole("switch", { name: "切换视图：项目 / 最近" }));
+    const sessionNav = screen.getByRole("navigation", { name: "会话列表" });
+    // 组头不再提供内联编辑按钮，编辑入口只在右键菜单。
+    expect(screen.queryByRole("button", { name: "编辑 alpha" })).not.toBeInTheDocument();
+    fireEvent.contextMenu(within(sessionNav).getByText("alpha"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "编辑" }));
+    return screen.findByRole("dialog", { name: "编辑项目" });
+  }
+  it("打开工作区时名称留空则回退目录名", async () => {
+    localStorage.clear();
+    namingBackend({ empty: true });
+    vi.mocked(open).mockResolvedValueOnce("D:/alpha-dir");
+    render(<App />);
+    await screen.findByLabelText("当前模型");
+    // 无项目草稿态：从 chip 菜单的「新建项目」进入打开工作区流程
+    fireEvent.click(screen.getByRole("button", { name: "选择项目" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /新建项目/ }));
+    await screen.findByRole("dialog", { name: "打开工作区" });
+    expect(screen.getByText("留空则使用目录名「alpha-dir」。")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("项目名称"), { target: { value: "  " } });
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("workspace_open", {
+        path: "D:/alpha-dir",
+        name: null,
+        executionMode: "direct",
+      }),
+    );
+    // 后端归一化后的目录名显示在面包屑上
+    await waitFor(() => expect(screen.getAllByText("alpha-dir").length).toBeGreaterThanOrEqual(1));
+  });
+  it("项目右键菜单可编辑并立即显示新名称", async () => {
+    localStorage.clear();
+    namingBackend();
+    const dialog = await openEditDialog();
+    expect(screen.getByLabelText("项目名称")).toHaveValue("alpha");
+    expect(screen.getByLabelText("默认执行位置")).toHaveValue("replica");
+    fireEvent.change(screen.getByLabelText("项目名称"), { target: { value: "新名字" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("workspace_update", {
+        workspaceId: "w",
+        name: "新名字",
+        executionMode: "replica",
+      }),
+    );
+    expect(screen.getByRole("button", { name: /^新名字 \d+$/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^alpha \d+$/ })).not.toBeInTheDocument();
+    expect(await screen.findByText("项目已重命名为「新名字」。")).toBeInTheDocument();
+  });
+  it("编辑留空提交时显示后端错误且名称不变", async () => {
+    localStorage.clear();
+    namingBackend({ updateError: "名称不能为空" });
+    const dialog = await openEditDialog();
+    fireEvent.change(screen.getByLabelText("项目名称"), { target: { value: "  " } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    await screen.findByText("名称不能为空");
+    expect(screen.getByRole("button", { name: /^alpha \d+$/ })).toBeInTheDocument();
+  });
+  it("编辑弹窗默认选中当前默认执行位置并可切换", async () => {
+    localStorage.clear();
+    namingBackend();
+    const dialog = await openEditDialog();
+    const mode = screen.getByLabelText("默认执行位置");
+    expect(mode).toHaveValue("replica");
+    fireEvent.change(mode, { target: { value: "direct" } });
+    expect(
+      await screen.findByText(/切换从下一回合起对未固化执行位置的会话生效/),
+    ).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("workspace_update", {
+        workspaceId: "w",
+        name: "alpha",
+        executionMode: "direct",
+      }),
+    );
+    expect(await screen.findByText(/默认执行位置已切换为直接/)).toBeInTheDocument();
+  });
+  it("默认执行位置切换失败时展示后端原因", async () => {
+    localStorage.clear();
+    namingBackend({ updateError: "隔离副本重建失败" });
+    const dialog = await openEditDialog();
+    fireEvent.change(screen.getByLabelText("默认执行位置"), { target: { value: "direct" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    await screen.findByText("隔离副本重建失败");
+    expect(screen.getByRole("button", { name: /^alpha \d+$/ })).toBeInTheDocument();
+  });
+  it("旧 worktree 项目编辑时显示直接模式并保留旧会话说明", async () => {
+    localStorage.clear();
+    namingBackend({ executionMode: "worktree" });
+    const dialog = await openEditDialog();
+    expect(screen.getByLabelText("默认执行位置")).toHaveValue("direct");
+    expect(within(dialog).getByText(/旧版 worktree 模式创建/)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("workspace_update", {
+        workspaceId: "w",
+        name: "alpha",
+        executionMode: "direct",
+      }),
+    );
+  });
+  it("中文与空格路径预填目录名并随创建提交", async () => {
+    localStorage.clear();
+    namingBackend({ empty: true });
+    vi.mocked(open).mockResolvedValueOnce("D:/我的 项目");
+    render(<App />);
+    await screen.findByLabelText("当前模型");
+    // 无项目草稿态：从 chip 菜单的「新建项目」进入打开工作区流程
+    fireEvent.click(screen.getByRole("button", { name: "选择项目" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /新建项目/ }));
+    await screen.findByRole("dialog", { name: "打开工作区" });
+    // 预填保留空格与中文；确认后原样携带名称提交
+    expect(screen.getByLabelText("项目名称")).toHaveValue("我的 项目");
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("workspace_open", {
+        path: "D:/我的 项目",
+        name: "我的 项目",
+        executionMode: "direct",
+      }),
+    );
+    // 后端返回的中文名称显示在面包屑上
+    await waitFor(() => expect(screen.getAllByText("我的 项目").length).toBeGreaterThanOrEqual(1));
+  });
+  it("草稿执行位置默认直接并随会话创建提交", async () => {
+    localStorage.clear();
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list")
+        return [
+          {
+            id: "w",
+            sourcePath: "D:/project",
+            replicaPath: "D:/copy",
+            createdAt: "",
+            name: "project",
+            executionMode: "direct",
+            worktrees: {},
+          },
+        ];
+      if (name === "session_create") return { id: "direct-1", workspaceId: "w", title: "新会话" };
+      return original(name, args);
+    });
+    await renderOpenA();
+    fireEvent.click(screen.getByRole("button", { name: "新建聊天" }));
+    const mode = await screen.findByLabelText("执行位置");
+    expect(mode).toHaveValue("direct");
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "直接改" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_create", {
+        workspaceId: "w",
+        title: "新会话",
+        executionMode: "direct",
+      }),
+    );
+  });
+  it("草稿选择 worktree 后会话创建携带 worktree", async () => {
+    localStorage.clear();
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list")
+        return [
+          {
+            id: "w",
+            sourcePath: "D:/project",
+            replicaPath: "D:/copy",
+            createdAt: "",
+            name: "project",
+            executionMode: "direct",
+            worktrees: {},
+          },
+        ];
+      if (name === "session_create") return { id: "worktree-1", workspaceId: "w", title: "新会话" };
+      return original(name, args);
+    });
+    await renderOpenA();
+    fireEvent.click(screen.getByRole("button", { name: "新建聊天" }));
+    fireEvent.change(await screen.findByLabelText("执行位置"), { target: { value: "worktree" } });
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "隔离改" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_create", {
+        workspaceId: "w",
+        title: "新会话",
+        executionMode: "worktree",
+      }),
+    );
+  });
+  it("副本项目的草稿默认副本且可改为直接", async () => {
+    localStorage.clear();
+    namingBackend();
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_create"
+        ? { id: "replica-1", workspaceId: "w", title: "新会话" }
+        : original(name, args),
+    );
+    await renderOpenA();
+    fireEvent.click(screen.getByRole("button", { name: "新建聊天" }));
+    const mode = await screen.findByLabelText("执行位置");
+    expect(mode).toHaveValue("replica");
+    fireEvent.change(mode, { target: { value: "direct" } });
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "直连" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_create", {
+        workspaceId: "w",
+        title: "新会话",
+        executionMode: "direct",
+      }),
+    );
+  });
+});
+
+describe("会话命名", () => {
+  beforeEach(() => localStorage.clear());
+  it("重命名旧会话后仍按更新时间排序", async () => {
+    const newer = {
+      id: "newer",
+      workspaceId: "w",
+      title: "较新的会话",
+      createdAt: "",
+      updatedAt: "2026-11-09T11:00:00Z",
+      parentId: null,
+    };
+    const older = {
+      id: "older",
+      workspaceId: "w",
+      title: "较旧的会话",
+      createdAt: "",
+      updatedAt: "2026-11-08T11:00:00Z",
+      parentId: null,
+    };
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list")
+        return [
+          {
+            id: "w",
+            sourcePath: "D:/alpha",
+            replicaPath: "D:/copy-a",
+            createdAt: "",
+            name: "alpha",
+          },
+        ];
+      if (name === "session_list") return [newer, older];
+      if (name === "session_timeline_page")
+        return timeline(
+          args.sessionId,
+          args.sessionId === "newer" ? [event("e-newer", "newer", "1", "新会话内容")] : [],
+        );
+      if (name === "session_rename") return { ...older, title: args.title };
+      return original(name, args);
+    });
+    render(<App />);
+    await openSidebarSession(/较新的会话/);
+    await screen.findByText("新会话内容");
+    const sessionRows = () =>
+      screen.getAllByRole("button").filter((button) => button.classList.contains("session-row"));
+    expect(
+      sessionRows().map((button) => button.querySelector(".session-title")?.textContent),
+    ).toEqual(["较新的会话", "较旧的会话"]);
+    fireEvent.contextMenu(screen.getByRole("button", { name: /较旧的会话/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "重命名" }));
+    const dialog = await screen.findByRole("dialog", { name: "重命名会话" });
+    fireEvent.change(screen.getByLabelText("会话名称"), { target: { value: "已重命名的旧会话" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    await screen.findByText("已重命名的旧会话");
+    expect(
+      sessionRows().map((button) => button.querySelector(".session-title")?.textContent),
+    ).toEqual(["较新的会话", "已重命名的旧会话"]);
+  });
+  it("首问后的标题响应按新的更新时间重新排序", async () => {
+    const newer = {
+      id: "newer",
+      workspaceId: "w",
+      title: "较新的会话",
+      createdAt: "",
+      updatedAt: "2026-11-09T11:00:00Z",
+      parentId: null,
+    };
+    const older = {
+      id: "older",
+      workspaceId: "w",
+      title: "新会话",
+      createdAt: "",
+      updatedAt: "2026-11-08T11:00:00Z",
+      parentId: null,
+    };
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_list") return [newer, older];
+      if (name === "session_timeline_page")
+        return timeline(
+          args.sessionId,
+          args.sessionId === "newer" ? [event("e-newer", "newer", "1", "较新会话内容")] : [],
+        );
+      if (name === "session_title_generate")
+        return { ...older, title: "首问自动标题", updatedAt: "2026-11-09T12:00:00Z" };
+      return original(name, args);
+    });
+    render(<App />);
+    await openSidebarSession(/较新的会话/);
+    await screen.findByText("较新会话内容");
+    fireEvent.click(screen.getByRole("button", { name: /新会话/ }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_timeline_page", { sessionId: "older" }),
+    );
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "今天首次提问" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_title_generate", {
+        sessionId: "older",
+        text: "今天首次提问",
+        modelId: "m",
+        effort: "high",
+        attachmentNames: [],
+      }),
+    );
+    expect(await screen.findAllByText("首问自动标题")).toHaveLength(2);
+    const titles = screen
+      .getAllByRole("button")
+      .filter((button) => button.classList.contains("session-row"))
+      .map((button) => button.querySelector(".session-title")?.textContent);
+    expect(titles).toEqual(["首问自动标题", "较新的会话"]);
+  });
+  it.each(["最近", "项目"])("在%s视图右键会话可重命名并更新列表和面包屑", async (view) => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_rename"
+        ? { id: args.sessionId, workspaceId: "w", title: args.title, createdAt: "", updatedAt: "" }
+        : original(name, args),
+    );
+    await renderOpenA();
+    if (view === "项目")
+      fireEvent.click(screen.getByRole("switch", { name: "切换视图：项目 / 最近" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: /会话 A/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "重命名" }));
+    const dialog = await screen.findByRole("dialog", { name: "重命名会话" });
+    expect(screen.getByLabelText("会话名称")).toHaveValue("会话 A");
+    fireEvent.change(screen.getByLabelText("会话名称"), { target: { value: "重命名后的会话" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_rename", {
+        sessionId: "a",
+        title: "重命名后的会话",
+      }),
+    );
+    expect(await screen.findAllByText("重命名后的会话")).toHaveLength(2);
+    expect(screen.queryByRole("menu", { name: "会话操作" })).not.toBeInTheDocument();
+  });
+  it("首问创建草稿会话时并行生成标题和发送消息", async () => {
+    let resolveTitle!: (value: unknown) => void;
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_list") return [];
+      if (name === "session_create")
+        return { id: "first", workspaceId: "w", title: "新会话", createdAt: "", updatedAt: "" };
+      if (name === "session_title_generate")
+        return new Promise((resolve) => {
+          resolveTitle = resolve;
+        });
+      if (name === "session_timeline_page") return timeline(args.sessionId, []);
+      return original(name, args);
+    });
+    render(<App />);
+    await screen.findByRole("button", { name: "选择项目" });
+    fireEvent.change(screen.getByLabelText("消息"), {
+      target: { value: "修复登录状态刷新后丢失" },
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "发送消息" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_title_generate", {
+        sessionId: "first",
+        text: "修复登录状态刷新后丢失",
+        modelId: "m",
+        effort: "high",
+        attachmentNames: [],
+      }),
+    );
+    expect(mocks.send).toHaveBeenCalledWith(
+      "first",
+      "修复登录状态刷新后丢失",
+      "m",
+      expect.any(Function),
+      undefined,
+      "high",
+    );
+    await act(async () =>
+      resolveTitle({
+        id: "first",
+        workspaceId: "w",
+        title: "修复登录状态丢失",
+        createdAt: "",
+        updatedAt: "",
+      }),
+    );
+    expect(await screen.findAllByText("修复登录状态丢失")).toHaveLength(2);
+  });
+  it("标题命令失败不会阻止用户首问发送", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_list") return [];
+      if (name === "session_create")
+        return { id: "first", workspaceId: "w", title: "新会话", createdAt: "", updatedAt: "" };
+      if (name === "session_title_generate") throw new Error("标题服务不可用");
+      if (name === "session_timeline_page") return timeline(args.sessionId, []);
+      return original(name, args);
+    });
+    render(<App />);
+    await screen.findByRole("button", { name: "选择项目" });
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "检查构建错误" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.send).toHaveBeenCalledWith(
+        "first",
+        "检查构建错误",
+        "m",
+        expect.any(Function),
+        undefined,
+        "high",
+      ),
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+  it("已有空会话的首问也触发标题生成", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_list")
+        return [{ id: "blank", workspaceId: "w", title: "新会话", createdAt: "", updatedAt: "" }];
+      if (name === "session_timeline_page" && args.sessionId === "blank")
+        return timeline(args.sessionId, []);
+      if (name === "session_title_generate")
+        return { id: "blank", workspaceId: "w", title: "空会话首问", createdAt: "", updatedAt: "" };
+      return original(name, args);
+    });
+    render(<App />);
+    await openSidebarSession(/新会话/);
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_timeline_page", { sessionId: "blank" }),
+    );
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "梳理项目入口" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_title_generate", {
+        sessionId: "blank",
+        text: "梳理项目入口",
+        modelId: "m",
+        effort: "high",
+        attachmentNames: [],
+      }),
+    );
+    expect(await screen.findAllByText("空会话首问")).toHaveLength(2);
+  });
+  it("空会话的首条 /init 也并行生成标题", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_list")
+        return [
+          {
+            id: "blank",
+            workspaceId: "w",
+            title: "新会话",
+            createdAt: "",
+            updatedAt: "",
+            parentId: null,
+          },
+        ];
+      if (name === "session_timeline_page" && args.sessionId === "blank")
+        return timeline(args.sessionId, []);
+      if (name === "session_title_generate")
+        return {
+          id: "blank",
+          workspaceId: "w",
+          title: "初始化项目说明",
+          createdAt: "",
+          updatedAt: "",
+        };
+      return original(name, args);
+    });
+    render(<App />);
+    await openSidebarSession(/新会话/);
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "/init" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_title_generate", {
+        sessionId: "blank",
+        text: INIT_PROMPT,
+        modelId: "m",
+        effort: "high",
+        attachmentNames: [],
+      }),
+    );
+    expect(mocks.send).toHaveBeenCalledWith(
+      "blank",
+      INIT_PROMPT,
+      "m",
+      expect.any(Function),
+      undefined,
+      "high",
+    );
+    expect(await screen.findAllByText("初始化项目说明")).toHaveLength(2);
+  });
+  it("迟到的自动标题响应不会覆盖人工重命名", async () => {
+    let resolveTitle!: (value: unknown) => void;
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_list")
+        return [
+          {
+            id: "blank",
+            workspaceId: "w",
+            title: "新会话",
+            createdAt: "",
+            updatedAt: "",
+            parentId: null,
+          },
+        ];
+      if (name === "session_timeline_page" && args.sessionId === "blank")
+        return timeline(args.sessionId, []);
+      if (name === "session_title_generate")
+        return new Promise((resolve) => {
+          resolveTitle = resolve;
+        });
+      if (name === "session_rename")
+        return {
+          id: "blank",
+          workspaceId: "w",
+          title: args.title,
+          createdAt: "",
+          updatedAt: "",
+          parentId: null,
+        };
+      return original(name, args);
+    });
+    render(<App />);
+    await openSidebarSession(/新会话/);
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "首个问题" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_title_generate", {
+        sessionId: "blank",
+        text: "首个问题",
+        modelId: "m",
+        effort: "high",
+        attachmentNames: [],
+      }),
+    );
+    fireEvent.contextMenu(screen.getByRole("button", { name: /新会话/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "重命名" }));
+    const dialog = await screen.findByRole("dialog", { name: "重命名会话" });
+    fireEvent.change(screen.getByLabelText("会话名称"), { target: { value: "人工标题" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_rename", {
+        sessionId: "blank",
+        title: "人工标题",
+      }),
+    );
+    await act(async () =>
+      resolveTitle({
+        id: "blank",
+        workspaceId: "w",
+        title: "自动生成标题",
+        createdAt: "",
+        updatedAt: "",
+        parentId: null,
+      }),
+    );
+    expect(await screen.findAllByText("人工标题")).toHaveLength(2);
+    expect(screen.queryByText("自动生成标题")).not.toBeInTheDocument();
+  });
+  it("迟到的会话列表快照不会覆盖已生成标题", async () => {
+    let resolveTitle!: (value: unknown) => void, resolveList!: (value: unknown) => void;
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list")
+        return [
+          {
+            id: "w",
+            sourcePath: "D:/alpha",
+            replicaPath: "D:/copy-a",
+            createdAt: "",
+            name: "alpha",
+          },
+          {
+            id: "other",
+            sourcePath: "D:/beta",
+            replicaPath: "D:/copy-b",
+            createdAt: "",
+            name: "beta",
+          },
+        ];
+      if (name === "session_list" && args.workspaceId === "w")
+        return [
+          {
+            id: "blank",
+            workspaceId: "w",
+            title: "新会话",
+            createdAt: "",
+            updatedAt: "2026-11-09T11:00:00Z",
+            parentId: null,
+          },
+          {
+            id: "other-session",
+            workspaceId: "other",
+            title: "B 的会话",
+            createdAt: "",
+            updatedAt: "2026-11-09T10:00:00Z",
+            parentId: null,
+          },
+        ];
+      if (name === "session_list" && args.workspaceId === "other")
+        return new Promise((resolve) => {
+          resolveList = resolve;
+        });
+      if (name === "session_timeline_page" && args.sessionId === "blank")
+        return timeline(args.sessionId, []);
+      if (name === "session_timeline_page" && args.sessionId === "other-session")
+        return timeline(args.sessionId, [event("e-other", "other-session", "1", "B 的内容")]);
+      if (name === "session_title_generate")
+        return new Promise((resolve) => {
+          resolveTitle = resolve;
+        });
+      return original(name, args);
+    });
+    render(<App />);
+    await openSidebarSession(/新会话/);
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "首个问题" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_title_generate", {
+        sessionId: "blank",
+        text: "首个问题",
+        modelId: "m",
+        effort: "high",
+        attachmentNames: [],
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /B 的会话/ }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_list", {
+        workspaceId: "other",
+        allWorkspaces: true,
+      }),
+    );
+    await act(async () =>
+      resolveTitle({
+        id: "blank",
+        workspaceId: "w",
+        title: "生成完成标题",
+        createdAt: "",
+        updatedAt: "2026-11-09T11:00:00Z",
+        parentId: null,
+      }),
+    );
+    expect(await screen.findByText("生成完成标题")).toBeInTheDocument();
+    await act(async () =>
+      resolveList([
+        {
+          id: "blank",
+          workspaceId: "w",
+          title: "新会话",
+          createdAt: "",
+          updatedAt: "2026-11-09T11:00:00Z",
+          parentId: null,
+        },
+        {
+          id: "other-session",
+          workspaceId: "other",
+          title: "B 的会话",
+          createdAt: "",
+          updatedAt: "2026-11-09T10:00:00Z",
+          parentId: null,
+        },
+      ]),
+    );
+    expect(screen.getByText("生成完成标题")).toBeInTheDocument();
+  });
+  it("有历史用户消息的会话不再生成首次标题", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_list")
+        return [{ id: "used", workspaceId: "w", title: "新会话", createdAt: "", updatedAt: "" }];
+      if (name === "session_timeline_page" && args.sessionId === "used")
+        return timeline(args.sessionId, [
+          {
+            id: "old-user",
+            sessionId: "used",
+            seq: "1",
+            kind: "user.message",
+            data: { content: "之前的问题" },
+            createdAt: "",
+          },
+        ]);
+      return original(name, args);
+    });
+    render(<App />);
+    await openSidebarSession(/新会话/);
+    await screen.findByText("之前的问题");
+    await waitFor(() => expect(useChat.getState().events.used?.[0]?.kind).toBe("user.message"));
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "后续问题" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.send).toHaveBeenCalledWith(
+        "used",
+        "后续问题",
+        "m",
+        expect.any(Function),
+        undefined,
+        "high",
+      ),
+    );
+    expect(mocks.command).not.toHaveBeenCalledWith("session_title_generate", expect.anything());
+  });
+  it("会话右键菜单可复制会话ID", async () => {
+    const copy = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: copy },
+    });
+    await renderOpenA();
+    fireEvent.contextMenu(screen.getByRole("button", { name: /会话 A/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "复制会话ID" }));
+    await waitFor(() => expect(copy).toHaveBeenCalledWith("a"));
+    await waitFor(() =>
+      expect(screen.queryByRole("menu", { name: "会话操作" })).not.toBeInTheDocument(),
+    );
+  });
+  it("会话右键菜单可用 Escape 和点击外部关闭", async () => {
+    await renderOpenA();
+    fireEvent.contextMenu(screen.getByRole("button", { name: /会话 A/ }));
+    expect(await screen.findByRole("menu", { name: "会话操作" })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() =>
+      expect(screen.queryByRole("menu", { name: "会话操作" })).not.toBeInTheDocument(),
+    );
+    fireEvent.contextMenu(screen.getByRole("button", { name: /会话 A/ }));
+    expect(await screen.findByRole("menu", { name: "会话操作" })).toBeInTheDocument();
+    fireEvent.mouseDown(document.body);
+    await waitFor(() =>
+      expect(screen.queryByRole("menu", { name: "会话操作" })).not.toBeInTheDocument(),
+    );
+  });
+  it("会话重命名拒绝空白标题", async () => {
+    await renderOpenA();
+    fireEvent.contextMenu(screen.getByRole("button", { name: /会话 A/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "重命名" }));
+    const dialog = await screen.findByRole("dialog", { name: "重命名会话" });
+    fireEvent.change(screen.getByLabelText("会话名称"), { target: { value: "  " } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("不能为空");
+    expect(mocks.command).not.toHaveBeenCalledWith("session_rename", expect.anything());
+  });
+  it("取消重命名不提交且保留原标题", async () => {
+    await renderOpenA();
+    fireEvent.contextMenu(screen.getByRole("button", { name: /会话 A/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "重命名" }));
+    const dialog = await screen.findByRole("dialog", { name: "重命名会话" });
+    fireEvent.change(screen.getByLabelText("会话名称"), { target: { value: "临时标题" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    expect(mocks.command).not.toHaveBeenCalledWith("session_rename", expect.anything());
+    expect(screen.getByRole("button", { name: /会话 A/ })).toBeInTheDocument();
+  });
+  it("重命名保存失败时保留对话框和列表标题", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_rename" ? Promise.reject(new Error("存储失败")) : original(name, args),
+    );
+    await renderOpenA();
+    fireEvent.contextMenu(screen.getByRole("button", { name: /会话 A/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "重命名" }));
+    const dialog = await screen.findByRole("dialog", { name: "重命名会话" });
+    fireEvent.change(screen.getByLabelText("会话名称"), { target: { value: "新标题" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("存储失败");
+    expect(screen.getByRole("button", { name: /会话 A/ })).toBeInTheDocument();
+  });
+  it.each(["成功", "失败"])("旧的重命名请求%s返回时不影响新打开的对话框", async (outcome) => {
+    let resolveRename!: (value: unknown) => void, rejectRename!: (reason: unknown) => void;
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_rename" && args.sessionId === "a")
+        return new Promise((resolve, reject) => {
+          resolveRename = resolve;
+          rejectRename = reject;
+        });
+      return original(name, args);
+    });
+    await renderOpenA();
+    fireEvent.contextMenu(screen.getByRole("button", { name: /会话 A/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "重命名" }));
+    let dialog = await screen.findByRole("dialog", { name: "重命名会话" });
+    fireEvent.change(screen.getByLabelText("会话名称"), { target: { value: "A 的新标题" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_rename", {
+        sessionId: "a",
+        title: "A 的新标题",
+      }),
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: /会话 B/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "重命名" }));
+    dialog = await screen.findByRole("dialog", { name: "重命名会话" });
+    fireEvent.change(screen.getByLabelText("会话名称"), { target: { value: "B 的编辑草稿" } });
+    await act(async () => {
+      if (outcome === "成功")
+        resolveRename({
+          id: "a",
+          workspaceId: "w",
+          title: "A 的新标题",
+          createdAt: "",
+          updatedAt: "",
+          parentId: null,
+        });
+      else rejectRename(new Error("A 保存失败"));
+    });
+    expect(screen.getByRole("dialog", { name: "重命名会话" })).toBeInTheDocument();
+    expect(screen.getByLabelText("会话名称")).toHaveValue("B 的编辑草稿");
+    if (outcome === "失败") expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
+  });
+  it("同一标题弹窗正在保存时忽略重复提交", async () => {
+    let resolveRename!: (value: unknown) => void;
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_rename" && args.sessionId === "a"
+        ? new Promise((resolve) => {
+            resolveRename = resolve;
+          })
+        : original(name, args),
+    );
+    await renderOpenA();
+    fireEvent.contextMenu(screen.getByRole("button", { name: /会话 A/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "重命名" }));
+    const dialog = await screen.findByRole("dialog", { name: "重命名会话" });
+    fireEvent.change(screen.getByLabelText("会话名称"), { target: { value: "新的标题" } });
+    const saveButton = within(dialog).getByRole("button", { name: "保存" });
+    fireEvent.click(saveButton);
+    fireEvent.click(saveButton);
+    await waitFor(() =>
+      expect(
+        mocks.command.mock.calls.filter(
+          ([name, args]) => name === "session_rename" && args.sessionId === "a",
+        ),
+      ).toHaveLength(1),
+    );
+    await act(async () =>
+      resolveRename({
+        id: "a",
+        workspaceId: "w",
+        title: "新的标题",
+        createdAt: "",
+        updatedAt: "",
+        parentId: null,
+      }),
+    );
+  });
+});
+it("会话中的助手链接和用户网址打开网页抽屉", async () => {
+  const original = mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async (name, args) =>
+    name === "session_timeline_page"
+      ? timeline("a", [
+          {
+            id: "u",
+            sessionId: "a",
+            seq: "1",
+            kind: "user.message",
+            data: { content: "请看 https://example.org/test。" },
+            createdAt: "",
+          },
+          event("e", "a", "2", "[站点](https://example.com/path)"),
+        ])
+      : original(name, args),
+  );
+  render(<App />);
+  await openSidebarSession(/会话 A/);
+
+  const link = await screen.findByRole("link", { name: "站点" });
+  expect(link.isConnected).toBe(true);
+  fireEvent.click(link);
+  expect(useSidePanel.getState()).toMatchObject({
+    view: "web",
+    webUrl: "https://example.com/path",
+  });
+  const userLink = screen.getByRole("link", { name: "https://example.org/test" });
+  fireEvent.click(userLink);
+  expect(useSidePanel.getState().webUrl).toBe("https://example.org/test");
+});
+it("链接右键菜单复制完整地址并可在默认浏览器中打开", async () => {
+  const original = mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async (name, args) =>
+    name === "session_timeline_page"
+      ? timeline("a", [event("e", "a", "1", "[站点](https://example.com/path?q=1)")])
+      : original(name, args),
+  );
+  const copy = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: copy } });
+  render(<App />);
+  await openSidebarSession(/会话 A/);
+  fireEvent.contextMenu(await screen.findByRole("link", { name: "站点" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "复制链接" }));
+  await waitFor(() => expect(copy).toHaveBeenCalledWith("https://example.com/path?q=1"));
+  fireEvent.contextMenu(screen.getByRole("link", { name: "站点" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "在默认浏览器中打开" }));
+  await waitFor(() =>
+    expect(mocks.command).toHaveBeenCalledWith("open_external_link", {
+      url: "https://example.com/path?q=1",
+    }),
+  );
+});
+it("用户消息中的网址不包含句末标点", async () => {
+  const original = mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async (name, args) =>
+    name === "session_timeline_page"
+      ? timeline("a", [
+          {
+            id: "u",
+            sessionId: "a",
+            seq: "1",
+            kind: "user.message",
+            data: { content: "访问 https://example.org/page. 然后继续" },
+            createdAt: "",
+          },
+          event("e", "a", "2", "完成"),
+        ])
+      : original(name, args),
+  );
+  render(<App />);
+  await openSidebarSession(/会话 A/);
+  expect(await screen.findByRole("link", { name: "https://example.org/page" })).toHaveAttribute(
+    "href",
+    "https://example.org/page",
+  );
+});
+it("非 HTTP Markdown 链接保留原有地址与行为", async () => {
+  const original = mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async (name, args) =>
+    name === "session_timeline_page"
+      ? timeline("a", [event("e", "a", "1", "[邮件](mailto:hello@example.com)")])
+      : original(name, args),
+  );
+  render(<App />);
+  await openSidebarSession(/会话 A/);
+  const link = await screen.findByRole("link", { name: "邮件" });
+  expect(link).toHaveAttribute("href", "mailto:hello@example.com");
+});
+
+describe("会话存档", () => {
+  const session = (
+    id: string,
+    title: string,
+    extra: Partial<import("./types").SessionInfo> = {},
+  ) => ({
+    id,
+    workspaceId: "w",
+    title,
+    createdAt: "2026-11-01T00:00:00Z",
+    updatedAt: "2026-11-08T00:00:00Z",
+    parentId: null,
+    ...extra,
+  });
+  it("悬停浮层显示时点击行内存档按钮：会话移除后浮层立即收起", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_list")
+        return args.archived ? [] : [session("a", "会话 A"), session("b", "会话 B")];
+      if (name === "session_archive")
+        return session("a", "会话 A", { archivedAt: "2026-11-09T00:00:00Z" });
+      return original(name, args);
+    });
+    await renderOpenA();
+    const row = screen.getByRole("button", { name: /会话 A/ });
+    fireEvent.mouseEnter(row);
+    await screen.findByRole("tooltip");
+    // 回归：光标未离开会话行（无 mouseLeave）时点击行内存档按钮，行随存档移除后浮层不得驻留
+    fireEvent.click(within(row).getByRole("button", { name: "存档会话" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_archive", { sessionId: "a" }),
+    );
+    await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
+  });
+  it("右键菜单存档会话：调用 session_archive 并从任务列表移除", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_list")
+        return args.archived ? [] : [session("a", "会话 A"), session("b", "会话 B")];
+      if (name === "session_archive")
+        return session("a", "会话 A", { archivedAt: "2026-11-09T00:00:00Z" });
+      return original(name, args);
+    });
+    await renderOpenA();
+    const row = screen.getByRole("button", { name: /会话 A/ });
+    fireEvent.contextMenu(row);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "存档" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_archive", { sessionId: "a" }),
+    );
+    await waitFor(() => expect(screen.queryByText("会话 A")).not.toBeInTheDocument());
+    expect(screen.getByText("已存档会话「会话 A」。")).toBeInTheDocument();
+  });
+  it("存档当前会话后统一回到新会话草稿态，不自动打开同项目其他会话", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_list")
+        return [
+          session("a", "会话 A"),
+          session("sub", "检查计划模式安全接入点", { parentId: "a" }),
+          session("b", "会话 B"),
+        ];
+      if (name === "session_archive")
+        return session("a", "会话 A", { archivedAt: "2026-11-09T00:00:00Z" });
+      return original(name, args);
+    });
+    await renderOpenA();
+    const row = screen.getByRole("button", { name: /会话 A/ });
+    fireEvent.click(within(row).getByRole("button", { name: "存档会话" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_archive", { sessionId: "a" }),
+    );
+    // 统一回主页：欢迎页带项目名、输入框可用，同项目其他会话与子代理会话都不自动打开
+    expect(
+      await screen.findByRole("heading", { name: /你想在 project 中构建什么/ }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("消息")).toBeEnabled();
+    expect(
+      mocks.command.mock.calls.some(
+        ([name, args]) =>
+          name === "session_timeline_page" && (args.sessionId === "b" || args.sessionId === "sub"),
+      ),
+    ).toBe(false);
+  });
+  it("存档项目唯一主会话后回到新会话草稿态，不加载子代理会话内容", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_list")
+        return [
+          session("a", "会话 A"),
+          session("sub", "检查计划模式安全接入点", { parentId: "a" }),
+        ];
+      if (name === "session_archive")
+        return session("a", "会话 A", { archivedAt: "2026-11-09T00:00:00Z" });
+      return original(name, args);
+    });
+    await renderOpenA();
+    const row = screen.getByRole("button", { name: /会话 A/ });
+    fireEvent.click(within(row).getByRole("button", { name: "存档会话" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_archive", { sessionId: "a" }),
+    );
+    expect(
+      await screen.findByRole("heading", { name: /你想在 project 中构建什么/ }),
+    ).toBeInTheDocument();
+    expect(
+      mocks.command.mock.calls.some(
+        ([name, args]) => name === "session_timeline_page" && args.sessionId === "sub",
+      ),
+    ).toBe(false);
+  });
+  it("设置存档管理按项目显示归档会话并可恢复到列表", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_list")
+        return args.archived
+          ? [session("old", "已归档的旧会话", { archivedAt: "2026-11-09T00:00:00Z" })]
+          : [session("a", "会话 A"), session("b", "会话 B")];
+      if (name === "session_restore") return session("old", "已归档的旧会话");
+      return original(name, args);
+    });
+    await renderOpenA();
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    const page = await screen.findByRole("dialog", { name: "设置" });
+    fireEvent.click(within(page).getByRole("button", { name: "存档管理" }));
+    expect(await within(page).findByText("已归档的旧会话")).toBeInTheDocument();
+    expect(within(page).getByText(/归档于/)).toBeInTheDocument();
+    fireEvent.click(within(page).getByRole("button", { name: "恢复" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_restore", { sessionId: "old" }),
+    );
+    fireEvent.click(within(page).getByRole("button", { name: "关闭设置，返回工作台" }));
+    expect(await screen.findByText("已归档的旧会话")).toBeInTheDocument();
+    expect(screen.getByText("已恢复会话「已归档的旧会话」。")).toBeInTheDocument();
+  });
+  it("无归档数据时存档管理显示空态", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_list")
+        return args.archived ? [] : [session("a", "会话 A"), session("b", "会话 B")];
+      return original(name, args);
+    });
+    await renderOpenA();
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    const page = await screen.findByRole("dialog", { name: "设置" });
+    fireEvent.click(within(page).getByRole("button", { name: "存档管理" }));
+    expect(await within(page).findByText(/还没有归档的会话/)).toBeInTheDocument();
+  });
+});
+describe("项目移除（隐藏语义）", () => {
+  it("组头右键打开项目菜单，确认后隐藏项目并提示重新显示", async () => {
+    localStorage.removeItem("sessionView");
+    localStorage.removeItem("sessionCollapsed");
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list")
+        return [
+          {
+            id: "w",
+            sourcePath: "D:/project",
+            replicaPath: "D:/copy",
+            createdAt: "",
+            name: "项目A",
+            pinned: false,
+            hidden: false,
+          },
+          {
+            id: "w2",
+            sourcePath: "D:/project-2",
+            replicaPath: "D:/copy2",
+            createdAt: "",
+            name: "项目B",
+            pinned: false,
+            hidden: false,
+          },
+        ];
+      if (name === "session_list") return [{ id: "a", workspaceId: "w", title: "会话 A" }];
+      if (name === "workspace_remove") return { workspaceId: "w2", stoppedSessions: 0 };
+      return original(name, args);
+    });
+    render(<App />);
+    await screen.findByRole("button", { name: /会话 A/ });
+    fireEvent.click(screen.getByRole("switch", { name: "切换视图：项目 / 最近" }));
+    fireEvent.contextMenu(screen.getByText("项目B"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "移除项目" }));
+    const dialog = await screen.findByRole("dialog", { name: "移除项目「项目B」" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "移除项目" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("workspace_remove", {
+        workspaceId: "w2",
+        stopRunning: false,
+      }),
+    );
+    expect(await screen.findByText(/已移除项目「项目B」，数据全部保留/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("项目B")).not.toBeInTheDocument());
+  });
+  it("有运行中会话时确认按钮为「移除并停止运行」并带 stopRunning", async () => {
+    localStorage.removeItem("sessionView");
+    localStorage.removeItem("sessionCollapsed");
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list")
+        return [
+          {
+            id: "w",
+            sourcePath: "D:/project",
+            replicaPath: "D:/copy",
+            createdAt: "",
+            name: "运行项目",
+            pinned: false,
+            hidden: false,
+          },
+        ];
+      if (name === "session_list") return [{ id: "a", workspaceId: "w", title: "会话 A" }];
+      if (name === "session_active_list") return ["a"];
+      if (name === "workspace_remove") return { workspaceId: "w", stoppedSessions: 1 };
+      return original(name, args);
+    });
+    render(<App />);
+    await screen.findByRole("button", { name: /会话 A/ });
+    fireEvent.click(screen.getByRole("switch", { name: "切换视图：项目 / 最近" }));
+    const sessionNav = screen.getByRole("navigation", { name: "会话列表" });
+    fireEvent.contextMenu(within(sessionNav).getByText("运行项目"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "移除项目" }));
+    const dialog = await screen.findByRole("dialog", { name: "移除项目「运行项目」" });
+    expect(within(dialog).getByText(/该项目还有运行中的对话或 Agent/)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "移除项目（移除并停止运行）" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("workspace_remove", {
+        workspaceId: "w",
+        stopRunning: true,
+      }),
+    );
+  });
+  it("打开项目后重新显示同目录隐藏项目并提示", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_open")
+        return {
+          id: "new-w",
+          sourcePath: "D:/project",
+          replicaPath: "D:/copy",
+          createdAt: "",
+          name: "项目A",
+          pinned: false,
+          hidden: false,
+          executionMode: "replica",
+          worktrees: {},
+        };
+      if (name === "workspace_reveal_hidden") return { workspaceId: "new-w", revealed: 1 };
+      if (name === "session_list") return [];
+      return original(name, args);
+    });
+    vi.mocked(open).mockResolvedValue("D:/project");
+    render(<App />);
+    await screen.findByRole("button", { name: "新建聊天" });
+    fireEvent.click(screen.getByRole("button", { name: "新建聊天" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /新建项目/ }));
+    await screen.findByRole("dialog", { name: "打开工作区" });
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+    expect(await screen.findByText(/重新显示 1 个同目录隐藏项目/)).toBeInTheDocument();
+    expect(mocks.command).toHaveBeenCalledWith("workspace_reveal_hidden", { workspaceId: "new-w" });
+  });
+  it("隐藏项目的归档会话仍显示在存档管理且可恢复", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list")
+        return [
+          {
+            id: "w",
+            sourcePath: "D:/keep",
+            replicaPath: "D:/keep-copy",
+            createdAt: "",
+            name: "正常项目",
+            pinned: false,
+            hidden: false,
+          },
+          {
+            id: "gone",
+            sourcePath: "D:/gone",
+            replicaPath: "D:/gone-copy",
+            createdAt: "",
+            name: "隐藏项目",
+            pinned: false,
+            hidden: true,
+          },
+        ];
+      if (name === "session_list" && args.archived)
+        return [
+          {
+            id: "arc",
+            workspaceId: "gone",
+            title: "隐藏项目的归档会话",
+            archivedAt: "2026-11-13T00:00:00Z",
+          },
+        ];
+      if (name === "session_list") return [];
+      return original(name, args);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    const page = await screen.findByRole("dialog", { name: "设置" });
+    fireEvent.click(within(page).getByRole("button", { name: "存档管理" }));
+    expect(await screen.findByText("隐藏项目")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "恢复" })).toBeEnabled();
+  });
+});
+describe("项目右键打开目录", () => {
+  it("右键项目菜单首项「打开项目目录」调用 workspace_open_dir", async () => {
+    localStorage.removeItem("sessionView");
+    localStorage.removeItem("sessionCollapsed");
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list")
+        return [
+          {
+            id: "w2",
+            sourcePath: "D:/project-2",
+            replicaPath: "D:/copy2",
+            createdAt: "",
+            name: "项目B",
+            pinned: false,
+            hidden: false,
+          },
+        ];
+      if (name === "session_list") return [];
+      return original(name, args);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("switch", { name: "切换视图：项目 / 最近" }));
+    const sessionNav = screen.getByRole("navigation", { name: "会话列表" });
+    fireEvent.contextMenu(await within(sessionNav).findByText("项目B"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "打开项目目录" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("workspace_open_dir", { workspaceId: "w2" }),
+    );
+    expect(screen.queryByRole("menu", { name: "项目操作" })).not.toBeInTheDocument();
+  });
+  it("打开目录失败时顶部错误区展示原因", async () => {
+    localStorage.removeItem("sessionView");
+    localStorage.removeItem("sessionCollapsed");
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list")
+        return [
+          {
+            id: "w2",
+            sourcePath: "D:/project-2",
+            replicaPath: "D:/copy2",
+            createdAt: "",
+            name: "项目B",
+            pinned: false,
+            hidden: false,
+          },
+        ];
+      if (name === "session_list") return [];
+      if (name === "workspace_open_dir")
+        return Promise.reject(new Error("项目目录不存在或已被移动：D:/project-2"));
+      return original(name, args);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("switch", { name: "切换视图：项目 / 最近" }));
+    const sessionNav = screen.getByRole("navigation", { name: "会话列表" });
+    fireEvent.contextMenu(await within(sessionNav).findByText("项目B"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "打开项目目录" }));
+    expect(await screen.findByText("项目目录不存在或已被移动：D:/project-2")).toBeInTheDocument();
+  });
+});
+describe("消息引用", () => {
+  const withSelection = async (body: () => Promise<void>) => {
+    const spy = vi
+      .spyOn(window, "getSelection")
+      .mockReturnValue({ toString: () => "引用内容", removeAllRanges: () => {} } as Selection);
+    try {
+      await body();
+    } finally {
+      spy.mockRestore();
+    }
+  };
+  it("有选区时右键菜单出现「引用」，点击后以附件式引用条显示且可删除", async () => {
+    await withSelection(async () => {
+      await renderOpenA();
+      fireEvent.contextMenu(screen.getByText("内容 a"));
+      const item = await screen.findByRole("menuitem", { name: /引用/ });
+      expect(item).toBeEnabled();
+      fireEvent.click(item);
+      expect(await screen.findByTitle("引用内容")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "删除引用 1" }));
+      expect(screen.queryByTitle("引用内容")).toBeNull();
+    });
+  });
+  it("无选区时右键菜单「引用」禁用", async () => {
+    const spy = vi
+      .spyOn(window, "getSelection")
+      .mockReturnValue({ toString: () => "", removeAllRanges: () => {} } as Selection);
+    try {
+      await renderOpenA();
+      fireEvent.contextMenu(screen.getByText("内容 a"));
+      expect(await screen.findByRole("menuitem", { name: /引用/ })).toBeDisabled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+  it("发送时携带引用，发送成功后清空", async () => {
+    mocks.send.mockResolvedValue(undefined);
+    await withSelection(async () => {
+      await renderOpenA();
+      fireEvent.contextMenu(screen.getByText("内容 a"));
+      fireEvent.click(await screen.findByRole("menuitem", { name: /引用/ }));
+      const input = screen.getByLabelText("消息");
+      fireEvent.change(input, { target: { value: "请看引用" } });
+      fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+      await waitFor(() =>
+        expect(mocks.send).toHaveBeenCalledWith(
+          "a",
+          "请看引用",
+          "m",
+          expect.any(Function),
+          undefined,
+          "high",
+          ["引用内容"],
+        ),
+      );
+      await waitFor(() => expect(screen.queryByTitle("引用内容")).toBeNull());
+    });
+  });
+  it("仅引用无正文也可发送", async () => {
+    mocks.send.mockResolvedValue(undefined);
+    await withSelection(async () => {
+      await renderOpenA();
+      fireEvent.contextMenu(screen.getByText("内容 a"));
+      fireEvent.click(await screen.findByRole("menuitem", { name: /引用/ }));
+      const button = screen.getByRole("button", { name: "发送消息" });
+      expect(button).toBeEnabled();
+      fireEvent.click(button);
+      await waitFor(() =>
+        expect(mocks.send).toHaveBeenCalledWith(
+          "a",
+          "",
+          "m",
+          expect.any(Function),
+          undefined,
+          "high",
+          ["引用内容"],
+        ),
+      );
+    });
+  });
+  it("时间线渲染用户消息的引用块", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_timeline_page"
+        ? timeline(args.sessionId, [
+            {
+              ...event(`u-${args.sessionId}`, args.sessionId, "1", "带引用的消息"),
+              kind: "user.message",
+              data: { content: "带引用的消息", quotes: ["引用甲", "引用乙"] },
+            },
+            event(`e-${args.sessionId}`, args.sessionId, "2", "回复内容"),
+          ])
+        : original(name, args),
+    );
+    render(<App />);
+    await openSidebarSession(/会话 A/);
+    await screen.findByText("带引用的消息");
+    expect(screen.getByText(/引用甲/)).toBeInTheDocument();
+    expect(screen.getByText(/引用乙/)).toBeInTheDocument();
+  });
+});
+describe("滚动到底按钮", () => {
+  // jsdom 无布局：给滚动容器注入 scrollHeight/clientHeight 后配合 fireEvent.scroll 驱动显隐逻辑。
+  const metrics = (conversation: HTMLElement, scrollHeight: number, clientHeight: number) => {
+    Object.defineProperty(conversation, "scrollHeight", {
+      configurable: true,
+      value: scrollHeight,
+    });
+    Object.defineProperty(conversation, "clientHeight", {
+      configurable: true,
+      value: clientHeight,
+    });
+  };
+  const restoreMetrics = (conversation: HTMLElement) => {
+    delete (conversation as unknown as Record<string, unknown>).scrollHeight;
+    delete (conversation as unknown as Record<string, unknown>).clientHeight;
+  };
+  it("位于底部时不显示按钮；上滚离开底部后出现", async () => {
+    await renderOpenA();
+    const conversation = screen.getByLabelText("聊天消息");
+    metrics(conversation, 1200, 400);
+    try {
+      conversation.scrollTop = 840;
+      fireEvent.scroll(conversation);
+      expect(screen.queryByRole("button", { name: "滚动到底部" })).toBeNull();
+      conversation.scrollTop = 200;
+      fireEvent.scroll(conversation);
+      expect(screen.getByRole("button", { name: "滚动到底部" })).toBeInTheDocument();
+    } finally {
+      restoreMetrics(conversation);
+    }
+  });
+  it("点击按钮滚回底部并恢复自动跟随，按钮隐藏", async () => {
+    await renderOpenA();
+    const conversation = screen.getByLabelText("聊天消息");
+    metrics(conversation, 1200, 400);
+    const proto = Element.prototype as unknown as Record<string, unknown>;
+    const originalScrollTo = proto.scrollTo;
+    const scrollTo = vi.fn();
+    proto.scrollTo = scrollTo;
+    try {
+      conversation.scrollTop = 200;
+      fireEvent.scroll(conversation);
+      fireEvent.click(screen.getByRole("button", { name: "滚动到底部" }));
+      expect(scrollTo).toHaveBeenCalledWith({ top: 1200, behavior: "smooth" });
+      expect(screen.queryByRole("button", { name: "滚动到底部" })).toBeNull();
+    } finally {
+      proto.scrollTo = originalScrollTo;
+      restoreMetrics(conversation);
+    }
+  });
+  it("滚回底部附近后按钮隐藏", async () => {
+    await renderOpenA();
+    const conversation = screen.getByLabelText("聊天消息");
+    metrics(conversation, 1200, 400);
+    try {
+      conversation.scrollTop = 200;
+      fireEvent.scroll(conversation);
+      expect(screen.getByRole("button", { name: "滚动到底部" })).toBeInTheDocument();
+      conversation.scrollTop = 800;
+      fireEvent.scroll(conversation);
+      expect(screen.queryByRole("button", { name: "滚动到底部" })).toBeNull();
+    } finally {
+      restoreMetrics(conversation);
+    }
+  });
+  it("切换会话后按钮重置隐藏", async () => {
+    await renderOpenA();
+    const conversation = screen.getByLabelText("聊天消息");
+    metrics(conversation, 1200, 400);
+    try {
+      conversation.scrollTop = 200;
+      fireEvent.scroll(conversation);
+      expect(screen.getByRole("button", { name: "滚动到底部" })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /会话 B/ }));
+      await screen.findByText("内容 b");
+      expect(screen.queryByRole("button", { name: "滚动到底部" })).toBeNull();
+    } finally {
+      restoreMetrics(conversation);
+    }
+  });
+});
+
+describe("同源重复项目合并", () => {
+  // keep 创建时间更早（合并时自动成为保留方）；两条记录均可见，「项目」视图出现两个同名组。
+  const dupWorkspaces = [
+    {
+      id: "keep",
+      sourcePath: "D:/rust",
+      replicaPath: "D:/copy-keep",
+      createdAt: "2026-11-06T00:00:00Z",
+      name: "rust-harness",
+      pinned: false,
+      hidden: false,
+      executionMode: "replica",
+      worktrees: {},
+    },
+    {
+      id: "dup",
+      sourcePath: "D:/rust",
+      replicaPath: "D:/copy-dup",
+      createdAt: "2026-11-16T00:00:00Z",
+      name: "rust-harness",
+      pinned: false,
+      hidden: false,
+      executionMode: "worktree",
+      worktrees: {},
+    },
+  ];
+  it("同源重复时组头显示重复标记且右键菜单出现合并入口", async () => {
+    localStorage.removeItem("sessionView");
+    localStorage.removeItem("sessionCollapsed");
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list") return dupWorkspaces;
+      if (name === "session_list")
+        return [
+          { id: "a", workspaceId: "keep", title: "会话 A", updatedAt: "2026-11-10T00:00:00Z" },
+        ];
+      return original(name, args);
+    });
+    render(<App />);
+    await screen.findByRole("button", { name: /会话 A/ });
+    fireEvent.click(screen.getByRole("switch", { name: "切换视图：项目 / 最近" }));
+    const sessionNav = screen.getByRole("navigation", { name: "会话列表" });
+    expect(within(sessionNav).getAllByText("重复").length).toBeGreaterThan(0);
+    fireEvent.contextMenu(within(sessionNav).getAllByText("rust-harness")[0]);
+    expect(await screen.findByRole("menuitem", { name: "合并同源项目…" })).toBeInTheDocument();
+  });
+  it("无重复时不出现合并入口", async () => {
+    localStorage.removeItem("sessionView");
+    localStorage.removeItem("sessionCollapsed");
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list") return [dupWorkspaces[0]];
+      if (name === "session_list") return [{ id: "a", workspaceId: "keep", title: "会话 A" }];
+      return original(name, args);
+    });
+    render(<App />);
+    await screen.findByRole("button", { name: /会话 A/ });
+    fireEvent.click(screen.getByRole("switch", { name: "切换视图：项目 / 最近" }));
+    const sessionNav = screen.getByRole("navigation", { name: "会话列表" });
+    fireEvent.contextMenu(within(sessionNav).getByText("rust-harness"));
+    expect(await screen.findByRole("menuitem", { name: "移除项目" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "合并同源项目…" })).not.toBeInTheDocument();
+  });
+  it("确认合并后调用 workspace_merge 并刷新项目与会话列表", async () => {
+    localStorage.removeItem("sessionView");
+    localStorage.removeItem("sessionCollapsed");
+    const original = mocks.command.getMockImplementation()!;
+    let merged = false;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_merge") {
+        merged = true;
+        return {
+          fromWorkspaceId: "dup",
+          toWorkspaceId: "keep",
+          movedSessions: 1,
+          movedAutomations: 2,
+          movedSchedules: 0,
+          leftoverWorktrees: ["D:/rust/.worktrees/harness-dup0123"],
+        };
+      }
+      if (name === "workspace_list") return merged ? [dupWorkspaces[0]] : dupWorkspaces;
+      if (name === "session_list")
+        return args.allWorkspaces
+          ? [
+              { id: "a", workspaceId: "keep", title: "会话 A", updatedAt: "2026-11-10T00:00:00Z" },
+              {
+                id: "b",
+                workspaceId: "dup",
+                title: "重复项目会话",
+                updatedAt: "2026-11-16T01:00:00Z",
+              },
+            ]
+          : [{ id: "a", workspaceId: "keep", title: "会话 A", updatedAt: "2026-11-10T00:00:00Z" }];
+      return original(name, args);
+    });
+    render(<App />);
+    await screen.findByRole("button", { name: /会话 A/ });
+    fireEvent.click(screen.getByRole("switch", { name: "切换视图：项目 / 最近" }));
+    const sessionNav = screen.getByRole("navigation", { name: "会话列表" });
+    // 组排序按组内最新会话倒序：dup 有更新的会话排前，右键的组是较新的 dup，
+    // 保留方仍应自动落在创建时间最早的 keep。
+    fireEvent.contextMenu(within(sessionNav).getAllByText("rust-harness")[0]);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "合并同源项目…" }));
+    const dialog = await screen.findByRole("dialog", { name: "合并同源项目" });
+    expect(within(dialog).getByText(/自动选择创建时间最早/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/待并入并删除记录的项目/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/副本中未同步的改动将随之删除/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/不会自动删除/)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "合并" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("workspace_merge", {
+        fromWorkspaceId: "dup",
+        toWorkspaceId: "keep",
+        stopRunning: false,
+      }),
+    );
+    expect(
+      await screen.findByText(/已合并 1 个重复项目：1 个会话与 2 个自动化任务挂到保留项目/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/仍有 1 个会话 worktree 残留/)).toBeInTheDocument();
+    // 合并后重拉：重复标记消失（workspace_list 再返回去重后的列表）。
+    await waitFor(() => expect(screen.queryByText("重复")).not.toBeInTheDocument());
+  });
+  it("待并入项目运行中时提示停止并带 stopRunning=true", async () => {
+    localStorage.removeItem("sessionView");
+    localStorage.removeItem("sessionCollapsed");
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "workspace_list") return dupWorkspaces;
+      if (name === "session_list")
+        return [
+          { id: "a", workspaceId: "keep", title: "会话 A", updatedAt: "2026-11-10T00:00:00Z" },
+          { id: "b", workspaceId: "dup", title: "重复项目会话", updatedAt: "2026-11-16T01:00:00Z" },
+        ];
+      if (name === "session_active_list") return ["b"];
+      if (name === "workspace_merge")
+        return {
+          fromWorkspaceId: "dup",
+          toWorkspaceId: "keep",
+          movedSessions: 1,
+          movedAutomations: 0,
+          movedSchedules: 0,
+          leftoverWorktrees: [],
+        };
+      return original(name, args);
+    });
+    render(<App />);
+    await screen.findByRole("button", { name: /会话 A/ });
+    fireEvent.click(screen.getByRole("switch", { name: "切换视图：项目 / 最近" }));
+    const sessionNav = screen.getByRole("navigation", { name: "会话列表" });
+    fireEvent.contextMenu(within(sessionNav).getAllByText("rust-harness")[0]);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "合并同源项目…" }));
+    const dialog = await screen.findByRole("dialog", { name: "合并同源项目" });
+    expect(within(dialog).getByText(/待并入项目还有运行中的对话或 Agent/)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "合并" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("workspace_merge", {
+        fromWorkspaceId: "dup",
+        toWorkspaceId: "keep",
+        stopRunning: true,
+      }),
+    );
+  });
+});
+
+describe("侧栏宽度拖拽", () => {
+  // jsdom 可能缺 PointerEvent 与 setPointerCapture：fireEvent.pointerMove 需要它们携带 clientX。
+  beforeEach(() => {
+    Element.prototype.setPointerCapture = Element.prototype.setPointerCapture ?? (() => {});
+    Element.prototype.releasePointerCapture = Element.prototype.releasePointerCapture ?? (() => {});
+    if (typeof window.PointerEvent !== "function") {
+      const PE = class extends MouseEvent {
+        pointerId: number;
+        constructor(type: string, init: Record<string, unknown> = {}) {
+          super(type, init as MouseEventInit);
+          this.pointerId = Number(init.pointerId ?? 0);
+        }
+      };
+      (window as unknown as { PointerEvent: unknown }).PointerEvent = PE;
+      (globalThis as unknown as { PointerEvent: unknown }).PointerEvent = PE;
+    }
+  });
+  afterEach(() => {
+    localStorage.removeItem("sidebar-width");
+  });
+  it("侧栏渲染宽度分隔条，默认 264px", async () => {
+    render(<App />);
+    await screen.findByRole("button", { name: /会话 A/ });
+    expect(screen.getByRole("complementary", { name: "项目列表" }).style.width).toBe("264px");
+    expect(screen.getByRole("separator", { name: "调整列表宽度" })).toBeInTheDocument();
+  });
+  it("拖拽右缘分隔条调宽并记忆，限制 200px 到 40% 视口", async () => {
+    render(<App />);
+    await screen.findByRole("button", { name: /会话 A/ });
+    const sidebar = screen.getByRole("complementary", { name: "项目列表" });
+    const resizer = screen.getByRole("separator", { name: "调整列表宽度" });
+    fireEvent.pointerDown(resizer, { pointerId: 1 });
+    fireEvent.pointerMove(resizer, { pointerId: 1, clientX: 500 });
+    const max = Math.min(window.innerWidth * 0.4, 480);
+    expect(sidebar.style.width).toBe(`${Math.min(500, max)}px`);
+    fireEvent.pointerMove(resizer, { pointerId: 1, clientX: 100 });
+    expect(sidebar.style.width).toBe("200px");
+    fireEvent.pointerUp(resizer, { pointerId: 1 });
+    expect(localStorage.getItem("sidebar-width")).toBe("200");
+  });
+  it("已保存的宽度在启动时恢复", async () => {
+    localStorage.setItem("sidebar-width", "380");
+    render(<App />);
+    await screen.findByRole("button", { name: /会话 A/ });
+    expect(screen.getByRole("complementary", { name: "项目列表" }).style.width).toBe("380px");
+  });
+});
+describe("无项目会话", () => {
+  beforeEach(() => {
+    localStorage.removeItem("sessionView");
+    localStorage.removeItem("sessionCollapsed");
+  });
+  it("草稿态 chip 菜单可选「无项目」，发送以空串落点创建会话", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_list") return [];
+      if (name === "session_create") return { id: "np1", workspaceId: "", title: "新会话" };
+      if (name === "session_timeline_page") return timeline(args.sessionId, []);
+      return original(name, args);
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: /你想在 project 中构建什么/ });
+    fireEvent.click(screen.getByRole("button", { name: "选择项目" }));
+    const menu = screen.getByRole("menu", { name: "选择项目" });
+    fireEvent.click(within(menu).getByRole("menuitem", { name: /无项目/ }));
+    await screen.findByRole("heading", { name: /你想在 无项目 中构建什么/ });
+    expect(screen.getByPlaceholderText(/发送后将在 无项目 创建会话/)).toBeInTheDocument();
+    expect(mocks.command.mock.calls.filter(([name]) => name === "session_create")).toHaveLength(0);
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "独立问答" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith("session_create", {
+        workspaceId: "",
+        title: "新会话",
+        executionMode: "direct",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.send).toHaveBeenCalledWith(
+        "np1",
+        "独立问答",
+        "m",
+        expect.any(Function),
+        undefined,
+        "high",
+      ),
+    );
+  });
+  it("无项目会话激活后面包屑显示「无项目」，自动化与技能列表仍可拉取", async () => {
+    localStorage.setItem("sessionView", "project");
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_list")
+        return [
+          {
+            id: "np1",
+            workspaceId: "",
+            title: "无项目讨论",
+            createdAt: "",
+            updatedAt: new Date().toISOString(),
+            parentId: null,
+          },
+          {
+            id: "a",
+            workspaceId: "w",
+            title: "会话 A",
+            createdAt: "",
+            updatedAt: new Date(Date.now() - 60000).toISOString(),
+            parentId: null,
+          },
+        ];
+      if (name === "session_timeline_page")
+        return timeline(args.sessionId, [event("e-np1", "np1", "1", "内容 np1")]);
+      return original(name, args);
+    });
+    render(<App />);
+    // 「无项目」组固定排在项目组之后
+    const wsNames = screen.getAllByText(/^无项目$/).length;
+    expect(wsNames).toBeGreaterThan(0);
+    fireEvent.click(await screen.findByRole("button", { name: /无项目讨论/ }));
+    await screen.findByText("内容 np1");
+    const breadcrumb = document.querySelector(".workspace-name");
+    expect(breadcrumb?.textContent).toBe("无项目");
+  });
+  it("「无项目」组不提供重命名与置顶入口", async () => {
+    localStorage.setItem("sessionView", "project");
+    const original = mocks.command.getMockImplementation()!;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "session_list")
+        return [
+          {
+            id: "np1",
+            workspaceId: "",
+            title: "无项目讨论",
+            createdAt: "",
+            updatedAt: new Date().toISOString(),
+            parentId: null,
+          },
+          {
+            id: "a",
+            workspaceId: "w",
+            title: "会话 A",
+            createdAt: "",
+            updatedAt: new Date(Date.now() - 60000).toISOString(),
+            parentId: null,
+          },
+        ];
+      if (name === "session_timeline_page") return timeline(args.sessionId, []);
+      return original(name, args);
+    });
+    render(<App />);
+    const groupHead = await screen.findByRole("button", { name: /^无项目 \d+$/ });
+    // 组头内不含重命名/置顶按钮（无项目组只保留折叠与新建）
+    expect(
+      within(groupHead.closest(".ws-head") as HTMLElement).queryByLabelText(/重命名 无项目/),
+    ).not.toBeInTheDocument();
+    expect(
+      within(groupHead.closest(".ws-head") as HTMLElement).queryByLabelText(/置顶 无项目/),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe("运行中插话", () => {
+  it("运行中可以发送插话，同时保留停止按钮和原回合", async () => {
+    let release!: () => void;
+    mocks.send.mockImplementation(
+      async (_id: string, _text: string, _model: string, receive: (e: LiveEvent) => void) => {
+        receive({
+          type: "durable",
+          event: {
+            id: "start-steer",
+            sessionId: "a",
+            seq: "2",
+            kind: "turn.start",
+            data: { runId: "run-1" },
+            createdAt: "",
+          },
+        });
+        await new Promise<void>((resolve) => (release = resolve));
+      },
+    );
+    await renderOpenA();
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "开始" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await screen.findByRole("button", { name: "取消生成" });
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "改用中文" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.command).toHaveBeenCalledWith(
+        "session_steer",
+        expect.objectContaining({
+          sessionId: "a",
+          expectedRunId: "run-1",
+          text: "改用中文",
+          messageId: expect.any(String),
+        }),
+      ),
+    );
+    expect(mocks.send).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "取消生成" })).toBeInTheDocument();
+    await act(async () => release());
+  });
+});
+
+describe("插话时间线", () => {
+  it("按原事件顺序显示插话并显示处理状态，避免重复用户消息", () => {
+    const events: SessionEvent[] = [
+      {
+        id: "st",
+        sessionId: "a",
+        seq: "1",
+        kind: "turn.start",
+        data: { runId: "r" },
+        createdAt: "",
+      },
+      {
+        id: "u",
+        sessionId: "a",
+        seq: "2",
+        kind: "user.message",
+        data: { content: "任务" },
+        createdAt: "",
+      },
+      {
+        id: "n",
+        sessionId: "a",
+        seq: "3",
+        kind: "assistant.message",
+        data: { content: "正在检查" },
+        createdAt: "",
+      },
+      {
+        id: "q",
+        sessionId: "a",
+        seq: "4",
+        kind: "steer.queued",
+        data: { id: "q1", runId: "r", content: "补充限制", attachments: [], quotes: [] },
+        createdAt: "",
+      },
+      {
+        id: "us",
+        sessionId: "a",
+        seq: "5",
+        kind: "user.message",
+        data: { steerId: "q1", runId: "r", content: "补充限制" },
+        createdAt: "",
+      },
+      {
+        id: "ap",
+        sessionId: "a",
+        seq: "6",
+        kind: "steer.applied",
+        data: { id: "q1", runId: "r" },
+        createdAt: "",
+      },
+      {
+        id: "last",
+        sessionId: "a",
+        seq: "7",
+        kind: "assistant.message",
+        data: { content: "最终结果" },
+        createdAt: "",
+      },
+      {
+        id: "end",
+        sessionId: "a",
+        seq: "8",
+        kind: "turn.end",
+        data: { status: "completed" },
+        createdAt: "",
+      },
+    ];
+    render(<ConversationEvents events={events} turns={[]} />);
+    expect(screen.getAllByText("补充限制")).toHaveLength(1);
+    expect(screen.getByText("已纳入上下文")).toBeInTheDocument();
+    expect(
+      screen.getByText("正在检查").compareDocumentPosition(screen.getByText("补充限制")) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      screen.getByText("补充限制").compareDocumentPosition(screen.getByText("最终结果")) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+});
+
+describe("插话失败重试", () => {
+  it("通信失败保留输入，重试使用同一个消息标识", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    let release!: () => void;
+    let calls = 0;
+    mocks.command.mockImplementation(async (name, args) =>
+      name === "session_steer" && ++calls === 1
+        ? Promise.reject(new Error("连接中断"))
+        : original(name, args),
+    );
+    mocks.send.mockImplementation(
+      async (_id: string, _text: string, _model: string, receive: (e: LiveEvent) => void) => {
+        receive({
+          type: "durable",
+          event: {
+            id: "start-retry",
+            sessionId: "a",
+            seq: "2",
+            kind: "turn.start",
+            data: { runId: "run-1" },
+            createdAt: "",
+          },
+        });
+        await new Promise<void>((resolve) => (release = resolve));
+      },
+    );
+    await renderOpenA();
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "任务" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await screen.findByRole("button", { name: "取消生成" });
+    const input = screen.getByLabelText("消息");
+    fireEvent.change(input, { target: { value: "补充要求" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await screen.findByText("连接中断");
+    expect(input).toHaveValue("补充要求");
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() =>
+      expect(mocks.command.mock.calls.filter(([name]) => name === "session_steer")).toHaveLength(2),
+    );
+    const submissions = mocks.command.mock.calls.filter(([name]) => name === "session_steer");
+    expect(submissions[0][1].messageId).toBe(submissions[1][1].messageId);
+    await act(async () => release());
+  });
+});
+
+it("中断回合仍显示未处理插话供用户重新发送", () => {
+  const events: SessionEvent[] = [
+    {
+      id: "start-f",
+      sessionId: "a",
+      seq: "1",
+      kind: "turn.start",
+      data: { runId: "r" },
+      createdAt: "",
+    },
+    {
+      id: "user-f",
+      sessionId: "a",
+      seq: "2",
+      kind: "user.message",
+      data: { content: "任务" },
+      createdAt: "",
+    },
+    {
+      id: "queued-f",
+      sessionId: "a",
+      seq: "3",
+      kind: "steer.queued",
+      data: { id: "m", runId: "r", content: "保留这条", attachments: [], quotes: [] },
+      createdAt: "",
+    },
+    {
+      id: "failed-f",
+      sessionId: "a",
+      seq: "4",
+      kind: "steer.failed",
+      data: { id: "m", runId: "r", reason: "取消" },
+      createdAt: "",
+    },
+    {
+      id: "end-f",
+      sessionId: "a",
+      seq: "5",
+      kind: "turn.end",
+      data: { status: "cancelled" },
+      createdAt: "",
+    },
+  ];
+  render(<ConversationEvents events={events} turns={[]} />);
+  expect(screen.getByText("保留这条")).toBeVisible();
+  expect(screen.getByText("未处理，请重新发送")).toBeVisible();
+});
+
+it("工具调用与结果之间插话时仍配对成一张卡", () => {
+  const events: SessionEvent[] = [
+    {
+      id: "start-p",
+      sessionId: "a",
+      seq: "1",
+      kind: "turn.start",
+      data: { runId: "r" },
+      createdAt: "",
+    },
+    {
+      id: "user-p",
+      sessionId: "a",
+      seq: "2",
+      kind: "user.message",
+      data: { content: "任务" },
+      createdAt: "",
+    },
+    {
+      id: "call-p",
+      sessionId: "a",
+      seq: "3",
+      kind: "tool.call",
+      data: { id: "c", name: "read", arguments: { path: "a.txt" } },
+      createdAt: "",
+    },
+    {
+      id: "queued-p",
+      sessionId: "a",
+      seq: "4",
+      kind: "steer.queued",
+      data: { id: "m", runId: "r", content: "新要求", attachments: [], quotes: [] },
+      createdAt: "",
+    },
+    {
+      id: "result-p",
+      sessionId: "a",
+      seq: "5",
+      kind: "tool.result",
+      data: { callId: "c", name: "read", content: "文件内容", isError: false },
+      createdAt: "",
+    },
+  ];
+  render(<ConversationEvents events={events} turns={[]} />);
+  const tool = screen.getByText("读取", { selector: ".t-title" }).closest(".tcard")!;
+  expect(within(tool as HTMLElement).getByText("已完成")).toBeInTheDocument();
+  expect(screen.getAllByText("读取", { selector: ".t-title" })).toHaveLength(1);
+});
+
+it("重新打开长回合时可使用分页元数据向当前回合插话", async () => {
+  const original = mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async (name, args) => {
+    if (name === "session_active_list") return ["a"];
+    if (name === "session_timeline_page")
+      return {
+        ...timeline(args.sessionId, [event("late", "a", "250", "内容 a")]),
+        turns: [
+          { startSeq: "1", runId: "long-run", endSeq: null, status: null, finalMessageId: null },
+        ],
+      };
+    return original(name, args);
   });
   await renderOpenA();
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'开始'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await screen.findByRole('button',{name:'取消生成'});
-  fireEvent.change(screen.getByLabelText('消息'),{target:{value:'改用中文'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_steer',expect.objectContaining({sessionId:'a',expectedRunId:'run-1',text:'改用中文',messageId:expect.any(String)})));
-  expect(mocks.send).toHaveBeenCalledTimes(1);
-  expect(screen.getByRole('button',{name:'取消生成'})).toBeInTheDocument();
-  await act(async()=>release());
- });
+  await screen.findByRole("button", { name: "取消生成" });
+  fireEvent.change(screen.getByLabelText("消息"), { target: { value: "新增限制" } });
+  fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+  await waitFor(() =>
+    expect(mocks.command).toHaveBeenCalledWith(
+      "session_steer",
+      expect.objectContaining({ expectedRunId: "long-run", text: "新增限制" }),
+    ),
+  );
 });
-
-describe('插话时间线',()=>{
- it('按原事件顺序显示插话并显示处理状态，避免重复用户消息',()=>{
-  const events:SessionEvent[]=[
-   {id:'st',sessionId:'a',seq:'1',kind:'turn.start',data:{runId:'r'},createdAt:''},
-   {id:'u',sessionId:'a',seq:'2',kind:'user.message',data:{content:'任务'},createdAt:''},
-   {id:'n',sessionId:'a',seq:'3',kind:'assistant.message',data:{content:'正在检查'},createdAt:''},
-   {id:'q',sessionId:'a',seq:'4',kind:'steer.queued',data:{id:'q1',runId:'r',content:'补充限制',attachments:[],quotes:[]},createdAt:''},
-   {id:'us',sessionId:'a',seq:'5',kind:'user.message',data:{steerId:'q1',runId:'r',content:'补充限制'},createdAt:''},
-   {id:'ap',sessionId:'a',seq:'6',kind:'steer.applied',data:{id:'q1',runId:'r'},createdAt:''},
-   {id:'last',sessionId:'a',seq:'7',kind:'assistant.message',data:{content:'最终结果'},createdAt:''},
-   {id:'end',sessionId:'a',seq:'8',kind:'turn.end',data:{status:'completed'},createdAt:''}
+it("插话结算事件不在当前页时使用分页中的状态", () => {
+  const events: SessionEvent[] = [
+    {
+      id: "s-page",
+      sessionId: "a",
+      seq: "1",
+      kind: "turn.start",
+      data: { runId: "r" },
+      createdAt: "",
+    },
+    {
+      id: "q-page",
+      sessionId: "a",
+      seq: "2",
+      kind: "steer.queued",
+      data: { id: "m", runId: "r", content: "分页输入", steerStatus: "steer.applied" },
+      createdAt: "",
+    },
   ];
-  render(<ConversationEvents events={events} turns={[]}/>);
-  expect(screen.getAllByText('补充限制')).toHaveLength(1);
-  expect(screen.getByText('已纳入上下文')).toBeInTheDocument();
-  expect(screen.getByText('正在检查').compareDocumentPosition(screen.getByText('补充限制'))&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(screen.getByText('补充限制').compareDocumentPosition(screen.getByText('最终结果'))&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
- });
+  render(<ConversationEvents events={events} turns={[]} />);
+  expect(screen.getByText("已纳入上下文")).toBeVisible();
 });
 
-describe('插话失败重试',()=>{
- it('通信失败保留输入，重试使用同一个消息标识',async()=>{
-  const original=mocks.command.getMockImplementation()!;let release!:()=>void;let calls=0;
-  mocks.command.mockImplementation(async(name,args)=>name==='session_steer'&&++calls===1?Promise.reject(new Error('连接中断')):original(name,args));
-  mocks.send.mockImplementation(async(_id:string,_text:string,_model:string,receive:(e:LiveEvent)=>void)=>{
-   receive({type:'durable',event:{id:'start-retry',sessionId:'a',seq:'2',kind:'turn.start',data:{runId:'run-1'},createdAt:''}});
-   await new Promise<void>(resolve=>release=resolve);
+it("后台运行会话的插话事件可实时更新当前时间线", async () => {
+  const original = mocks.command.getMockImplementation()!;
+  mocks.command.mockImplementation(async (name, args) =>
+    name === "session_active_list" ? ["a"] : original(name, args),
+  );
+  await renderOpenA();
+  await waitFor(() => expect(mocks.listeners.has("session-steering-event")).toBe(true));
+  await emitTauriEvent("session-steering-event", {
+    id: "bg-start",
+    sessionId: "a",
+    seq: "2",
+    kind: "turn.start",
+    data: { runId: "bg" },
+    createdAt: "",
   });
-  await renderOpenA();fireEvent.change(screen.getByLabelText('消息'),{target:{value:'任务'}});fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await screen.findByRole('button',{name:'取消生成'});
-  const input=screen.getByLabelText('消息');fireEvent.change(input,{target:{value:'补充要求'}});
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));await screen.findByText('连接中断');expect(input).toHaveValue('补充要求');
-  fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
-  await waitFor(()=>expect(mocks.command.mock.calls.filter(([name])=>name==='session_steer')).toHaveLength(2));
-  const submissions=mocks.command.mock.calls.filter(([name])=>name==='session_steer');
-  expect(submissions[0][1].messageId).toBe(submissions[1][1].messageId);
-  await act(async()=>release());
- });
+  await emitTauriEvent("session-steering-event", {
+    id: "bg-q",
+    sessionId: "a",
+    seq: "3",
+    kind: "steer.queued",
+    data: { id: "m", runId: "bg", content: "后台消息", attachments: [], quotes: [] },
+    createdAt: "",
+  });
+  expect(await screen.findByText("后台消息")).toBeVisible();
+  await emitTauriEvent("session-steering-event", {
+    id: "bg-ap",
+    sessionId: "a",
+    seq: "4",
+    kind: "steer.applied",
+    data: { id: "m", runId: "bg" },
+    createdAt: "",
+  });
+  expect(screen.getByText("已纳入上下文")).toBeVisible();
 });
 
-it('中断回合仍显示未处理插话供用户重新发送',()=>{
- const events:SessionEvent[]=[
-  {id:'start-f',sessionId:'a',seq:'1',kind:'turn.start',data:{runId:'r'},createdAt:''},
-  {id:'user-f',sessionId:'a',seq:'2',kind:'user.message',data:{content:'任务'},createdAt:''},
-  {id:'queued-f',sessionId:'a',seq:'3',kind:'steer.queued',data:{id:'m',runId:'r',content:'保留这条',attachments:[],quotes:[]},createdAt:''},
-  {id:'failed-f',sessionId:'a',seq:'4',kind:'steer.failed',data:{id:'m',runId:'r',reason:'取消'},createdAt:''},
-  {id:'end-f',sessionId:'a',seq:'5',kind:'turn.end',data:{status:'cancelled'},createdAt:''}
- ];
- render(<ConversationEvents events={events} turns={[]}/>);
- expect(screen.getByText('保留这条')).toBeVisible();
- expect(screen.getByText('未处理，请重新发送')).toBeVisible();
+it("回合结束后补记的失败状态仍关联原插话", () => {
+  const events: SessionEvent[] = [
+    {
+      id: "s-late",
+      sessionId: "a",
+      seq: "1",
+      kind: "turn.start",
+      data: { runId: "r" },
+      createdAt: "",
+    },
+    {
+      id: "q-late",
+      sessionId: "a",
+      seq: "2",
+      kind: "steer.queued",
+      data: { id: "m", runId: "r", content: "保留晚到状态" },
+      createdAt: "",
+    },
+    {
+      id: "end-late",
+      sessionId: "a",
+      seq: "3",
+      kind: "turn.end",
+      data: { status: "error" },
+      createdAt: "",
+    },
+    {
+      id: "fail-late",
+      sessionId: "a",
+      seq: "4",
+      kind: "steer.failed",
+      data: { id: "m", runId: "r", reason: "恢复" },
+      createdAt: "",
+    },
+  ];
+  render(<ConversationEvents events={events} turns={[]} />);
+  expect(screen.getByText("未处理，请重新发送")).toBeVisible();
 });
 
-it('工具调用与结果之间插话时仍配对成一张卡',()=>{
- const events:SessionEvent[]=[
-  {id:'start-p',sessionId:'a',seq:'1',kind:'turn.start',data:{runId:'r'},createdAt:''},
-  {id:'user-p',sessionId:'a',seq:'2',kind:'user.message',data:{content:'任务'},createdAt:''},
-  {id:'call-p',sessionId:'a',seq:'3',kind:'tool.call',data:{id:'c',name:'read',arguments:{path:'a.txt'}},createdAt:''},
-  {id:'queued-p',sessionId:'a',seq:'4',kind:'steer.queued',data:{id:'m',runId:'r',content:'新要求',attachments:[],quotes:[]},createdAt:''},
-  {id:'result-p',sessionId:'a',seq:'5',kind:'tool.result',data:{callId:'c',name:'read',content:'文件内容',isError:false},createdAt:''}
- ];
- render(<ConversationEvents events={events} turns={[]}/>);
- const tool=screen.getByText('读取',{selector:'.t-title'}).closest('.tcard')!;
- expect(within(tool as HTMLElement).getByText('已完成')).toBeInTheDocument();
- expect(screen.getAllByText('读取',{selector:'.t-title'})).toHaveLength(1);
+it("后台回合结束时补拉未广播的插话记录", async () => {
+  const original = mocks.command.getMockImplementation()!;
+  let finished = false;
+  const done: SessionEvent[] = [
+    {
+      id: "rt-st",
+      sessionId: "a",
+      seq: "2",
+      kind: "turn.start",
+      data: { runId: "r" },
+      createdAt: "",
+    },
+    {
+      id: "rt-q",
+      sessionId: "a",
+      seq: "3",
+      kind: "steer.queued",
+      data: { id: "m", runId: "r", content: "补拉消息" },
+      createdAt: "",
+    },
+    {
+      id: "rt-f",
+      sessionId: "a",
+      seq: "4",
+      kind: "steer.failed",
+      data: { id: "m", runId: "r" },
+      createdAt: "",
+    },
+    {
+      id: "rt-end",
+      sessionId: "a",
+      seq: "5",
+      kind: "turn.end",
+      data: { status: "cancelled" },
+      createdAt: "",
+    },
+  ];
+  mocks.command.mockImplementation(async (name, args) =>
+    name === "session_timeline_page" && finished
+      ? timeline("a", [event("e-a", "a", "1", "内容 a"), ...done])
+      : original(name, args),
+  );
+  await renderOpenA();
+  await waitFor(() => expect(mocks.listeners.has("session-steering-event")).toBe(true));
+  finished = true;
+  await emitTauriEvent("session-steering-event", done[3]);
+  expect(await screen.findByText("补拉消息")).toBeVisible();
+  expect(screen.getByText("未处理，请重新发送")).toBeVisible();
 });
 
-it('重新打开长回合时可使用分页元数据向当前回合插话',async()=>{
- const original=mocks.command.getMockImplementation()!;
- mocks.command.mockImplementation(async(name,args)=>{
-  if(name==='session_active_list')return ['a'];
-  if(name==='session_timeline_page')return {...timeline(args.sessionId,[event('late','a','250','内容 a')]),turns:[{startSeq:'1',runId:'long-run',endSeq:null,status:null,finalMessageId:null}]};
-  return original(name,args);
- });
- await renderOpenA();
- await screen.findByRole('button',{name:'取消生成'});
- fireEvent.change(screen.getByLabelText('消息'),{target:{value:'新增限制'}});
- fireEvent.click(screen.getByRole('button',{name:'发送消息'}));
- await waitFor(()=>expect(mocks.command).toHaveBeenCalledWith('session_steer',expect.objectContaining({expectedRunId:'long-run',text:'新增限制'})));
-});
-it('插话结算事件不在当前页时使用分页中的状态',()=>{
- const events:SessionEvent[]=[
-  {id:'s-page',sessionId:'a',seq:'1',kind:'turn.start',data:{runId:'r'},createdAt:''},
-  {id:'q-page',sessionId:'a',seq:'2',kind:'steer.queued',data:{id:'m',runId:'r',content:'分页输入',steerStatus:'steer.applied'},createdAt:''},
- ];
- render(<ConversationEvents events={events} turns={[]}/>);
- expect(screen.getByText('已纳入上下文')).toBeVisible();
-});
-
-it('后台运行会话的插话事件可实时更新当前时间线',async()=>{
- const original=mocks.command.getMockImplementation()!;
- mocks.command.mockImplementation(async(name,args)=>name==='session_active_list'?['a']:original(name,args));
- await renderOpenA();
- await waitFor(()=>expect(mocks.listeners.has('session-steering-event')).toBe(true));
- await emitTauriEvent('session-steering-event',{id:'bg-start',sessionId:'a',seq:'2',kind:'turn.start',data:{runId:'bg'},createdAt:''});
- await emitTauriEvent('session-steering-event',{id:'bg-q',sessionId:'a',seq:'3',kind:'steer.queued',data:{id:'m',runId:'bg',content:'后台消息',attachments:[],quotes:[]},createdAt:''});
- expect(await screen.findByText('后台消息')).toBeVisible();
- await emitTauriEvent('session-steering-event',{id:'bg-ap',sessionId:'a',seq:'4',kind:'steer.applied',data:{id:'m',runId:'bg'},createdAt:''});
- expect(screen.getByText('已纳入上下文')).toBeVisible();
-});
-
-it('回合结束后补记的失败状态仍关联原插话',()=>{
- const events:SessionEvent[]=[
-  {id:'s-late',sessionId:'a',seq:'1',kind:'turn.start',data:{runId:'r'},createdAt:''},
-  {id:'q-late',sessionId:'a',seq:'2',kind:'steer.queued',data:{id:'m',runId:'r',content:'保留晚到状态'},createdAt:''},
-  {id:'end-late',sessionId:'a',seq:'3',kind:'turn.end',data:{status:'error'},createdAt:''},
-  {id:'fail-late',sessionId:'a',seq:'4',kind:'steer.failed',data:{id:'m',runId:'r',reason:'恢复'},createdAt:''}
- ];
- render(<ConversationEvents events={events} turns={[]}/>);
- expect(screen.getByText('未处理，请重新发送')).toBeVisible();
-});
-
-it('后台回合结束时补拉未广播的插话记录',async()=>{
- const original=mocks.command.getMockImplementation()!;let finished=false;
- const done:SessionEvent[]=[
-  {id:'rt-st',sessionId:'a',seq:'2',kind:'turn.start',data:{runId:'r'},createdAt:''},
-  {id:'rt-q',sessionId:'a',seq:'3',kind:'steer.queued',data:{id:'m',runId:'r',content:'补拉消息'},createdAt:''},
-  {id:'rt-f',sessionId:'a',seq:'4',kind:'steer.failed',data:{id:'m',runId:'r'},createdAt:''},
-  {id:'rt-end',sessionId:'a',seq:'5',kind:'turn.end',data:{status:'cancelled'},createdAt:''}
- ];
- mocks.command.mockImplementation(async(name,args)=>name==='session_timeline_page'&&finished?timeline('a',[event('e-a','a','1','内容 a'),...done]):original(name,args));
- await renderOpenA();await waitFor(()=>expect(mocks.listeners.has('session-steering-event')).toBe(true));
- finished=true;await emitTauriEvent('session-steering-event',done[3]);
- expect(await screen.findByText('补拉消息')).toBeVisible();
- expect(screen.getByText('未处理，请重新发送')).toBeVisible();
-});
-
-it('受理事件不在当前页时已应用的插话仍显示状态',()=>{
- const events:SessionEvent[]=[
-  {id:'us-page',sessionId:'a',seq:'30',kind:'user.message',data:{steerId:'m',runId:'r',content:'较早的插话'},createdAt:''},
-  {id:'ap-page',sessionId:'a',seq:'31',kind:'steer.applied',data:{id:'m',runId:'r'},createdAt:''}
- ];
- render(<ConversationEvents events={events} turns={[]}/>);
- expect(screen.getByText('较早的插话')).toBeVisible();
- expect(screen.getByText('已纳入上下文')).toBeVisible();
+it("受理事件不在当前页时已应用的插话仍显示状态", () => {
+  const events: SessionEvent[] = [
+    {
+      id: "us-page",
+      sessionId: "a",
+      seq: "30",
+      kind: "user.message",
+      data: { steerId: "m", runId: "r", content: "较早的插话" },
+      createdAt: "",
+    },
+    {
+      id: "ap-page",
+      sessionId: "a",
+      seq: "31",
+      kind: "steer.applied",
+      data: { id: "m", runId: "r" },
+      createdAt: "",
+    },
+  ];
+  render(<ConversationEvents events={events} turns={[]} />);
+  expect(screen.getByText("较早的插话")).toBeVisible();
+  expect(screen.getByText("已纳入上下文")).toBeVisible();
 });

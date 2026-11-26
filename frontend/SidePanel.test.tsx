@@ -1,147 +1,212 @@
-import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
-import {act,cleanup,fireEvent,render,screen} from '@testing-library/react';
-import {SidePanel} from './SidePanel';
-import {useSidePanel} from './sidePanelStore';
-vi.mock('./ChangesView',()=>({ChangesView:({workspaceId}:{workspaceId:string})=><div>更改视图 {workspaceId}</div>}));
-vi.mock('./PdfView',()=>({PdfView:({path,sessionId}:{path:string;sessionId:string})=><div><div>PDF 视图 {path}</div><div>PDF 会话 {sessionId}</div></div>}));
-vi.mock('./PreviewView',()=>({PreviewView:({path}:{path:string|null})=><div>预览视图 {path??'空'}</div>}));
-vi.mock('./SideChatView',()=>({SideChatView:({sessionId,parentSessionId}:{sessionId:string;parentSessionId:string|null})=><div data-testid="side-chat-view"><span>侧聊视图 {sessionId} / {parentSessionId??'无'}</span><textarea aria-label="侧聊消息"/></div>}));
-const sideChatProps={workspaceId:'w',modelId:'m',effort:null,sessions:[],activeIds:new Set<string>(),approvals:[],questions:[],onResolveApproval:()=>{},onResolveQuestion:()=>{},onOpenSession:()=>{}};
-beforeEach(()=>{
- act(()=>{useSidePanel.getState().reset()});
- Element.prototype.setPointerCapture=Element.prototype.setPointerCapture??(()=>{});
- Element.prototype.releasePointerCapture=Element.prototype.releasePointerCapture??(()=>{});
- // jsdom 可能缺 PointerEvent：fireEvent.pointerMove 需要它携带 clientX。
- if(typeof window.PointerEvent!=='function'){
-  const PE=class extends MouseEvent{pointerId:number;constructor(type:string,init:Record<string,unknown>={}){super(type,init as MouseEventInit);this.pointerId=Number(init.pointerId??0)}};
-  (window as unknown as {PointerEvent:unknown}).PointerEvent=PE;
-  (globalThis as unknown as {PointerEvent:unknown}).PointerEvent=PE;
- }
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { SidePanel } from "./SidePanel";
+import { useSidePanel } from "./sidePanelStore";
+vi.mock("./ChangesView", () => ({
+  ChangesView: ({ workspaceId }: { workspaceId: string }) => <div>更改视图 {workspaceId}</div>,
+}));
+vi.mock("./PdfView", () => ({
+  PdfView: ({ path, sessionId }: { path: string; sessionId: string }) => (
+    <div>
+      <div>PDF 视图 {path}</div>
+      <div>PDF 会话 {sessionId}</div>
+    </div>
+  ),
+}));
+vi.mock("./PreviewView", () => ({
+  PreviewView: ({ path }: { path: string | null }) => <div>预览视图 {path ?? "空"}</div>,
+}));
+vi.mock("./SideChatView", () => ({
+  SideChatView: ({
+    sessionId,
+    parentSessionId,
+  }: {
+    sessionId: string;
+    parentSessionId: string | null;
+  }) => (
+    <div data-testid="side-chat-view">
+      <span>
+        侧聊视图 {sessionId} / {parentSessionId ?? "无"}
+      </span>
+      <textarea aria-label="侧聊消息" />
+    </div>
+  ),
+}));
+const sideChatProps = {
+  workspaceId: "w",
+  modelId: "m",
+  effort: null,
+  sessions: [],
+  activeIds: new Set<string>(),
+  approvals: [],
+  questions: [],
+  onResolveApproval: () => {},
+  onResolveQuestion: () => {},
+  onOpenSession: () => {},
+};
+beforeEach(() => {
+  act(() => {
+    useSidePanel.getState().reset();
+  });
+  Element.prototype.setPointerCapture = Element.prototype.setPointerCapture ?? (() => {});
+  Element.prototype.releasePointerCapture = Element.prototype.releasePointerCapture ?? (() => {});
+  // jsdom 可能缺 PointerEvent：fireEvent.pointerMove 需要它携带 clientX。
+  if (typeof window.PointerEvent !== "function") {
+    const PE = class extends MouseEvent {
+      pointerId: number;
+      constructor(type: string, init: Record<string, unknown> = {}) {
+        super(type, init as MouseEventInit);
+        this.pointerId = Number(init.pointerId ?? 0);
+      }
+    };
+    (window as unknown as { PointerEvent: unknown }).PointerEvent = PE;
+    (globalThis as unknown as { PointerEvent: unknown }).PointerEvent = PE;
+  }
 });
 afterEach(cleanup);
 
-describe('右侧面板容器',()=>{
- it('计划 tab 可切换且计划内容不再是弹窗',async()=>{
-  const onOpenSession=vi.fn();
-  render(<SidePanel workspaceId="w" currentSessionId="s1" onOpenSession={onOpenSession}/>);
-  act(()=>useSidePanel.getState().openChanges());
-  fireEvent.click(screen.getByRole('tab',{name:'计划'}));
-  expect(screen.getByRole('tab',{name:'计划'})).toHaveAttribute('aria-selected','true');
-  expect(await screen.findByText(/所有会话的最新待办/)).toBeInTheDocument();
-  expect(screen.queryByRole('dialog',{name:'计划与目标'})).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole('tab',{name:'预览'}));
-  expect(screen.getByText('预览视图 空')).toBeInTheDocument();
- });
- it('默认不渲染，openChanges 后显示更改 tab',()=>{
-  render(<SidePanel workspaceId="w"/>);
-  expect(screen.queryByRole('complementary',{name:'文件面板'})).not.toBeInTheDocument();
-  act(()=>{useSidePanel.getState().openChanges()});
-  const panel=screen.getByRole('complementary',{name:'文件面板'});
-  expect(panel).toBeInTheDocument();
-  expect(panel).toHaveTextContent('更改视图 w');
- });
- it('tab 切换更改与预览，预览携带当前文件路径',()=>{
-  render(<SidePanel workspaceId="w"/>);
-  act(()=>{useSidePanel.getState().openPreview('src/app.ts')});
-  expect(screen.getByText('预览视图 src/app.ts')).toBeInTheDocument();
-  fireEvent.click(screen.getByRole('tab',{name:'更改'}));
-  expect(screen.getByText('更改视图 w')).toBeInTheDocument();
-  fireEvent.click(screen.getByRole('tab',{name:'预览'}));
-  expect(screen.getByText('预览视图 src/app.ts')).toBeInTheDocument();
- });
- it('Escape 关闭面板且不丢视图状态，重开仍在原视图',()=>{
-  render(<SidePanel workspaceId="w"/>);
-  act(()=>{useSidePanel.getState().openPreview('a.ts')});
-  fireEvent.keyDown(document,{key:'Escape'});
-  expect(screen.queryByRole('complementary',{name:'文件面板'})).not.toBeInTheDocument();
-  act(()=>{useSidePanel.getState().openChanges()});
-  expect(screen.getByText('更改视图 w')).toBeInTheDocument();
- });
- it('关闭按钮关闭面板',()=>{
-  render(<SidePanel workspaceId="w"/>);
-  act(()=>{useSidePanel.getState().openChanges()});
-  fireEvent.click(screen.getByRole('button',{name:'关闭面板'}));
-  expect(screen.queryByRole('complementary',{name:'文件面板'})).not.toBeInTheDocument();
- });
- it('拖拽左缘分隔条调宽并记忆，宽度限制在 280px 到 60% 之间',()=>{
-  render(<SidePanel workspaceId="w"/>);
-  act(()=>{useSidePanel.getState().openChanges()});
-  const panel=screen.getByRole('complementary',{name:'文件面板'});
-  const resizer=screen.getByRole('separator',{name:'调整面板宽度'});
-  fireEvent.pointerDown(resizer,{pointerId:1});
-  fireEvent.pointerMove(resizer,{pointerId:1,clientX:500});
-  const innerWidth=window.innerWidth;
-  expect(panel.style.width).toBe(`${Math.min(innerWidth-500,Math.round(innerWidth*0.6))}px`);
-  fireEvent.pointerMove(resizer,{pointerId:1,clientX:innerWidth-100});
-  expect(panel.style.width).toBe('280px');
-  fireEvent.pointerUp(resizer,{pointerId:1});
-  expect(localStorage.getItem('side-panel-width')).toBe('280');
-  localStorage.removeItem('side-panel-width');
- });
- it('已保存的宽度在重开时恢复',()=>{
-  localStorage.setItem('side-panel-width','520');
-  render(<SidePanel workspaceId="w"/>);
-  act(()=>{useSidePanel.getState().openChanges()});
-  expect(screen.getByRole('complementary',{name:'文件面板'}).style.width).toBe('520px');
-  localStorage.removeItem('side-panel-width');
- });
+describe("右侧面板容器", () => {
+  it("计划 tab 可切换且计划内容不再是弹窗", async () => {
+    const onOpenSession = vi.fn();
+    render(<SidePanel workspaceId="w" currentSessionId="s1" onOpenSession={onOpenSession} />);
+    act(() => useSidePanel.getState().openChanges());
+    fireEvent.click(screen.getByRole("tab", { name: "计划" }));
+    expect(screen.getByRole("tab", { name: "计划" })).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByText(/所有会话的最新待办/)).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "计划与目标" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "预览" }));
+    expect(screen.getByText("预览视图 空")).toBeInTheDocument();
+  });
+  it("默认不渲染，openChanges 后显示更改 tab", () => {
+    render(<SidePanel workspaceId="w" />);
+    expect(screen.queryByRole("complementary", { name: "文件面板" })).not.toBeInTheDocument();
+    act(() => {
+      useSidePanel.getState().openChanges();
+    });
+    const panel = screen.getByRole("complementary", { name: "文件面板" });
+    expect(panel).toBeInTheDocument();
+    expect(panel).toHaveTextContent("更改视图 w");
+  });
+  it("tab 切换更改与预览，预览携带当前文件路径", () => {
+    render(<SidePanel workspaceId="w" />);
+    act(() => {
+      useSidePanel.getState().openPreview("src/app.ts");
+    });
+    expect(screen.getByText("预览视图 src/app.ts")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "更改" }));
+    expect(screen.getByText("更改视图 w")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "预览" }));
+    expect(screen.getByText("预览视图 src/app.ts")).toBeInTheDocument();
+  });
+  it("Escape 关闭面板且不丢视图状态，重开仍在原视图", () => {
+    render(<SidePanel workspaceId="w" />);
+    act(() => {
+      useSidePanel.getState().openPreview("a.ts");
+    });
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("complementary", { name: "文件面板" })).not.toBeInTheDocument();
+    act(() => {
+      useSidePanel.getState().openChanges();
+    });
+    expect(screen.getByText("更改视图 w")).toBeInTheDocument();
+  });
+  it("关闭按钮关闭面板", () => {
+    render(<SidePanel workspaceId="w" />);
+    act(() => {
+      useSidePanel.getState().openChanges();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "关闭面板" }));
+    expect(screen.queryByRole("complementary", { name: "文件面板" })).not.toBeInTheDocument();
+  });
+  it("拖拽左缘分隔条调宽并记忆，宽度限制在 280px 到 60% 之间", () => {
+    render(<SidePanel workspaceId="w" />);
+    act(() => {
+      useSidePanel.getState().openChanges();
+    });
+    const panel = screen.getByRole("complementary", { name: "文件面板" });
+    const resizer = screen.getByRole("separator", { name: "调整面板宽度" });
+    fireEvent.pointerDown(resizer, { pointerId: 1 });
+    fireEvent.pointerMove(resizer, { pointerId: 1, clientX: 500 });
+    const innerWidth = window.innerWidth;
+    expect(panel.style.width).toBe(`${Math.min(innerWidth - 500, Math.round(innerWidth * 0.6))}px`);
+    fireEvent.pointerMove(resizer, { pointerId: 1, clientX: innerWidth - 100 });
+    expect(panel.style.width).toBe("280px");
+    fireEvent.pointerUp(resizer, { pointerId: 1 });
+    expect(localStorage.getItem("side-panel-width")).toBe("280");
+    localStorage.removeItem("side-panel-width");
+  });
+  it("已保存的宽度在重开时恢复", () => {
+    localStorage.setItem("side-panel-width", "520");
+    render(<SidePanel workspaceId="w" />);
+    act(() => {
+      useSidePanel.getState().openChanges();
+    });
+    expect(screen.getByRole("complementary", { name: "文件面板" }).style.width).toBe("520px");
+    localStorage.removeItem("side-panel-width");
+  });
 });
-it('网页面板显示当前地址并可切换回文件预览',()=>{
- render(<SidePanel workspaceId="w"/>);
- act(()=>useSidePanel.getState().openWeb('https://example.com/'));
- expect(screen.getByRole('tab',{name:'网页'})).toHaveAttribute('aria-selected','true');
- expect(screen.getByText('https://example.com/')).toBeInTheDocument();
- fireEvent.click(screen.getByRole('tab',{name:'预览'}));
- expect(screen.getByText('预览视图 空')).toBeInTheDocument();
-});
-
-it('本地 PDF 在右侧独立视图显示并可切换回来',async()=>{
- render(<SidePanel workspaceId=""/>);
- act(()=>useSidePanel.getState().openPdf('D:/reports/a.pdf'));
- expect(screen.getByRole('tab',{name:'PDF'})).toHaveAttribute('aria-selected','true');
- expect(await screen.findByText('PDF 视图 D:/reports/a.pdf')).toBeInTheDocument();
- fireEvent.click(screen.getByRole('tab',{name:'计划'}));
- fireEvent.click(screen.getByRole('tab',{name:'PDF'}));
- expect(await screen.findByText('PDF 视图 D:/reports/a.pdf')).toBeInTheDocument();
-});
-
-it('切换会话不会让相对 PDF 预览指向另一个会话的文件',async()=>{
- const {rerender}=render(<SidePanel workspaceId="w" currentSessionId="a"/>);
- act(()=>useSidePanel.getState().openPdf('output/report.pdf'));
- expect(await screen.findByText('PDF 会话 a')).toBeInTheDocument();
- rerender(<SidePanel workspaceId="w" currentSessionId="b"/>);
- expect(screen.getByText('PDF 会话 a')).toBeInTheDocument();
- act(()=>useSidePanel.getState().openPdf('output/report.pdf'));
- expect(await screen.findByText('PDF 会话 b')).toBeInTheDocument();
+it("网页面板显示当前地址并可切换回文件预览", () => {
+  render(<SidePanel workspaceId="w" />);
+  act(() => useSidePanel.getState().openWeb("https://example.com/"));
+  expect(screen.getByRole("tab", { name: "网页" })).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByText("https://example.com/")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("tab", { name: "预览" }));
+  expect(screen.getByText("预览视图 空")).toBeInTheDocument();
 });
 
-describe('侧聊抽屉',()=>{
- it('openChat 显示侧聊 tab 与常驻聊天视图，切到其他视图隐藏但不卸载',()=>{
-  render(<SidePanel workspaceId="w" sideChat={sideChatProps}/>);
-  act(()=>useSidePanel.getState().openChat('side-1','a'));
-  expect(screen.getByRole('complementary',{name:'侧聊面板'})).toBeInTheDocument();
-  expect(screen.getByRole('tab',{name:'侧聊'})).toHaveAttribute('aria-selected','true');
-  expect(screen.getByText('侧聊视图 side-1 / a')).toBeVisible();
-  fireEvent.click(screen.getByRole('tab',{name:'预览'}));
-  expect(screen.getByRole('tab',{name:'侧聊'})).toHaveAttribute('aria-selected','false');
-  expect(screen.getByText('侧聊视图 side-1 / a')).not.toBeVisible();
-  expect(screen.getByText('预览视图 空')).toBeVisible();
-  fireEvent.click(screen.getByRole('tab',{name:'侧聊'}));
-  expect(screen.getByText('侧聊视图 side-1 / a')).toBeVisible();
- });
- it('侧聊输入框中的 Escape 不关闭面板',()=>{
-  render(<SidePanel workspaceId="w" sideChat={sideChatProps}/>);
-  act(()=>useSidePanel.getState().openChat('side-1','a'));
-  const input=screen.getByLabelText('侧聊消息');
-  fireEvent.keyDown(input,{key:'Escape'});
-  expect(screen.getByRole('complementary',{name:'侧聊面板'})).toBeInTheDocument();
-  fireEvent.keyDown(document,{key:'Escape'});
-  expect(screen.queryByRole('complementary',{name:'侧聊面板'})).not.toBeInTheDocument();
- });
- it('侧聊有待处理审批时 tab 显示提示点',()=>{
-  const approval={id:'ap',sessionId:'side-1',tool:'shell',arguments:{},reason:'需要批准'};
-  render(<SidePanel workspaceId="w" sideChat={{...sideChatProps,approvals:[approval]}}/>);
-  act(()=>useSidePanel.getState().openChat('side-1','a'));
-  expect(screen.getByRole('img',{name:'侧聊有待处理事项'})).toBeInTheDocument();
- });
+it("本地 PDF 在右侧独立视图显示并可切换回来", async () => {
+  render(<SidePanel workspaceId="" />);
+  act(() => useSidePanel.getState().openPdf("D:/reports/a.pdf"));
+  expect(screen.getByRole("tab", { name: "PDF" })).toHaveAttribute("aria-selected", "true");
+  expect(await screen.findByText("PDF 视图 D:/reports/a.pdf")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("tab", { name: "计划" }));
+  fireEvent.click(screen.getByRole("tab", { name: "PDF" }));
+  expect(await screen.findByText("PDF 视图 D:/reports/a.pdf")).toBeInTheDocument();
+});
+
+it("切换会话不会让相对 PDF 预览指向另一个会话的文件", async () => {
+  const { rerender } = render(<SidePanel workspaceId="w" currentSessionId="a" />);
+  act(() => useSidePanel.getState().openPdf("output/report.pdf"));
+  expect(await screen.findByText("PDF 会话 a")).toBeInTheDocument();
+  rerender(<SidePanel workspaceId="w" currentSessionId="b" />);
+  expect(screen.getByText("PDF 会话 a")).toBeInTheDocument();
+  act(() => useSidePanel.getState().openPdf("output/report.pdf"));
+  expect(await screen.findByText("PDF 会话 b")).toBeInTheDocument();
+});
+
+describe("侧聊抽屉", () => {
+  it("openChat 显示侧聊 tab 与常驻聊天视图，切到其他视图隐藏但不卸载", () => {
+    render(<SidePanel workspaceId="w" sideChat={sideChatProps} />);
+    act(() => useSidePanel.getState().openChat("side-1", "a"));
+    expect(screen.getByRole("complementary", { name: "侧聊面板" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "侧聊" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("侧聊视图 side-1 / a")).toBeVisible();
+    fireEvent.click(screen.getByRole("tab", { name: "预览" }));
+    expect(screen.getByRole("tab", { name: "侧聊" })).toHaveAttribute("aria-selected", "false");
+    expect(screen.getByText("侧聊视图 side-1 / a")).not.toBeVisible();
+    expect(screen.getByText("预览视图 空")).toBeVisible();
+    fireEvent.click(screen.getByRole("tab", { name: "侧聊" }));
+    expect(screen.getByText("侧聊视图 side-1 / a")).toBeVisible();
+  });
+  it("侧聊输入框中的 Escape 不关闭面板", () => {
+    render(<SidePanel workspaceId="w" sideChat={sideChatProps} />);
+    act(() => useSidePanel.getState().openChat("side-1", "a"));
+    const input = screen.getByLabelText("侧聊消息");
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.getByRole("complementary", { name: "侧聊面板" })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("complementary", { name: "侧聊面板" })).not.toBeInTheDocument();
+  });
+  it("侧聊有待处理审批时 tab 显示提示点", () => {
+    const approval = {
+      id: "ap",
+      sessionId: "side-1",
+      tool: "shell",
+      arguments: {},
+      reason: "需要批准",
+    };
+    render(<SidePanel workspaceId="w" sideChat={{ ...sideChatProps, approvals: [approval] }} />);
+    act(() => useSidePanel.getState().openChat("side-1", "a"));
+    expect(screen.getByRole("img", { name: "侧聊有待处理事项" })).toBeInTheDocument();
+  });
 });

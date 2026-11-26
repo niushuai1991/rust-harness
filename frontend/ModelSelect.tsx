@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { Check, ChevronDown, RotateCcw, Search, Settings2, Zap } from 'lucide-react';
-import type { ModelConfig, ProviderInfo } from './types';
-import { visionLabel } from './VisionBadge';
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import { Check, ChevronDown, RotateCcw, Search, Settings2, Zap } from "lucide-react";
+import type { ModelConfig, ProviderInfo } from "./types";
+import { visionLabel } from "./VisionBadge";
 
 export type ModelSelectProps = {
   models: ModelConfig[];
@@ -31,7 +31,7 @@ export default function ModelSelect({
   onPickEffort,
   onOpenManage,
 }: ModelSelectProps) {
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState("");
   const [highlight, setHighlight] = useState(0);
   const wrapRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -52,9 +52,7 @@ export default function ModelSelect({
         rows: models
           .filter((m) => m.providerId === provider.id)
           .filter(
-            (m) =>
-              !keyword ||
-              `${m.id} ${m.name} ${provider.name}`.toLowerCase().includes(keyword),
+            (m) => !keyword || `${m.id} ${m.name} ${provider.name}`.toLowerCase().includes(keyword),
           ),
       }))
       .filter((group) => group.rows.length > 0);
@@ -74,17 +72,17 @@ export default function ModelSelect({
 
   useEffect(() => {
     if (!open) return;
-    setQuery('');
+    setQuery("");
     const timer = window.setTimeout(() => searchRef.current?.focus(), 0);
     const onDown = (event: MouseEvent) => {
       if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) {
         onOpenChange(false);
       }
     };
-    document.addEventListener('mousedown', onDown);
+    document.addEventListener("mousedown", onDown);
     return () => {
       window.clearTimeout(timer);
-      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener("mousedown", onDown);
     };
   }, [open, onOpenChange]);
 
@@ -98,25 +96,25 @@ export default function ModelSelect({
   }
 
   function onSearchKeyDown(event: ReactKeyboardEvent) {
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       if (!enabledRows.length) return;
       setHighlight((old) =>
-        event.key === 'ArrowDown'
+        event.key === "ArrowDown"
           ? Math.min(old + 1, enabledRows.length - 1)
           : Math.max(old - 1, 0),
       );
-    } else if (event.key === 'Enter') {
+    } else if (event.key === "Enter") {
       event.preventDefault();
       const row = enabledRows[highlight];
       if (row) pickRow(row);
-    } else if (event.key === 'Escape') {
+    } else if (event.key === "Escape") {
       event.preventDefault();
       onOpenChange(false);
     }
   }
 
-  const triggerLabel = activeModel ? activeModel.name || activeModel.model : '选择模型';
+  const triggerLabel = activeModel ? activeModel.name || activeModel.model : "选择模型";
   const sliderFill = `linear-gradient(to right,var(--accent) calc(8px + (100% - 16px) * ${fill}),var(--border) calc(8px + (100% - 16px) * ${fill}))`;
   let flatIndex = -1;
 
@@ -154,7 +152,7 @@ export default function ModelSelect({
               <div key={group.provider.id}>
                 <div className="mm-group">
                   <span>{group.provider.name}</span>
-                  <em>{group.provider.builtin ? '内置' : '自定义'}</em>
+                  <em>{group.provider.builtin ? "内置" : "自定义"}</em>
                 </div>
                 {group.rows.map((model) => {
                   const enabled = model.enabled;
@@ -165,12 +163,17 @@ export default function ModelSelect({
                     <button
                       type="button"
                       key={model.id}
-                      className={`mm-row${model.id === modelId ? ' current' : ''}${enabled ? '' : ' disabled'}${highlighted ? ' sel' : ''}`}
+                      className={`mm-row${model.id === modelId ? " current" : ""}${enabled ? "" : " disabled"}${highlighted ? " sel" : ""}`}
                       onClick={() => pickRow(row)}
                     >
-                      <span className="mm-check">{model.id === modelId && <Check size={13} aria-hidden />}</span>
+                      <span className="mm-check">
+                        {model.id === modelId && <Check size={13} aria-hidden />}
+                      </span>
                       <span className="mm-name">{model.name || model.model}</span>
-                      <span className="mm-meta" title="模型能力参考；当前应用不支持原生图片输入">{visionLabel(model.supportsVision)}{enabled ? '' : ' · 已停用'}</span>
+                      <span className="mm-meta" title="模型能力参考；当前应用不支持原生图片输入">
+                        {visionLabel(model.supportsVision)}
+                        {enabled ? "" : " · 已停用"}
+                      </span>
                     </button>
                   );
                 })}
@@ -199,8 +202,10 @@ export default function ModelSelect({
                   {efforts.map((_, index) => (
                     <span
                       key={index}
-                      className={index <= activeIndex ? 'passed' : undefined}
-                      style={{ left: `calc(8px + (100% - 16px) * ${efforts.length > 1 ? index / (efforts.length - 1) : 0})` }}
+                      className={index <= activeIndex ? "passed" : undefined}
+                      style={{
+                        left: `calc(8px + (100% - 16px) * ${efforts.length > 1 ? index / (efforts.length - 1) : 0})`,
+                      }}
                     />
                   ))}
                 </div>
