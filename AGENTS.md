@@ -31,6 +31,10 @@
 
 - 额外运行受影响 crate、桌面端或前端的专用检查，并在 PR 中记录结果。
 
+## 前端格式化
+
+- `frontend/` 下的 TypeScript、TSX 和 CSS 使用 Prettier。运行 `npm run format` 自动格式化，运行 `npm run format:check` 检查格式；生成的 `frontend/bindings.ts` 不纳入检查。
+
 ## 命令输出瘦身
 
 编译、测试等长输出命令不得把全量日志送入对话上下文——编译进度等噪声会随每次请求重复消耗 token 并挤占上下文。
