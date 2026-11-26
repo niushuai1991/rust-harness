@@ -3,7 +3,6 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { Unplug } from "lucide-react";
 import { command, desktop, errorText } from "./api";
 import { Modal } from "./Modal";
-import { McpPanel } from "./McpPanel";
 import { PluginContributionsPanel } from "./PluginContributionsPanel";
 import type { PluginInfo } from "./types";
 
@@ -162,7 +161,6 @@ export function PluginPanel({
         sessionId={sessionId}
         revision={revision}
       />
-      <McpPanel workspaceId={workspaceId} sessionId={sessionId} />
     </Modal>
   );
 }

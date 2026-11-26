@@ -102,7 +102,12 @@ export function McpPanel({
   return (
     <section className="mcp-panel" aria-label="MCP 连接">
       <h3>MCP 连接</h3>
-      <McpSavedServers workspaceId={workspaceId} sessionId={sessionId} onChanged={load} />
+      <McpSavedServers
+        key={workspaceId}
+        workspaceId={workspaceId}
+        sessionId={sessionId}
+        onChanged={load}
+      />
       <p className="muted">启用的已保存服务器在会话开始时连接，连接状态仅保留在当前进程中。</p>
       <p className="mcp-warning">
         stdio 服务按当前会话的执行位置运行；直接模式使用当前用户权限。远端服务不受本地沙箱约束。

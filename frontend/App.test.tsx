@@ -940,6 +940,8 @@ describe("设置入口", () => {
     expect(within(navigation).getByRole("button", { name: "能力预设" })).toBeInTheDocument();
     expect(within(navigation).getByRole("button", { name: "技能" })).toBeInTheDocument();
     expect(within(navigation).getByRole("button", { name: "插件与权限" })).toBeInTheDocument();
+    fireEvent.click(within(navigation).getByRole("button", { name: "MCP 配置" }));
+    expect(within(page).getByRole("button", { name: "添加服务器" })).toBeInTheDocument();
     expect(within(navigation).getByRole("button", { name: "模型设置" })).toBeInTheDocument();
     fireEvent.click(within(navigation).getByRole("button", { name: "技能" }));
     expect(within(page).getByRole("heading", { name: "技能" })).toBeInTheDocument();

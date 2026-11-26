@@ -1461,6 +1461,18 @@ pub async fn mcp_config_save(
 }
 #[tauri::command]
 #[specta::specta]
+pub async fn mcp_config_create(
+    state: Backend<'_>,
+    scope: JsonPayload,
+    config: JsonPayload,
+) -> AppResult<()> {
+    let scope = serde_json::from_value(scope.0).map_err(error)?;
+    let config = serde_json::from_value(config.0).map_err(error)?;
+    state.create_mcp_config(scope, config).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn mcp_config_remove(
     state: Backend<'_>,
     scope: JsonPayload,
@@ -1829,6 +1841,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         mcp_config_list,
         mcp_config_status,
         mcp_config_save,
+        mcp_config_create,
         mcp_config_remove,
         mcp_config_trust,
         mcp_config_connect,

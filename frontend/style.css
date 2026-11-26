@@ -5938,3 +5938,57 @@ body,
   padding: 0 5px;
   flex-shrink: 0;
 }
+
+.mcp-saved article {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.mcp-saved article strong,
+.mcp-saved article pre {
+  flex-basis: 100%;
+}
+.mcp-saved article pre {
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.mcp-editor {
+  margin: 16px 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.mcp-editor details > label {
+  margin: 12px 0;
+}
+.mcp-editor textarea {
+  width: 100%;
+  min-height: 120px;
+}
+.mcp-editor fieldset {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+}
+.mcp-editor fieldset > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+}
+.mcp-editor fieldset > div label {
+  flex: 1 1 120px;
+}
+.mcp-editor .mcp-enabled {
+  flex-direction: row;
+  align-items: center;
+}
+.mcp-editor .mcp-enabled input {
+  width: auto;
+}
