@@ -25,3 +25,4 @@ sha2.workspace = true
 rand = "0.10"
 [dev-dependencies]
 tempfile.workspace = true
+wat = "1"

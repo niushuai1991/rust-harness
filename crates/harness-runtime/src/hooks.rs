@@ -1,0 +1,424 @@
+//! Agent Hook configuration validation.
+use harness_contracts::{AppError, AppResult};
+use serde_json::{Value, json};
+use std::path::Path;
+use tokio_util::sync::CancellationToken;
+
+pub(crate) struct HookRun {
+    pub status: &'static str,
+    pub context: Option<String>,
+    pub diagnostic: Option<String>,
+    pub blocked: bool,
+    pub updated_input: Option<Value>,
+    pub ask: bool,
+}
+
+fn invalid(message: impl Into<String>) -> AppError {
+    AppError::new("HOOK_CONFIG", message)
+}
+
+/// Until trust management is available, project declarations must not be skipped.
+pub(crate) fn require_project_trust(root: &Path) -> AppResult<()> {
+    let directory = root.join(".rh");
+    for path in [
+        directory.join(".settings.json"),
+        directory.join(".settings-local.json"),
+    ] {
+        for component in [&directory, &path] {
+            match std::fs::symlink_metadata(component) {
+                Ok(metadata) => {
+                    #[cfg(windows)]
+                    let linked = {
+                        use std::os::windows::fs::MetadataExt;
+                        metadata.file_attributes() & 0x400 != 0
+                    };
+                    #[cfg(not(windows))]
+                    let linked = metadata.file_type().is_symlink();
+                    if linked {
+                        return Err(invalid(format!(
+                            "Hook 配置不能通过链接访问：{}",
+                            component.display()
+                        )));
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(invalid(format!(
+                        "无法检查 {}：{error}",
+                        component.display()
+                    )));
+                }
+            }
+        }
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(invalid(format!("无法读取 {}：{error}", path.display()))),
+        };
+        let settings: Value = serde_json::from_slice(&bytes)
+            .map_err(|error| invalid(format!("{} 不是有效 JSON：{error}", path.display())))?;
+        if let Some(hooks) = settings.get("hooks") {
+            let object = hooks
+                .as_object()
+                .ok_or_else(|| invalid("hooks 必须是对象"))?;
+            if !object.is_empty() {
+                return Err(AppError::new(
+                    "HOOK_TRUST_REQUIRED",
+                    format!("项目 Hook 需要审核：{}", path.display()),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate only the hooks section, preserving unrelated settings.
+pub(crate) fn validate_settings(data_dir: &Path) -> AppResult<()> {
+    let Some(value) = read_settings(data_dir)? else {
+        return Ok(());
+    };
+    validate_value(&value)
+}
+
+fn read_settings(data_dir: &Path) -> AppResult<Option<Value>> {
+    let path = data_dir.join("settings.json");
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(invalid(format!("无法读取 {}：{error}", path.display()))),
+    };
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| invalid(format!("{} 不是有效 JSON：{error}", path.display())))?;
+    Ok(Some(value))
+}
+
+fn validate_value(value: &Value) -> AppResult<()> {
+    let Some(hooks) = value.get("hooks") else {
+        return Ok(());
+    };
+    let events = hooks
+        .as_object()
+        .ok_or_else(|| invalid("hooks 必须是对象"))?;
+    let mut unsupported_handlers = false;
+    for (event, groups) in events {
+        if !matches!(
+            event.as_str(),
+            "SessionStart"
+                | "UserPromptSubmit"
+                | "PreToolUse"
+                | "PermissionRequest"
+                | "PostToolUse"
+                | "PostToolUseFailure"
+                | "Stop"
+                | "Notification"
+                | "PostToolBatch"
+        ) {
+            return Err(invalid(format!("不支持的 Hook 事件：{event}")));
+        }
+        for group in groups
+            .as_array()
+            .ok_or_else(|| invalid(format!("{event} 必须是数组")))?
+        {
+            let group = group
+                .as_object()
+                .ok_or_else(|| invalid("Hook 匹配组必须是对象"))?;
+            if group.get("matcher").is_some_and(|v| !v.is_string()) {
+                return Err(invalid("matcher 必须是字符串"));
+            }
+            if event == "SessionStart"
+                && let Some(matcher) = group.get("matcher").and_then(Value::as_str)
+                && matcher != "*"
+                && !matcher
+                    .split('|')
+                    .all(|part| matches!(part.trim(), "" | "startup" | "resume"))
+            {
+                return Err(invalid("暂仅支持 SessionStart 的 startup 和 resume 匹配"));
+            }
+            if matches!(
+                event.as_str(),
+                "PreToolUse" | "PermissionRequest" | "PostToolUse" | "PostToolUseFailure"
+            ) && let Some(matcher) = group.get("matcher").and_then(Value::as_str)
+                && matcher != "*"
+                && !matcher
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '|' | ',' | ' '))
+            {
+                return Err(invalid("PreToolUse 正则 matcher 暂不支持"));
+            }
+            let handlers = group
+                .get("hooks")
+                .and_then(Value::as_array)
+                .ok_or_else(|| invalid("Hook 匹配组必须包含 hooks 数组"))?;
+            for handler in handlers {
+                unsupported_handlers |= !matches!(
+                    event.as_str(),
+                    "SessionStart"
+                        | "UserPromptSubmit"
+                        | "PreToolUse"
+                        | "PermissionRequest"
+                        | "Notification"
+                        | "PostToolUse"
+                        | "PostToolUseFailure"
+                        | "Stop"
+                        | "PostToolBatch"
+                );
+                if handler.get("type").and_then(Value::as_str) != Some("command") {
+                    return Err(invalid("仅支持 command 类型的 Hook"));
+                }
+                if handler
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .is_none_or(|s| s.trim().is_empty())
+                {
+                    return Err(invalid("Hook command 不能为空"));
+                }
+                let object = handler
+                    .as_object()
+                    .ok_or_else(|| invalid("Hook 处理器必须是对象"))?;
+                if object.keys().any(|key| {
+                    !matches!(
+                        key.as_str(),
+                        "type" | "command" | "args" | "timeout" | "shell"
+                    )
+                }) {
+                    return Err(invalid("Hook 含暂不支持的处理器字段"));
+                }
+                if let Some(args) = handler.get("args")
+                    && args
+                        .as_array()
+                        .is_none_or(|args| args.iter().any(|arg| !arg.is_string()))
+                {
+                    return Err(invalid("Hook args 必须是字符串数组"));
+                }
+                if let Some(timeout) = handler.get("timeout")
+                    && timeout.as_u64().is_none_or(|n| !(1..=600).contains(&n))
+                {
+                    return Err(invalid("Hook timeout 须为 1 至 600 秒"));
+                }
+                if let Some(shell) = handler.get("shell")
+                    && shell.as_str() != Some("powershell")
+                {
+                    return Err(invalid("暂仅支持 powershell shell"));
+                }
+            }
+        }
+    }
+    if unsupported_handlers {
+        return Err(AppError::new(
+            "HOOK_UNAVAILABLE",
+            "Agent Hook 执行功能尚未实现，无法安全继续",
+        ));
+    }
+    Ok(())
+}
+
+/// Executes a supported event after validating the same configuration snapshot.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_event(
+    data_dir: &Path,
+    root: &Path,
+    capability_id: &str,
+    sandboxed: bool,
+    session_id: &str,
+    event: &str,
+    mut payload: Value,
+    cancel: CancellationToken,
+) -> AppResult<Vec<HookRun>> {
+    let Some(settings) = read_settings(data_dir)? else {
+        return Ok(Vec::new());
+    };
+    validate_value(&settings)?;
+    let Some(groups) = settings["hooks"][event].as_array() else {
+        return Ok(Vec::new());
+    };
+    let mut results = Vec::new();
+    for group in groups {
+        let matcher = group["matcher"].as_str().unwrap_or("");
+        let source = payload["source"].as_str().unwrap_or("");
+        if event == "SessionStart"
+            && !matcher.is_empty()
+            && matcher != "*"
+            && !matcher.split('|').any(|part| part.trim() == source)
+        {
+            continue;
+        }
+        let tool_name = payload["tool_name"].as_str().unwrap_or("");
+        if event == "Notification"
+            && !matcher.is_empty()
+            && matcher != "*"
+            && !matcher
+                .split(['|', ','])
+                .any(|part| part.trim() == payload["notification_type"].as_str().unwrap_or(""))
+        {
+            continue;
+        }
+        if matches!(
+            event,
+            "PreToolUse" | "PermissionRequest" | "PostToolUse" | "PostToolUseFailure"
+        ) && !matcher.is_empty()
+            && matcher != "*"
+            && !matcher
+                .split(['|', ','])
+                .any(|part| part.trim() == tool_name)
+        {
+            continue;
+        }
+        for handler in group["hooks"].as_array().into_iter().flatten() {
+            let command = handler["command"]
+                .as_str()
+                .ok_or_else(|| invalid("缺少 command"))?;
+            let (program, args) = if let Some(args) = handler.get("args") {
+                (
+                    command.to_owned(),
+                    args.as_array()
+                        .ok_or_else(|| invalid("args 不是数组"))?
+                        .iter()
+                        .map(|v| {
+                            v.as_str()
+                                .map(str::to_owned)
+                                .ok_or_else(|| invalid("args 包含非字符串"))
+                        })
+                        .collect::<AppResult<Vec<_>>>()?,
+                )
+            } else {
+                (
+                    "powershell.exe".to_owned(),
+                    vec![
+                        "-NoProfile".into(),
+                        "-NonInteractive".into(),
+                        "-Command".into(),
+                        command.to_owned(),
+                    ],
+                )
+            };
+            let mut input = json!({"session_id":session_id,"cwd":root,"hook_event_name":event});
+            if let (Some(target), Some(extra)) = (input.as_object_mut(), payload.as_object()) {
+                target.extend(extra.clone());
+            }
+            let mut input =
+                serde_json::to_vec(&input).map_err(|error| invalid(error.to_string()))?;
+            input.push(b'\n');
+            let timeout = handler["timeout"].as_u64().unwrap_or(60);
+            match harness_platform::ShellService::run_hook_in(
+                root,
+                capability_id,
+                &program,
+                &args,
+                &input,
+                cancel.clone(),
+                sandboxed,
+                std::time::Duration::from_secs(timeout),
+            )
+            .await
+            {
+                Ok(output) if output.exit_code == 0 => {
+                    let text = output.stdout.trim();
+                    let structured = if text.starts_with('{') {
+                        serde_json::from_str::<Value>(text).ok()
+                    } else {
+                        None
+                    };
+                    let context = if let Some(value) = &structured {
+                        value["hookSpecificOutput"]["additionalContext"]
+                            .as_str()
+                            .map(str::to_owned)
+                    } else if text.is_empty()
+                        || text.starts_with('{')
+                        || !matches!(event, "SessionStart" | "UserPromptSubmit")
+                    {
+                        None
+                    } else {
+                        Some(text.to_owned())
+                    };
+                    let blocked = structured.as_ref().is_some_and(|value| {
+                        value["decision"] == "block"
+                            || value["continue"] == false
+                            || value["hookSpecificOutput"]["permissionDecision"] == "deny"
+                    }) || (event == "Stop" && context.is_some())
+                        || (event == "PermissionRequest"
+                            && structured.as_ref().is_some_and(|value| {
+                                value["hookSpecificOutput"]["decision"]["behavior"] == "deny"
+                            }));
+                    let diagnostic = structured
+                        .as_ref()
+                        .and_then(|value| {
+                            value["hookSpecificOutput"]["decision"]["message"]
+                                .as_str()
+                                .or_else(|| {
+                                    value["hookSpecificOutput"]["permissionDecisionReason"].as_str()
+                                })
+                                .or_else(|| value["reason"].as_str())
+                        })
+                        .map(str::to_owned);
+                    if event == "PreToolUse"
+                        && let Some(value) = &structured
+                        && let Some(decision) =
+                            value["hookSpecificOutput"].get("permissionDecision")
+                        && !matches!(decision.as_str(), Some("allow" | "deny" | "ask"))
+                    {
+                        return Err(invalid("Hook permissionDecision 无效"));
+                    }
+                    let updated_input = if event == "PreToolUse" {
+                        structured
+                            .as_ref()
+                            .and_then(|value| value["hookSpecificOutput"].get("updatedInput"))
+                            .cloned()
+                    } else {
+                        None
+                    };
+                    let ask = event == "PreToolUse"
+                        && structured.as_ref().is_some_and(|value| {
+                            value["hookSpecificOutput"]["permissionDecision"] == "ask"
+                        });
+                    if let Some(value) = &updated_input {
+                        if !value.is_object() {
+                            return Err(invalid("Hook updatedInput 必须是对象"));
+                        }
+                        payload["tool_input"] = value.clone();
+                    }
+                    results.push(HookRun {
+                        status: if blocked { "denied" } else { "completed" },
+                        context,
+                        diagnostic,
+                        blocked,
+                        updated_input,
+                        ask,
+                    });
+                }
+                Ok(output) => results.push(HookRun {
+                    status: if output.exit_code == 2
+                        && matches!(event, "UserPromptSubmit" | "PreToolUse" | "Stop")
+                    {
+                        "denied"
+                    } else {
+                        "error"
+                    },
+                    context: None,
+                    diagnostic: Some(
+                        if output.exit_code == 2
+                            && matches!(event, "UserPromptSubmit" | "PreToolUse" | "Stop")
+                        {
+                            output.stderr
+                        } else {
+                            format!("Hook 退出码 {}", output.exit_code)
+                        },
+                    ),
+                    blocked: output.exit_code == 2
+                        && matches!(event, "UserPromptSubmit" | "PreToolUse" | "Stop"),
+                    updated_input: None,
+                    ask: false,
+                }),
+                Err(error) if error.code == "CANCELLED" => return Err(error),
+                Err(error) => results.push(HookRun {
+                    status: "error",
+                    context: None,
+                    diagnostic: Some(error.to_string()),
+                    blocked: false,
+                    updated_input: None,
+                    ask: false,
+                }),
+            }
+        }
+    }
+    Ok(results)
+}

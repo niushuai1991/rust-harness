@@ -14,6 +14,10 @@ pub struct SandboxedStdio {
     pub writer: tokio::fs::File,
     pub stderr: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
     pub(crate) _guard: Box<dyn Send>,
+    #[cfg(windows)]
+    pub(crate) process: std::sync::Arc<windows::Handle>,
+    #[cfg(windows)]
+    pub(crate) stderr_done: tokio::sync::oneshot::Receiver<()>,
 }
 impl tokio::io::AsyncRead for SandboxedStdio {
     fn poll_read(
@@ -48,6 +52,105 @@ impl tokio::io::AsyncWrite for SandboxedStdio {
 impl ShellService {
     pub fn new() -> Self {
         Self
+    }
+    /// 执行同步 Hook；持有调用方的工作区租约，取消或超时时清理整个进程树。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_hook_in(
+        root: &Path,
+        capability_id: &str,
+        program: &str,
+        args: &[String],
+        input: &[u8],
+        cancel: CancellationToken,
+        sandboxed: bool,
+        timeout: std::time::Duration,
+    ) -> AppResult<ProcessOutput> {
+        #[cfg(windows)]
+        {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            const LIMIT: usize = 32 * 1024;
+            let child = Self::spawn_stdio_in(
+                root,
+                capability_id,
+                program,
+                args,
+                cancel.clone(),
+                sandboxed,
+            )
+            .await?;
+            let SandboxedStdio {
+                mut reader,
+                mut writer,
+                stderr,
+                _guard,
+                process,
+                stderr_done,
+            } = child;
+            let stdout_task = tokio::spawn(async move {
+                let mut out = Vec::new();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    let count = reader.read(&mut chunk).await?;
+                    if count == 0 {
+                        break;
+                    }
+                    let take = count.min(LIMIT.saturating_sub(out.len()));
+                    out.extend_from_slice(&chunk[..take]);
+                }
+                Ok::<_, std::io::Error>(out)
+            });
+            let input = input.to_vec();
+            let input_task = tokio::spawn(async move {
+                let result = async {
+                    writer.write_all(&input).await?;
+                    writer.flush().await
+                }
+                .await;
+                drop(writer);
+                result
+            });
+            let wait_task = tokio::task::spawn_blocking(move || windows::wait_process(&process));
+            let outcome = tokio::select! {
+                _ = cancel.cancelled() => Err(AppError::new("CANCELLED", "Hook 已取消")),
+                result = tokio::time::timeout(timeout, wait_task) => match result {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(error)) => Err(crate::io(error)),
+                    Err(_) => Err(AppError::new("HOOK_TIMEOUT", "Hook 执行超时")),
+                },
+            };
+            // 关闭 Job Object，清理仍持有管道的后代进程；确保读取任务收敛。
+            drop(_guard);
+            let input_result = input_task.await.map_err(crate::io)?;
+            let stdout = stdout_task.await.map_err(crate::io)?.map_err(crate::io)?;
+            let _ = stderr_done.await;
+            let code = outcome?;
+            if code != 2 {
+                input_result.map_err(crate::io)?;
+            }
+            let err = stderr.lock().map_err(crate::io)?;
+            Ok(ProcessOutput {
+                stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&err[..err.len().min(LIMIT)]).into_owned(),
+                exit_code: code,
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (
+                root,
+                capability_id,
+                program,
+                args,
+                input,
+                cancel,
+                sandboxed,
+                timeout,
+            );
+            Err(AppError::new(
+                "UNSUPPORTED",
+                "System process isolation is Windows only",
+            ))
+        }
     }
     /// 在指定执行根执行命令（调用方须已持有工作区运行租约）。
     ///

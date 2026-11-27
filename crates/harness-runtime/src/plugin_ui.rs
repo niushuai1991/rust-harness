@@ -111,8 +111,17 @@ impl Runtime {
         .await?;
         let result = async {
             // 插件命令固定在托管副本执行：reason 按实际执行位置（隔离副本）描述。
-            self.approve(session, &call, &cancel, false, None, ExecutionMode::Replica)
-                .await?;
+            self.approve(
+                session,
+                &call,
+                &cancel,
+                false,
+                None,
+                ExecutionMode::Replica,
+                false,
+                None,
+            )
+            .await?;
             self.plugins
                 .execute_command(
                     &info.workspace_id,

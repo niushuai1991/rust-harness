@@ -107,6 +107,861 @@ fn call(id: &str, name: &str, args: Value) -> ModelAnswer {
     }
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn pre_tool_hook_sees_tool_rewritten_by_wasm_plugin() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = json!({"hooks":{"PreToolUse":[{"matcher":"write","hooks":[{"type":"command","command":"powershell.exe","args":["-NoProfile","-Command","[Console]::Error.Write('write blocked'); exit 2"]}]}]}});
+    std::fs::write(
+        temp.path().join("settings.json"),
+        serde_json::to_vec(&settings).unwrap(),
+    )
+    .unwrap();
+    let plugin = temp.path().join("fixture");
+    std::fs::create_dir(&plugin).unwrap();
+    std::fs::write(plugin.join("plugin.toml"), "id='rewrite'\nname='Rewrite'\nversion='1.0.0'\napi='^0.1'\ncomponent='plugin.wasm'\npermissions=['tools','hooks']\n[contributions]\nhooks=['before_tool']\n").unwrap();
+    let output = r#"{"name":"write","arguments":{"path":"blocked.txt","content":"bad"}}"#;
+    let encoded = output
+        .as_bytes()
+        .iter()
+        .map(|b| format!("\\{b:02x}"))
+        .collect::<String>();
+    let length = (output.len() as u32)
+        .to_le_bytes()
+        .iter()
+        .map(|b| format!("\\{b:02x}"))
+        .collect::<String>();
+    let wasm = wat::parse_str(format!(r#"(component
+      (core module $m (memory (export "memory") 1)
+        (data (i32.const 16) "\00\00\00\00\40\00\00\00{length}")
+        (data (i32.const 64) "{encoded}")
+        (global $heap (mut i32) (i32.const 1024))
+        (func (export "realloc") (param i32 i32 i32 i32) (result i32) (local $old i32) global.get $heap local.set $old global.get $heap local.get 3 i32.add global.set $heap local.get $old)
+        (func (export "activate") (result i32) i32.const 0)
+        (func (export "execute") (param i32 i32 i32 i32) (result i32) i32.const 16)
+        (func (export "deactivate") (result i32) i32.const 0))
+      (core instance $i (instantiate $m))
+      (alias core export $i "memory" (core memory $mem))
+      (alias core export $i "realloc" (core func $realloc))
+      (alias core export $i "activate" (core func $activate))
+      (alias core export $i "execute" (core func $execute))
+      (alias core export $i "deactivate" (core func $deactivate))
+      (func (export "activate") (result (result (error string))) (canon lift (core func $activate) (memory $mem) (realloc $realloc)))
+      (func (export "execute") (param "name" string) (param "arguments" string) (result (result string (error string))) (canon lift (core func $execute) (memory $mem) (realloc $realloc)))
+      (func (export "deactivate") (result (result (error string))) (canon lift (core func $deactivate) (memory $mem) (realloc $realloc))))"#)).unwrap();
+    std::fs::write(plugin.join("plugin.wasm"), wasm).unwrap();
+    let runtime = Runtime::open(temp.path().to_path_buf()).await.unwrap();
+    runtime
+        .plugins
+        .install(&plugin, vec!["tools".into(), "hooks".into()])
+        .unwrap();
+    runtime.plugins.set_enabled("rewrite", true).unwrap();
+    runtime.set_default_approval_policy(Some(ApprovalPolicy::Auto));
+    let session = runtime.store.create_session("", "hooks").await.unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([
+            call("id", "read", json!({"path":"original.txt"})),
+            ModelAnswer {
+                content: "done".into(),
+                ..Default::default()
+            },
+        ])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .run_session(session.id.clone(), "test".into(), provider)
+        .await
+        .unwrap();
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    assert!(events.iter().any(|e| {
+        e.kind == "tool.result"
+            && e.data["callId"] == "id"
+            && e.data["content"]
+                .as_str()
+                .unwrap_or("")
+                .contains("write blocked")
+    }));
+    assert!(
+        !temp
+            .path()
+            .join("sessions")
+            .join(session.id)
+            .join("root")
+            .join("blocked.txt")
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn invalid_hook_configuration_stops_before_the_model_request() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("settings.json"),
+        r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"http","url":"https://example.invalid"}]}]}}"#,
+    )
+    .unwrap();
+    let runtime = Runtime::open(temp.path().to_path_buf()).await.unwrap();
+    let session = runtime.store.create_session("", "hooks").await.unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            content: "unexpected".into(),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+    let result = runtime
+        .clone()
+        .run_session(session.id.clone(), "test".into(), provider.clone())
+        .await;
+    let error = result.expect_err("不支持的 Hook 类型应产生配置错误");
+    assert_eq!(error.code, "HOOK_CONFIG");
+    assert!(provider.requests.lock().unwrap().is_empty());
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    assert!(events.iter().any(|e| e.kind == "inbox.claimed"));
+    assert!(
+        events
+            .iter()
+            .any(|e| e.kind == "turn.end" && e.data["status"] == "error")
+    );
+}
+
+#[tokio::test]
+async fn project_hooks_require_trust_before_model_request() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(project.join(".rh")).unwrap();
+    std::fs::write(
+        project.join(".rh/.settings.json"),
+        r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"example"}]}]}}"#,
+    )
+    .unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&project, None, ExecutionMode::Direct)
+        .unwrap();
+    let session = runtime
+        .store
+        .create_session_with_mode(&workspace.id, "hooks", Some(ExecutionMode::Direct))
+        .await
+        .unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            content: "unexpected".into(),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+    let error = runtime
+        .clone()
+        .run_session(session.id.clone(), "test".into(), provider.clone())
+        .await
+        .expect_err("项目 Hook 尚未授权");
+    assert_eq!(error.code, "HOOK_TRUST_REQUIRED");
+    assert!(provider.requests.lock().unwrap().is_empty());
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    assert!(events.iter().any(|e| e.kind == "inbox.claimed"));
+    assert!(
+        events
+            .iter()
+            .any(|e| e.kind == "turn.end" && e.data["status"] == "error")
+    );
+}
+
+#[tokio::test]
+async fn project_hook_created_during_turn_blocks_next_model_request() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(project.join(".rh")).unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&project, None, ExecutionMode::Direct)
+        .unwrap();
+    let session = runtime
+        .store
+        .create_session_with_mode(&workspace.id, "hooks", Some(ExecutionMode::Direct))
+        .await
+        .unwrap();
+    runtime.set_default_approval_policy(Some(ApprovalPolicy::Auto));
+    let hook_config =
+        r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"example"}]}]}}"#;
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([
+            call(
+                "write-config",
+                "write",
+                json!({"path":".rh/.settings.json","content":hook_config}),
+            ),
+            ModelAnswer {
+                content: "unexpected".into(),
+                ..Default::default()
+            },
+        ])),
+        requests: Mutex::new(vec![]),
+    });
+    let error = runtime
+        .clone()
+        .run_session(session.id, "test".into(), provider.clone())
+        .await
+        .expect_err("新出现的项目 Hook 必须等待审核");
+    assert_eq!(error.code, "HOOK_TRUST_REQUIRED");
+    assert_eq!(provider.requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn project_hook_added_during_approval_prevents_tool_execution() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(project.join(".rh")).unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&project, None, ExecutionMode::Direct)
+        .unwrap();
+    let session = runtime
+        .store
+        .create_session_with_mode(&workspace.id, "hooks", Some(ExecutionMode::Direct))
+        .await
+        .unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([call(
+            "write1",
+            "write",
+            json!({"path":"protected.txt","content":"bad"}),
+        )])),
+        requests: Mutex::new(vec![]),
+    });
+    let run = tokio::spawn(
+        runtime
+            .clone()
+            .run_session(session.id, "test".into(), provider),
+    );
+    let approval = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Some(request) = runtime.approvals.list().into_iter().next() {
+                break request;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    std::fs::write(
+        project.join(".rh/.settings.json"),
+        r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"example"}]}]}}"#,
+    )
+    .unwrap();
+    runtime.approvals.resolve(&approval.id, true).unwrap();
+    let error = run.await.unwrap().unwrap_err();
+    assert_eq!(error.code, "HOOK_TRUST_REQUIRED");
+    assert!(!project.join("protected.txt").exists());
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn project_hook_added_during_parallel_preparation_blocks_prepared_reads() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(project.join(".rh")).unwrap();
+    std::fs::write(project.join("a.txt"), "secret").unwrap();
+    std::fs::write(project.join("b.txt"), "secret").unwrap();
+    let host = temp.path().join("host");
+    std::fs::create_dir(&host).unwrap();
+    let script = "[IO.File]::WriteAllText('.rh/.settings.json', '{\"hooks\":{\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"example\"}]}]}}')";
+    std::fs::write(host.join("settings.json"), serde_json::to_vec(&json!({"hooks":{"PreToolUse":[{"matcher":"read","hooks":[{"type":"command","command":"powershell.exe","args":["-NoProfile","-Command",script]}]}]}})).unwrap()).unwrap();
+    let runtime = Runtime::open(host).await.unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&project, None, ExecutionMode::Direct)
+        .unwrap();
+    let session = runtime
+        .store
+        .create_session_with_mode(&workspace.id, "hooks", Some(ExecutionMode::Direct))
+        .await
+        .unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            calls: vec![
+                ToolCall {
+                    id: "read-a".into(),
+                    name: "read".into(),
+                    arguments: json!({"path":"a.txt"}),
+                },
+                ToolCall {
+                    id: "read-b".into(),
+                    name: "read".into(),
+                    arguments: json!({"path":"b.txt"}),
+                },
+            ],
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+    let error = runtime
+        .clone()
+        .run_session(session.id.clone(), "test".into(), provider)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "HOOK_TRUST_REQUIRED");
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    let result = events
+        .iter()
+        .find(|e| e.kind == "tool.result" && e.data["callId"] == "read-a")
+        .unwrap();
+    assert_eq!(result.data["isError"], true);
+    assert!(!result.data["content"].as_str().unwrap().contains("secret"));
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn session_start_hook_adds_context_before_first_model_request() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = json!({"hooks":{"SessionStart":[{"hooks":[{
+        "type":"command", "command":"powershell.exe",
+        "args":["-NoProfile","-Command","[Console]::Out.Write('hook context marker')"]
+    }]}]}});
+    std::fs::write(
+        temp.path().join("settings.json"),
+        serde_json::to_vec(&settings).unwrap(),
+    )
+    .unwrap();
+    let runtime = Runtime::open(temp.path().to_path_buf()).await.unwrap();
+    let session = runtime.store.create_session("", "hooks").await.unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            content: "done".into(),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .run_session(session.id, "hello".into(), provider.clone())
+        .await
+        .unwrap();
+    assert!(
+        provider.requests.lock().unwrap()[0]
+            .iter()
+            .any(|message| message.content.contains("hook context marker"))
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn user_prompt_hook_adds_context_to_the_model_request() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = json!({"hooks":{"UserPromptSubmit":[{"hooks":[{
+        "type":"command", "command":"powershell.exe",
+        "args":["-NoProfile","-Command","[Console]::Out.Write('prompt hook context')"]
+    }]}]}});
+    std::fs::write(
+        temp.path().join("settings.json"),
+        serde_json::to_vec(&settings).unwrap(),
+    )
+    .unwrap();
+    let runtime = Runtime::open(temp.path().to_path_buf()).await.unwrap();
+    let session = runtime.store.create_session("", "hooks").await.unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            content: "done".into(),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .run_session(session.id.clone(), "hello".into(), provider.clone())
+        .await
+        .unwrap();
+    assert!(
+        provider.requests.lock().unwrap()[0]
+            .iter()
+            .any(|message| message.content.contains("prompt hook context"))
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn user_prompt_hook_can_block_without_calling_the_model() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = json!({"hooks":{"UserPromptSubmit":[{"hooks":[{
+        "type":"command", "command":"powershell.exe",
+        "args":["-NoProfile","-Command","[Console]::Out.Write('must not be saved')"]
+    },{
+        "type":"command", "command":"powershell.exe",
+        "args":["-NoProfile","-Command","[Console]::Error.Write('prompt blocked'); exit 2"]
+    }]}]}});
+    std::fs::write(
+        temp.path().join("settings.json"),
+        serde_json::to_vec(&settings).unwrap(),
+    )
+    .unwrap();
+    let runtime = Runtime::open(temp.path().to_path_buf()).await.unwrap();
+    let session = runtime.store.create_session("", "hooks").await.unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::new()),
+        requests: Mutex::new(vec![]),
+    });
+    let error = runtime
+        .clone()
+        .run_session(session.id.clone(), "hello".into(), provider.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "HOOK_DENIED");
+    assert!(error.message.contains("prompt blocked"));
+    assert!(provider.requests.lock().unwrap().is_empty());
+    assert!(
+        !runtime
+            .store
+            .events(&session.id, 0)
+            .await
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == "hook.context" && e.data["content"] == "must not be saved")
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn pre_tool_hook_denial_prevents_tool_execution() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = json!({"hooks":{"PreToolUse":[{"matcher":"write","hooks":[{
+        "type":"command", "command":"powershell.exe",
+        "args":["-NoProfile","-Command","[Console]::Error.Write('blocked by test'); exit 2"]
+    }]}]}});
+    std::fs::write(
+        temp.path().join("settings.json"),
+        serde_json::to_vec(&settings).unwrap(),
+    )
+    .unwrap();
+    let runtime = Runtime::open(temp.path().to_path_buf()).await.unwrap();
+    runtime.set_default_approval_policy(Some(ApprovalPolicy::Auto));
+    let session = runtime.store.create_session("", "hooks").await.unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([
+            call(
+                "blocked",
+                "write",
+                json!({"path":"blocked.txt","content":"bad"}),
+            ),
+            ModelAnswer {
+                content: "done".into(),
+                ..Default::default()
+            },
+        ])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .run_session(session.id.clone(), "hello".into(), provider)
+        .await
+        .unwrap();
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    let result = events
+        .iter()
+        .find(|event| event.kind == "tool.result" && event.data["callId"] == "blocked")
+        .unwrap();
+    assert_eq!(result.data["isError"], true);
+    assert!(
+        result.data["content"]
+            .as_str()
+            .unwrap()
+            .contains("blocked by test")
+    );
+    assert!(
+        !temp
+            .path()
+            .join("sessions")
+            .join(&session.id)
+            .join("root")
+            .join("blocked.txt")
+            .exists()
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn pre_tool_hook_rewrites_validated_input_before_execution() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = json!({"hooks":{"PreToolUse":[{"matcher":"write","hooks":[{
+        "type":"command", "command":"powershell.exe",
+        "args":["-NoProfile","-Command","[Console]::Out.Write('{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"updatedInput\":{\"path\":\"rewritten.txt\",\"content\":\"safe\"}}}')"]
+    }]}]}});
+    std::fs::write(
+        temp.path().join("settings.json"),
+        serde_json::to_vec(&settings).unwrap(),
+    )
+    .unwrap();
+    let runtime = Runtime::open(temp.path().to_path_buf()).await.unwrap();
+    runtime.set_default_approval_policy(Some(ApprovalPolicy::Auto));
+    let session = runtime.store.create_session("", "hooks").await.unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([
+            call(
+                "write1",
+                "write",
+                json!({"path":"original.txt","content":"bad"}),
+            ),
+            ModelAnswer {
+                content: "done".into(),
+                ..Default::default()
+            },
+        ])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .run_session(session.id.clone(), "hello".into(), provider)
+        .await
+        .unwrap();
+    let root = temp.path().join("sessions").join(&session.id).join("root");
+    assert_eq!(
+        std::fs::read_to_string(root.join("rewritten.txt")).unwrap(),
+        "safe"
+    );
+    assert!(!root.join("original.txt").exists());
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| e.kind == "tool.rewrite" && e.data["callId"] == "write1")
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn pre_tool_hook_ask_requires_user_approval_even_in_auto_mode() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = json!({"hooks":{"PreToolUse":[{"matcher":"write","hooks":[{
+        "type":"command", "command":"powershell.exe",
+        "args":["-NoProfile","-Command","[Console]::Out.Write('{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\"}}')"]
+    }]}]}});
+    std::fs::write(
+        temp.path().join("settings.json"),
+        serde_json::to_vec(&settings).unwrap(),
+    )
+    .unwrap();
+    let runtime = Runtime::open(temp.path().to_path_buf()).await.unwrap();
+    runtime.set_default_approval_policy(Some(ApprovalPolicy::Auto));
+    let session = runtime.store.create_session("", "hooks").await.unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([
+            call("write1", "write", json!({"path":"ask.txt","content":"bad"})),
+            ModelAnswer {
+                content: "done".into(),
+                ..Default::default()
+            },
+        ])),
+        requests: Mutex::new(vec![]),
+    });
+    let run = tokio::spawn(runtime.clone().run_session(
+        session.id.clone(),
+        "hello".into(),
+        provider,
+    ));
+    let approval = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Some(request) = runtime.approvals.list().into_iter().next() {
+                break request;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Hook ask 必须产生人工审批");
+    runtime.approvals.resolve(&approval.id, false).unwrap();
+    run.await.unwrap().unwrap();
+    assert!(
+        !temp
+            .path()
+            .join("sessions")
+            .join(session.id)
+            .join("root")
+            .join("ask.txt")
+            .exists()
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn permission_request_hook_denies_before_user_is_prompted() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = json!({"hooks":{"PermissionRequest":[{"matcher":"write","hooks":[{
+        "type":"command", "command":"powershell.exe",
+        "args":["-NoProfile","-Command","[Console]::Out.Write('{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"deny\",\"message\":\"denied by permission hook\"}}}')"]
+    }]}]}});
+    std::fs::write(
+        temp.path().join("settings.json"),
+        serde_json::to_vec(&settings).unwrap(),
+    )
+    .unwrap();
+    let runtime = Runtime::open(temp.path().to_path_buf()).await.unwrap();
+    runtime.set_default_approval_policy(Some(ApprovalPolicy::Ask));
+    let session = runtime.store.create_session("", "hooks").await.unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([
+            call(
+                "write1",
+                "write",
+                json!({"path":"denied.txt","content":"bad"}),
+            ),
+            ModelAnswer {
+                content: "done".into(),
+                ..Default::default()
+            },
+        ])),
+        requests: Mutex::new(vec![]),
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        runtime
+            .clone()
+            .run_session(session.id.clone(), "hello".into(), provider),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(runtime.approvals.list().is_empty());
+    let events = runtime.store.events(&session.id, 0).await.unwrap();
+    assert!(events.iter().any(|e| {
+        e.kind == "tool.result"
+            && e.data["callId"] == "write1"
+            && e.data["content"]
+                .as_str()
+                .unwrap_or("")
+                .contains("denied by permission hook")
+    }));
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn notification_hook_runs_when_user_input_is_requested() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = json!({"hooks":{"Notification":[{"matcher":"user_input","hooks":[{
+        "type":"command", "command":"powershell.exe",
+        "args":["-NoProfile","-Command","[IO.File]::WriteAllText('notify.txt','notified')"]
+    }]}]}});
+    std::fs::write(
+        temp.path().join("settings.json"),
+        serde_json::to_vec(&settings).unwrap(),
+    )
+    .unwrap();
+    let runtime = Runtime::open(temp.path().to_path_buf()).await.unwrap();
+    let session = runtime.store.create_session("", "hooks").await.unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([
+            call("ask1", "ask_user", json!({"question":"选择？"})),
+            ModelAnswer {
+                content: "done".into(),
+                ..Default::default()
+            },
+        ])),
+        requests: Mutex::new(vec![]),
+    });
+    let run = tokio::spawn(runtime.clone().run_session(
+        session.id.clone(),
+        "hello".into(),
+        provider,
+    ));
+    let marker = temp
+        .path()
+        .join("sessions")
+        .join(&session.id)
+        .join("root")
+        .join("notify.txt");
+    let request = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if marker.exists()
+                && let Some(request) = runtime.questions.list().into_iter().next()
+            {
+                break request;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("等待答复时应执行通知 Hook");
+    runtime
+        .questions
+        .resolve(
+            &request.id,
+            AskAnswer {
+                text: "继续".into(),
+                source: AskSource::Text,
+            },
+        )
+        .unwrap();
+    run.await.unwrap().unwrap();
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "notified");
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn stop_hook_continuations_are_limited_to_three() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = json!({"hooks":{"Stop":[{"hooks":[{
+        "type":"command", "command":"powershell.exe",
+        "args":["-NoProfile","-Command","[Console]::Out.Write('{\"decision\":\"block\",\"reason\":\"continue work\"}')"]
+    }]}]}});
+    std::fs::write(
+        temp.path().join("settings.json"),
+        serde_json::to_vec(&settings).unwrap(),
+    )
+    .unwrap();
+    let runtime = Runtime::open(temp.path().to_path_buf()).await.unwrap();
+    let session = runtime.store.create_session("", "hooks").await.unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from(
+            (0..4)
+                .map(|i| ModelAnswer {
+                    content: format!("answer {i}"),
+                    ..Default::default()
+                })
+                .collect::<Vec<_>>(),
+        )),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .run_session(session.id, "hello".into(), provider.clone())
+        .await
+        .unwrap();
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 4);
+    assert!(
+        requests[1]
+            .iter()
+            .any(|message| message.content.contains("continue work"))
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn post_tool_batch_context_is_injected_after_all_tool_results() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = json!({"hooks":{"PostToolBatch":[{"hooks":[{
+        "type":"command", "command":"powershell.exe",
+        "args":["-NoProfile","-Command","[Console]::Out.Write('{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolBatch\",\"additionalContext\":\"batch context marker\"}}')"]
+    }]}]}});
+    std::fs::write(
+        temp.path().join("settings.json"),
+        serde_json::to_vec(&settings).unwrap(),
+    )
+    .unwrap();
+    let runtime = Runtime::open(temp.path().to_path_buf()).await.unwrap();
+    let session = runtime.store.create_session("", "hooks").await.unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([
+            call("read1", "read", json!({"path":"missing.txt"})),
+            ModelAnswer {
+                content: "done".into(),
+                ..Default::default()
+            },
+        ])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .run_session(session.id, "hello".into(), provider.clone())
+        .await
+        .unwrap();
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    let messages = &requests[1];
+    let result = messages
+        .iter()
+        .position(|message| message.role == MessageRole::Tool)
+        .unwrap();
+    let context = messages
+        .iter()
+        .position(|message| message.content.contains("batch context marker"))
+        .unwrap();
+    assert!(context > result);
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn post_tool_hook_context_is_visible_after_the_tool_result() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = json!({"hooks":{"PostToolUse":[{"matcher":"list_files","hooks":[{
+        "type":"command", "command":"powershell.exe",
+        "args":["-NoProfile","-Command","[Console]::Out.Write('{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"post hook marker\"}}')"]
+    }]}]}});
+    std::fs::write(
+        temp.path().join("settings.json"),
+        serde_json::to_vec(&settings).unwrap(),
+    )
+    .unwrap();
+    let runtime = Runtime::open(temp.path().to_path_buf()).await.unwrap();
+    let session = runtime.store.create_session("", "hooks").await.unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([
+            call("list1", "list_files", json!({})),
+            ModelAnswer {
+                content: "done".into(),
+                ..Default::default()
+            },
+        ])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .run_session(session.id, "hello".into(), provider.clone())
+        .await
+        .unwrap();
+    let requests = provider.requests.lock().unwrap();
+    let messages = &requests[1];
+    let result = messages
+        .iter()
+        .position(|message| message.role == MessageRole::Tool)
+        .unwrap();
+    let context = messages
+        .iter()
+        .position(|message| message.content.contains("post hook marker"))
+        .unwrap();
+    assert!(context > result);
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn post_tool_failure_hook_runs_for_failed_execution() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = json!({"hooks":{"PostToolUseFailure":[{"matcher":"read","hooks":[{
+        "type":"command", "command":"powershell.exe",
+        "args":["-NoProfile","-Command","[Console]::Out.Write('{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUseFailure\",\"additionalContext\":\"failure marker\"}}')"]
+    }]}]}});
+    std::fs::write(
+        temp.path().join("settings.json"),
+        serde_json::to_vec(&settings).unwrap(),
+    )
+    .unwrap();
+    let runtime = Runtime::open(temp.path().to_path_buf()).await.unwrap();
+    let session = runtime.store.create_session("", "hooks").await.unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([
+            call("missing", "read", json!({"path":"missing.txt"})),
+            ModelAnswer {
+                content: "done".into(),
+                ..Default::default()
+            },
+        ])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .run_session(session.id, "hello".into(), provider.clone())
+        .await
+        .unwrap();
+    let requests = provider.requests.lock().unwrap();
+    assert!(
+        requests[1]
+            .iter()
+            .any(|message| message.content.contains("failure marker"))
+    );
+}
+
 #[tokio::test]
 async fn resume_failed_turn_preserves_history_and_budget_without_a_user_message() {
     let temp = tempfile::tempdir().unwrap();

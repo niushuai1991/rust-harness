@@ -27,6 +27,7 @@
 | [右侧面板（文件预览、改动审阅、网页浏览与计划抽屉）](specs/side-panel.md) | 桌面右侧面板承载更改审阅、文件预览、网页浏览和只读计划抽屉。 |
 | [自动化任务（周期调度）](specs/automation.md) | 桌面端可管理的周期自动化任务：五类周期、可选所属项目与绑定会话投递回合，跨项目全量管理面板。 |
 | [Skills（技能）支持](specs/skills.md) | 技能目录与 frontmatter 解析、catalog 注入系统提示、`$name` 显式提及全文注入与禁用名单。 |
+| [Agent Hooks 设计草稿](specs/agent-hooks-draft.md) | 探索 Agent 生命周期与工具事件的 Hook 配置、执行和安全边界。 |
 | [会话列表「最近 / 项目」视图](specs/session-list.md) | 桌面侧栏按最近/按项目两种视图，以及项目置顶、搜索、存档、草稿态、标题生成等会话管理能力。 |
 | [会话用量环形指示器与上下文窗口](specs/context-usage-indicator.md) | 会话输入区用量环形与悬停明细卡，模型目录 `context_window` 元数据，ChatGPT 订阅用量接入。 |
 | [每回合 Token 预算](specs/token-usage-budget.md) | 每条用户消息独立累计输出与未缓存输入 token，父子代理共享额度，默认 1M 且可调。 |
