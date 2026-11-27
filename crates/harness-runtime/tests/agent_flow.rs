@@ -269,6 +269,264 @@ async fn project_hooks_require_trust_before_model_request() {
     );
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn trusted_project_hook_runs_and_revocation_blocks_next_turn() {
+    use harness_runtime::hook_trust::HookTrustService;
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(project.join(".rh")).unwrap();
+    let settings = json!({"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"powershell.exe","args":["-NoProfile","-Command","[Console]::Out.Write('trusted project hook')"]}]}]}});
+    std::fs::write(
+        project.join(".rh/.settings.json"),
+        serde_json::to_vec(&settings).unwrap(),
+    )
+    .unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&project, None, ExecutionMode::Direct)
+        .unwrap();
+    let session = runtime
+        .store
+        .create_session_with_mode(&workspace.id, "hooks", Some(ExecutionMode::Direct))
+        .await
+        .unwrap();
+    let service = HookTrustService::new(runtime.store.clone());
+    let review = service.review(&project).await.unwrap();
+    service.trust(&project, &review[0].digest).await.unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            content: "done".into(),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .run_session(session.id.clone(), "first".into(), provider.clone())
+        .await
+        .unwrap();
+    assert!(
+        provider.requests.lock().unwrap()[0]
+            .iter()
+            .any(|message| message.content.contains("trusted project hook"))
+    );
+    service.revoke(&project, &review[0].digest).await.unwrap();
+    let error = runtime
+        .clone()
+        .run_session(session.id, "second".into(), provider)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "HOOK_TRUST_REQUIRED");
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn interactive_project_hook_waits_for_review_and_then_continues() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(project.join(".rh")).unwrap();
+    std::fs::write(
+        project.join(".rh/.settings.json"),
+        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"exit 0"}]}]}}"#,
+    )
+    .unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&project, None, ExecutionMode::Direct)
+        .unwrap();
+    let session = runtime
+        .store
+        .create_session_with_mode(&workspace.id, "hooks", Some(ExecutionMode::Direct))
+        .await
+        .unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            content: "done".into(),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+    let task = tokio::spawn(runtime.clone().run_session_with_attachments_interactive(
+        session.id.clone(),
+        "first".into(),
+        provider.clone(),
+        vec![],
+        vec![],
+    ));
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if runtime
+                .store
+                .events(&session.id, 0)
+                .await
+                .unwrap()
+                .iter()
+                .any(|event| event.kind == "hook.trust.required")
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!task.is_finished());
+    assert!(provider.requests.lock().unwrap().is_empty());
+    let digest = runtime.review_project_hooks(&session.id).await.unwrap()[0]
+        .digest
+        .clone();
+    runtime
+        .trust_project_hook(&session.id, &digest)
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(provider.requests.lock().unwrap().len(), 1);
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn cancelling_interactive_hook_review_stops_without_running_model() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(project.join(".rh")).unwrap();
+    std::fs::write(
+        project.join(".rh/.settings.json"),
+        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"exit 0"}]}]}}"#,
+    )
+    .unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&project, None, ExecutionMode::Direct)
+        .unwrap();
+    let session = runtime
+        .store
+        .create_session_with_mode(&workspace.id, "hooks", Some(ExecutionMode::Direct))
+        .await
+        .unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::new()),
+        requests: Mutex::new(vec![]),
+    });
+    let task = tokio::spawn(runtime.clone().run_session_with_attachments_interactive(
+        session.id.clone(),
+        "first".into(),
+        provider.clone(),
+        vec![],
+        vec![],
+    ));
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if runtime
+                .store
+                .events(&session.id, 0)
+                .await
+                .unwrap()
+                .iter()
+                .any(|event| event.kind == "hook.trust.required")
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    runtime.cancel(&session.id);
+    let error = tokio::time::timeout(std::time::Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.code, "CANCELLED");
+    assert!(provider.requests.lock().unwrap().is_empty());
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn explicitly_authorized_plugin_hook_runs_only_while_enabled() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("project");
+    let plugin = temp.path().join("plugin");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(plugin.join("hooks")).unwrap();
+    std::fs::write(
+        plugin.join("plugin.toml"),
+        "id='test-hook'\nname='Test'\nversion='1.0.0'\napi='^0.1'\npermissions=['hooks.command']\n",
+    )
+    .unwrap();
+    std::fs::write(
+        plugin.join("test.ps1"),
+        "[Console]::Out.Write('plugin hook')",
+    )
+    .unwrap();
+    let settings = json!({"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"powershell.exe","args":["-NoProfile","-File","${RH_PLUGIN_ROOT}\\test.ps1"]}]}]}});
+    std::fs::write(
+        plugin.join("hooks/hooks.json"),
+        serde_json::to_vec(&settings).unwrap(),
+    )
+    .unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    runtime
+        .plugins
+        .install(&plugin, vec!["hooks.command".into()])
+        .unwrap();
+    runtime.plugins.set_enabled("test-hook", true).unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&project, None, ExecutionMode::Direct)
+        .unwrap();
+    let session = runtime
+        .store
+        .create_session_with_mode(&workspace.id, "hooks", Some(ExecutionMode::Direct))
+        .await
+        .unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([
+            ModelAnswer {
+                content: "done".into(),
+                ..Default::default()
+            },
+            ModelAnswer {
+                content: "again".into(),
+                ..Default::default()
+            },
+        ])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .run_session(session.id.clone(), "first".into(), provider.clone())
+        .await
+        .unwrap();
+    assert!(
+        provider.requests.lock().unwrap()[0]
+            .iter()
+            .any(|message| message.content.contains("plugin hook"))
+    );
+    runtime.plugins.set_enabled("test-hook", false).unwrap();
+    runtime
+        .clone()
+        .run_session(session.id, "second".into(), provider.clone())
+        .await
+        .unwrap();
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(
+        requests[1]
+            .iter()
+            .filter(|message| message.content.contains("plugin hook"))
+            .count(),
+        1
+    );
+}
+
 #[tokio::test]
 async fn project_hook_created_during_turn_blocks_next_model_request() {
     let temp = tempfile::tempdir().unwrap();
@@ -308,6 +566,122 @@ async fn project_hook_created_during_turn_blocks_next_model_request() {
         .expect_err("新出现的项目 Hook 必须等待审核");
     assert_eq!(error.code, "HOOK_TRUST_REQUIRED");
     assert_eq!(provider.requests.lock().unwrap().len(), 1);
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn interactive_turn_waits_if_project_hook_appears_mid_turn() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(project.join(".rh")).unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&project, None, ExecutionMode::Direct)
+        .unwrap();
+    let session = runtime
+        .store
+        .create_session_with_mode(&workspace.id, "hooks", Some(ExecutionMode::Direct))
+        .await
+        .unwrap();
+    runtime.set_default_approval_policy(Some(ApprovalPolicy::Auto));
+    let config = r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"exit 0"}]}]}}"#;
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([
+            call(
+                "write-config",
+                "write",
+                json!({"path":".rh/.settings.json","content":config}),
+            ),
+            ModelAnswer {
+                content: "done".into(),
+                ..Default::default()
+            },
+        ])),
+        requests: Mutex::new(vec![]),
+    });
+    let task = tokio::spawn(runtime.clone().run_session_with_attachments_interactive(
+        session.id.clone(),
+        "test".into(),
+        provider.clone(),
+        vec![],
+        vec![],
+    ));
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if runtime
+                .store
+                .events(&session.id, 0)
+                .await
+                .unwrap()
+                .iter()
+                .any(|event| event.kind == "hook.trust.required")
+            {
+                break;
+            }
+            if task.is_finished() {
+                panic!("任务未等待审核");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(provider.requests.lock().unwrap().len(), 1);
+    let digest = runtime.review_project_hooks(&session.id).await.unwrap()[0]
+        .digest
+        .clone();
+    runtime
+        .trust_project_hook(&session.id, &digest)
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(provider.requests.lock().unwrap().len(), 2);
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn newly_untrusted_project_hook_blocks_later_global_hook() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("project");
+    let host = temp.path().join("host");
+    std::fs::create_dir_all(project.join(".rh")).unwrap();
+    std::fs::create_dir_all(&host).unwrap();
+    let project_config =
+        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"exit 0"}]}]}}"#;
+    let global = json!({"hooks":{"UserPromptSubmit":[{"hooks":[
+        {"type":"command","command":format!("Set-Content -LiteralPath '.rh/.settings.json' -Value '{project_config}'")},
+        {"type":"command","command":"Set-Content -LiteralPath 'marker' -Value 'unexpected'"}
+    ]}]}});
+    std::fs::write(
+        host.join("settings.json"),
+        serde_json::to_vec(&global).unwrap(),
+    )
+    .unwrap();
+    let runtime = Runtime::open(host).await.unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&project, None, ExecutionMode::Direct)
+        .unwrap();
+    let session = runtime
+        .store
+        .create_session_with_mode(&workspace.id, "hooks", Some(ExecutionMode::Direct))
+        .await
+        .unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::new()),
+        requests: Mutex::new(vec![]),
+    });
+    let error = runtime
+        .run_session(session.id, "test".into(), provider)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "HOOK_TRUST_REQUIRED");
+    assert!(!project.join("marker").exists());
 }
 
 #[tokio::test]

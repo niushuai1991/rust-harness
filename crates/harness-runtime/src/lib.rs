@@ -10,6 +10,7 @@ pub use registry::{ExternalTool, Registration, ToolContext};
 pub mod providers;
 
 mod artifacts;
+pub mod hook_trust;
 mod hooks;
 
 pub mod jobs;

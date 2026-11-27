@@ -1330,6 +1330,64 @@ describe("聊天交互", () => {
     expect(screen.queryByRole("status", { name: "正在思考" })).not.toBeInTheDocument();
     await act(async () => release());
   });
+  it("收到项目 Hook 待审核事件时暂停并展示审核，信任后继续", async () => {
+    const original = mocks.command.getMockImplementation()!;
+    let trusted = false,
+      release!: () => void,
+      receive!: (event: LiveEvent) => void;
+    mocks.command.mockImplementation(async (name, args) => {
+      if (name === "hooks_project_review")
+        return [
+          {
+            digest: "abc",
+            source: ".rh/.settings.json",
+            event: "Stop",
+            matcher: null,
+            command: "exit 0",
+            args: null,
+            scriptPath: null,
+            scriptBound: false,
+            trusted,
+          },
+        ];
+      if (name === "hooks_project_trust") {
+        trusted = true;
+        return;
+      }
+      return original(name, args);
+    });
+    mocks.send.mockImplementation(async (_id, _text, _model, onEvent) => {
+      receive = onEvent;
+      await new Promise<void>((resolve) => (release = resolve));
+    });
+    await renderOpenA();
+    fireEvent.change(screen.getByLabelText("消息"), { target: { value: "请求" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() => expect(receive).toBeDefined());
+    act(() =>
+      receive({
+        type: "durable",
+        event: {
+          id: "hook-review",
+          sessionId: "a",
+          seq: "50",
+          kind: "hook.trust.required",
+          data: {},
+          createdAt: "",
+        },
+      }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "项目 Hook 需要审核" });
+    fireEvent.click(await within(dialog).findByRole("button", { name: "信任此 Hook" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "项目 Hook 需要审核" })).not.toBeInTheDocument(),
+    );
+    expect(mocks.command).toHaveBeenCalledWith("hooks_project_trust", {
+      sessionId: "a",
+      digest: "abc",
+    });
+    await act(async () => release());
+  });
   it("取消生成后清除思考状态", async () => {
     let release!: () => void;
     mocks.send.mockImplementation(async () => new Promise<void>((resolve) => (release = resolve)));

@@ -58,10 +58,38 @@ enum Commands {
     Presets(manage::PresetsArgs),
     /// 技能管理
     Skills(manage::SkillsArgs),
+    /// 审核项目 Hook 信任
+    Hooks {
+        #[command(subcommand)]
+        action: HookAction,
+    },
     /// ChatGPT 账号登录（浏览器 OAuth）
     Login(manage::LoginArgs),
     /// 登出 ChatGPT 账号并清除本地凭据
     Logout,
+}
+
+#[derive(Subcommand)]
+enum HookAction {
+    /// 查看当前会话执行目录中的 Hook
+    Review {
+        #[arg(long)]
+        session: String,
+    },
+    /// 信任刚刚审核的指定摘要
+    Trust {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        digest: String,
+    },
+    /// 撤销指定摘要的信任
+    Revoke {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        digest: String,
+    },
 }
 
 fn data_dir(cli: &Cli) -> AppResult<PathBuf> {
@@ -107,6 +135,22 @@ async fn run() -> AppResult<()> {
         Commands::Models(args) => manage::models(runtime, args).await,
         Commands::Presets(args) => manage::presets(runtime, args).await,
         Commands::Skills(args) => manage::skills(runtime, args).await,
+        Commands::Hooks { action } => {
+            match action {
+                HookAction::Review { session } => println!(
+                    "{}",
+                    serde_json::to_string_pretty(&runtime.review_project_hooks(&session).await?)
+                        .map_err(|e| AppError::new("JSON", e.to_string()))?
+                ),
+                HookAction::Trust { session, digest } => {
+                    runtime.trust_project_hook(&session, &digest).await?
+                }
+                HookAction::Revoke { session, digest } => {
+                    runtime.revoke_project_hook(&session, &digest).await?
+                }
+            }
+            Ok(())
+        }
         Commands::Login(args) => manage::login(runtime, args).await,
         Commands::Logout => manage::logout(runtime).await,
     }

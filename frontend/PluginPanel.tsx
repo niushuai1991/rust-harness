@@ -47,6 +47,9 @@ export function PluginPanel({
   return (
     <Modal title="插件与权限" onClose={onClose}>
       <p className="muted">从本地导入 WASM 插件。插件仅获得声明、授权与工作区策略的交集权限。</p>
+      <p className="muted">
+        插件的命令 Hook 需要清单声明并显式授予 hooks.command；直接执行模式下命令以当前用户权限运行。
+      </p>
       {error && (
         <p role="alert" className="inline-error">
           {error}

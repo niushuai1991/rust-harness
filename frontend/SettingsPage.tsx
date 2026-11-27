@@ -25,6 +25,7 @@ import { PerformancePanel } from "./PerformancePanel";
 import { ModelPanel } from "./ModelPanel";
 import { AboutPanel } from "./AboutPanel";
 import { McpPanel } from "./McpPanel";
+import { HookTrustPanel } from "./HookTrustPanel";
 
 export type SettingsPanelId = "presets" | "skills" | "plugins";
 type SettingsSectionId =
@@ -34,6 +35,7 @@ type SettingsSectionId =
   | "performance"
   | "models"
   | "mcp"
+  | "hooks"
   | "about";
 
 export type SettingsCategoryId = Exclude<SettingsSectionId, "overview">;
@@ -99,6 +101,14 @@ const ITEMS: SettingsItem[] = [
     icon: Plug,
   },
   {
+    id: "hooks",
+    title: "项目 Hook 审核",
+    description: "查看当前会话的项目 Hook，审核或撤销命令信任。",
+    summary: "命令审核与信任",
+    group: "扩展与安全",
+    icon: ShieldCheck,
+  },
+  {
     id: "models",
     title: "模型设置",
     description: "管理模型供应商、API 连接与可用模型。",
@@ -123,6 +133,7 @@ const INTRO: Record<SettingsCategoryId, string> = {
     "工具并发调度、上下文自动压缩与 HTTP 连接复用均可独立开关；调整立即生效，下一回合起生效。",
   plugins: "集中查看本地插件及其声明与授权的权限范围。",
   mcp: "管理全局和当前项目的 MCP 服务器及会话连接。",
+  hooks: "审核当前会话执行目录中的项目 Hook。",
   models: "管理模型供应商、凭据和模型目录；API 密钥只保存在系统凭据管理器中。",
   archive: "归档后的会话不会出现在任务列表里，但仍保留在本机；在这里按项目查看并恢复。",
   about: "查看当前安装的版本号、构建时间与对应的提交记录。",
@@ -397,6 +408,7 @@ function SettingsCategory({
         item.id !== "performance" &&
         item.id !== "models" &&
         item.id !== "mcp" &&
+        item.id !== "hooks" &&
         item.id !== "about" && (
           <div className="settings-preview-notice">
             <Sparkles size={15} />
@@ -414,6 +426,7 @@ function SettingsCategory({
       )}
       {item.id === "performance" && <PerformancePanel />}
       {item.id === "mcp" && <McpPanel workspaceId={workspaceId} sessionId={sessionId} />}
+      {item.id === "hooks" && <HookTrustPanel sessionId={sessionId} />}
       {item.id === "models" && <ModelPanel models={models} onSaved={onModelsSaved} />}
       {item.id === "about" && <AboutPanel />}
       {item.id === "plugins" && <PluginsPreview />}

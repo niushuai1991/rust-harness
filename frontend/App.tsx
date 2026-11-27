@@ -98,6 +98,7 @@ import { ApprovalPrompt } from "./ApprovalPrompt";
 import { AutomationsPanel } from "./AutomationsPanel";
 import { QuestionCard } from "./QuestionCard";
 import { SettingsPage, type SettingsCategoryId } from "./SettingsPage";
+import { HookTrustPanel } from "./HookTrustPanel";
 import { SidePanel } from "./SidePanel";
 import { useSidePanel } from "./sidePanelStore";
 import type {
@@ -223,6 +224,8 @@ export default function App() {
     [settingsSection, setSettingsSection] = useState<SettingsCategoryId | null>(null);
   // ask_user 提问：与审批同用轮询通道；答复后从列表移除。
   const [questions, setQuestions] = useState<AskRequest[]>([]);
+  const [pendingHookReviews, setPendingHookReviews] = useState<string[]>([]);
+  const pendingHookReview = pendingHookReviews[0] ?? "";
   // 权限模式：默认档全局持久化；会话内切档记录显式覆盖（后端同口径：覆盖优先于默认档）。
   const [approvalMode, setApprovalMode] = useState<ApprovalPolicy>("ask"),
     [approvalOverrides, setApprovalOverrides] = useState<Record<string, ApprovalPolicy>>({});
@@ -1444,6 +1447,10 @@ export default function App() {
   }
   function receiveEvent(event: LiveEvent) {
     useChat.getState().receive(event);
+    if (event.type === "durable" && event.event.kind === "hook.trust.required") {
+      const id = event.event.sessionId;
+      setPendingHookReviews((old) => (old.includes(id) ? old : [...old, id]));
+    }
     if (
       event.type === "durable" &&
       event.event.kind === "session.plan" &&
@@ -1482,6 +1489,7 @@ export default function App() {
       else await send(id, input, modelId, receiveEvent, undefined, effort);
     });
     setRunning((old) => ({ ...old, [id]: false }));
+    setPendingHookReviews((old) => old.filter((item) => item !== id));
     useChat.getState().clearStream(id);
     if (activeSessionId.current === id) await loadLatestTimeline(id);
   }
@@ -3185,6 +3193,24 @@ export default function App() {
               </button>
             </div>
           </form>
+        </Modal>
+      )}
+      {pendingHookReview && (
+        <Modal
+          title="项目 Hook 需要审核"
+          onClose={() => {
+            const id = pendingHookReview;
+            setPendingHookReviews((old) => old.filter((item) => item !== id));
+            void command("session_cancel", { sessionId: id }).catch((e) => setError(errorText(e)));
+          }}
+        >
+          <p>任务已暂停。逐条信任后将继续执行；关闭窗口将取消任务。</p>
+          <HookTrustPanel
+            sessionId={pendingHookReview}
+            onComplete={() =>
+              setPendingHookReviews((old) => old.filter((item) => item !== pendingHookReview))
+            }
+          />
         </Modal>
       )}
       {mainApproval && (

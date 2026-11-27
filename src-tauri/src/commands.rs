@@ -848,7 +848,7 @@ pub async fn session_send(
         }
     });
     let result = runtime
-        .run_session_with_attachments(
+        .run_session_with_attachments_interactive(
             session_id,
             text,
             provider,
@@ -1423,6 +1423,37 @@ pub async fn plugin_remove(state: Backend<'_>, id: String) -> AppResult<()> {
 
 #[tauri::command]
 #[specta::specta]
+pub async fn hooks_project_review(
+    state: Backend<'_>,
+    session_id: String,
+) -> AppResult<Vec<JsonPayload>> {
+    state
+        .review_project_hooks(&session_id)
+        .await?
+        .into_iter()
+        .map(|entry| serde_json::to_value(entry).map(JsonPayload).map_err(error))
+        .collect()
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn hooks_project_trust(
+    state: Backend<'_>,
+    session_id: String,
+    digest: String,
+) -> AppResult<()> {
+    state.trust_project_hook(&session_id, &digest).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn hooks_project_revoke(
+    state: Backend<'_>,
+    session_id: String,
+    digest: String,
+) -> AppResult<()> {
+    state.revoke_project_hook(&session_id, &digest).await
+}
+#[tauri::command]
+#[specta::specta]
 pub async fn mcp_config_list(
     state: Backend<'_>,
     workspace_id: String,
@@ -1838,6 +1869,9 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         plugin_install,
         plugin_enable,
         plugin_remove,
+        hooks_project_review,
+        hooks_project_trust,
+        hooks_project_revoke,
         mcp_config_list,
         mcp_config_status,
         mcp_config_save,

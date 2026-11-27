@@ -74,6 +74,7 @@ impl Manifest {
             if ![
                 "tools",
                 "hooks",
+                "hooks.command",
                 "log",
                 "kv",
                 "workspace.read",
