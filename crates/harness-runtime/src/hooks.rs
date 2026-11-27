@@ -20,6 +20,15 @@ fn invalid(message: impl Into<String>) -> AppError {
     AppError::new("HOOK_CONFIG", message)
 }
 
+/// 项目目录模板变量：`${RH_PROJECT_DIR}` 与 Claude Code 兼容别名 `${CLAUDE_PROJECT_DIR}`，
+/// 均展开为当前工作区（hook 执行根）。变量是运行时值，不参与信任摘要。
+fn expand_project_variables(value: &str, root: &Path) -> String {
+    let project_dir = root.to_string_lossy();
+    value
+        .replace("${RH_PROJECT_DIR}", &project_dir)
+        .replace("${CLAUDE_PROJECT_DIR}", &project_dir)
+}
+
 /// Validate only the hooks section, preserving unrelated settings.
 pub(crate) fn validate_settings(data_dir: &Path) -> AppResult<()> {
     let Some(value) = read_settings(data_dir)? else {
@@ -322,6 +331,16 @@ pub(crate) async fn run_event(
             let mut input =
                 serde_json::to_vec(&input).map_err(|error| invalid(error.to_string()))?;
             input.push(b'\n');
+            let program = expand_project_variables(&program, root);
+            let args = args
+                .iter()
+                .map(|arg| expand_project_variables(arg, root))
+                .collect::<Vec<_>>();
+            let project_dir = root.to_string_lossy().into_owned();
+            let env = std::collections::BTreeMap::from([
+                ("RH_PROJECT_DIR".to_owned(), project_dir.clone()),
+                ("CLAUDE_PROJECT_DIR".to_owned(), project_dir),
+            ]);
             let timeout = handler["timeout"].as_u64().unwrap_or(60);
             match harness_platform::ShellService::run_hook_in(
                 root,
@@ -329,6 +348,7 @@ pub(crate) async fn run_event(
                 &program,
                 &args,
                 &input,
+                &env,
                 cancel.clone(),
                 sandboxed,
                 std::time::Duration::from_secs(timeout),
@@ -445,4 +465,43 @@ pub(crate) async fn run_event(
         }
     }
     Ok(results)
+}
+
+#[cfg(test)]
+mod expand_tests {
+    use super::*;
+
+    #[test]
+    fn expands_both_aliases_to_the_workspace_root() {
+        let root = Path::new("D:/work/proj");
+        assert_eq!(
+            expand_project_variables("${RH_PROJECT_DIR}", root),
+            "D:/work/proj"
+        );
+        assert_eq!(
+            expand_project_variables("${CLAUDE_PROJECT_DIR}", root),
+            "D:/work/proj"
+        );
+    }
+
+    #[test]
+    fn replaces_every_occurrence_and_keeps_other_text_intact() {
+        let root = Path::new("C:/tmp/r");
+        assert_eq!(
+            expand_project_variables(
+                "bash \"${CLAUDE_PROJECT_DIR}/a.sh\" \"${RH_PROJECT_DIR}/b.sh\" ${CLAUDE_PROJECT_DIR}",
+                root,
+            ),
+            "bash \"C:/tmp/r/a.sh\" \"C:/tmp/r/b.sh\" C:/tmp/r"
+        );
+    }
+
+    #[test]
+    fn leaves_unknown_variables_untouched() {
+        let root = Path::new("C:/tmp/r");
+        assert_eq!(
+            expand_project_variables("${RH_PLUGIN_ROOT} ${OTHER}", root),
+            "${RH_PLUGIN_ROOT} ${OTHER}"
+        );
+    }
 }

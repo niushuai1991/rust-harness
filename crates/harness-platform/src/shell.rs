@@ -54,6 +54,8 @@ impl ShellService {
         Self
     }
     /// 执行同步 Hook；持有调用方的工作区租约，取消或超时时清理整个进程树。
+    ///
+    /// `env` 为注入子进程的附加环境变量（白名单 env 之上的 supplied 覆盖层）。
     #[allow(clippy::too_many_arguments)]
     pub async fn run_hook_in(
         root: &Path,
@@ -61,6 +63,7 @@ impl ShellService {
         program: &str,
         args: &[String],
         input: &[u8],
+        env: &std::collections::BTreeMap<String, String>,
         cancel: CancellationToken,
         sandboxed: bool,
         timeout: std::time::Duration,
@@ -69,13 +72,14 @@ impl ShellService {
         {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             const LIMIT: usize = 32 * 1024;
-            let child = Self::spawn_stdio_in(
+            let child = Self::spawn_stdio_with_env(
                 root,
                 capability_id,
                 program,
                 args,
                 cancel.clone(),
                 sandboxed,
+                env,
             )
             .await?;
             let SandboxedStdio {
@@ -142,6 +146,7 @@ impl ShellService {
                 program,
                 args,
                 input,
+                env,
                 cancel,
                 sandboxed,
                 timeout,

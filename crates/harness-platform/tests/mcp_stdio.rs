@@ -16,6 +16,7 @@ async fn hook_process_receives_stdin_and_returns_exit_status_and_both_streams() 
             "$s=[Console]::In.ReadToEnd(); [Console]::Out.Write($s); [Console]::Error.Write('denied'); exit 2".into(),
         ],
         b"{\"event\":\"test\"}\n",
+        &Default::default(),
         CancellationToken::new(),
         false,
         Duration::from_secs(10),
@@ -44,6 +45,7 @@ async fn hook_rejection_is_preserved_when_process_exits_before_reading_large_inp
             "[Console]::Error.Write('denied'); exit 2".into(),
         ],
         &vec![b'x'; 2 * 1024 * 1024],
+        &Default::default(),
         CancellationToken::new(),
         false,
         Duration::from_secs(10),
@@ -67,6 +69,7 @@ async fn hook_success_does_not_hide_an_incomplete_stdin_write() {
         "powershell.exe",
         &["-NoProfile".into(), "-Command".into(), "exit 0".into()],
         &vec![b'x'; 2 * 1024 * 1024],
+        &Default::default(),
         CancellationToken::new(),
         false,
         Duration::from_secs(10),
@@ -96,6 +99,7 @@ async fn hook_process_in_scratch_sandbox_receives_input() {
             "[Console]::Out.Write([Console]::In.ReadToEnd())".into(),
         ],
         b"sandboxed",
+        &Default::default(),
         CancellationToken::new(),
         true,
         Duration::from_secs(10),
@@ -125,6 +129,7 @@ async fn hook_process_timeout_terminates_a_running_process() {
             "Start-Sleep -Seconds 30".into(),
         ],
         b"",
+        &Default::default(),
         CancellationToken::new(),
         false,
         Duration::from_millis(250),
@@ -276,6 +281,38 @@ async fn direct_stdio_passes_explicit_environment_values() {
     .unwrap();
     assert_eq!(output.trim(), "expected");
 }
+#[cfg(windows)]
+#[tokio::test]
+async fn hook_process_receives_injected_environment_variables() {
+    use harness_platform::ShellService;
+    use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
+
+    let root = tempfile::tempdir().unwrap();
+    let project_dir = root.path().to_string_lossy().into_owned();
+    let mut env = std::collections::BTreeMap::new();
+    env.insert("RH_PROJECT_DIR".to_owned(), project_dir.clone());
+    env.insert("CLAUDE_PROJECT_DIR".to_owned(), project_dir.clone());
+    let output = ShellService::run_hook_in(
+        root.path(),
+        "",
+        "powershell.exe",
+        &[
+            "-NoProfile".into(),
+            "-Command".into(),
+            "[Console]::Out.Write($env:RH_PROJECT_DIR + ';' + $env:CLAUDE_PROJECT_DIR)".into(),
+        ],
+        b"",
+        &env,
+        CancellationToken::new(),
+        false,
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
+    assert_eq!(output.stdout.trim(), format!("{project_dir};{project_dir}"));
+}
+
 #[cfg(windows)]
 #[tokio::test]
 async fn dropping_stdio_terminates_running_process() {

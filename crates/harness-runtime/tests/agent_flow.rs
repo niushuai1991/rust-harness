@@ -822,6 +822,129 @@ async fn session_start_hook_adds_context_before_first_model_request() {
     );
 }
 
+/// 提取 hook 输出中 `OUT:<值A>|<值B>` 标记，断言两个值同为一个真实存在的目录（env 注入通道）。
+fn assert_project_dir_marker(content: &str) {
+    let marker_start = content.find("OUT:").expect("hook 输出应进入模型上下文");
+    let rest = &content[marker_start + "OUT:".len()..];
+    let line_end = rest.find(['\n', '\r']).unwrap_or(rest.len());
+    let line = &rest[..line_end];
+    let (expanded, injected) = line.split_once('|').expect("应有 | 分隔的两个值");
+    assert_eq!(expanded, injected, "两个项目目录变量应同值");
+    assert!(
+        std::path::Path::new(expanded).is_dir(),
+        "变量应展开为真实执行根：{expanded}"
+    );
+}
+
+/// 提取 hook 输出中 `TPL:<路径>|` 标记，断言模板变量已展开为真实存在的目录（模板展开通道）。
+fn assert_project_dir_template_marker(content: &str) {
+    let marker_start = content
+        .find("TPL:")
+        .expect("模板展开 hook 输出应进入模型上下文");
+    let rest = &content[marker_start + "TPL:".len()..];
+    assert!(!rest.starts_with("${"), "模板变量必须已展开：{rest}");
+    let path = &rest[..rest.find('|').expect("模板展开标记应以 | 结尾")];
+    assert!(
+        std::path::Path::new(path).is_dir(),
+        "模板变量应展开为真实执行根：{path}"
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn session_start_hook_expands_project_dir_template_and_environment() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = json!({"hooks":{"SessionStart":[{"hooks":[{
+        "type":"command", "command":"powershell.exe",
+        "args":["-NoProfile","-Command",
+            "[Console]::Out.Write('TPL:${RH_PROJECT_DIR}|')"]
+    },{
+        "type":"command", "command":"powershell.exe",
+        "args":["-NoProfile","-Command",
+            "[Console]::Out.Write('OUT:' + $env:RH_PROJECT_DIR + '|' + $env:CLAUDE_PROJECT_DIR)"]
+    }]}]}});
+    std::fs::write(
+        temp.path().join("settings.json"),
+        serde_json::to_vec(&settings).unwrap(),
+    )
+    .unwrap();
+    let runtime = Runtime::open(temp.path().to_path_buf()).await.unwrap();
+    let session = runtime.store.create_session("", "hooks").await.unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            content: "done".into(),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .run_session(session.id, "hello".into(), provider.clone())
+        .await
+        .unwrap();
+    let content = provider.requests.lock().unwrap()[0]
+        .iter()
+        .map(|message| message.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !content.contains("${RH_PROJECT_DIR}") && !content.contains("${CLAUDE_PROJECT_DIR}"),
+        "模板变量必须已展开：{content}"
+    );
+    assert_project_dir_template_marker(&content);
+    assert_project_dir_marker(&content);
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn trusted_project_hook_receives_project_dir_environment() {
+    use harness_runtime::hook_trust::HookTrustService;
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(project.join(".rh")).unwrap();
+    let settings = json!({"hooks":{"UserPromptSubmit":[{"hooks":[{
+        "type":"command", "command":"powershell.exe",
+        "args":["-NoProfile","-Command",
+            "[Console]::Out.Write('OUT:' + $env:RH_PROJECT_DIR + '|' + $env:CLAUDE_PROJECT_DIR)"]
+    }]}]}});
+    std::fs::write(
+        project.join(".rh/.settings.json"),
+        serde_json::to_vec(&settings).unwrap(),
+    )
+    .unwrap();
+    let runtime = Runtime::open(temp.path().join("host")).await.unwrap();
+    let workspace = runtime
+        .workspaces
+        .create(&project, None, ExecutionMode::Direct)
+        .unwrap();
+    let session = runtime
+        .store
+        .create_session_with_mode(&workspace.id, "hooks", Some(ExecutionMode::Direct))
+        .await
+        .unwrap();
+    let service = HookTrustService::new(runtime.store.clone());
+    let review = service.review(&project).await.unwrap();
+    service.trust(&project, &review[0].digest).await.unwrap();
+    let provider = Arc::new(Recorded {
+        answers: Mutex::new(VecDeque::from([ModelAnswer {
+            content: "done".into(),
+            ..Default::default()
+        }])),
+        requests: Mutex::new(vec![]),
+    });
+    runtime
+        .clone()
+        .run_session(session.id, "hello".into(), provider.clone())
+        .await
+        .unwrap();
+    let content = provider.requests.lock().unwrap()[0]
+        .iter()
+        .map(|message| message.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_project_dir_marker(&content);
+}
+
 #[cfg(windows)]
 #[tokio::test]
 async fn user_prompt_hook_adds_context_to_the_model_request() {
