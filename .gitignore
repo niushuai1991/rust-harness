@@ -12,8 +12,12 @@ __pycache__/
 *.pyc
 src-tauri/gen/
 /.zcode/
-/.claude/
-/.codex/
+/.claude/*
+!/.claude/settings.json
+!/.claude/hooks/
+/.codex/*
+!/.codex/hooks.json
+!/.codex/hooks/
 # Tauri Specta generated bindings
 /frontend/bindings.ts
 
