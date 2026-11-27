@@ -195,6 +195,7 @@ pub struct Runtime {
     pub(crate) active: Mutex<HashMap<String, CancellationToken>>,
     queues: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     steering: Mutex<HashMap<String, Arc<tokio::sync::Mutex<SteeringState>>>>,
+    hook_started_sessions: Mutex<HashSet<String>>,
     cancelled_messages: Mutex<HashSet<(String, String)>>,
     children: Mutex<HashMap<String, Vec<String>>>,
     pending_children: Mutex<HashSet<String>>,
@@ -255,7 +256,7 @@ impl Drop for McpPending<'_> {
 
 /// 回合执行上下文：执行根、执行模式、shell 沙箱 capability 派生 id 与 worktree 模式的分支名。
 #[derive(Clone)]
-struct ExecContext {
+pub(crate) struct ExecContext {
     root: PathBuf,
     mode: ExecutionMode,
     capability_id: String,
@@ -354,6 +355,7 @@ impl Runtime {
             active: Mutex::new(HashMap::new()),
             queues: Mutex::new(HashMap::new()),
             steering: Mutex::new(HashMap::new()),
+            hook_started_sessions: Mutex::new(HashSet::new()),
             cancelled_messages: Mutex::new(HashSet::new()),
             children: Mutex::new(children),
             pending_children: Mutex::new(HashSet::new()),
@@ -1831,6 +1833,12 @@ impl Runtime {
                 parent.as_deref(),
             )
             .await?;
+        if !self.session_plan_get(&session_id).await? {
+            crate::hooks::validate_settings(self.workspaces.data_dir())?;
+            if !session.workspace_id.is_empty() {
+                crate::hooks::require_project_trust(&exec.root)?;
+            }
+        }
         let _lease = if session.workspace_id.is_empty() {
             None
         } else {
@@ -1869,6 +1877,7 @@ impl Runtime {
             .insert(session_id.clone(), cancel.clone());
         let run_id = new_id();
         let result = async {
+            self.run_session_start_hooks(&session_id, &exec, cancel.clone(), false).await?;
             let state = self.steering_state(&session_id);
             let mut state = state.lock().await;
             state.run_id = Some(run_id.clone());
@@ -2114,32 +2123,66 @@ impl Runtime {
         Ok(())
     }
 
-    async fn apply_steering(&self, session: &str, root: &Path) -> AppResult<()> {
+    async fn apply_steering(
+        &self,
+        session: &str,
+        exec: &ExecContext,
+        cancel: &CancellationToken,
+    ) -> AppResult<()> {
         let state = self.steering_state(session);
         let state = state.lock().await;
-        let Some(run_id) = state.run_id.as_deref() else {
+        let Some(run_id) = state.run_id.clone() else {
             return Ok(());
         };
-        let pending = self.store.pending_steering(session, run_id).await?;
+        let pending = self.store.pending_steering(session, &run_id).await?;
         if pending.is_empty() {
             return Ok(());
         }
+        drop(state);
         let mut records = Vec::new();
+        let mut applied = Vec::new();
         for input in &pending {
+            let text = input["content"].as_str().unwrap_or_default();
+            let (denial, contexts) = self
+                .run_user_prompt_hooks(session, exec, text, true, cancel.clone())
+                .await?;
+            if let Some(reason) = denial {
+                records.push((
+                    "steer.failed".into(),
+                    json!({"id":input["id"],"runId":input["runId"],"reason":reason}),
+                ));
+                continue;
+            }
             records.push(("user.message".into(), json!({"steerId":input["id"],"runId":input["runId"],"content":input["content"],"attachments":input["attachments"],"quotes":input["quotes"]})));
+            for context in contexts {
+                records.push(("hook.context".into(), json!({"content":context})));
+            }
             records.push((
                 "steer.applied".into(),
                 json!({"id":input["id"],"runId":input["runId"]}),
             ));
+            applied.push(input.clone());
+        }
+        let state = self.steering_state(session);
+        let state = state.lock().await;
+        if cancel.is_cancelled() {
+            return Err(cancelled());
+        }
+        if state.run_id.as_deref() != Some(run_id.as_str()) {
+            return Ok(());
         }
         let events = self.store.append_batch(session, records).await?;
         for event in events {
             let _ = self.events.send(LiveEvent::Durable { event });
         }
         drop(state);
-        for input in pending {
-            self.load_skill_mentions(session, input["content"].as_str().unwrap_or_default(), root)
-                .await?;
+        for input in applied {
+            self.load_skill_mentions(
+                session,
+                input["content"].as_str().unwrap_or_default(),
+                &exec.root,
+            )
+            .await?;
         }
         Ok(())
     }
@@ -2314,18 +2357,34 @@ impl Runtime {
             .await?;
             self.append(&session_id, "inbox.claimed", json!({"id":message_id}))
                 .await?;
+            drop(state);
+            if !self.session_plan_get(&session_id).await? {
+                crate::hooks::validate_settings(self.workspaces.data_dir())?;
+                if !session.workspace_id.is_empty() {
+                    crate::hooks::require_project_trust(&exec.root)?;
+                }
+            }
+            self.run_session_start_hooks(&session_id, &exec, cancel.clone(), true).await?;
             let text = queued.data["content"]
                 .as_str()
                 .unwrap_or_default()
                 .to_owned();
+            let (denial, contexts) = self.run_user_prompt_hooks(&session_id, &exec, &text, false, cancel.clone()).await?;
+            if let Some(reason) = denial {
+                return Err(AppError::new("HOOK_DENIED", reason));
+            }
             let attached: Vec<ArtifactMetadata> =
                 serde_json::from_value(queued.data["attachments"].clone()).map_err(internal)?;
             let mut message = json!({"content":text,"attachments":attached});
             if let Some(quotes) = queued.data.get("quotes") {
                 message["quotes"] = quotes.clone();
             }
-            self.append(&session_id, "user.message", message).await?;
-            drop(state);
+            if cancel.is_cancelled() { return Err(cancelled()); }
+            let mut records = vec![("user.message".into(), message)];
+            records.extend(contexts.into_iter().map(|context| ("hook.context".into(), json!({"content":context}))));
+            for event in self.store.append_batch(&session_id, records).await? {
+                let _ = self.events.send(LiveEvent::Durable { event });
+            }
             {
                 let _updates = token_budget.serialize_updates().await;
                 self.publish_token_budget(&session_id, &token_budget, token_budget.snapshot())
@@ -2369,6 +2428,140 @@ impl Runtime {
         });
         ending?;
         result
+    }
+    async fn run_session_start_hooks(
+        &self,
+        session: &str,
+        exec: &ExecContext,
+        cancel: CancellationToken,
+        current_turn_started: bool,
+    ) -> AppResult<()> {
+        if self.hook_started_sessions.lock().unwrap().contains(session)
+            || self.session_plan_get(session).await?
+        {
+            return Ok(());
+        }
+        let history = self.store.events(session, 0).await?;
+        let source = if history
+            .iter()
+            .filter(|event| event.kind == "turn.start")
+            .count()
+            > usize::from(current_turn_started)
+        {
+            "resume"
+        } else {
+            "startup"
+        };
+        let runs = crate::hooks::run_event(
+            self.workspaces.data_dir(),
+            &exec.root,
+            &exec.capability_id,
+            exec.mode != ExecutionMode::Direct,
+            session,
+            "SessionStart",
+            json!({"source":source}),
+            cancel,
+        )
+        .await?;
+        for run in runs {
+            self.append(
+                session,
+                "hook.completed",
+                json!({"event":"SessionStart", "status":run.status, "error":run.diagnostic}),
+            )
+            .await?;
+            if let Some(context) = run.context {
+                self.append(session, "hook.context", json!({"content":context}))
+                    .await?;
+            }
+        }
+        self.hook_started_sessions
+            .lock()
+            .unwrap()
+            .insert(session.to_owned());
+        Ok(())
+    }
+    async fn run_user_prompt_hooks(
+        &self,
+        session: &str,
+        exec: &ExecContext,
+        text: &str,
+        steering: bool,
+        cancel: CancellationToken,
+    ) -> AppResult<(Option<String>, Vec<String>)> {
+        if self.session_plan_get(session).await? {
+            return Ok((None, Vec::new()));
+        }
+        let runs = crate::hooks::run_event(
+            self.workspaces.data_dir(),
+            &exec.root,
+            &exec.capability_id,
+            exec.mode != ExecutionMode::Direct,
+            session,
+            "UserPromptSubmit",
+            json!({"prompt":text, "is_steering":steering}),
+            cancel,
+        )
+        .await?;
+        let mut denial = None;
+        let mut contexts = Vec::new();
+        for run in runs {
+            self.append(
+                session,
+                "hook.completed",
+                json!({"event":"UserPromptSubmit", "status":run.status, "error":run.diagnostic}),
+            )
+            .await?;
+            if run.blocked && denial.is_none() {
+                denial = Some(
+                    run.diagnostic
+                        .unwrap_or_else(|| "用户消息被 Hook 拒绝".into()),
+                );
+            }
+            if let Some(context) = run.context {
+                contexts.push(context);
+            }
+        }
+        Ok((denial, contexts))
+    }
+    async fn run_notification_hook(
+        &self,
+        session: &str,
+        exec: &ExecContext,
+        notification_type: &str,
+        message: &str,
+        cancel: CancellationToken,
+    ) {
+        if self.session_plan_get(session).await.unwrap_or(true) {
+            return;
+        }
+        match crate::hooks::run_event(
+            self.workspaces.data_dir(),
+            &exec.root,
+            &exec.capability_id,
+            exec.mode != ExecutionMode::Direct,
+            session,
+            "Notification",
+            json!({"notification_type":notification_type,"message":message}),
+            cancel,
+        )
+        .await
+        {
+            Ok(runs) => {
+                for run in runs {
+                    let _ = self.append(session, "hook.completed", json!({"event":"Notification","status":run.status,"error":run.diagnostic})).await;
+                }
+            }
+            Err(error) => {
+                let _ = self
+                    .append(
+                        session,
+                        "hook.completed",
+                        json!({"event":"Notification","status":"error","error":error}),
+                    )
+                    .await;
+            }
+        }
     }
     /// 解析用户消息中的 `$name` 提及：命中启用技能时 append `skill.loaded` 注入正文。
     /// 单个技能加载失败仅告警跳过，不阻塞回合。
@@ -2449,12 +2642,16 @@ impl Runtime {
         // 请求前自动压缩每回合最多尝试一次：失败不无限重试，避免反复请求溢出。
         let mut auto_compaction_tried = false;
         let mut mcp_initialized = false;
+        let mut stop_hook_continuations = 0u8;
         loop {
             if cancel.is_cancelled() {
                 return Err(token_budget.error().unwrap_or_else(cancelled));
             }
+            if !workspace.is_empty() && !self.session_plan_get(session).await? {
+                crate::hooks::require_project_trust(root)?;
+            }
             token_budget.check_available()?;
-            self.apply_steering(session, root).await?;
+            self.apply_steering(session, exec, &cancel).await?;
             let mut tools = builtin_tools();
             let plan_mode = self.session_plan_get(session).await?;
             if !plan_mode && !mcp_initialized {
@@ -2732,7 +2929,54 @@ impl Runtime {
                 let _ = self.events.send(LiveEvent::Durable { event });
             }
             if answer.calls.is_empty() {
-                if budget_snapshot.stopped.is_some() || self.close_if_no_steering(session).await? {
+                if budget_snapshot.stopped.is_some() {
+                    return Ok(());
+                }
+                let has_pending = {
+                    let state = self.steering_state(session);
+                    let state = state.lock().await;
+                    match state.run_id.as_deref() {
+                        Some(run_id) => !self
+                            .store
+                            .pending_steering(session, run_id)
+                            .await?
+                            .is_empty(),
+                        None => false,
+                    }
+                };
+                if has_pending {
+                    continue;
+                }
+                if stop_hook_continuations < 3 && !self.session_plan_get(session).await? {
+                    let runs = crate::hooks::run_event(self.workspaces.data_dir(), root, &exec.capability_id, exec.mode != ExecutionMode::Direct, session, "Stop", json!({"stop_hook_active":stop_hook_continuations > 0, "last_assistant_message":answer.content}), cancel.clone()).await?;
+                    let mut feedback = Vec::new();
+                    for run in runs {
+                        self.append(
+                            session,
+                            "hook.completed",
+                            json!({"event":"Stop", "status":run.status, "error":run.diagnostic}),
+                        )
+                        .await?;
+                        if run.blocked {
+                            feedback.push(
+                                run.context
+                                    .or(run.diagnostic)
+                                    .unwrap_or_else(|| "Hook 要求继续完成任务".into()),
+                            );
+                        }
+                    }
+                    if !feedback.is_empty() {
+                        self.append(
+                            session,
+                            "hook.context",
+                            json!({"content":feedback.join("\n")}),
+                        )
+                        .await?;
+                        stop_hook_continuations += 1;
+                        continue;
+                    }
+                }
+                if self.close_if_no_steering(session).await? {
                     return Ok(());
                 }
                 continue;
@@ -2772,6 +3016,8 @@ impl Runtime {
                 token_budget: &token_budget,
                 cancel: &cancel,
             };
+            let batch_calls = answer.calls.clone();
+            let mut pending_hook_contexts = Vec::new();
             let mut queue: VecDeque<ToolCall> = answer.calls.into_iter().collect();
             while let Some(first) = queue.pop_front() {
                 let first_groupable = concurrency
@@ -2794,9 +3040,7 @@ impl Runtime {
                     let mut broken = false;
                     for call in segment {
                         let prepared_call = self
-                            .prepare_call(
-                                call, &tools, session, workspace, root, &cancel, exec.mode,
-                            )
+                            .prepare_call(call, &tools, session, workspace, exec, &cancel)
                             .await?;
                         if prepared_call.failure.is_none()
                             && (prepared_call.needs_approval
@@ -2809,9 +3053,14 @@ impl Runtime {
                     }
                     if broken || prepared.len() < 2 {
                         for prepared_call in prepared {
-                            let (call, result) = self.execute_prepared(prepared_call, &ctx).await;
-                            self.settle_call(&call, result, session, workspace, root, &cancel)
-                                .await?;
+                            let (call, result, executed) =
+                                self.execute_prepared(prepared_call, &ctx).await;
+                            pending_hook_contexts.extend(
+                                self.settle_call(
+                                    &call, result, executed, session, workspace, exec, &cancel,
+                                )
+                                .await?,
+                            );
                         }
                     } else {
                         // 并发执行：Semaphore 限流；全部完成后按声明顺序结算。
@@ -2847,32 +3096,112 @@ impl Runtime {
                             outcomes.insert(index, handle.await.map_err(internal)?);
                         }
                         for (index, prepared_call) in prepared.into_iter().enumerate() {
-                            let result = match outcomes.remove(&index) {
-                                Some(result) => result,
-                                None => Err(prepared_call
-                                    .failure
-                                    .clone()
-                                    .expect("未执行成员必有准备期失败")),
+                            let (result, executed) = match outcomes.remove(&index) {
+                                Some(result) => (result, true),
+                                None => (
+                                    Err(prepared_call
+                                        .failure
+                                        .clone()
+                                        .expect("未执行成员必有准备期失败")),
+                                    false,
+                                ),
                             };
-                            self.settle_call(
-                                &prepared_call.call,
-                                result,
-                                session,
-                                workspace,
-                                root,
-                                &cancel,
-                            )
-                            .await?;
+                            pending_hook_contexts.extend(
+                                self.settle_call(
+                                    &prepared_call.call,
+                                    result,
+                                    executed,
+                                    session,
+                                    workspace,
+                                    exec,
+                                    &cancel,
+                                )
+                                .await?,
+                            );
                         }
                     }
                 } else {
                     // 串行完整路径：prepare → execute（含审批发起）→ settle，与既有行为一致。
                     let prepared_call = self
-                        .prepare_call(first, &tools, session, workspace, root, &cancel, exec.mode)
+                        .prepare_call(first, &tools, session, workspace, exec, &cancel)
                         .await?;
-                    let (call, result) = self.execute_prepared(prepared_call, &ctx).await;
-                    self.settle_call(&call, result, session, workspace, root, &cancel)
-                        .await?;
+                    let (call, result, executed) = self.execute_prepared(prepared_call, &ctx).await;
+                    pending_hook_contexts.extend(
+                        self.settle_call(
+                            &call, result, executed, session, workspace, exec, &cancel,
+                        )
+                        .await?,
+                    );
+                }
+            }
+            if !workspace.is_empty() && !self.session_plan_get(session).await? {
+                crate::hooks::require_project_trust(root)?;
+            }
+            let batch_events = self.store.events(session, 0).await?;
+            for call in &batch_calls {
+                for event in batch_events.iter().filter(|event| {
+                    event.kind == "hook.pre_context" && event.data["callId"] == call.id
+                }) {
+                    self.append(
+                        session,
+                        "hook.context",
+                        json!({"content":event.data["content"]}),
+                    )
+                    .await?;
+                }
+            }
+            for context in pending_hook_contexts {
+                self.append(session, "hook.context", json!({"content":context}))
+                    .await?;
+            }
+            if !cancel.is_cancelled() && !self.session_plan_get(session).await? {
+                let events = &batch_events;
+                let mut calls = Vec::with_capacity(batch_calls.len());
+                for call in &batch_calls {
+                    let result = events
+                        .iter()
+                        .rev()
+                        .find(|event| {
+                            event.kind == "tool.result" && event.data["callId"] == call.id
+                        })
+                        .ok_or_else(|| AppError::new("HOOK_BATCH", "工具批次缺少结算结果"))?;
+                    let effective = events
+                        .iter()
+                        .rev()
+                        .find(|event| {
+                            event.kind == "tool.rewrite" && event.data["callId"] == call.id
+                        })
+                        .map(|event| event.data["effective"].clone())
+                        .unwrap_or(serde_json::to_value(call).map_err(internal)?);
+                    calls.push(json!({"tool_name":effective["name"], "tool_input":effective["arguments"], "tool_use_id":call.id, "tool_response":result.data["content"], "is_error":result.data["isError"], "status":result.data["status"]}));
+                }
+                let runs = crate::hooks::run_event(
+                    self.workspaces.data_dir(),
+                    root,
+                    &exec.capability_id,
+                    exec.mode != ExecutionMode::Direct,
+                    session,
+                    "PostToolBatch",
+                    json!({"tool_calls":calls}),
+                    cancel.clone(),
+                )
+                .await?;
+                let mut denied = None;
+                for run in runs {
+                    self.append(session, "hook.completed", json!({"event":"PostToolBatch", "status":run.status, "error":run.diagnostic})).await?;
+                    if run.blocked && denied.is_none() {
+                        denied = Some(
+                            run.diagnostic
+                                .unwrap_or_else(|| "Hook 停止工具批次后的模型请求".into()),
+                        );
+                    }
+                    if let Some(context) = run.context {
+                        self.append(session, "hook.context", json!({"content":context}))
+                            .await?;
+                    }
+                }
+                if let Some(reason) = denied {
+                    return Err(AppError::new("HOOK_DENIED", reason));
                 }
             }
             benchmark_timing(session, "tool_batch", batch_started);
@@ -2937,6 +3266,7 @@ impl Runtime {
             branch: target.branch,
         })
     }
+    #[allow(clippy::too_many_arguments)] // 审批调用方与权限上下文保持显式。
     pub(crate) async fn approve(
         &self,
         session: &str,
@@ -2945,6 +3275,8 @@ impl Runtime {
         escalated: bool,
         denial_rule: Option<&str>,
         exec_mode: ExecutionMode,
+        force: bool,
+        hook_exec: Option<&ExecContext>,
     ) -> AppResult<()> {
         let policy = self.approval_policy(session);
         // 自主档下命令承载类工具的危险命令在审批理由中点名规则，便于用户判断。
@@ -2992,7 +3324,10 @@ impl Runtime {
             },
         };
         // 会话级策略（桌面端设置）可自动裁决的档位不经 pending 等待；事件流仍完整记录请求与结算。
-        if let Some(allowed) = policy.and_then(|p| p.decide(&request)) {
+        if let Some(allowed) = policy
+            .and_then(|p| p.decide(&request))
+            .filter(|allowed| !force || !*allowed)
+        {
             self.append(
                 session,
                 "approval.request",
@@ -3013,6 +3348,38 @@ impl Runtime {
                 "会话审批策略拒绝此工具调用",
             ));
         }
+        if force && self.unattended() {
+            return Err(AppError::new(
+                "APPROVAL_DENIED",
+                "Hook 要求人工审批，但当前无人在场",
+            ));
+        }
+        if let Some(exec) = hook_exec {
+            let runs = crate::hooks::run_event(
+                self.workspaces.data_dir(),
+                &exec.root,
+                &exec.capability_id,
+                exec.mode != ExecutionMode::Direct,
+                session,
+                "PermissionRequest",
+                json!({"tool_name":call.name,"tool_input":call.arguments,"tool_use_id":call.id}),
+                cancel.clone(),
+            )
+            .await?;
+            let mut denial = None;
+            for run in runs {
+                self.append(session, "hook.completed", json!({"event":"PermissionRequest","callId":call.id,"status":run.status,"error":run.diagnostic})).await?;
+                if run.blocked && denial.is_none() {
+                    denial = Some(
+                        run.diagnostic
+                            .unwrap_or_else(|| "权限请求被 Hook 拒绝".into()),
+                    );
+                }
+            }
+            if let Some(reason) = denial {
+                return Err(AppError::new("HOOK_DENIED", reason));
+            }
+        }
         let (tx, rx) = oneshot::channel();
         self.approvals
             .pending
@@ -3029,6 +3396,16 @@ impl Runtime {
         if let Err(e) = logged {
             self.approvals.pending.lock().unwrap().remove(&request.id);
             return Err(e);
+        }
+        if let Some(exec) = hook_exec {
+            self.run_notification_hook(
+                session,
+                exec,
+                "permission_prompt",
+                "等待用户审批",
+                cancel.clone(),
+            )
+            .await;
         }
         let allowed = tokio::select! {_ = cancel.cancelled()=>false,r=rx=>r.unwrap_or(false),_ = tokio::time::sleep(std::time::Duration::from_secs(600))=>false};
         self.approvals.pending.lock().unwrap().remove(&request.id);
@@ -3056,15 +3433,17 @@ impl Runtime {
         &self,
         session: &str,
         a: &Value,
+        exec: &ExecContext,
         cancel: &CancellationToken,
     ) -> AppResult<String> {
-        let (request, answer) = self.ask_user_answer(session, a, cancel).await?;
+        let (request, answer) = self.ask_user_answer(session, a, exec, cancel).await?;
         Ok(answer_text(&answer, &request))
     }
     async fn ask_user_answer(
         &self,
         session: &str,
         a: &Value,
+        exec: &ExecContext,
         cancel: &CancellationToken,
     ) -> AppResult<(AskRequest, AskAnswer)> {
         let request = AskRequest {
@@ -3111,6 +3490,14 @@ impl Runtime {
             self.questions.pending.lock().unwrap().remove(&request.id);
             logged.map(|_| ())?;
         }
+        self.run_notification_hook(
+            session,
+            exec,
+            "user_input",
+            &request.question,
+            cancel.clone(),
+        )
+        .await;
         let answer = tokio::select! {
             _ = cancel.cancelled() => {
                 // 回合取消：仍落结算事件保持配对完整；结果随回合取消收尾。
@@ -3300,8 +3687,17 @@ impl Runtime {
                         .await?
                 } else if a["escalate"].as_bool().unwrap_or(false) {
                     // 主动提权：首次即审批，批准后无沙箱执行。
-                    self.approve(&session, &call, &cancel, true, None, exec.mode)
-                        .await?;
+                    self.approve(
+                        &session,
+                        &call,
+                        &cancel,
+                        true,
+                        None,
+                        exec.mode,
+                        false,
+                        Some(&exec),
+                    )
+                    .await?;
                     escalated = true;
                     ShellService::run_in(root, &exec.capability_id, command, cancel.clone(), false)
                         .await?
@@ -3318,8 +3714,17 @@ impl Runtime {
                     if first.exit_code != 0
                         && let Some(rule) = harness_platform::classify_sandbox_denial(&first)
                     {
-                        self.approve(&session, &call, &cancel, true, Some(rule), exec.mode)
-                            .await?;
+                        self.approve(
+                            &session,
+                            &call,
+                            &cancel,
+                            true,
+                            Some(rule),
+                            exec.mode,
+                            false,
+                            Some(&exec),
+                        )
+                        .await?;
                         escalated = true;
                         ShellService::run_in(
                             root,
@@ -3464,7 +3869,7 @@ impl Runtime {
                 self.cancel(id);
                 "已请求中断".into()
             }
-            "ask_user" => self.ask_user(&session, a, &cancel).await?,
+            "ask_user" => self.ask_user(&session, a, &exec, &cancel).await?,
             "plan_exit" => {
                 if !self.session_plan_get(&session).await? {
                     return Err(AppError::new("PLAN_MODE_INACTIVE", "当前不在计划模式"));
@@ -3473,7 +3878,9 @@ impl Runtime {
                     "question": format!("是否批准以下计划并退出只读模式？\n\n{}", arg(a, "content")?),
                     "options": [{"label":"批准"},{"label":"拒绝"}]
                 });
-                let (request, answer) = self.ask_user_answer(&session, &question, &cancel).await?;
+                let (request, answer) = self
+                    .ask_user_answer(&session, &question, &exec, &cancel)
+                    .await?;
                 if cancel.is_cancelled() {
                     return Err(cancelled());
                 }
@@ -3584,11 +3991,14 @@ impl Runtime {
         tools: &[ToolDefinition],
         session: &str,
         workspace: &str,
-        root: &Path,
+        exec: &ExecContext,
         cancel: &CancellationToken,
-        exec_mode: ExecutionMode,
     ) -> AppResult<PreparedCall> {
+        let mut force_approval = false;
         let outcome = async {
+            if !workspace.is_empty() && !self.session_plan_get(session).await? {
+                crate::hooks::require_project_trust(&exec.root)?;
+            }
             let definition = tools
                 .iter()
                 .find(|t| t.name == call.name)
@@ -3606,9 +4016,9 @@ impl Runtime {
                     .plugins
                     .run_hook(
                         workspace,
-                        root,
+                        &exec.root,
                         "before_tool",
-                        original.clone(),
+                        serde_json::to_value(&call).map_err(internal)?,
                         cancel.clone(),
                     )
                     .await?
@@ -3619,6 +4029,20 @@ impl Runtime {
                         .into();
                     call.arguments = rewrite["arguments"].clone();
                 }
+                let definition = tools.iter().find(|tool| tool.name == call.name).ok_or_else(|| AppError::new("TOOL_UNAVAILABLE", &call.name))?;
+                if !jsonschema::validator_for(&definition.parameters).map_err(internal)?.is_valid(&call.arguments) {
+                    return Err(AppError::new("TOOL_ARGUMENTS", "插件修改后的工具参数无效"));
+                }
+                let runs = crate::hooks::run_event(self.workspaces.data_dir(), &exec.root, &exec.capability_id, exec.mode != ExecutionMode::Direct, session, "PreToolUse", json!({"tool_name":call.name,"tool_input":call.arguments,"tool_use_id":call.id}), cancel.clone()).await?;
+                let mut denial = None;
+                for run in runs {
+                    self.append(session, "hook.completed", json!({"event":"PreToolUse", "callId":call.id, "status":run.status, "error":run.diagnostic})).await?;
+                    if run.blocked && denial.is_none() { denial = Some(run.diagnostic.unwrap_or_else(|| "工具调用被 Hook 拒绝".into())); }
+                    if let Some(context) = run.context { self.append(session, "hook.pre_context", json!({"callId":call.id,"content":context})).await?; }
+                    if let Some(updated) = run.updated_input { call.arguments = updated; }
+                    force_approval |= run.ask;
+                }
+                if let Some(reason) = denial { return Err(AppError::new("HOOK_DENIED", reason)); }
             }
             if original != serde_json::to_value(&call).map_err(internal)? {
                 self.append(
@@ -3658,8 +4082,8 @@ impl Runtime {
             // 沙箱外终端的持续续审），避免「一次批准换整段免审命令」的审批套利。
             // 副本/worktree/scratch 终端在受限令牌内，维持打开时一次审批。
             let needs_approval = !plan_mode
-                && (declared
-                    || (exec_mode == ExecutionMode::Direct && call.name == "terminal_write"));
+                && (force_approval || declared
+                    || (exec.mode == ExecutionMode::Direct && call.name == "terminal_write"));
             Ok(needs_approval)
         }
         .await;
@@ -3667,11 +4091,13 @@ impl Runtime {
             Ok(needs_approval) => Ok(PreparedCall {
                 call,
                 needs_approval,
+                force_approval,
                 failure: None,
             }),
             Err(error) => Ok(PreparedCall {
                 call,
                 needs_approval: false,
+                force_approval: false,
                 failure: Some(error),
             }),
         }
@@ -3682,21 +4108,42 @@ impl Runtime {
         self: &Arc<Self>,
         prepared: PreparedCall,
         ctx: &CallCtx<'_>,
-    ) -> (ToolCall, AppResult<ToolResult>) {
+    ) -> (ToolCall, AppResult<ToolResult>, bool) {
         let PreparedCall {
             call,
             needs_approval,
+            force_approval,
             failure,
         } = prepared;
         if let Some(error) = failure {
-            return (call, Err(error));
+            return (call, Err(error), false);
         }
         if needs_approval
             && let Err(error) = self
-                .approve(ctx.session, &call, ctx.cancel, false, None, ctx.exec.mode)
+                .approve(
+                    ctx.session,
+                    &call,
+                    ctx.cancel,
+                    false,
+                    None,
+                    ctx.exec.mode,
+                    force_approval,
+                    Some(ctx.exec),
+                )
                 .await
         {
-            return (call, Err(error));
+            return (call, Err(error), false);
+        }
+        if !ctx.workspace.is_empty() {
+            match self.session_plan_get(ctx.session).await {
+                Ok(false) => {
+                    if let Err(error) = crate::hooks::require_project_trust(&ctx.exec.root) {
+                        return (call, Err(error), false);
+                    }
+                }
+                Ok(true) => (),
+                Err(error) => return (call, Err(error), false),
+            }
         }
         let result = run_tool_guarded(
             self.clone(),
@@ -3712,25 +4159,27 @@ impl Runtime {
             },
         )
         .await;
-        (call, result)
+        (call, result, true)
     }
     /// 结果结算：状态判定、后置钩子、溢出 blob 与 tool.result 事件落库（语义与既有串行路径一致）。
+    #[allow(clippy::too_many_arguments)] // 结算需要调用、执行位置与取消上下文。
     async fn settle_call(
         &self,
         call: &ToolCall,
         result: AppResult<ToolResult>,
+        executed: bool,
         session: &str,
         workspace: &str,
-        root: &Path,
+        exec: &ExecContext,
         cancel: &CancellationToken,
-    ) -> AppResult<()> {
+    ) -> AppResult<Vec<String>> {
         let status = match &result {
             Ok(_) => "completed",
             Err(e) if matches!(e.code.as_str(), "CANCELLED" | "TOOL_TIMEOUT") => "unknown",
             Err(e)
                 if matches!(
                     e.code.as_str(),
-                    "APPROVAL_DENIED" | "PLAN_MODE_READ_ONLY" | "PLAN_NOT_APPROVED"
+                    "APPROVAL_DENIED" | "HOOK_DENIED" | "PLAN_MODE_READ_ONLY" | "PLAN_NOT_APPROVED"
                 ) =>
             {
                 "denied"
@@ -3757,7 +4206,7 @@ impl Runtime {
                 .plugins
                 .run_hook(
                     workspace,
-                    root,
+                    &exec.root,
                     "after_tool",
                     json!({"call": call, "result": result}),
                     cancel.clone(),
@@ -3777,6 +4226,52 @@ impl Runtime {
         }
         if protected_failure {
             result.is_error = true;
+        }
+        let mut contexts = Vec::new();
+        if executed
+            && !cancel.is_cancelled()
+            && !self.session_plan_get(session).await?
+            && (workspace.is_empty() || crate::hooks::require_project_trust(&exec.root).is_ok())
+        {
+            let event = if result.is_error {
+                "PostToolUseFailure"
+            } else {
+                "PostToolUse"
+            };
+            let payload = if result.is_error {
+                json!({"tool_name":call.name,"tool_input":call.arguments,"tool_use_id":call.id,"error":result.content,"is_interrupt":false})
+            } else {
+                json!({"tool_name":call.name,"tool_input":call.arguments,"tool_use_id":call.id,"tool_response":result})
+            };
+            match crate::hooks::run_event(
+                self.workspaces.data_dir(),
+                &exec.root,
+                &exec.capability_id,
+                exec.mode != ExecutionMode::Direct,
+                session,
+                event,
+                payload,
+                cancel.clone(),
+            )
+            .await
+            {
+                Ok(runs) => {
+                    for run in runs {
+                        self.append(session, "hook.completed", json!({"event":event,"callId":call.id,"status":run.status,"error":run.diagnostic})).await?;
+                        if let Some(context) = run.context {
+                            contexts.push(context);
+                        }
+                    }
+                }
+                Err(error) => {
+                    self.append(
+                        session,
+                        "hook.completed",
+                        json!({"event":event,"callId":call.id,"status":"error","error":error}),
+                    )
+                    .await?;
+                }
+            }
         }
         let mut content = result.content;
         let mut structured_content = result.structured_content;
@@ -3832,7 +4327,7 @@ impl Runtime {
             }),
         )
         .await?;
-        Ok(())
+        Ok(contexts)
     }
     /// 压缩会话投影：清洗 replay/reasoning → 摘要请求 → 校验 → 落 `compaction.summary`。
     /// 原始事件保留；投影在 compaction.summary 处重置（见 [`project_messages`]）。
@@ -4043,6 +4538,7 @@ async fn blocking_io<T: Send + 'static>(
 struct PreparedCall {
     call: ToolCall,
     needs_approval: bool,
+    force_approval: bool,
     failure: Option<AppError>,
 }
 /// shell 前台转后台所需的最小元数据（input 移动进工具体前提取）。
@@ -4055,6 +4551,9 @@ struct HandoffMeta {
 /// shell 到达时限不取消：解除回合取消链接并转为受管后台任务继续执行
 ///（见 handoff_shell_to_background）；其余工具超时取消并结算 TOOL_TIMEOUT。
 async fn run_tool_guarded(runtime: Arc<Runtime>, input: ToolExecution) -> AppResult<ToolResult> {
+    if !input.workspace.is_empty() && !runtime.session_plan_get(&input.session).await? {
+        crate::hooks::require_project_trust(&input.exec.root)?;
+    }
     let is_ask = input.call.name == "ask_user";
     let is_shell = !is_ask && input.call.name == "shell";
     let turn_cancel = input.cancel.clone();
@@ -4413,7 +4912,7 @@ pub fn project_messages(events: &[SessionEvent]) -> Vec<ModelMessage> {
                 e.data["path"].as_str().unwrap_or(""),
                 content()
             ))),
-            "plugin.context" => history.push(ModelMessage::user(content())),
+            "plugin.context" | "hook.context" => history.push(ModelMessage::user(content())),
             "assistant.message" => history.push(ModelMessage {
                 role: MessageRole::Assistant,
                 content: content(),

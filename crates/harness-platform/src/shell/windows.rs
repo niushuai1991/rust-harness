@@ -448,10 +448,22 @@ pub(crate) fn prepare(root: &Path, id: &str) -> AppResult<()> {
 }
 struct StdioLifetime {
     job: std::sync::Arc<Handle>,
-    process: Handle,
+    process: std::sync::Arc<Handle>,
     done: CancellationToken,
     _lease: Option<crate::WorkspaceLease>,
     _temp: tempfile::TempDir,
+}
+pub(super) fn wait_process(process: &Handle) -> AppResult<i32> {
+    unsafe {
+        if WaitForSingleObject(process.0, INFINITE) != WAIT_OBJECT_0 {
+            return Err(error("WaitForSingleObject"));
+        }
+        let mut code = 0;
+        if GetExitCodeProcess(process.0, &mut code) == 0 {
+            return Err(error("GetExitCodeProcess"));
+        }
+        Ok(code as i32)
+    }
 }
 impl Drop for StdioLifetime {
     fn drop(&mut self) {
@@ -637,7 +649,7 @@ pub(super) fn spawn_stdio(
         {
             return Err(error("CreateProcessAsUserW"));
         }
-        let process_handle = Handle(process.hProcess);
+        let process_handle = std::sync::Arc::new(Handle(process.hProcess));
         let thread = Handle(process.hThread);
         if AssignProcessToJobObject(job.0, process_handle.0) == 0 {
             TerminateProcess(process_handle.0, 1);
@@ -652,6 +664,7 @@ pub(super) fn spawn_stdio(
         drop(err_write);
         let stderr_buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let buffer = stderr_buffer.clone();
+        let (stderr_finished, stderr_done) = tokio::sync::oneshot::channel();
         std::thread::spawn(move || {
             let mut stderr = stderr;
             let mut chunk = [0u8; 4096];
@@ -664,11 +677,12 @@ pub(super) fn spawn_stdio(
                     bytes.extend_from_slice(&chunk[..take]);
                 }
             }
+            let _ = stderr_finished.send(());
         });
         let done = CancellationToken::new();
         let lifecycle = StdioLifetime {
             job: job.clone(),
-            process: process_handle,
+            process: process_handle.clone(),
             done: done.clone(),
             _lease: Some(lease),
             _temp: temp,
@@ -681,6 +695,8 @@ pub(super) fn spawn_stdio(
             writer: tokio::fs::File::from_std(in_write),
             stderr: stderr_buffer,
             _guard: Box::new(lifecycle),
+            process: process_handle,
+            stderr_done,
         })
     }
 }
@@ -861,7 +877,7 @@ pub(super) fn spawn_stdio_in(
         if created == 0 {
             return Err(error("CreateProcess"));
         }
-        let process_handle = Handle(process.hProcess);
+        let process_handle = std::sync::Arc::new(Handle(process.hProcess));
         let thread = Handle(process.hThread);
         if AssignProcessToJobObject(job.0, process_handle.0) == 0 {
             TerminateProcess(process_handle.0, 1);
@@ -876,6 +892,7 @@ pub(super) fn spawn_stdio_in(
         drop(err_write);
         let stderr_buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let buffer = stderr_buffer.clone();
+        let (stderr_finished, stderr_done) = tokio::sync::oneshot::channel();
         std::thread::spawn(move || {
             let mut stderr = stderr;
             let mut chunk = [0u8; 4096];
@@ -888,11 +905,12 @@ pub(super) fn spawn_stdio_in(
                     bytes.extend_from_slice(&chunk[..take]);
                 }
             }
+            let _ = stderr_finished.send(());
         });
         let done = CancellationToken::new();
         let lifecycle = StdioLifetime {
             job: job.clone(),
-            process: process_handle,
+            process: process_handle.clone(),
             done: done.clone(),
             _lease: None,
             _temp: temp,
@@ -905,6 +923,8 @@ pub(super) fn spawn_stdio_in(
             writer: tokio::fs::File::from_std(in_write),
             stderr: stderr_buffer,
             _guard: Box::new(lifecycle),
+            process: process_handle,
+            stderr_done,
         })
     }
 }

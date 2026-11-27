@@ -10,6 +10,7 @@ pub use registry::{ExternalTool, Registration, ToolContext};
 pub mod providers;
 
 mod artifacts;
+mod hooks;
 
 pub mod jobs;
 pub mod mcp_config;

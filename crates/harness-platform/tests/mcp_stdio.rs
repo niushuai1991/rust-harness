@@ -1,5 +1,142 @@
 #[cfg(windows)]
 #[tokio::test]
+async fn hook_process_receives_stdin_and_returns_exit_status_and_both_streams() {
+    use harness_platform::ShellService;
+    use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
+
+    let root = tempfile::tempdir().unwrap();
+    let output = ShellService::run_hook_in(
+        root.path(),
+        "",
+        "powershell.exe",
+        &[
+            "-NoProfile".into(),
+            "-Command".into(),
+            "$s=[Console]::In.ReadToEnd(); [Console]::Out.Write($s); [Console]::Error.Write('denied'); exit 2".into(),
+        ],
+        b"{\"event\":\"test\"}\n",
+        CancellationToken::new(),
+        false,
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
+    assert_eq!(output.stdout, "{\"event\":\"test\"}\n");
+    assert_eq!(output.stderr, "denied");
+    assert_eq!(output.exit_code, 2);
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn hook_rejection_is_preserved_when_process_exits_before_reading_large_input() {
+    use harness_platform::ShellService;
+    use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
+    let root = tempfile::tempdir().unwrap();
+    let output = ShellService::run_hook_in(
+        root.path(),
+        "",
+        "powershell.exe",
+        &[
+            "-NoProfile".into(),
+            "-Command".into(),
+            "[Console]::Error.Write('denied'); exit 2".into(),
+        ],
+        &vec![b'x'; 2 * 1024 * 1024],
+        CancellationToken::new(),
+        false,
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
+    assert_eq!(output.exit_code, 2);
+    assert_eq!(output.stderr, "denied");
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn hook_success_does_not_hide_an_incomplete_stdin_write() {
+    use harness_platform::ShellService;
+    use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
+    let root = tempfile::tempdir().unwrap();
+    let result = ShellService::run_hook_in(
+        root.path(),
+        "",
+        "powershell.exe",
+        &["-NoProfile".into(), "-Command".into(), "exit 0".into()],
+        &vec![b'x'; 2 * 1024 * 1024],
+        CancellationToken::new(),
+        false,
+        Duration::from_secs(10),
+    )
+    .await;
+    assert!(result.is_err(), "未能送达完整输入不能当作成功");
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn hook_process_in_scratch_sandbox_receives_input() {
+    use harness_platform::{ShellService, WorkspaceManager};
+    use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
+
+    let host = tempfile::tempdir().unwrap();
+    let manager = WorkspaceManager::new(host.path().to_path_buf()).unwrap();
+    let session = uuid::Uuid::new_v4().to_string();
+    let root = manager.ensure_scratch_root(&session).unwrap();
+    let output = ShellService::run_hook_in(
+        &root,
+        &session,
+        "powershell.exe",
+        &[
+            "-NoProfile".into(),
+            "-Command".into(),
+            "[Console]::Out.Write([Console]::In.ReadToEnd())".into(),
+        ],
+        b"sandboxed",
+        CancellationToken::new(),
+        true,
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
+    assert_eq!(output.exit_code, 0);
+    assert_eq!(output.stdout, "sandboxed");
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn hook_process_timeout_terminates_a_running_process() {
+    use harness_platform::ShellService;
+    use std::time::{Duration, Instant};
+    use tokio_util::sync::CancellationToken;
+
+    let root = tempfile::tempdir().unwrap();
+    let start = Instant::now();
+    let result = ShellService::run_hook_in(
+        root.path(),
+        "",
+        "powershell.exe",
+        &[
+            "-NoProfile".into(),
+            "-Command".into(),
+            "Start-Sleep -Seconds 30".into(),
+        ],
+        b"",
+        CancellationToken::new(),
+        false,
+        Duration::from_millis(250),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(result.code, "HOOK_TIMEOUT");
+    assert!(start.elapsed() < Duration::from_secs(8));
+}
+
+#[cfg(windows)]
+#[tokio::test]
 async fn direct_stdio_uses_explicit_working_directory() {
     use harness_platform::ShellService;
     use tokio::io::AsyncReadExt;

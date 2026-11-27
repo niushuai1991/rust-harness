@@ -2346,6 +2346,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+ "wat",
 ]
 
 [[package]]
