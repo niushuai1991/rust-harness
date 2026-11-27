@@ -10,6 +10,7 @@ pub use manifest::{Command, Contributions, Manifest, Tool};
 use manifest::{fail, identifier};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashMap},
     fs,
@@ -23,6 +24,62 @@ struct Installed {
     manifest: Manifest,
     enabled: bool,
     grants: Vec<String>,
+    #[serde(default)]
+    command_hook_package_digest: Option<String>,
+}
+
+fn package_digest(root: &Path) -> AppResult<String> {
+    fn visit(
+        root: &Path,
+        path: &Path,
+        digest: &mut Sha256,
+        count: &mut usize,
+        total: &mut u64,
+    ) -> AppResult<()> {
+        let meta = fs::symlink_metadata(path).map_err(fail)?;
+        if package::linked(&meta) {
+            return Err(fail("linked plugin package path rejected"));
+        }
+        *count += 1;
+        if *count > 2049 {
+            return Err(fail("plugin package entry limit exceeded"));
+        }
+        let relative = path.strip_prefix(root).map_err(fail)?.to_string_lossy();
+        digest.update((relative.len() as u64).to_le_bytes());
+        digest.update(relative.as_bytes());
+        if meta.is_dir() {
+            digest.update(b"D");
+            let mut entries = fs::read_dir(path)
+                .map_err(fail)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(fail)?;
+            entries.sort_by_key(|entry| entry.file_name());
+            for entry in entries {
+                visit(root, &entry.path(), digest, count, total)?;
+            }
+        } else if meta.is_file() {
+            *total = total
+                .checked_add(meta.len())
+                .ok_or_else(|| fail("plugin package too large"))?;
+            if meta.len() > 32 << 20 || *total > 128 << 20 {
+                return Err(fail("plugin package too large"));
+            }
+            digest.update(b"F");
+            digest.update(meta.len().to_le_bytes());
+            use std::io::Read;
+            let file = fs::File::open(path).map_err(fail)?;
+            let copied = std::io::copy(&mut file.take(meta.len() + 1), digest).map_err(fail)?;
+            if copied != meta.len() {
+                return Err(fail("plugin package changed while reading"));
+            }
+        } else {
+            return Err(fail("unsupported plugin package entry"));
+        }
+        Ok(())
+    }
+    let mut digest = Sha256::new();
+    visit(root, root, &mut digest, &mut 0, &mut 0)?;
+    Ok(format!("{:x}", digest.finalize()))
 }
 struct State {
     plugins: BTreeMap<String, Installed>,
@@ -100,6 +157,19 @@ impl PluginManager {
                 toml::from_str(&fs::read_to_string(staging.join("plugin.toml")).map_err(fail)?)
                     .map_err(fail)?;
             manifest.validate()?;
+            let command_hooks = staging.join("hooks").join("hooks.json");
+            if command_hooks.exists() {
+                if !command_hooks.is_file() {
+                    return Err(fail("command hook configuration must be a file"));
+                }
+                if !manifest
+                    .permissions
+                    .iter()
+                    .any(|permission| permission == "hooks.command")
+                {
+                    return Err(fail("command hooks require hooks.command permission"));
+                }
+            }
             if grants.iter().any(|p| !manifest.permissions.contains(p)) {
                 return Err(fail("grant is not declared"));
             }
@@ -140,11 +210,17 @@ impl PluginManager {
                     return Err(fail("upgrade breaks dependent"));
                 }
             }
+            let command_hook_package_digest = if command_hooks.exists() {
+                Some(package_digest(&staging)?)
+            } else {
+                None
+            };
             fs::rename(&staging, &version).map_err(fail)?;
             let installed = Installed {
                 manifest,
                 enabled: false,
                 grants,
+                command_hook_package_digest,
             };
             let mut next = state.plugins.clone();
             next.insert(installed.manifest.id.clone(), installed.clone());
@@ -171,6 +247,21 @@ impl PluginManager {
         let mut next = state.plugins.clone();
         let p = next.get(id).ok_or_else(|| fail("plugin not found"))?;
         if enabled {
+            let command_hooks = self
+                .dir
+                .join("versions")
+                .join(id)
+                .join(&p.manifest.version)
+                .join("hooks")
+                .join("hooks.json");
+            if command_hooks.exists()
+                && !p
+                    .grants
+                    .iter()
+                    .any(|permission| permission == "hooks.command")
+            {
+                return Err(fail("command hooks require explicit hooks.command grant"));
+            }
             for (dep, req) in &p.manifest.dependencies {
                 let installed = next
                     .get(dep)
@@ -233,6 +324,93 @@ impl PluginManager {
             .filter(|(_, p)| p.enabled)
             .map(|(id, p)| (id.clone(), p.manifest.contributions.clone()))
             .collect())
+    }
+    /// 快速判断是否存在需要进一步检查的命令 Hook 授权。
+    pub fn has_command_hook_grant(&self) -> bool {
+        self.state.lock().unwrap().plugins.values().any(|plugin| {
+            plugin.enabled
+                && plugin
+                    .grants
+                    .iter()
+                    .any(|permission| permission == "hooks.command")
+        })
+    }
+    /// 返回有独立授权且受工作区策略允许的启用插件命令 Hook 配置。
+    pub fn command_hook_sources(&self, workspace_id: &str) -> AppResult<Vec<(String, PathBuf)>> {
+        let allowed = self
+            .workspace_policies
+            .lock()
+            .unwrap()
+            .get(workspace_id)
+            .is_some_and(|permissions| {
+                permissions
+                    .iter()
+                    .any(|permission| permission == "hooks.command")
+            });
+        if !allowed {
+            return Ok(Vec::new());
+        }
+        let state = self.state.lock().unwrap();
+        let mut sources = Vec::new();
+        for (id, plugin) in &state.plugins {
+            if !plugin.enabled
+                || !plugin
+                    .grants
+                    .iter()
+                    .any(|permission| permission == "hooks.command")
+            {
+                continue;
+            }
+            let version = self
+                .dir
+                .join("versions")
+                .join(id)
+                .join(&plugin.manifest.version);
+            let hook_dir = version.join("hooks");
+            let config = hook_dir.join("hooks.json");
+            for ancestor in [
+                self.dir.join("versions"),
+                self.dir.join("versions").join(id),
+            ] {
+                let meta = fs::symlink_metadata(&ancestor).map_err(fail)?;
+                if package::linked(&meta) {
+                    return Err(fail("linked plugin package path rejected"));
+                }
+            }
+            match fs::symlink_metadata(&config) {
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::NotFound
+                        && plugin.command_hook_package_digest.is_none() =>
+                {
+                    continue;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(fail(
+                        "command hook configuration removed; reinstall and grant again",
+                    ));
+                }
+                Err(error) => return Err(fail(error)),
+                Ok(_) => {}
+            }
+            for path in [&version, &hook_dir, &config] {
+                let meta = fs::symlink_metadata(path).map_err(fail)?;
+                if package::linked(&meta) {
+                    return Err(fail("linked command hook path rejected"));
+                }
+            }
+            if !config.is_file() {
+                return Err(fail("command hook configuration must be a file"));
+            }
+            if plugin.command_hook_package_digest.as_deref()
+                != Some(package_digest(&version)?.as_str())
+            {
+                return Err(fail(
+                    "command hook package changed; reinstall and grant again",
+                ));
+            }
+            sources.push((id.clone(), config));
+        }
+        Ok(sources)
     }
     pub fn tool_definitions(&self, workspace_id: &str) -> AppResult<Vec<ToolDefinition>> {
         let policies = self.workspace_policies.lock().unwrap();

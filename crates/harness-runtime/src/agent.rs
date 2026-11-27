@@ -196,6 +196,7 @@ pub struct Runtime {
     queues: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     steering: Mutex<HashMap<String, Arc<tokio::sync::Mutex<SteeringState>>>>,
     hook_started_sessions: Mutex<HashSet<String>>,
+    hook_trust_changed: tokio::sync::Notify,
     cancelled_messages: Mutex<HashSet<(String, String)>>,
     children: Mutex<HashMap<String, Vec<String>>>,
     pending_children: Mutex<HashSet<String>>,
@@ -356,6 +357,7 @@ impl Runtime {
             queues: Mutex::new(HashMap::new()),
             steering: Mutex::new(HashMap::new()),
             hook_started_sessions: Mutex::new(HashSet::new()),
+            hook_trust_changed: tokio::sync::Notify::new(),
             cancelled_messages: Mutex::new(HashSet::new()),
             children: Mutex::new(children),
             pending_children: Mutex::new(HashSet::new()),
@@ -1596,6 +1598,23 @@ impl Runtime {
             self.execute_message(session_id, message_id, provider).await
         })
     }
+    /// 桌面交互请求可等待用户审核；无人值守入口继续返回待审核错误。
+    pub fn run_session_with_attachments_interactive(
+        self: Arc<Self>,
+        session_id: String,
+        text: String,
+        provider: Arc<dyn ModelProvider>,
+        attachments: Vec<String>,
+        quotes: Vec<String>,
+    ) -> futures::future::BoxFuture<'static, AppResult<()>> {
+        Box::pin(async move {
+            let message_id = self
+                .enqueue_message(&session_id, text, attachments, quotes)
+                .await?;
+            self.execute_message_with_budget(session_id, message_id, provider, None, true)
+                .await
+        })
+    }
     /// Continue only the exact interrupted turn selected by the caller.
     pub async fn resume_session(
         self: Arc<Self>,
@@ -1836,7 +1855,9 @@ impl Runtime {
         if !self.session_plan_get(&session_id).await? {
             crate::hooks::validate_settings(self.workspaces.data_dir())?;
             if !session.workspace_id.is_empty() {
-                crate::hooks::require_project_trust(&exec.root)?;
+                crate::hook_trust::HookTrustService::new(self.store.clone())
+                    .require_trust(&exec.root)
+                    .await?;
             }
         }
         let _lease = if session.workspace_id.is_empty() {
@@ -1885,7 +1906,7 @@ impl Runtime {
             self.append(&session_id, "turn.resume", json!({"content":"请继续此前被中断的任务。先确认当前状态和结果未知的操作，再继续完成任务。"})).await?;
             drop(state);
             self.publish_token_budget(&session_id, &budget, budget.snapshot()).await?;
-            self.steps(&session_id, &session.workspace_id, &exec, provider, cancel.clone(), budget.clone()).await
+            self.steps(&session_id, &session.workspace_id, &exec, provider, cancel.clone(), budget.clone(), false).await
         }.await;
         let steering_result = self.fail_pending_steering(&session_id).await;
         self.active.lock().unwrap().remove(&session_id);
@@ -1917,8 +1938,14 @@ impl Runtime {
             let message_id = self
                 .enqueue_message(&session_id, text, vec![], vec![])
                 .await?;
-            self.execute_message_with_budget(session_id, message_id, provider, Some(token_budget))
-                .await
+            self.execute_message_with_budget(
+                session_id,
+                message_id,
+                provider,
+                Some(token_budget),
+                false,
+            )
+            .await
         })
     }
     pub async fn token_budget_limit(&self) -> AppResult<u64> {
@@ -2273,7 +2300,7 @@ impl Runtime {
         message_id: String,
         provider: Arc<dyn ModelProvider>,
     ) -> AppResult<()> {
-        self.execute_message_with_budget(session_id, message_id, provider, None)
+        self.execute_message_with_budget(session_id, message_id, provider, None, false)
             .await
     }
     async fn execute_message_with_budget(
@@ -2282,6 +2309,7 @@ impl Runtime {
         message_id: String,
         provider: Arc<dyn ModelProvider>,
         inherited_budget: Option<Arc<TurnBudget>>,
+        interactive_hook_review: bool,
     ) -> AppResult<()> {
         let session = self.store.session(&session_id).await?;
         let queued = self
@@ -2361,7 +2389,7 @@ impl Runtime {
             if !self.session_plan_get(&session_id).await? {
                 crate::hooks::validate_settings(self.workspaces.data_dir())?;
                 if !session.workspace_id.is_empty() {
-                    crate::hooks::require_project_trust(&exec.root)?;
+                    self.wait_project_hook_trust(&session_id, &exec.root, &cancel, interactive_hook_review).await?;
                 }
             }
             self.run_session_start_hooks(&session_id, &exec, cancel.clone(), true).await?;
@@ -2399,6 +2427,7 @@ impl Runtime {
                 provider,
                 cancel.clone(),
                 token_budget.clone(),
+                interactive_hook_review,
             )
             .await
         }
@@ -2441,6 +2470,20 @@ impl Runtime {
         {
             return Ok(());
         }
+        let workspace = self.store.session(session).await?.workspace_id;
+        self.plugins.set_workspace_policy(
+            &workspace,
+            vec![
+                "tools".into(),
+                "hooks".into(),
+                "hooks.command".into(),
+                "log".into(),
+                "workspace.read".into(),
+                "workspace.write".into(),
+                "http".into(),
+                "kv".into(),
+            ],
+        );
         let history = self.store.events(session, 0).await?;
         let source = if history
             .iter()
@@ -2453,6 +2496,8 @@ impl Runtime {
             "startup"
         };
         let runs = crate::hooks::run_event(
+            &self.store,
+            &self.plugins,
             self.workspaces.data_dir(),
             &exec.root,
             &exec.capability_id,
@@ -2493,6 +2538,8 @@ impl Runtime {
             return Ok((None, Vec::new()));
         }
         let runs = crate::hooks::run_event(
+            &self.store,
+            &self.plugins,
             self.workspaces.data_dir(),
             &exec.root,
             &exec.capability_id,
@@ -2536,6 +2583,8 @@ impl Runtime {
             return;
         }
         match crate::hooks::run_event(
+            &self.store,
+            &self.plugins,
             self.workspaces.data_dir(),
             &exec.root,
             &exec.capability_id,
@@ -2592,6 +2641,7 @@ impl Runtime {
         }
         Ok(())
     }
+    #[allow(clippy::too_many_arguments)] // 运行时上下文和交互式审核策略共同决定执行行为。
     async fn steps(
         self: &Arc<Self>,
         session: &str,
@@ -2600,6 +2650,7 @@ impl Runtime {
         provider: Arc<dyn ModelProvider>,
         cancel: CancellationToken,
         token_budget: Arc<TurnBudget>,
+        interactive_hook_review: bool,
     ) -> AppResult<()> {
         let root = exec.root.as_path();
         self.plugins.set_workspace_policy(
@@ -2607,6 +2658,7 @@ impl Runtime {
             vec![
                 "tools".into(),
                 "hooks".into(),
+                "hooks.command".into(),
                 "log".into(),
                 "workspace.read".into(),
                 "workspace.write".into(),
@@ -2648,7 +2700,8 @@ impl Runtime {
                 return Err(token_budget.error().unwrap_or_else(cancelled));
             }
             if !workspace.is_empty() && !self.session_plan_get(session).await? {
-                crate::hooks::require_project_trust(root)?;
+                self.wait_project_hook_trust(session, root, &cancel, interactive_hook_review)
+                    .await?;
             }
             token_budget.check_available()?;
             self.apply_steering(session, exec, &cancel).await?;
@@ -2948,7 +3001,7 @@ impl Runtime {
                     continue;
                 }
                 if stop_hook_continuations < 3 && !self.session_plan_get(session).await? {
-                    let runs = crate::hooks::run_event(self.workspaces.data_dir(), root, &exec.capability_id, exec.mode != ExecutionMode::Direct, session, "Stop", json!({"stop_hook_active":stop_hook_continuations > 0, "last_assistant_message":answer.content}), cancel.clone()).await?;
+                    let runs = crate::hooks::run_event(&self.store, &self.plugins, self.workspaces.data_dir(), root, &exec.capability_id, exec.mode != ExecutionMode::Direct, session, "Stop", json!({"stop_hook_active":stop_hook_continuations > 0, "last_assistant_message":answer.content}), cancel.clone()).await?;
                     let mut feedback = Vec::new();
                     for run in runs {
                         self.append(
@@ -3135,7 +3188,8 @@ impl Runtime {
                 }
             }
             if !workspace.is_empty() && !self.session_plan_get(session).await? {
-                crate::hooks::require_project_trust(root)?;
+                self.wait_project_hook_trust(session, root, &cancel, interactive_hook_review)
+                    .await?;
             }
             let batch_events = self.store.events(session, 0).await?;
             for call in &batch_calls {
@@ -3176,6 +3230,8 @@ impl Runtime {
                     calls.push(json!({"tool_name":effective["name"], "tool_input":effective["arguments"], "tool_use_id":call.id, "tool_response":result.data["content"], "is_error":result.data["isError"], "status":result.data["status"]}));
                 }
                 let runs = crate::hooks::run_event(
+                    &self.store,
+                    &self.plugins,
                     self.workspaces.data_dir(),
                     root,
                     &exec.capability_id,
@@ -3208,6 +3264,83 @@ impl Runtime {
             step = step.saturating_add(1);
         }
     }
+    async fn project_hook_root(&self, session_id: &str) -> AppResult<std::path::PathBuf> {
+        let session = self.store.session(session_id).await?;
+        if session.workspace_id.is_empty() {
+            return Err(AppError::new("HOOK_TRUST", "当前会话没有项目"));
+        }
+        let parent = self.parents.lock().unwrap().get(session_id).cloned();
+        Ok(self
+            .resolve_exec_root(
+                &session.workspace_id,
+                session_id,
+                session.execution_mode,
+                parent.as_deref(),
+            )
+            .await?
+            .root)
+    }
+
+    async fn wait_project_hook_trust(
+        &self,
+        session_id: &str,
+        root: &Path,
+        cancel: &CancellationToken,
+        interactive: bool,
+    ) -> AppResult<()> {
+        let service = crate::hook_trust::HookTrustService::new(self.store.clone());
+        let mut announced = false;
+        loop {
+            let notified = self.hook_trust_changed.notified();
+            match service.require_trust(root).await {
+                Ok(()) => return Ok(()),
+                Err(error) if error.code == "HOOK_TRUST_REQUIRED" && interactive => {
+                    if !announced {
+                        self.append(
+                            session_id,
+                            "hook.trust.required",
+                            json!({"message":"项目 Hook 需要审核，任务已暂停"}),
+                        )
+                        .await?;
+                        announced = true;
+                    }
+                    tokio::select! {
+                        _ = cancel.cancelled() => return Err(cancelled()),
+                        _ = notified => {},
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {},
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    pub async fn review_project_hooks(
+        &self,
+        session_id: &str,
+    ) -> AppResult<Vec<crate::hook_trust::HookReview>> {
+        let root = self.project_hook_root(session_id).await?;
+        crate::hook_trust::HookTrustService::new(self.store.clone())
+            .review(&root)
+            .await
+    }
+
+    pub async fn trust_project_hook(&self, session_id: &str, digest: &str) -> AppResult<()> {
+        let root = self.project_hook_root(session_id).await?;
+        crate::hook_trust::HookTrustService::new(self.store.clone())
+            .trust(&root, digest)
+            .await?;
+        self.hook_trust_changed.notify_waiters();
+        Ok(())
+    }
+
+    pub async fn revoke_project_hook(&self, session_id: &str, digest: &str) -> AppResult<()> {
+        let root = self.project_hook_root(session_id).await?;
+        crate::hook_trust::HookTrustService::new(self.store.clone())
+            .revoke(&root, digest)
+            .await
+    }
+
     /// 解析会话执行根与执行上下文：直接模式为源项目目录（capability 为空、无沙箱）；
     /// replica 模式为隔离副本（capability 派生自工作区 id）；worktree 模式为宿主代建的
     /// 会话 worktree（capability 派生自会话 id，与 prepare 授权一致）。
@@ -3356,6 +3489,8 @@ impl Runtime {
         }
         if let Some(exec) = hook_exec {
             let runs = crate::hooks::run_event(
+                &self.store,
+                &self.plugins,
                 self.workspaces.data_dir(),
                 &exec.root,
                 &exec.capability_id,
@@ -3997,7 +4132,7 @@ impl Runtime {
         let mut force_approval = false;
         let outcome = async {
             if !workspace.is_empty() && !self.session_plan_get(session).await? {
-                crate::hooks::require_project_trust(&exec.root)?;
+                crate::hook_trust::HookTrustService::new(self.store.clone()).require_trust(&exec.root).await?;
             }
             let definition = tools
                 .iter()
@@ -4033,7 +4168,7 @@ impl Runtime {
                 if !jsonschema::validator_for(&definition.parameters).map_err(internal)?.is_valid(&call.arguments) {
                     return Err(AppError::new("TOOL_ARGUMENTS", "插件修改后的工具参数无效"));
                 }
-                let runs = crate::hooks::run_event(self.workspaces.data_dir(), &exec.root, &exec.capability_id, exec.mode != ExecutionMode::Direct, session, "PreToolUse", json!({"tool_name":call.name,"tool_input":call.arguments,"tool_use_id":call.id}), cancel.clone()).await?;
+                let runs = crate::hooks::run_event(&self.store, &self.plugins, self.workspaces.data_dir(), &exec.root, &exec.capability_id, exec.mode != ExecutionMode::Direct, session, "PreToolUse", json!({"tool_name":call.name,"tool_input":call.arguments,"tool_use_id":call.id}), cancel.clone()).await?;
                 let mut denial = None;
                 for run in runs {
                     self.append(session, "hook.completed", json!({"event":"PreToolUse", "callId":call.id, "status":run.status, "error":run.diagnostic})).await?;
@@ -4137,7 +4272,10 @@ impl Runtime {
         if !ctx.workspace.is_empty() {
             match self.session_plan_get(ctx.session).await {
                 Ok(false) => {
-                    if let Err(error) = crate::hooks::require_project_trust(&ctx.exec.root) {
+                    if let Err(error) = crate::hook_trust::HookTrustService::new(self.store.clone())
+                        .require_trust(&ctx.exec.root)
+                        .await
+                    {
                         return (call, Err(error), false);
                     }
                 }
@@ -4231,7 +4369,11 @@ impl Runtime {
         if executed
             && !cancel.is_cancelled()
             && !self.session_plan_get(session).await?
-            && (workspace.is_empty() || crate::hooks::require_project_trust(&exec.root).is_ok())
+            && (workspace.is_empty()
+                || crate::hook_trust::HookTrustService::new(self.store.clone())
+                    .require_trust(&exec.root)
+                    .await
+                    .is_ok())
         {
             let event = if result.is_error {
                 "PostToolUseFailure"
@@ -4244,6 +4386,8 @@ impl Runtime {
                 json!({"tool_name":call.name,"tool_input":call.arguments,"tool_use_id":call.id,"tool_response":result})
             };
             match crate::hooks::run_event(
+                &self.store,
+                &self.plugins,
                 self.workspaces.data_dir(),
                 &exec.root,
                 &exec.capability_id,
@@ -4552,7 +4696,9 @@ struct HandoffMeta {
 ///（见 handoff_shell_to_background）；其余工具超时取消并结算 TOOL_TIMEOUT。
 async fn run_tool_guarded(runtime: Arc<Runtime>, input: ToolExecution) -> AppResult<ToolResult> {
     if !input.workspace.is_empty() && !runtime.session_plan_get(&input.session).await? {
-        crate::hooks::require_project_trust(&input.exec.root)?;
+        crate::hook_trust::HookTrustService::new(runtime.store.clone())
+            .require_trust(&input.exec.root)
+            .await?;
     }
     let is_ask = input.call.name == "ask_user";
     let is_shell = !is_ask && input.call.name == "shell";

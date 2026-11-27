@@ -13,63 +13,11 @@ pub(crate) struct HookRun {
     pub ask: bool,
 }
 
+type PluginSnapshot = (String, std::path::PathBuf, Vec<u8>);
+type HookGroup = (Value, Option<String>, Option<PluginSnapshot>);
+
 fn invalid(message: impl Into<String>) -> AppError {
     AppError::new("HOOK_CONFIG", message)
-}
-
-/// Until trust management is available, project declarations must not be skipped.
-pub(crate) fn require_project_trust(root: &Path) -> AppResult<()> {
-    let directory = root.join(".rh");
-    for path in [
-        directory.join(".settings.json"),
-        directory.join(".settings-local.json"),
-    ] {
-        for component in [&directory, &path] {
-            match std::fs::symlink_metadata(component) {
-                Ok(metadata) => {
-                    #[cfg(windows)]
-                    let linked = {
-                        use std::os::windows::fs::MetadataExt;
-                        metadata.file_attributes() & 0x400 != 0
-                    };
-                    #[cfg(not(windows))]
-                    let linked = metadata.file_type().is_symlink();
-                    if linked {
-                        return Err(invalid(format!(
-                            "Hook 配置不能通过链接访问：{}",
-                            component.display()
-                        )));
-                    }
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => {
-                    return Err(invalid(format!(
-                        "无法检查 {}：{error}",
-                        component.display()
-                    )));
-                }
-            }
-        }
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(invalid(format!("无法读取 {}：{error}", path.display()))),
-        };
-        let settings: Value = serde_json::from_slice(&bytes)
-            .map_err(|error| invalid(format!("{} 不是有效 JSON：{error}", path.display())))?;
-        if let Some(hooks) = settings.get("hooks") {
-            let object = hooks
-                .as_object()
-                .ok_or_else(|| invalid("hooks 必须是对象"))?;
-            if !object.is_empty() {
-                return Err(AppError::new(
-                    "HOOK_TRUST_REQUIRED",
-                    format!("项目 Hook 需要审核：{}", path.display()),
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 /// Validate only the hooks section, preserving unrelated settings.
@@ -92,7 +40,7 @@ fn read_settings(data_dir: &Path) -> AppResult<Option<Value>> {
     Ok(Some(value))
 }
 
-fn validate_value(value: &Value) -> AppResult<()> {
+pub(crate) fn validate_value(value: &Value) -> AppResult<()> {
     let Some(hooks) = value.get("hooks") else {
         return Ok(());
     };
@@ -215,6 +163,8 @@ fn validate_value(value: &Value) -> AppResult<()> {
 /// Executes a supported event after validating the same configuration snapshot.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_event(
+    store: &harness_storage::Store,
+    plugins: &harness_extensions::PluginManager,
     data_dir: &Path,
     root: &Path,
     capability_id: &str,
@@ -224,15 +174,65 @@ pub(crate) async fn run_event(
     mut payload: Value,
     cancel: CancellationToken,
 ) -> AppResult<Vec<HookRun>> {
-    let Some(settings) = read_settings(data_dir)? else {
+    let mut groups: Vec<HookGroup> = Vec::new();
+    if let Some(settings) = read_settings(data_dir)? {
+        validate_value(&settings)?;
+        if let Some(global) = settings["hooks"][event].as_array() {
+            groups.extend(global.iter().cloned().map(|group| (group, None, None)));
+        }
+    }
+    if groups.is_empty()
+        && matches!(std::fs::symlink_metadata(root.join(".rh")), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+        && !plugins.has_command_hook_grant()
+    {
         return Ok(Vec::new());
-    };
-    validate_value(&settings)?;
-    let Some(groups) = settings["hooks"][event].as_array() else {
-        return Ok(Vec::new());
-    };
+    }
+    let trust = crate::hook_trust::HookTrustService::new(store.clone());
+    let workspace_id = store.session(session_id).await?.workspace_id;
+    if !workspace_id.is_empty() {
+        let reviews = trust.review(root).await?;
+        if reviews.iter().any(|entry| !entry.trusted) {
+            return Err(AppError::new("HOOK_TRUST_REQUIRED", "项目 Hook 需要审核"));
+        }
+        groups.extend(reviews.into_iter().filter(|entry| entry.event == event).map(|entry| {
+            (json!({"matcher":entry.matcher.unwrap_or_default(), "hooks":[entry.handler]}), Some(entry.digest), None)
+        }));
+    }
+    for (id, path) in plugins.command_hook_sources(&workspace_id)? {
+        let bytes = std::fs::read(&path).map_err(|e| invalid(e.to_string()))?;
+        if bytes.len() > 1024 * 1024 {
+            return Err(invalid("插件 Hook 配置超过 1 MiB"));
+        }
+        let settings: Value = serde_json::from_slice(&bytes).map_err(|e| invalid(e.to_string()))?;
+        validate_value(&settings)?;
+        if let Some(plugin_groups) = settings["hooks"][event].as_array() {
+            let plugin_root = path
+                .parent()
+                .and_then(Path::parent)
+                .ok_or_else(|| invalid("插件路径无效"))?
+                .to_string_lossy();
+            for group in plugin_groups {
+                let mut group = group.clone();
+                for handler in group["hooks"].as_array_mut().into_iter().flatten() {
+                    if let Some(command) = handler["command"].as_str() {
+                        handler["command"] =
+                            Value::String(command.replace("${RH_PLUGIN_ROOT}", &plugin_root));
+                    }
+                    if let Some(args) = handler.get_mut("args").and_then(Value::as_array_mut) {
+                        for arg in args {
+                            if let Some(value) = arg.as_str() {
+                                *arg =
+                                    Value::String(value.replace("${RH_PLUGIN_ROOT}", &plugin_root));
+                            }
+                        }
+                    }
+                }
+                groups.push((group, None, Some((id.clone(), path.clone(), bytes.clone()))));
+            }
+        }
+    }
     let mut results = Vec::new();
-    for group in groups {
+    for (group, digest, plugin) in &groups {
         let matcher = group["matcher"].as_str().unwrap_or("");
         let source = payload["source"].as_str().unwrap_or("");
         if event == "SessionStart"
@@ -264,6 +264,30 @@ pub(crate) async fn run_event(
             continue;
         }
         for handler in group["hooks"].as_array().into_iter().flatten() {
+            if !workspace_id.is_empty() {
+                let current = trust.review(root).await?;
+                if current.iter().any(|entry| !entry.trusted)
+                    || digest.as_ref().is_some_and(|digest| {
+                        !current
+                            .iter()
+                            .any(|entry| entry.digest == *digest && entry.trusted)
+                    })
+                {
+                    return Err(AppError::new(
+                        "HOOK_TRUST_REQUIRED",
+                        "项目 Hook 已更改或信任已撤销，请重新审核",
+                    ));
+                }
+            }
+            if let Some((id, path, bytes)) = plugin
+                && (!plugins
+                    .command_hook_sources(&workspace_id)?
+                    .iter()
+                    .any(|source| &source.0 == id && &source.1 == path)
+                    || std::fs::read(path).map_err(|e| invalid(e.to_string()))? != *bytes)
+            {
+                return Err(invalid("插件 Hook 授权或配置已变化"));
+            }
             let command = handler["command"]
                 .as_str()
                 .ok_or_else(|| invalid("缺少 command"))?;

@@ -37,12 +37,12 @@ pub(crate) fn relative(name: &str) -> AppResult<PathBuf> {
     Ok(PathBuf::from(name.trim_end_matches('/')))
 }
 #[cfg(windows)]
-fn linked(m: &fs::Metadata) -> bool {
+pub(crate) fn linked(m: &fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
     m.file_attributes() & 0x400 != 0
 }
 #[cfg(not(windows))]
-fn linked(m: &fs::Metadata) -> bool {
+pub(crate) fn linked(m: &fs::Metadata) -> bool {
     m.file_type().is_symlink()
 }
 pub(crate) fn unpack(source: &Path, dest: &Path) -> AppResult<()> {

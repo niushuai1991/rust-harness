@@ -298,6 +298,23 @@ pub async fn dispatch(runtime: Arc<Runtime>, method: &str, p: Value) -> AppResul
             runtime.plugins.remove(field(&p, "id")?)?;
             Value::Null
         }
+        "hooks.project.review" => json!(
+            runtime
+                .review_project_hooks(field(&p, "sessionId")?)
+                .await?
+        ),
+        "hooks.project.trust" => {
+            runtime
+                .trust_project_hook(field(&p, "sessionId")?, field(&p, "digest")?)
+                .await?;
+            Value::Null
+        }
+        "hooks.project.revoke" => {
+            runtime
+                .revoke_project_hook(field(&p, "sessionId")?, field(&p, "digest")?)
+                .await?;
+            Value::Null
+        }
         "mcp.config.list" => json!(
             runtime
                 .mcp_config
